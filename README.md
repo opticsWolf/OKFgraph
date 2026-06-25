@@ -1,8 +1,8 @@
-# OKFGraph
+# OKFgraph
 
 **Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings and multimodal image ingestion.**
 
-OKFGraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, and — in v4.0 — unified multimodal image embedding into a single SQLite-backed system.
+OKFgraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, and — in v4.0 — unified multimodal image embedding into a single SQLite-backed system.
 
 ---
 
@@ -90,7 +90,7 @@ okf shell
 
 ### Embedding Engine
 
-OKFGraph uses a **dual-model** approach with a **unified vector space**:
+OKFgraph uses a **dual-model** approach with a **unified vector space**:
 
 | Model | Role | Framework | Loaded |
 |---|---|---|---|

@@ -137,6 +137,7 @@ def _search(args):
         tags=tags,
         parent_id=args.parent,
         limit=args.limit,
+        include_chunks=getattr(args, "chunks", False),
     )
     if not results:
         print("No results found.")
@@ -150,6 +151,12 @@ def _search(args):
         if r.get("tags"):
             print(f"     tags: {', '.join(r['tags'])}")
         print(f"     id: {r['id']}")
+        # Print matched chunks if requested
+        if r.get("matched_chunks"):
+            print(f"     matched chunks:")
+            for mc in r["matched_chunks"][:3]:
+                print(f"       [{mc['rrf_score']:.4f}] {mc['block_type']} #{mc['chunk_index']}")
+                print(f"         {mc.get('chunk_text', '')[:100]}")
         print()
 
 
@@ -260,7 +267,7 @@ def _search_chunks(args):
         print(f"     {text[:150]}")
         if r.get("parent_title"):
             print(f"     parent: {r['parent_title']}")
-        print(f"     id: {r['id']}")
+        print(f"     id: {r['chunk_id']}")
         print()
 
 
@@ -692,6 +699,7 @@ def build_parser():
     p.add_argument("--tags", help="Comma-separated tag filters")
     p.add_argument("--parent", help="Parent directory ID")
     p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
+    p.add_argument("--chunks", action="store_true", help="Include matched chunks per result")
 
     # traverse
     p = sub.add_parser("traverse", help="Graph traversal")

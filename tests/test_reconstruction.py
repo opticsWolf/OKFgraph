@@ -31,13 +31,16 @@ class TestReconstruction:
     """Reconstruction tests — class-scoped router for speed."""
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
-        shutil.rmtree(d, ignore_errors=True)
+        cls._tmp_dir = d
+        yield cls._tmp_dir
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_reconstruction.db"),
             bundle_root=tmp_dir,
@@ -47,11 +50,13 @@ class TestReconstruction:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     @pytest.fixture(scope="class")
-    def multi_section_doc(self, router, tmp_dir):
+    @classmethod
+    def multi_section_doc(cls, router, tmp_dir):
         """Import a document with multiple sections for reconstruction."""
         body = "\n\n".join([
             "## First Section",
@@ -63,7 +68,8 @@ class TestReconstruction:
         ])
         p = _write_okf(tmp_dir, "reconstruct.md", "Reconstruct Me", body)
         cid = router.import_from_okf(p)
-        return cid, body
+        cls._multi_section_doc = (cid, body)
+        return cls._multi_section_doc
 
     def test_reconstruct_returns_text(self, router, multi_section_doc):
         cid, _ = multi_section_doc

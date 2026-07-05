@@ -31,13 +31,16 @@ class TestIntegration:
     """Full pipeline integration tests — class-scoped router for speed."""
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
-        shutil.rmtree(d, ignore_errors=True)
+        cls._tmp_dir = d
+        yield cls._tmp_dir
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_integration.db"),
             bundle_root=tmp_dir,
@@ -47,11 +50,13 @@ class TestIntegration:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     @pytest.fixture(scope="class")
-    def full_bundle(self, router, tmp_dir):
+    @classmethod
+    def full_bundle(cls, router, tmp_dir):
         """Import a bundle with cross-links and run full pipeline."""
         bundle_dir = Path(tmp_dir) / "bundle"
         bundle_dir.mkdir(exist_ok=True)
@@ -77,7 +82,8 @@ class TestIntegration:
             cid = router.import_from_okf(p)
             ids[title.lower()] = cid
 
-        return ids
+        cls._full_bundle = ids
+        return cls._full_bundle
 
     def test_bundle_import_creates_concepts(self, router, full_bundle):
         for title, cid in full_bundle.items():

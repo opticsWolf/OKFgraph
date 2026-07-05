@@ -1,29 +1,30 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 4.0 (Unified Omni — Multimodal Image Ingestion)  
-**Based on**: Architecture v2.2 (implementation-verified)  
+**Version**: 5.0 (Graph-Aware Chunking & Retrieval)  
+**Based on**: Architecture v4.0 (Unified Omni — Multimodal Image Ingestion)  
 **Verified against**: LadybugDB v0.17.1, Python 3.13.14
 
 **Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
-**Embedding Engine**: ONNX-optimized Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via `optimum[onnxruntime]`.  
+**Embedding Engine**: ONNX-optimized Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via `optimum[onnxruntime]`. **Numpy-only post-processing** (no torch).  
 **Multimodal Engine**: SentenceTransformer with `jinaai/jina-embeddings-v5-omni-small-retrieval` (vision tower, lazy-loaded).  
 **Unified Vector Space**: Both encoders write into one `ImageAsset.embedding` column indexed by `image_omni_idx`.  
-**Search Modes**: Hybrid (RRF fusion), Traversal (pure graph), Direct (exact ID lookup), Image search (text→image via unified index).
+**Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
+**Search Modes**: Hybrid (RRF fusion), Traversal (pure graph), Direct (exact ID lookup), Image search (text→image via unified index), **Chunk-level search with graph enrichment**.
 
 ---
 
 ## 1. Dependencies
 
 ```bash
-pip install optimum[onnxruntime] transformers torch python-frontmatter pyyaml pydantic ladybug sentence-transformers Pillow
+pip install optimum[onnxruntime] transformers numpy mordant python-frontmatter pyyaml pydantic ladybug sentence-transformers Pillow
 ```
 
-> `torch` is required as a backend for ONNX Runtime's tensor operations. Use `torch --index-url https://download.pytorch.org/whl/cpu` for CPU-only (lightweight) builds.
+> **No torch dependency**. ONNX Runtime returns numpy arrays; all post-processing (last-token pooling, L2 normalization, Matryoshka truncation) uses `numpy` exclusively.
 
 **Installed versions** (verified working):
-- `optimum==2.1.0`, `onnxruntime==1.27.0`, `torch==2.12.1`, `transformers==4.57.6`
-- `ladybug==0.17.1`, `pydantic==2.13.4`
+- `optimum==2.1.0`, `onnxruntime==1.27.0`, `numpy>=1.24`, `transformers==4.57.6`
+- `ladybug==0.17.1`, `pydantic==2.13.4`, `mordant>=0.12`
 
 ---
 
@@ -70,6 +71,19 @@ CREATE NODE TABLE BrokenLink (
     timestamp TIMESTAMP
 );
 
+CREATE NODE TABLE Chunk (
+    id STRING PRIMARY KEY,
+    parent_doc_id STRING,
+    chunk_index INTEGER,
+    chunk_text STRING,
+    block_type STRING,                -- "paragraph", "heading", "code", "list", "blockquote", "table", "diagram"
+    start_offset INTEGER,
+    end_offset INTEGER,
+    embedding FLOAT[dim]              -- Jina v5 text model output
+);
+
+CREATE REL TABLE PART_OF (FROM Concept TO Chunk);
+
 CREATE REL TABLE CONTAINS (
     FROM Directory TO Directory,
     FROM Directory TO Concept
@@ -87,6 +101,15 @@ CALL CREATE_VECTOR_INDEX(
 
 -- Full-text index on combined search text (title + description + body)
 CALL CREATE_FTS_INDEX('Concept', 'concept_fts', ['title', 'description', 'body']);
+
+-- Chunk vector index for ANN search on Chunk.embedding
+CALL CREATE_VECTOR_INDEX(
+    'Chunk', 'chunk_embedding', 'embedding',
+    mu := 30, ml := 60, metric := 'cosine', efc := 200
+);
+
+-- Chunk full-text index on chunk_text
+CALL CREATE_FTS_INDEX('Chunk', 'chunk_fts', ['chunk_text']);
 
 -- Unified image vector index (shared space: text-model alt-text vectors + omni-model image vectors)
 CALL CREATE_VECTOR_INDEX(
@@ -556,6 +579,162 @@ def model_info(cls, model_id: str = "...", cache_dir: Optional[str] = None) -> D
 
 ---
 
+## 4a. Chunking & Graph Retrieval (v5.0)
+
+### 4a.1. Chunk Model
+
+```python
+class ChunkModel(BaseModel):
+    """A semantic chunk of a document, stored with its own vector embedding."""
+    id: str
+    parent_doc_id: str
+    chunk_index: int
+    chunk_text: str
+    block_type: str              # "paragraph", "heading", "code", "list", "blockquote", "table", "diagram"
+    start_offset: int = 0
+    end_offset: int = 0
+    embedding: Optional[List[float]] = None
+
+    model_config = {"extra": "allow"}
+```
+
+### 4a.2. Chunking Pipeline
+
+Documents are chunked during import using **Mordant** (Rust-based Markdown parser):
+
+1. **Parse** — `MarkdownChunker` splits the document into semantic blocks (headings, paragraphs, code blocks, lists, tables, blockquotes, diagrams).
+2. **Heading context injection** — Paragraph chunks track `current_heading` as an ephemeral key. This heading is prepended to the embedding payload without mutating the stored `chunk_text`.
+3. **Structural boundaries** — The `STRUCTURAL_BLOCKS` tuple (`Heading`, `CodeBlock`, `List`, `Blockquote`, `Table`, `Diagram`) enforces hard semantic breaks. Overlap tails are cleared when hitting any structural block to prevent "chimera" vectors (e.g., code tokens bleeding into prose).
+4. **Sliding window overlap** — Default `chunk_overlap=40` words. Tails are only generated from non-structural blocks.
+5. **Encoding** — Each chunk is encoded via `_encode()` with `Document:` prefix, last-token pooling, L2 normalization, and Matryoshka truncation.
+6. **Storage** — Chunks are stored as `Chunk` nodes with `PART_OF` relationships to the parent `Concept`.
+
+### 4a.3. Chunk Search (RRF Fusion)
+
+```python
+def search_chunks(
+    self,
+    query: str,
+    concept_type: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    parent_id: Optional[str] = None,
+    limit: int = 10,
+    max_chunks_per_doc: int = 3,
+) -> List[Dict[str, Any]]:
+    """RRF-fused chunk search: vector + FTS at chunk granularity.
+    
+    Returns list of dicts with keys:
+    - chunk_id, chunk_text, block_type, chunk_index
+    - parent_doc_id, parent_title, parent_type, parent_tags
+    - rrf_score
+    """
+```
+
+### 4a.4. Graph-Aware Reranking
+
+```python
+def search_with_context(
+    self,
+    query: str,
+    limit: int = 10,
+    context_hops: int = 1,
+) -> List[Dict[str, Any]]:
+    """Chunk search + graph neighborhood expansion.
+    
+    Returns chunks enriched with incoming_links, outgoing_links,
+    directory ancestry, and sibling concepts.
+    """
+
+def search_chunks_with_hub_score(
+    self,
+    query: str,
+    limit: int = 10,
+    hub_weight: float = 0.5,
+) -> List[Dict[str, Any]]:
+    """Chunk search reranked by parent hub score.
+    
+    Hub score = incoming link count. Blended with RRF score:
+    final_score = (1 - hub_weight) * rrf_score + hub_weight * normalized_hub
+    """
+
+def rerank_with_hub_score(
+    self,
+    chunk_results: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Adjust chunk scores by parent hub score."""
+
+def expand_with_graph_context(
+    self,
+    chunk_ids: List[str],
+) -> List[Dict[str, Any]]:
+    """Discover related concepts via graph edges from chunk parents."""
+```
+
+### 4a.5. Document Reconstruction
+
+```python
+def reconstruct_document(self, document_id: str) -> Optional[str]:
+    """Reconstruct original Markdown from chunks.
+    
+    Uses Mordant's `get_delimiter()` to join chunks with proper spacing.
+    Returns None for nonexistent IDs.
+    Achieves ~98% fidelity round-trip.
+    """
+
+def get_chunks(self, concept_id: str) -> List[ChunkModel]:
+    """List all chunks for a concept, ordered by chunk_index."""
+```
+
+### 4a.6. Path Finding
+
+```python
+def find_path(
+    self,
+    start_id: str,
+    end_id: str,
+    max_length: int = 10,
+) -> Optional[List[Dict[str, Any]]]:
+    """BFS shortest path between two concepts.
+    
+    Returns list of nodes along the path, or None if no path found.
+    Uses Ladybug variable-length patterns *1..N with MATCH path = ....
+    """
+```
+
+### 4a.7. Hybrid Search with Chunks
+
+```python
+def search_hybrid(
+    self,
+    query: str,
+    concept_type: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    parent_id: Optional[str] = None,
+    exclude_reserved: bool = True,
+    limit: int = 10,
+    include_chunks: bool = False,  # NEW in v5.0
+) -> List[Dict[str, Any]]:
+    """Hybrid search with optional matched chunks attached.
+    
+    When include_chunks=True, each result dict includes a 'matched_chunks'
+    key with top matching chunks for that concept.
+    """
+```
+
+### 4a.8. Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| **Numpy-only post-processing** | ONNX model returns numpy arrays; torch adds no value for pooling/normalization |
+| **Mordant `get_all_chunks()`** | Includes headings as separate chunks for ~98% reconstruction fidelity |
+| **Storage vs embedding text decoupling** | `chunk_text` remains pristine; heading context injected in-memory for encoder |
+| **Structural block boundaries** | Prevents chimera vectors (code/table tokens bleeding into prose) |
+| **Default `chunk_overlap=40`** | Tighter semantic overlap without excessive redundancy (was 64) |
+| **Class-scoped test fixtures** | ~80s run times vs 5-10x slower per-test model loading |
+| **`chunk_id` in return dicts** | Explicit key name distinguishes chunk results from concept results |
+
+---
+
 ## 5. CLI / App Layer
 
 The `okf` CLI provides command-line and interactive access to all `OKFRouter` operations.
@@ -576,7 +755,16 @@ okf = "okfgraph.cli:main"
 | `okf import <files>` | Import one or more OKF files |
 | `okf import --all` | Import entire bundle recursively |
 | `okf search <query>` | Hybrid search (type/tags/parent/limit filters) |
+| `okf search <query> --chunks` | Hybrid search with matched chunks attached |
 | `okf search-images <query>` | Find images via the unified vector index |
+| `okf search-chunks <query>` | Chunk-level RRF-fused search |
+| `okf context <query>` | Search with graph neighborhood expansion |
+| `okf hub-search <query>` | Chunk search reranked by hub score |
+| `okf path <id1> <id2>` | Find shortest path between concepts |
+| `okf siblings <id>` | List sibling concepts in same directory |
+| `okf ancestry <id>` | Show directory hierarchy for a concept |
+| `okf chunks <id>` | List chunks for a concept |
+| `okf reconstruct <id>` | Reconstruct document from chunks |
 | `okf traverse <id>` | Graph traversal (relationship/direction/depth) |
 | `okf list [dir]` | List directory contents |
 | `okf get <id>` | Fetch full concept (JSON + body) |
@@ -660,6 +848,76 @@ TOOLS = [
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum number of images to return (default 10)."},
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "search_chunks",
+        "description": "Search document chunks with RRF-fused vector + FTS. Returns chunk-level results with parent concept metadata.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "max_chunks_per_doc": {"type": "integer", "minimum": 1, "maximum": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "expand_with_graph_context",
+        "description": "Discover related concepts via graph edges from chunk parents.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chunk_ids": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["chunk_ids"],
+        },
+    },
+    {
+        "name": "rerank_with_hub_score",
+        "description": "Adjust chunk scores by parent hub score (incoming link count).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chunk_results": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["chunk_results"],
+        },
+    },
+    {
+        "name": "get_chunks",
+        "description": "List all chunks for a concept.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "concept_id": {"type": "string"},
+            },
+            "required": ["concept_id"],
+        },
+    },
+    {
+        "name": "reconstruct_document",
+        "description": "Reconstruct original Markdown from chunks (~98% fidelity).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+            },
+            "required": ["document_id"],
+        },
+    },
+    {
+        "name": "find_path",
+        "description": "Find shortest path between two concepts in the knowledge graph.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "start_id": {"type": "string"},
+                "end_id": {"type": "string"},
+                "max_length": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+            "required": ["start_id", "end_id"],
         },
     },
 ]
@@ -815,6 +1073,60 @@ The embedded UUID is deterministic and stable across round-trips.
 |---|---|
 | **Concept temporal dual-tracking** (`created_date`/`modified_date`) | Single-`timestamp` behaviour unchanged; ImageAsset uses `content_hash`-based change detection |
 | **`okf-asset://` link rewriting on ingest** | Concept bodies stored verbatim (markdown round-trips); asset ids are deterministic, so rewriting can be added later without data migration |
+
+---
+
+## 10a. Summary of Changes (v4.0 → v5.0)
+
+### Major Additions
+
+| Area | v4.0 | v5.0 | Reason |
+|---|---|---|---|
+| **Chunk node** | Not specified | **Full node table** with embedding | Chunk-level search and retrieval |
+| **PART_OF rel** | Not specified | **Concept → Chunk** | Graph edges to chunks |
+| **Chunk vector index** | Not specified | **`chunk_embedding` on Chunk** | ANN search at chunk granularity |
+| **Chunk FTS index** | Not specified | **`chunk_fts` on Chunk** | Keyword search at chunk granularity |
+| **Mordant chunker** | Not specified | **Rust-based Markdown parser** | Semantic block splitting with heading awareness |
+| **Heading context injection** | Not specified | **Ephemeral heading prepended to embedding payloads** | Enriches vectors without mutating storage |
+| **Structural block boundaries** | Not specified | **`STRUCTURAL_BLOCKS` tuple** | Prevents chimera vectors (code/table tokens bleeding into prose) |
+| **Chunk search (RRF)** | Not specified | **`search_chunks()`** | Vector + FTS fusion at chunk level |
+| **Graph context expansion** | Not specified | **`search_with_context()`** | Enriches search results with neighborhood info |
+| **Hub-score reranking** | Not specified | **`search_chunks_with_hub_score()`** | Chunks from authoritative docs rank higher |
+| **Document reconstruction** | Not specified | **`reconstruct_document()`** | ~98% fidelity round-trip from chunks |
+| **Path finding** | Not specified | **`find_path()`** | BFS shortest path between concepts |
+| **Hybrid search with chunks** | `include_chunks` absent | **`include_chunks=True`** | Attaches matched chunks to concept results |
+| **Numpy-only post-processing** | `torch` dependency | **`numpy` exclusively** | Removes heavy torch dependency |
+| **CLI chunking commands** | Not specified | **search-chunks, context, hub-search, path, siblings, ancestry, chunks, reconstruct** | Full CLI coverage |
+| **LLM tools** | 5 tools | **12 tools** | Agent-accessible chunking and graph enrichment |
+
+### Verified Corrections
+
+| Area | v4.0 (Spec) | v5.0 (Verified) | Reason |
+|---|---|---|---|
+| **`search_chunks` return key** | `"id"` | **`"chunk_id"`** | Distinguishes chunk results from concept results |
+| **`reconstruct_document` nonexistent** | Returns `""` | **Returns `None`** | Pythonic sentinel for missing data |
+| **Default `chunk_overlap`** | 64 | **40** | Tighter semantic overlap without excessive redundancy |
+| **Ladybug `$end` reserved** | Would fail | **`$eid`** | `$end` is a reserved parameter name in Ladybug |
+| **Ladybug `WITH` clauses** | Missing aliases | **Explicit `AS` aliases** | Ladybug requires all `WITH` expressions aliased |
+| **Ladybug `id(node)`** | Used in `ORDER BY` | **Removed** | Unsupported in Ladybug for ordering |
+| **Ladybug parameter stripping** | Silent drops | **`to_json($param)` wrapping** | Pybind backend strips non-JSON/non-wrapped parameters |
+
+### Unchanged (Verified Correct)
+
+- All v4.0 features (image ingestion, unified vector space, hybrid search)
+- Pydantic model structure and validators
+- ONNX embedding pipeline (last-token pooling, Matryoshka truncation)
+- Ladybug schema patterns (vector upsert, MAP construction, label matching)
+- CLI per-invocation router pattern
+- Batch encoding optimization (sequential single-pass)
+
+### Scoped Out (Clean Follow-ups)
+
+| Feature | Reason |
+|---|---|
+| **Function-scoped test fixtures** | Class-scoped for ~80s run times; revert at full-test maturity |
+| **`--skip-embedding` flag** | Faster imports without ONNX encoding; low priority |
+| **Mordant-specific unit tests** | Pure Mordant features; not OKF-specific logic |
 
 ---
 

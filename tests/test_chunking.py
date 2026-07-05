@@ -79,14 +79,17 @@ class TestPhase1_Schema:
     """
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
+        cls._tmp_dir = d
+        yield cls._tmp_dir
         import shutil
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_chunking.db"),
             bundle_root=tmp_dir,
@@ -96,8 +99,9 @@ class TestPhase1_Schema:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     def test_chunk_node_exists(self, router):
         """Chunk node table is created during init."""
@@ -120,14 +124,17 @@ class TestPhase1_Chunking:
     """
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
+        cls._tmp_dir = d
+        yield cls._tmp_dir
         import shutil
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_chunking.db"),
             bundle_root=tmp_dir,
@@ -137,11 +144,13 @@ class TestPhase1_Chunking:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     @pytest.fixture(scope="class")
-    def long_doc(self, router, tmp_dir):
+    @classmethod
+    def long_doc(cls, router, tmp_dir):
         """Import a document long enough to produce multiple chunks (once per class)."""
         sections = []
         for i in range(10):
@@ -150,7 +159,8 @@ class TestPhase1_Chunking:
         body = "\n\n".join(sections)
         p = _write_okf(tmp_dir, "long.md", "Long Doc", body)
         cid = router.import_from_okf(p)
-        return cid
+        cls._long_doc = cid
+        return cls._long_doc
 
     def test_splits_into_multiple_chunks(self, router, long_doc):
         chunks = router.get_chunks(long_doc)
@@ -199,14 +209,17 @@ class TestPhase2_Ingestion:
     """
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
+        cls._tmp_dir = d
+        yield cls._tmp_dir
         import shutil
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_chunking.db"),
             bundle_root=tmp_dir,
@@ -216,8 +229,9 @@ class TestPhase2_Ingestion:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     def test_import_creates_chunks(self, router, tmp_dir):
         body = "Word " * 300
@@ -268,14 +282,17 @@ class TestPhase3_Search:
     """
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
+        cls._tmp_dir = d
+        yield cls._tmp_dir
         import shutil
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_chunking.db"),
             bundle_root=tmp_dir,
@@ -285,11 +302,13 @@ class TestPhase3_Search:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     @pytest.fixture(scope="class")
-    def seeded_db(self, router, tmp_dir):
+    @classmethod
+    def seeded_db(cls, router, tmp_dir):
         """Seed 3 topic documents (once per class)."""
         for i in range(3):
             body = f"Topic {i} discussion with unique words alpha beta gamma delta epsilon " * 20
@@ -329,14 +348,17 @@ class TestPhase4_Graph:
     """
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
+        cls._tmp_dir = d
+        yield cls._tmp_dir
         import shutil
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_chunking.db"),
             bundle_root=tmp_dir,
@@ -346,11 +368,13 @@ class TestPhase4_Graph:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     @pytest.fixture(scope="class")
-    def linked_db(self, router, tmp_dir):
+    @classmethod
+    def linked_db(cls, router, tmp_dir):
         """Create two cross-linked documents (once per class)."""
         body_a = "Document A content. " * 50 + "\n\n[[doc_b]]"
         body_b = "Document B content. " * 50 + "\n\n[[doc_a]]"
@@ -358,7 +382,8 @@ class TestPhase4_Graph:
         _write_okf(tmp_dir, "doc_b.md", "Doc B", body_b, tags=["test"])
         id_a = router.import_from_okf(Path(tmp_dir) / "doc_a.md")
         id_b = router.import_from_okf(Path(tmp_dir) / "doc_b.md")
-        return id_a, id_b
+        cls._linked_db = (id_a, id_b)
+        return cls._linked_db
 
     def test_expand_with_graph_context(self, router, linked_db):
         id_a, _ = linked_db
@@ -470,14 +495,17 @@ class TestIndexRebuild:
     """
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
+        cls._tmp_dir = d
+        yield cls._tmp_dir
         import shutil
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_chunking.db"),
             bundle_root=tmp_dir,
@@ -487,8 +515,9 @@ class TestIndexRebuild:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     def test_reindex_includes_chunk_indexes(self, router, tmp_dir):
         body = "Index test content. " * 100

@@ -31,13 +31,16 @@ class TestChunkSearch:
     """Chunk search tests — class-scoped router for speed."""
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
-        shutil.rmtree(d, ignore_errors=True)
+        cls._tmp_dir = d
+        yield cls._tmp_dir
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_chunk_search.db"),
             bundle_root=tmp_dir,
@@ -47,11 +50,13 @@ class TestChunkSearch:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     @pytest.fixture(scope="class")
-    def seeded_docs(self, router, tmp_dir):
+    @classmethod
+    def seeded_docs(cls, router, tmp_dir):
         """Seed multiple documents with distinct tags and content."""
         ids = []
         for i, tag in enumerate(["alpha", "beta", "gamma"]):
@@ -59,7 +64,8 @@ class TestChunkSearch:
             p = _write_okf(tmp_dir, f"search_{i}.md", f"Search Doc {i}", body, tags=[tag])
             cid = router.import_from_okf(p)
             ids.append(cid)
-        return ids
+        cls._seeded_docs = ids
+        return cls._seeded_docs
 
     def test_search_returns_results(self, router, seeded_docs):
         results = router.search_chunks("shared query words")
@@ -75,7 +81,7 @@ class TestChunkSearch:
     def test_results_have_required_fields(self, router, seeded_docs):
         results = router.search_chunks("shared query words")
         for r in results:
-            assert "id" in r
+            assert "chunk_id" in r
             assert "chunk_text" in r
             assert "block_type" in r
             assert "chunk_index" in r

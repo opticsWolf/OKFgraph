@@ -2026,7 +2026,7 @@ class OKFRouter:
             if len(chunk_text) > 500:
                 chunk_text = chunk_text[:500] + "..."
             result: Dict[str, Any] = {
-                "id": cid,
+                "chunk_id": cid,
                 "chunk_text": chunk_text,
                 "block_type": row["ch.block_type"],
                 "chunk_index": row["ch.chunk_index"],

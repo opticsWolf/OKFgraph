@@ -31,13 +31,16 @@ class TestGraphEnrichment:
     """Graph enrichment tests — class-scoped router for speed."""
 
     @pytest.fixture(scope="class")
-    def tmp_dir(self):
+    @classmethod
+    def tmp_dir(cls):
         d = tempfile.mkdtemp()
-        yield d
-        shutil.rmtree(d, ignore_errors=True)
+        cls._tmp_dir = d
+        yield cls._tmp_dir
+        shutil.rmtree(cls._tmp_dir, ignore_errors=True)
 
     @pytest.fixture(scope="class")
-    def router(self, tmp_dir):
+    @classmethod
+    def router(cls, tmp_dir):
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_graph_enrichment.db"),
             bundle_root=tmp_dir,
@@ -47,11 +50,13 @@ class TestGraphEnrichment:
             enable_chunking=True,
             device="cuda",
         )
-        yield r
-        r.close()
+        cls._router = r
+        yield cls._router
+        cls._router.close()
 
     @pytest.fixture(scope="class")
-    def linked_docs(self, router, tmp_dir):
+    @classmethod
+    def linked_docs(cls, router, tmp_dir):
         """Create documents with cross-links for hub score testing."""
         # hub_doc is linked by many others (high hub score)
         body_hub = "## Hub Document\n\nThis is the central hub concept. " * 20
@@ -66,7 +71,8 @@ class TestGraphEnrichment:
             cid = router.import_from_okf(p)
             ids.append(cid)
 
-        return id_hub, ids[1:]
+        cls._linked_docs = (id_hub, ids[1:])
+        return cls._linked_docs
 
     def test_compute_hub_scores(self, router, linked_docs):
         hub_id, spoke_ids = linked_docs

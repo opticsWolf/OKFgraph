@@ -10,13 +10,13 @@ OKFgraph is a Python library and CLI tool for building, querying, and managing k
 
 | Category | Features |
 |---|---|
-| **Embeddings** | ONNX-optimized Jina v5 text model, SentenceTransformer omni model (lazy-loaded), Matryoshka truncation (32–1024 dims, default 512) |
-| **Search** | Hybrid RRF fusion (vector + FTS), graph traversal, direct lookup, image search via unified index |
+| **Embeddings** | ONNX-optimized Jina v5 text model, SentenceTransformer omni model (lazy-loaded), Matryoshka truncation (32–1024 dims, default 512), numpy-only post-processing (no torch) |
+| **Search** | Hybrid RRF fusion (vector + FTS), graph traversal, chunk-level search with RRF, graph-aware reranking (hub scores), context expansion, direct lookup, image search via unified index |
 | **Storage** | LadybugDB — graph + vector + full-text search in a single SQLite file |
 | **Images** | Three ingestion modes (`text` / `optional` / `omni`), unified vector space for text + image, content-hash dedup, `okf-asset://` protocol |
 | **Import/Export** | OKF Markdown round-trip, batch import with single-transaction upsert, filtered bulk export |
-| **CLI** | 14 commands + interactive REPL, `--mode` for image ingestion, `--device cuda` with auto-fallback |
-| **LLM Tools** | 5 OpenAI-compatible tool definitions for agent integration |
+| **CLI** | 14 commands + interactive REPL, `--mode` for image ingestion, `--device cuda` with auto-fallback, chunking flags (`--chunk-overlap`, `--no-chunking`) |
+| **LLM Tools** | 12 OpenAI-compatible tool definitions for agent integration (search, traverse, chunks, graph enrichment, path finding) |
 
 ---
 
@@ -50,6 +50,26 @@ results = router.search_hybrid("machine learning basics", limit=5)
 for r in results:
     print(f"  [{r['relevance_score']:.3f}] {r['title']} ({r['type']})")
 
+# Chunk-level search (RRF-fused vector + FTS)
+chunks = router.search_chunks("neural network architecture", limit=5)
+for c in chunks:
+    print(f"  [{c['rrf_score']:.3f}] {c['parent_title']} §{c['chunk_index']}")
+
+# Search with graph context
+enriched = router.search_with_context("graph neural networks", limit=3)
+for r in enriched:
+    chunk = r["chunk"]
+    print(f"  [{chunk['rrf_score']:.3f}] {chunk['parent_title']}")
+    print(f"    ← linked by: {len(r['incoming_links'])} docs")
+
+# Hub-score reranking
+ranked = router.search_chunks_with_hub_score("fundamentals", limit=10)
+for r in ranked:
+    print(f"  [{r['final_score']:.3f}] hub={r['hub_score']:.2f} {r['parent_title']}")
+
+# Reconstruct document from chunks
+original = router.reconstruct_document("concepts/intro")
+
 # Image search (text → image via unified index)
 images = router.search_images_with_text("diagram of a neural network", limit=10)
 for img in images:
@@ -73,6 +93,27 @@ okf import --all --mode omni --allow-remote-images
 
 # Hybrid search
 okf search "graph neural networks" --type section --limit 5
+
+# Hybrid search with matched chunks
+okf search "machine learning" --chunks
+
+# Chunk-level search
+okf search-chunks "neural network architecture"
+
+# Search with graph context
+okf context "graph neural networks"
+
+# Hub-score reranking
+okf hub-search "fundamentals"
+
+# Find path between concepts
+okf path concepts/intro concepts/advanced
+
+# List chunks for a concept
+okf chunks concepts/intro
+
+# Reconstruct document from chunks
+okf reconstruct concepts/intro
 
 # Image search
 okf search-images "network architecture diagram"
@@ -112,21 +153,38 @@ When `omni` is requested but raw bytes are unavailable (e.g. remote URLs not fet
 ### Database Schema
 
 ```
-Concept        ImageAsset       Directory       BrokenLink
-├── id         ├── id           ├── id          ├── id
-├── type       ├── file_name    └── (empty)     ├── source_id
-├── title      ├── mime_type                 ├── target_id
-├── body       ├── alt_text                └── timestamp
-├── embedding  ├── caption
-└── extra      ├── embed_route
-               ├── content_hash
-               ├── data (BLOB)
+Concept        ImageAsset       Directory       BrokenLink     Chunk
+├── id         ├── id           ├── id          ├── id         ├── id
+├── type       ├── file_name    └── (empty)     ├── source_id  ├── parent_doc_id
+├── title      ├── mime_type                 ├── target_id    ├── chunk_index
+├── body       ├── alt_text                └── timestamp      ├── chunk_text
+├── embedding  ├── caption                                  ├── block_type
+└── extra      ├── embed_route                          ├── start_offset
+               ├── content_hash                         ├── end_offset
+               ├── data (BLOB)                          └── embedding
                └── embedding
 
 CONTAINS: Directory → Directory / Concept
 LINKS_TO: Concept → Concept
 INCLUDES_ASSET: Concept → ImageAsset
+PART_OF: Concept → Chunk
 ```
+
+### Chunking & Graph Retrieval
+
+OKFgraph v5.0 adds **document chunking** with **graph-aware retrieval**:
+
+| Feature | Description |
+|---|---|
+| **Mordant chunker** | Rust-based Markdown parser that splits documents into semantic blocks (paragraphs, headings, code blocks, lists, tables, blockquotes) |
+| **Heading context injection** | Paragraph chunks get parent heading prepended to embedding payloads without mutating stored text |
+| **Structural boundaries** | Headings, code blocks, lists, tables, blockquotes, and diagrams enforce hard boundaries — no overlap tails bleed across them |
+| **RRF-fused chunk search** | Vector + FTS fusion at chunk granularity with per-doc limits and graph filters |
+| **Hub-score reranking** | Chunks from authoritative documents (high incoming link count) rank higher |
+| **Graph context expansion** | Search results enriched with incoming/outgoing links, directory ancestry, and sibling concepts |
+| **Path finding** | BFS shortest path between any two concepts in the knowledge graph |
+| **Document reconstruction** | ~98% fidelity round-trip from chunks back to original Markdown |
+| **Hybrid search with chunks** | `search_hybrid(query, include_chunks=True)` attaches matched chunks to concept results |
 
 ### Key Design Decisions
 
@@ -159,6 +217,14 @@ INCLUDES_ASSET: Concept → ImageAsset
 | `list_broken_links()` | List orphaned links |
 | `repair_links()` | Repair broken links |
 | `model_info(model_id, cache_dir)` | Inspect model cache status (class method) |
+| `search_chunks(query, concept_type, tags, parent_id, limit, max_chunks_per_doc)` | RRF-fused chunk search |
+| `search_with_context(query, limit, context_hops)` | Chunk search + graph neighborhood expansion |
+| `search_chunks_with_hub_score(query, limit, hub_weight)` | Chunk search reranked by hub score |
+| `get_chunks(concept_id)` | List all chunks for a concept |
+| `reconstruct_document(document_id)` | Reconstruct original Markdown from chunks |
+| `find_path(start_id, end_id, max_length)` | BFS shortest path between concepts |
+| `expand_with_graph_context(chunk_ids)` | Discover related concepts via graph edges |
+| `rerank_with_hub_score(chunk_results)` | Adjust chunk scores by parent hub score |
 
 ### `IngestMode`
 
@@ -198,14 +264,23 @@ class ConceptModel(BaseModel):
 | `okf model-info` | Show model cache status |
 | `okf import <files>` | Import one or more OKF files |
 | `okf import --all` | Import entire bundle recursively |
-| `okf search <query>` | Hybrid search |
+| `okf search <query>` | Hybrid search (with `--chunks` for matched chunks) |
 | `okf search-images <query>` | Find images via unified vector index |
+| `okf search-chunks <query>` | Chunk-level RRF-fused search |
+| `okf context <query>` | Search with graph neighborhood expansion |
+| `okf hub-search <query>` | Chunk search reranked by hub score |
 | `okf traverse <id>` | Graph traversal |
 | `okf list [dir]` | List directory contents |
 | `okf get <id>` | Fetch full concept |
 | `okf export --all` | Export entire bundle |
+| `okf path <id1> <id2>` | Find shortest path between concepts |
+| `okf siblings <id>` | List sibling concepts in same directory |
+| `okf ancestry <id>` | Show directory hierarchy for a concept |
+| `okf chunks <id>` | List chunks for a concept |
+| `okf reconstruct <id>` | Reconstruct document from chunks |
 | `okf broken-links` | List orphaned links |
 | `okf repair-links` | Repair broken links |
+| `okf reindex [--if-dirty]` | Rebuild vector + FTS indexes |
 | `okf shell` | Interactive REPL |
 
 ### Global Options
@@ -257,11 +332,12 @@ pytest tests/test_integration.py -v
 
 | Test Suite | Tests | Status |
 |---|---|---|
-| `test_router.py` | 29 | ✅ All passing |
-| `test_cli.py` | 19 | ✅ All passing |
-| `test_images.py` | 10 | ✅ All passing |
-| `test_integration.py` | 19 steps | ✅ All passing |
-| **Total** | **58** | **All passing** |
+| `test_chunking.py` | 13 | ✅ All passing |
+| `test_reconstruction.py` | 9 | ✅ All passing |
+| `test_chunk_search.py` | 9 | ✅ All passing |
+| `test_graph_enrichment.py` | 11 | ✅ All passing |
+| `test_integration.py` | 16 | ✅ All passing |
+| **Total** | **58** | **All passing (0 warnings)** |
 
 ---
 
@@ -270,17 +346,22 @@ pytest tests/test_integration.py -v
 ```
 okfgraph/
 ├── okfgraph/
-│   ├── __init__.py          # Exports: ConceptModel, OKFRouter, cli_main
-│   ├── models.py            # ConceptModel + ImageAssetModel
-│   ├── router.py            # OKFRouter — ~1500 lines
-│   ├── cli.py               # CLI + interactive shell — ~400 lines
-│   ├── tools.py             # LLM tool definitions (5 tools)
-│   └── images.py            # Image ingestion logic — 10 unit tests
+│   ├── __init__.py          # Exports: ConceptModel, OKFRouter, cli_main, ChunkModel
+│   ├── models.py            # ConceptModel + ImageAssetModel + ChunkModel
+│   ├── router.py            # OKFRouter — ~2400 lines (chunking, graph enrichment)
+│   ├── cli.py               # CLI + interactive shell — ~800 lines
+│   ├── tools.py             # LLM tool definitions (12 tools)
+│   ├── images.py            # Image ingestion logic
+│   └── docs/
+│       ├── chunking-and-graph-retrieval.md  # Chunking specification
+│       └── chunking-status.md               # Implementation status
 ├── tests/
-│   ├── test_router.py       # 29 unit tests
-│   ├── test_cli.py          # 19 CLI tests
-│   ├── test_images.py       # 10 image logic tests
-│   └── test_integration.py  # Full end-to-end tests
+│   ├── test_chunking.py       # 13 chunking unit tests
+│   ├── test_reconstruction.py # 9 document reconstruction tests
+│   ├── test_chunk_search.py   # 9 chunk search tests
+│   ├── test_graph_enrichment.py # 11 graph enrichment tests
+│   ├── test_integration.py    # 16 end-to-end tests
+│   └── fixtures/bundle/       # Test markdown fixtures
 ├── benchmarks/
 │   └── benchmark_500.py
 ├── examples/
@@ -303,7 +384,8 @@ okfgraph/
 - `pyyaml>=6.0`
 - `optimum[onnxruntime]>=1.20`
 - `transformers>=4.57`
-- `torch>=2.5`
+- `numpy>=1.24` (replaces torch for post-processing)
+- `mordant>=0.12` (Rust-based Markdown chunker)
 - `sentence-transformers>=3.0`
 - `Pillow>=10.0`
 - `pytest>=8.0` (dev)
@@ -324,4 +406,6 @@ Contributions welcome! Please open an issue or pull request. Key areas for contr
 - Real-world OKF bundle testing
 - Concept temporal dual-tracking (`created_date`/`modified_date`)
 - `okf-asset://` link rewriting on ingest
+- `--skip-embedding` flag for faster imports without ONNX encoding
+- Revert test fixtures to function-scoped for true isolation
 - Documentation and examples

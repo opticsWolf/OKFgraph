@@ -14,7 +14,8 @@ OKFgraph is a Python library and CLI tool for building, querying, and managing k
 | **Search** | Hybrid RRF fusion (vector + FTS), graph traversal, chunk-level search with RRF, graph-aware reranking (hub scores), context expansion, direct lookup, image search via unified index |
 | **Storage** | LadybugDB — graph + vector + full-text search in a single SQLite file |
 | **Images** | Three ingestion modes (`text` / `optional` / `omni`), unified vector space for text + image, content-hash dedup, `okf-asset://` protocol |
-| **Import/Export** | OKF Markdown round-trip, batch import with single-transaction upsert, filtered bulk export |
+| **Import/Export** | OKF Markdown round-trip, batch import with single-transaction upsert, filtered bulk export with graph enrichment (See Also + Cited By), auto-generated index.md files |
+| **PDF Ingestion** | `okfgraph.ingest` sub-module — pdf_oxide fast path + ONNX/Rapid heavy passes (RapidLaTeXOCR, RapidOCR, RapidLayout, RapidTable), four routing modes (NEVER/AUTO/SURGICAL/ALWAYS), Paddle-free |
 | **CLI** | 14 commands + interactive REPL, `--mode` for image ingestion, `--device cuda` with auto-fallback, chunking flags (`--chunk-overlap`, `--no-chunking`) |
 | **LLM Tools** | 13 OpenAI-compatible tool definitions for agent integration (search, traverse, chunks, graph enrichment, path finding, export) |
 
@@ -186,6 +187,25 @@ OKFgraph v5.0 adds **document chunking** with **graph-aware retrieval**:
 | **Document reconstruction** | ~98% fidelity round-trip from chunks back to original Markdown |
 | **Hybrid search with chunks** | `search_hybrid(query, include_chunks=True)` attaches matched chunks to concept results |
 
+### PDF Ingestion Engine (`okfgraph.ingest`)
+
+The `okfgraph.ingest` sub-module provides a **Paddle-free** PDF → Markdown conversion pipeline using the RapidAI family of ONNX models. Four routing modes control when ONNX models are invoked:
+
+| Mode | Behaviour |
+|---|---|
+| **NEVER** | Fast path only (pdf_oxide). No ONNX models loaded. |
+| **AUTO** | Heuristics per page → full ONNX pipeline only on flagged pages. |
+| **SURGICAL** | Formula crops via RapidLaTeXOCR; full pipeline only for scans. |
+| **ALWAYS** | Every page through the full ONNX layout + OCR pipeline. |
+
+Key features:
+
+- **Zero hard dependencies** — all RapidAI imports are guarded; the module loads cleanly without them
+- **Lazy loading** — born-digital PDFs never pay for OCR/layout/table models
+- **Graceful degradation** — if a model fails to load, the pipeline falls back to the fast path
+- **Device → ort_providers coercion** — `device="gpu"` auto-resolves to `["CUDAExecutionProvider", "CPUExecutionProvider"]`
+- **Output contract** — single `.md` with inline/display LaTeX, fenced code, GFM tables, and `okf-asset://` links
+
 ### Key Design Decisions
 
 - **Last-token pooling** (not mean pooling) — required by Jina v5's training protocol
@@ -338,21 +358,29 @@ pytest tests/test_integration.py -v
 | `test_graph_enrichment.py` | 11 | ✅ All passing |
 | `test_integration.py` | 16 | ✅ All passing |
 | `test_export_compliance.py` | 13 | ✅ All passing |
-| **Total** | **71** | **All passing (0 warnings)** |
+| `test_ingest.py` | 25 | ✅ All passing |
+| **Total** | **96** | **All passing (0 warnings)** |
 
 ---
 
 ## Project Structure
 
-```
+```text
 okfgraph/
 ├── okfgraph/
 │   ├── __init__.py          # Exports: ConceptModel, OKFRouter, cli_main, ChunkModel
 │   ├── models.py            # ConceptModel + ImageAssetModel + ChunkModel
-│   ├── router.py            # OKFRouter — ~2400 lines (chunking, graph enrichment)
+│   ├── router.py            # OKFRouter — ~2700 lines (chunking, graph enrichment, export)
 │   ├── cli.py               # CLI + interactive shell — ~800 lines
-│   ├── tools.py             # LLM tool definitions (12 tools)
+│   ├── tools.py             # LLM tool definitions (13 tools)
 │   ├── images.py            # Image ingestion logic
+│   ├── ingest/              # ONNX/Rapid PDF ingestion engine
+│   │   ├── __init__.py      # Public API exports
+│   │   ├── config.py        # ConverterConfig + RoutingMode
+│   │   ├── engine.py        # OnnxRapidEngine (lazy ONNX loaders)
+│   │   ├── converter.py     # HybridConverter (core pipeline)
+│   │   ├── tables.py        # HTML → GFM pipe-table converter
+│   │   └── assets.py        # okf-asset:// staging logic
 │   └── docs/
 │       ├── chunking-and-graph-retrieval.md  # Chunking specification
 │       └── chunking-status.md               # Implementation status
@@ -363,21 +391,26 @@ okfgraph/
 │   ├── test_graph_enrichment.py # 11 graph enrichment tests
 │   ├── test_integration.py    # 16 end-to-end tests
 │   ├── test_export_compliance.py # 13 OKF export compliance tests
+│   ├── test_ingest.py         # 25 ONNX/Rapid ingestion tests
 │   └── fixtures/bundle/       # Test markdown fixtures
 ├── benchmarks/
 │   └── benchmark_500.py
 ├── examples/
+│   ├── hybrid_pdf_converter.py    # PySide6 UI (legacy Paddle stack)
 │   └── oxide_to_markdown_converter.py
-├── architecture_v2.md       # Full architecture specification (v4.0)
-├── implementation_status.md # Detailed implementation status
-├── IMPLEMENTATION_NOTES.md  # v4.0 "Unified Omni" details
-├── pyproject.toml           # Project metadata
-└── requirements.txt         # Dependencies
+├── docs/
+│   ├── okf-export-compliance.md   # OKF export specification
+│   └── ONNX_RAPID_IMPLEMENTATION.md # ONNX/Rapid migration guide
+├── architecture.md        # Full architecture specification (v5.0)
+├── pyproject.toml         # Project metadata
+└── requirements.txt       # Dependencies
 ```
 
 ---
 
 ## Requirements
+
+### Core (required)
 
 - Python 3.10+
 - `ladybug>=0.17`
@@ -391,6 +424,17 @@ okfgraph/
 - `sentence-transformers>=3.0`
 - `Pillow>=10.0`
 - `pytest>=8.0` (dev)
+
+### PDF Ingestion (optional — ONNX/Rapid stack)
+
+- `pdf_oxide` — fast native PDF→Markdown (MIT)
+- `rapidocr` — text detection + recognition (Apache-2.0)
+- `rapid_latex_ocr` — formula image → LaTeX (MIT)
+- `rapid_layout` — layout region detection (Apache-2.0)
+- `rapid_table` — table structure → HTML (Apache-2.0)
+- `onnxruntime-gpu` or `onnxruntime-directml` or `onnxruntime` (pick one for your hardware)
+
+All RapidAI imports are guarded — the ingestion sub-module loads cleanly without them installed.
 
 ---
 
@@ -411,3 +455,5 @@ Contributions welcome! Please open an issue or pull request. Key areas for contr
 - `--skip-embedding` flag for faster imports without ONNX encoding
 - Revert test fixtures to function-scoped for true isolation
 - Documentation and examples
+- ONNX/Rapid end-to-end PDF tests (see `docs/ONNX_RAPID_IMPLEMENTATION.md` testing checklist)
+- Office file conversion via `office_oxide`

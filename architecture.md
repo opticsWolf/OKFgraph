@@ -16,6 +16,8 @@
 
 ## 1. Dependencies
 
+### Core (required)
+
 ```bash
 pip install optimum[onnxruntime] transformers numpy mordant python-frontmatter pyyaml pydantic ladybug sentence-transformers Pillow
 ```
@@ -25,6 +27,19 @@ pip install optimum[onnxruntime] transformers numpy mordant python-frontmatter p
 **Installed versions** (verified working):
 - `optimum==2.1.0`, `onnxruntime==1.27.0`, `numpy>=1.24`, `transformers==4.57.6`
 - `ladybug==0.17.1`, `pydantic==2.13.4`, `mordant>=0.12`
+
+### PDF Ingestion (optional — ONNX/Rapid stack)
+
+```bash
+pip install pdf_oxide pillow                          # fast path + rendering
+pip install rapidocr                                  # text detection + recognition
+pip install rapid_latex_ocr                           # formula image → LaTeX
+pip install rapid_layout                              # layout region detection
+pip install rapid_table                               # table structure → HTML
+pip install onnxruntime-gpu                           # or onnxruntime-directml / onnxruntime
+```
+
+All RapidAI packages are **Apache-2.0** (commercial-friendly); LaTeX-OCR is **MIT**. Every RapidAI import is guarded — the ingestion sub-module loads cleanly without them installed. Models download lazily on first use; offline installs can vendor `.onnx` files into a `models/` directory.
 
 ---
 
@@ -1041,7 +1056,93 @@ The embedded UUID is deterministic and stable across round-trips.
 
 ---
 
-## 10. Summary of Changes (v2.2 → v4.0)
+## 10. ONNX/Rapid PDF Ingestion Engine (`okfgraph.ingest`)
+
+The `okfgraph.ingest` sub-module provides a **Paddle-free** PDF → Markdown conversion pipeline using the RapidAI family of ONNX models. It replaces the PaddleOCR/PaddlePaddle stack entirely.
+
+### Architecture
+
+```
+                          ┌─────────────────────────────┐
+   PDF ──▶ pdf_oxide ────▶│ page has a usable text layer?│
+                          └──────────────┬──────────────┘
+                            yes │            │ no  (few chars + images = scanned)
+                ┌───────────────▼──┐      ┌──▼────────────────────────────────────┐
+                │ FAST PATH        │      │ FALLBACK (heavy, ONNX)                 │
+                │ pdf_oxide.markdown│     │ render page → RapidLayout regions      │
+                │  + surgical passes│     │  ├ text/title/list → RapidOCR          │
+                │  ├ math boxes →   │     │  ├ table          → RapidTable → GFM    │
+                │  │  RapidLaTeXOCR │     │  ├ formula        → RapidLaTeXOCR       │
+                │  ├ mono runs →    │     │  └ figure         → asset crop          │
+                │  │  code fences   │     │ assemble in reading order              │
+                │  └ tables kept as │     └────────────────────────────────────────┘
+                │    pdf_oxide GFM  │
+                │    (RapidTable    │
+                │     rescue opt.)  │
+                └───────────────────┘
+                            │            │
+                            └─────┬──────┘
+                                  ▼
+                        per-page markdown blocks
+                                  ▼
+             stage images → okf-asset://  •  join pages  •  write ONE .md
+```
+
+### Sub-Module Structure
+
+| File | Role |
+|---|---|
+| `config.py` | `ConverterConfig` dataclass + `RoutingMode` enum (NEVER/AUTO/SURGICAL/ALWAYS) |
+| `engine.py` | `OnnxRapidEngine` — lazy loaders for RapidLaTeXOCR, RapidOCR, RapidLayout, RapidTable |
+| `converter.py` | `HybridConverter` — core pipeline (pdf_oxide fast path + ONNX heavy passes) |
+| `tables.py` | `_SimpleTableParser` + `html_tables_to_gfm()` — HTML → GFM pipe-table converter |
+| `assets.py` | `stage_images_as_okf_assets()` — okf-asset:// staging for extracted images |
+
+### Routing Modes
+
+| Mode | Behaviour |
+|---|---|
+| **NEVER** | Fast path only. No ONNX models loaded. |
+| **AUTO** | Heuristics per page → full ONNX pipeline only on flagged pages. |
+| **SURGICAL** | Formula crops via RapidLaTeXOCR; full pipeline only for scans. |
+| **ALWAYS** | Every page through the full ONNX layout + OCR pipeline. |
+
+### Key Design Decisions
+
+- **Zero hard dependencies** — all RapidAI imports are guarded; the module loads cleanly without them
+- **Lazy loading** — born-digital PDFs never pay for OCR/layout/table models
+- **Graceful degradation** — if a model fails to load, the pipeline falls back to the fast path
+- **`# VERIFY` flags** — every version-sensitive RapidAI call is marked for confirmation
+- **Device → ort_providers coercion** — `device="gpu"` auto-resolves to `["CUDAExecutionProvider", "CPUExecutionProvider"]`
+- **Inline vs display LaTeX** — `_latex_wrap()` decides based on box dimensions vs threshold
+- **Output contract unchanged** — single `.md` with inline/display LaTeX, fenced code, GFM tables, and `okf-asset://` links
+
+### Execution Providers
+
+ONNX Runtime decouples from CUDA toolkit versions:
+
+| Hardware | Package | Providers |
+|---|---|---|
+| NVIDIA (incl. RTX 50-series) | `onnxruntime-gpu` | `CUDAExecutionProvider`, `CPUExecutionProvider` |
+| Windows DirectX 12 GPU | `onnxruntime-directml` | `DirectMLExecutionProvider`, `CPUExecutionProvider` |
+| Apple Silicon | `onnxruntime` | `CoreMLExecutionProvider` (or CPU) |
+| CPU-only | `onnxruntime` | `CPUExecutionProvider` |
+
+### Testing Checklist
+
+- [ ] Born-digital paper with display + inline equations → correct `$$`/`$`, spliced in place
+- [ ] Scanned/old PDF (no text layer) → fallback fires; text, tables, formulas recovered
+- [ ] Table-heavy digital PDF → pdf_oxide GFM tables preserved (no RapidTable invoked)
+- [ ] Scanned table → RapidTable → GFM (or HTML for rowspan/colspan)
+- [ ] Code-heavy PDF (monospace) → fenced ``` blocks
+- [ ] Image-heavy PDF → every image staged as `okf-asset://`, none dropped
+- [ ] Hyperlinks preserved as `[text](url)`
+- [ ] GPU path: `ort.get_available_providers()` shows your EP; CPU fallback works
+- [ ] Offline: with network disabled, explicit model paths load and run
+
+---
+
+## 11. Summary of Changes (v2.2 → v4.0)
 
 ### Major Additions
 
@@ -1121,6 +1222,11 @@ The embedded UUID is deterministic and stable across round-trips.
 | **LLM tools** | 5 tools | **13 tools** | Agent-accessible chunking, graph enrichment, and export |
 | **Export graph enrichment** | Body written verbatim | **See Also + Cited By sections** | Exported bundles reflect LINKS_TO graph |
 | **Index file generation** | Not specified | **Auto-generated index.md files** | Progressive disclosure for OKF consumers |
+| **ONNX/Rapid ingestion engine** | PaddleOCR/PaddlePaddle stack | **`okfgraph.ingest` sub-module** | Paddle-free PDF→Markdown via RapidAI ONNX models |
+| **Surgical formula pass (ONNX)** | PP-FormulaNet (Paddle) | **RapidLaTeXOCR (ONNX)** | Formula recognition without CUDA-version coupling |
+| **Scanned-page fallback (ONNX)** | PP-StructureV3 (Paddle) | **RapidLayout + RapidOCR + RapidTable** | Full layout-driven ONNX assembler for scanned PDFs |
+| **HTML → GFM table converter** | Not in core | **`okfgraph.ingest.tables`** | Dependency-free pipe-table converter with rowspan/colspan bail |
+| **okf-asset:// staging (ingest)** | Scattered across examples | **`okfgraph.ingest.assets`** | Deterministic asset ids, centralized staging logic |
 
 ### Verified Corrections
 
@@ -1150,10 +1256,12 @@ The embedded UUID is deterministic and stable across round-trips.
 | **Function-scoped test fixtures** | Class-scoped for ~80s run times; revert at full-test maturity |
 | **`--skip-embedding` flag** | Faster imports without ONNX encoding; low priority |
 | **Mordant-specific unit tests** | Pure Mordant features; not OKF-specific logic |
+| **ONNX/Rapid end-to-end PDF tests** | Require RapidAI packages + test PDFs; tracked in §10 testing checklist |
+| **Office file conversion (office_oxide)** | Optional dependency; wired through `HybridConverter.convert_office()` |
 
 ---
 
-## 11. Performance Baseline
+## 12. Performance Baseline
 
 **Benchmark**: `benchmarks/benchmark_500.py` — 100 synthetic concepts, in-memory DB.
 

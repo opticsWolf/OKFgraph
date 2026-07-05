@@ -294,7 +294,7 @@ class OKFRouter:
         omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval",
         embedding_dim: int = 512,          # bumped from 384
         cache_dir: Optional[str] = None,
-        device: str = "cpu",
+        device: str = "cuda",
         allow_remote_images: bool = False,
     ):
         # ... validates dim, loads text model, lazy-loads omni model
@@ -818,7 +818,7 @@ okf = "okfgraph.cli:main"
 | `--bundle <path>` | `.` | Bundle root directory |
 | `--dim <int>` | `512` | Embedding dimension (32-1024, official Matryoshka) |
 | `--cache-dir <path>` | `~/.cache/huggingface` | HuggingFace model cache directory |
-| `--device cpu\|cuda` | `cpu` | Inference device (auto-fallback to CPU if CUDA unavailable) |
+| `--device cpu\|cuda` | `cuda` | Inference device (auto-fallback to CPU if CUDA unavailable) |
 | `--omni-model-id <id>` | `jinaai/jina-embeddings-v5-omni-small-retrieval` | Multimodal model ID |
 
 ### 5.4. Import Options
@@ -1113,7 +1113,7 @@ The `okfgraph.ingest` sub-module provides a **Paddle-free** PDF → Markdown con
 - **Lazy loading** — born-digital PDFs never pay for OCR/layout/table models
 - **Graceful degradation** — if a model fails to load, the pipeline falls back to the fast path
 - **`# VERIFY` flags** — every version-sensitive RapidAI call is marked for confirmation
-- **Device → ort_providers coercion** — `device="gpu"` auto-resolves to `["CUDAExecutionProvider", "CPUExecutionProvider"]`
+- **Device → ort_providers coercion** — `device="cuda"` auto-resolves to `["CUDAExecutionProvider", "CPUExecutionProvider"]` (accepts `"gpu"` as alias)
 - **Inline vs display LaTeX** — `_latex_wrap()` decides based on box dimensions vs threshold
 - **Output contract unchanged** — single `.md` with inline/display LaTeX, fenced code, GFM tables, and `okf-asset://` links
 

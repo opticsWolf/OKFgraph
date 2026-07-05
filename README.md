@@ -39,7 +39,7 @@ router = OKFRouter(
     db_path="okfgraph.db",
     bundle_root="./my-knowledge-base",
     embedding_dim=512,       # Matryoshka: 32, 64, 128, 256, 512, 768, 1024
-    device="cpu",             # or "cuda" with onnxruntime-gpu
+    device="cuda",            # or "cpu" — defaults to CUDA when onnxruntime-gpu is available
 )
 
 # Import an OKF bundle
@@ -203,7 +203,7 @@ Key features:
 - **Zero hard dependencies** — all RapidAI imports are guarded; the module loads cleanly without them
 - **Lazy loading** — born-digital PDFs never pay for OCR/layout/table models
 - **Graceful degradation** — if a model fails to load, the pipeline falls back to the fast path
-- **Device → ort_providers coercion** — `device="gpu"` auto-resolves to `["CUDAExecutionProvider", "CPUExecutionProvider"]`
+- **Device → ort_providers coercion** — `device="cuda"` auto-resolves to `["CUDAExecutionProvider", "CPUExecutionProvider"]` (accepts `"gpu"` as alias)
 - **Output contract** — single `.md` with inline/display LaTeX, fenced code, GFM tables, and `okf-asset://` links
 
 ### Key Design Decisions
@@ -311,7 +311,7 @@ class ConceptModel(BaseModel):
 | `--bundle` | `.` | Bundle root directory |
 | `--dim` | `512` | Embedding dimension (32–1024) |
 | `--cache-dir` | `~/.cache/huggingface` | HuggingFace model cache |
-| `--device` | `cpu` | `cpu` or `cuda` |
+| `--device` | `cuda` | `cpu` or `cuda` |
 | `--omni-model-id` | `jinaai/jina-embeddings-v5-omni-small-retrieval` | Multimodal model ID |
 
 ### Import Options
@@ -359,7 +359,7 @@ pytest tests/test_integration.py -v
 | `test_integration.py` | 16 | ✅ All passing |
 | `test_export_compliance.py` | 13 | ✅ All passing |
 | `test_ingest.py` | 25 | ✅ All passing |
-| **Total** | **96** | **All passing (0 warnings)** |
+| **Total** | **98** | **All passing (0 warnings)** |
 
 ---
 

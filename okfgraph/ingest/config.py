@@ -72,13 +72,17 @@ class ConverterConfig:
     # -- OCR language (for RapidOCR) ----------------------------------------
     ocr_lang: str = "en"
 
-    # -- device hint (gpu → CUDAExecutionProvider, cpu → CPU) ---------------
-    device: str = "cpu"
+    # -- device hint (cuda → CUDAExecutionProvider, cpu → CPU) ---------------
+    device: str = "cuda"
 
     def __post_init__(self) -> None:
-        """Coerce device → ort_providers if the user didn't specify providers."""
+        """Coerce device → ort_providers if the user didn't specify providers.
+
+        Accepts ``"cuda"`` or ``"gpu"`` for GPU; anything else falls back to CPU.
+        This matches OKFRouter.device semantics.
+        """
         if self.ort_providers is None:
-            if self.device == "gpu":
+            if self.device in ("cuda", "gpu"):
                 self.ort_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
             else:
                 self.ort_providers = ["CPUExecutionProvider"]

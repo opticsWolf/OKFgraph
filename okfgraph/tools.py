@@ -290,4 +290,36 @@ TOOLS = [
             "required": ["start_id", "end_id"],
         },
     },
+    {
+        "name": "export_bundle",
+        "description": (
+            "Export concepts from the graph to an OKF-compliant bundle directory. "
+            "Each concept is written as a markdown file with YAML frontmatter. "
+            "The body is enriched with graph-derived LINKS_TO links (See Also + Cited By). "
+            "index.md files are generated for every directory."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "output_dir": {
+                    "type": "string",
+                    "description": "Output directory for the bundle.",
+                },
+                "directory_id": {
+                    "type": "string",
+                    "description": "Optional: only export concepts under this directory.",
+                },
+                "concept_type": {
+                    "type": "string",
+                    "description": "Optional: only export concepts of this type.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional: only export concepts with ALL these tags.",
+                },
+            },
+            "required": ["output_dir"],
+        },
+    },
 ]

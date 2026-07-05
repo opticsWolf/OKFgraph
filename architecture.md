@@ -433,11 +433,16 @@ def import_bundle(self, bundle_path: Optional[Path] = None, batch_size: int = 32
 
 ---
 
-## 4.6. Export to OKF
+## 4.6. Export to OKF (v5.0 — Graph-Enriched)
 
 ```python
 def export_to_okf(self, concept_id: str, output_path: Path) -> None:
-    """Export a concept back to an OKF .md file."""
+    """Export a concept back to an OKF .md file.
+    
+    Body is enriched with graph-derived LINKS_TO links:
+    - "See Also" section for outgoing links not already in body
+    - "Cited By" section for incoming links
+    """
     concept = self.get_by_id(concept_id)
     self._write_okf(concept, output_path)
 
@@ -449,8 +454,24 @@ def export_bundle(self, output_dir: Path,
 
     Filters: directory_id (subtree), concept_type, tags (AND logic).
     Reconstructs directory hierarchy from concept IDs.
+    Generates index.md files for progressive disclosure.
     """
 ```
+
+### Graph Enrichment
+
+Exported bodies are enriched with `LINKS_TO` relationships:
+
+| Section | Source | Behavior |
+|---|---|---|
+| **See Also** | Outgoing `LINKS_TO` edges | Appended if target not already linked in body |
+| **Cited By** | Incoming `LINKS_TO` edges | Appended if any sources exist |
+
+This ensures exported bundles are **graphs** (linked documents), not just **trees** (files in directories).
+
+### Progressive Disclosure
+
+`index.md` files are auto-generated for every directory in the bundle, listing children (concepts and subdirectories) sorted by title.
 
 ---
 
@@ -1097,7 +1118,9 @@ The embedded UUID is deterministic and stable across round-trips.
 | **Hybrid search with chunks** | `include_chunks` absent | **`include_chunks=True`** | Attaches matched chunks to concept results |
 | **Numpy-only post-processing** | `torch` dependency | **`numpy` exclusively** | Removes heavy torch dependency |
 | **CLI chunking commands** | Not specified | **search-chunks, context, hub-search, path, siblings, ancestry, chunks, reconstruct** | Full CLI coverage |
-| **LLM tools** | 5 tools | **12 tools** | Agent-accessible chunking and graph enrichment |
+| **LLM tools** | 5 tools | **13 tools** | Agent-accessible chunking, graph enrichment, and export |
+| **Export graph enrichment** | Body written verbatim | **See Also + Cited By sections** | Exported bundles reflect LINKS_TO graph |
+| **Index file generation** | Not specified | **Auto-generated index.md files** | Progressive disclosure for OKF consumers |
 
 ### Verified Corrections
 

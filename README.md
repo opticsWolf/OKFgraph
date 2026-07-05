@@ -16,7 +16,7 @@ OKFgraph is a Python library and CLI tool for building, querying, and managing k
 | **Images** | Three ingestion modes (`text` / `optional` / `omni`), unified vector space for text + image, content-hash dedup, `okf-asset://` protocol |
 | **Import/Export** | OKF Markdown round-trip, batch import with single-transaction upsert, filtered bulk export |
 | **CLI** | 14 commands + interactive REPL, `--mode` for image ingestion, `--device cuda` with auto-fallback, chunking flags (`--chunk-overlap`, `--no-chunking`) |
-| **LLM Tools** | 12 OpenAI-compatible tool definitions for agent integration (search, traverse, chunks, graph enrichment, path finding) |
+| **LLM Tools** | 13 OpenAI-compatible tool definitions for agent integration (search, traverse, chunks, graph enrichment, path finding, export) |
 
 ---
 
@@ -206,7 +206,7 @@ OKFgraph v5.0 adds **document chunking** with **graph-aware retrieval**:
 | `import_from_okf(file_path, mode)` | Import a single OKF file |
 | `import_bundle(bundle_path, batch_size, mode)` | Import entire bundle with batch encoding |
 | `export_to_okf(concept_id, output_path)` | Export a single concept to OKF markdown |
-| `export_bundle(output_dir, directory_id, concept_type, tags)` | Export filtered bundle |
+| `export_bundle(output_dir, directory_id, concept_type, tags)` | Export filtered bundle with graph enrichment |
 | `search_hybrid(query, concept_type, tags, parent_id, exclude_reserved, limit)` | Hybrid RRF search |
 | `search_images_with_text(text_query, use_text_model, limit)` | Text→image search via unified index |
 | `traverse(start_id, relationship, direction, depth, node_type)` | Graph traversal |
@@ -337,7 +337,8 @@ pytest tests/test_integration.py -v
 | `test_chunk_search.py` | 9 | ✅ All passing |
 | `test_graph_enrichment.py` | 11 | ✅ All passing |
 | `test_integration.py` | 16 | ✅ All passing |
-| **Total** | **58** | **All passing (0 warnings)** |
+| `test_export_compliance.py` | 13 | ✅ All passing |
+| **Total** | **71** | **All passing (0 warnings)** |
 
 ---
 
@@ -361,6 +362,7 @@ okfgraph/
 │   ├── test_chunk_search.py   # 9 chunk search tests
 │   ├── test_graph_enrichment.py # 11 graph enrichment tests
 │   ├── test_integration.py    # 16 end-to-end tests
+│   ├── test_export_compliance.py # 13 OKF export compliance tests
 │   └── fixtures/bundle/       # Test markdown fixtures
 ├── benchmarks/
 │   └── benchmark_500.py

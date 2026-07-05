@@ -187,7 +187,7 @@ class TestDeviceSelection:
 class TestTools:
     def test_tools_export(self):
         from okfgraph.tools import TOOLS
-        assert len(TOOLS) == 4
+        assert len(TOOLS) == 5
 
     def test_tool_names(self):
         from okfgraph.tools import TOOLS

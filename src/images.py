@@ -96,6 +96,10 @@ _MAGIC = [
 
 _ASSET_NAMESPACE = uuid.UUID("6f6b6661-0000-0000-0000-6f6b66617373")  # stable, project-scoped
 
+# Directory (relative to a bundle/file dir) where okf-asset:// bytes are stored
+# on disk prior to ingestion, named ``<asset_id>.<ext>``.
+ASSET_STORE_DIRNAME = "_assets"
+
 
 @dataclass
 class ExtractedImage:
@@ -213,14 +217,22 @@ def load_image_bytes(
 
     Handles inline ``data:`` URIs and local files (resolved against
     ``search_dirs`` in order). Remote ``http(s)`` URLs are not fetched unless
-    ``allow_remote`` is set, and ``okf-asset://`` links have no bytes on disk
-    (the caller is expected to look them up in the database instead).
+    ``allow_remote`` is set. ``okf-asset://<id>`` links resolve from the
+    bundle's on-disk asset store (``<dir>/_assets/<id>.<ext>``); if the bytes
+    are not on disk the asset is treated as DB-only and None is returned.
     """
     if src.startswith("data:"):
         return _decode_data_uri(src)
 
-    if _parse_okf_asset(src) is not None:
-        return None  # asset already lives in the DB, not on disk
+    okf_id = _parse_okf_asset(src)
+    if okf_id is not None:
+        # An okf-asset:// reference points at an asset in the bundle's on-disk
+        # store (``<dir>/_assets/<id>.<ext>``). Resolving it here lets the
+        # router embed it under the selected mode (incl. omni) and populate the
+        # BLOB — the asset is owned by the router, not pre-stored by callers.
+        # Returns None when the bytes are not on disk (already DB-only), in
+        # which case planning degrades to the text path.
+        return _load_asset_store_bytes(okf_id, search_dirs)
 
     scheme = urllib.parse.urlparse(src).scheme.lower()
     if scheme in ("http", "https"):
@@ -249,6 +261,31 @@ def load_image_bytes(
                 return path.read_bytes()
         except OSError:
             continue
+    return None
+
+
+def _load_asset_store_bytes(asset_id: str, search_dirs: List[Path]) -> Optional[bytes]:
+    """Resolve ``okf-asset://<asset_id>`` bytes from the bundle's asset store.
+
+    Looks for ``<dir>/_assets/<asset_id>.<ext>`` (and ``<dir>/<asset_id>.<ext>``)
+    under each search dir, returning the first match's bytes. Returns None if
+    the asset is not present on disk (i.e. it is already DB-only).
+    """
+    if not asset_id:
+        return None
+    for base in search_dirs:
+        for root in (base / ASSET_STORE_DIRNAME, base):
+            try:
+                if not root.is_dir():
+                    continue
+                exact = root / asset_id
+                if exact.is_file():
+                    return exact.read_bytes()
+                for match in sorted(root.glob(f"{asset_id}.*")):
+                    if match.is_file():
+                        return match.read_bytes()
+            except OSError:
+                continue
     return None
 
 

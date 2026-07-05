@@ -165,6 +165,29 @@ def test_build_extracted_images_local_and_inline(tmp_path):
     assert len({im.asset_id for im in imgs}) == 4
 
 
+def test_okf_asset_resolves_from_store(tmp_path):
+    # Bytes staged in the bundle's _assets store under <id>.<ext>
+    assets = tmp_path / "_assets"
+    assets.mkdir()
+    (assets / "img_deadbeef.png").write_bytes(PNG_1x1)
+    body = "![a diagram](okf-asset://img_deadbeef)\n![gone](okf-asset://img_missing)\n"
+    imgs = build_extracted_images("doc", body, search_dirs=[tmp_path])
+    assert len(imgs) == 2
+    resolved, missing = imgs
+
+    # Resolved: bytes present -> omni-eligible, id passed through verbatim
+    assert resolved.asset_id == "img_deadbeef"
+    assert resolved.has_data and resolved.mime_type == "image/png"
+    route, cap = plan_embedding(resolved, IngestMode.OMNI)
+    assert route is EmbedRoute.OMNI and cap is None
+
+    # Missing on disk: no bytes -> graceful text fallback even in omni mode
+    assert missing.asset_id == "img_missing"
+    assert not missing.has_data
+    route, cap = plan_embedding(missing, IngestMode.OMNI)
+    assert route is EmbedRoute.TEXT
+
+
 def run():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     import inspect

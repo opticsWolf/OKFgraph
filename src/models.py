@@ -30,6 +30,25 @@ class ConceptModel(BaseModel):
         return v
 
 
+class ChunkModel(BaseModel):
+    """Represents a chunked section of a document."""
+
+    id: str
+    parent_doc_id: str
+    chunk_index: int
+    chunk_text: str
+    block_type: str
+    start_offset: int = 0
+    end_offset: int = 0
+    rrf_score: Optional[float] = None
+    hub_score: Optional[float] = None
+    final_score: Optional[float] = None
+    parent_title: Optional[str] = None
+    parent_type: Optional[str] = None
+    parent_tags: List[str] = Field(default_factory=list)
+    embedding: Optional[List[float]] = None  # internal use only
+
+
 class ImageAssetModel(BaseModel):
     """Metadata for an image asset stored in the unified vector index.
 

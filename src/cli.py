@@ -18,11 +18,19 @@ def _add_global(parser):
     parser.add_argument("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface)")
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Inference device: cpu or cuda (default: cpu)")
     parser.add_argument("--omni-model-id", default="jinaai/jina-embeddings-v5-omni-small-retrieval", help="Multimodal model ID for image embeddings")
+    parser.add_argument("--chunk-size", type=int, default=512, help="Chunk size in words for overlap (default: 512)")
+    parser.add_argument("--chunk-overlap", type=int, default=40, help="Overlap in words between chunks (default: 40)")
+    parser.add_argument("--no-chunking", action="store_true", help="Disable chunking during ingestion")
+
+
+# Routers opened during a CLI invocation, closed (checkpointed) on exit so a
+# writer never leaves an un-checkpointed WAL that a later open would reject.
+_OPEN_ROUTERS = []
 
 
 def _router(args):
-    """Build an OKFRouter from parsed args."""
-    return OKFRouter(
+    """Build an OKFRouter from parsed args (registered for cleanup on exit)."""
+    router = OKFRouter(
         db_path=str(args.db),
         bundle_root=str(args.bundle),
         embedding_dim=args.dim,
@@ -30,7 +38,22 @@ def _router(args):
         cache_dir=getattr(args, "cache_dir", None),
         device=getattr(args, "device", "cpu"),
         allow_remote_images=getattr(args, "allow_remote_images", False),
+        chunk_size=getattr(args, "chunk_size", 512),
+        chunk_overlap=getattr(args, "chunk_overlap", 40),
+        enable_chunking=not getattr(args, "no_chunking", False),
     )
+    _OPEN_ROUTERS.append(router)
+    return router
+
+
+def _close_routers():
+    """Checkpoint + close every router opened this invocation."""
+    while _OPEN_ROUTERS:
+        router = _OPEN_ROUTERS.pop()
+        try:
+            router.close()
+        except Exception:
+            pass
 
 
 # ── command handlers ───────────────────────────────────────────────────────
@@ -211,6 +234,142 @@ def _repair_links(args):
     print(f"[OK] Repaired {count} link(s)")
 
 
+def _reindex(args):
+    router = _router(args)
+    ran = router.reindex(force=not getattr(args, "if_dirty", False))
+    if ran:
+        print("[OK] Search indexes rebuilt")
+    else:
+        print("Search indexes already up to date; nothing to do.")
+
+
+def _search_chunks(args):
+    router = _router(args)
+    results = router.search_chunks(
+        query=args.query,
+        limit=args.limit,
+        include_parent=not getattr(args, "no-parent", False),
+    )
+    if not results:
+        print("No chunk results found.")
+        return
+    print(f"Found {len(results)} chunk(s):\n")
+    for i, r in enumerate(results, 1):
+        print(f"  {i}. [{r['rrf_score']:.4f}] {r['block_type']} #{r['chunk_index']}")
+        text = r.get("chunk_text", "")
+        print(f"     {text[:150]}")
+        if r.get("parent_title"):
+            print(f"     parent: {r['parent_title']}")
+        print(f"     id: {r['id']}")
+        print()
+
+
+def _chunks(args):
+    router = _router(args)
+    chunks = router.get_chunks(args.concept_id)
+    if not chunks:
+        print("No chunks found for this concept.")
+        return
+    print(f"Chunks for '{args.concept_id}' ({len(chunks)} total):\n")
+    for c in chunks:
+        text = c.chunk_text[:120]
+        print(f"  #{c.chunk_index} [{c.block_type}] {text}")
+
+
+def _context(args):
+    router = _router(args)
+    results = router.search_with_context(
+        query=args.query,
+        limit=args.limit,
+        context_hops=getattr(args, "context_hops", 1),
+    )
+    if not results:
+        print("No results found.")
+        return
+    print(f"Found {len(results)} result(s):\n")
+    for i, r in enumerate(results, 1):
+        chunk = r["chunk"]
+        print(f"  {i}. [{chunk['rrf_score']:.4f}] {chunk['parent_title']} §{chunk['chunk_index']}")
+        print(f"     {chunk['chunk_text'][:150]}")
+        if r["incoming_links"]:
+            titles = [l.get("title", l.get("id", "?")) for l in r["incoming_links"][:3]]
+            print(f"     ← linked by: {', '.join(titles)}")
+        if r["outgoing_links"]:
+            titles = [l.get("title", l.get("id", "?")) for l in r["outgoing_links"][:3]]
+            print(f"     → links to: {', '.join(titles)}")
+        if r["ancestry"]:
+            print(f"     path: {' → '.join(a['title'] for a in r['ancestry'])}")
+        if r["siblings"]:
+            print(f"     siblings: {', '.join(s['title'] for s in r['siblings'][:3])}")
+        print()
+
+
+def _hub_search(args):
+    router = _router(args)
+    results = router.search_chunks_with_hub_score(
+        query=args.query,
+        limit=args.limit,
+        hub_weight=getattr(args, "hub_weight", 0.3),
+    )
+    if not results:
+        print("No results found.")
+        return
+    print(f"Found {len(results)} result(s):\n")
+    for i, r in enumerate(results, 1):
+        print(f"  {i}. [{r['final_score']:.4f}] {r['parent_title']} §{r['chunk_index']}")
+        print(f"     hub={r['hub_score']:.2f} rrf={r['rrf_score']:.4f}")
+        print(f"     {r['chunk_text'][:150]}")
+        print()
+
+
+def _siblings(args):
+    router = _router(args)
+    sibs = router._get_siblings(args.concept_id)
+    if not sibs:
+        print("No siblings found.")
+        return
+    print(f"Siblings of '{args.concept_id}':\n")
+    for s in sibs:
+        print(f"  {s['title']} ({s['type']})")
+        print(f"     id: {s['id']}")
+
+
+def _ancestry(args):
+    router = _router(args)
+    path = router._get_ancestry(args.concept_id)
+    if not path:
+        print(f"No directory ancestry for '{args.concept_id}'.")
+        return
+    print(f"Path for '{args.concept_id}':\n")
+    for a in path:
+        print(f"  {a['title']} (id: {a['id']})")
+
+
+def _reconstruct(args):
+    router = _router(args)
+    text = router.reconstruct_document(args.concept_id)
+    if not text:
+        print("No chunks found for this concept.")
+        return
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"[OK] Reconstructed document written to {args.output}")
+    else:
+        print(text)
+
+
+def _path(args):
+    router = _router(args)
+    nodes = router.find_path(args.id1, args.id2, max_length=getattr(args, "max_length", 6))
+    if not nodes:
+        print(f"No path found between '{args.id1}' and '{args.id2}'.")
+        return
+    print(f"Path ({len(nodes)} nodes):")
+    for i, n in enumerate(nodes, 1):
+        print(f"  {i}. {n.get('title', '?')} ({n.get('type', '?')})")
+        print(f"     id: {n['id']}")
+
+
 def _shell(args):
     router = _router(args)
     banner = """OKF Interactive Shell
@@ -218,10 +377,17 @@ def _shell(args):
 Commands:
   import <file> [mode]       — import single OKF file (mode: text|optional|omni)
   import-bundle [path] [mode]— import entire bundle (mode: text|optional|omni)
-  search <query>             — hybrid search
+  search <query>             — hybrid search (document-level)
   search <query> type:<type> — search with type filter
   search <query> tags:a,b    — search with tag filters
   search <query> parent:<id> — search under directory
+  search-chunks <query>      — search document chunks (RRF-fused)
+  context <query>            — search with graph neighborhood context
+  hub-search <query>         — chunk search reranked by hub score
+  path <id1> <id2>           — find shortest path between two concepts
+  siblings <concept_id>      — list sibling concepts in same directory
+  ancestry <concept_id>      — show directory path from root
+  reconstruct <concept_id>   — reconstruct original document from chunks
   search-images <query>      — find images via the unified vector index
   images <concept_id>        — list images attached to a concept
   traverse <id> [rel] [dir] [depth] — graph traversal
@@ -315,6 +481,83 @@ Image modes:
                 label = r.get("alt_text") or r.get("file_name") or r.get("id")
                 print(f"  {i}. [{r['relevance_score']:.4f}] {label} ({r.get('embed_route')})")
                 print(f"     id: {r['id']}")
+
+        elif cmd == "search-chunks" and rest:
+            results = router.search_chunks(rest.strip())
+            if not results:
+                print("No chunk results found.")
+            for i, r in enumerate(results, 1):
+                print(f"  {i}. [{r['rrf_score']:.4f}] {r['block_type']} #{r['chunk_index']}")
+                print(f"     {r.get('chunk_text', '')[:150]}")
+                if r.get("parent_title"):
+                    print(f"     parent: {r['parent_title']}")
+
+        elif cmd == "context" and rest:
+            results = router.search_with_context(rest.strip())
+            if not results:
+                print("No results found.")
+            for i, r in enumerate(results, 1):
+                chunk = r["chunk"]
+                print(f"  {i}. [{chunk['rrf_score']:.4f}] {chunk['parent_title']} §{chunk['chunk_index']}")
+                print(f"     {chunk['chunk_text'][:150]}")
+                if r["incoming_links"]:
+                    titles = [l.get("title", l.get("id", "?")) for l in r["incoming_links"][:3]]
+                    print(f"     ← linked by: {', '.join(titles)}")
+                if r["outgoing_links"]:
+                    titles = [l.get("title", l.get("id", "?")) for l in r["outgoing_links"][:3]]
+                    print(f"     → links to: {', '.join(titles)}")
+
+        elif cmd == "hub-search" and rest:
+            results = router.search_chunks_with_hub_score(rest.strip())
+            if not results:
+                print("No results found.")
+            for i, r in enumerate(results, 1):
+                print(f"  {i}. [{r['final_score']:.4f}] {r['parent_title']} §{r['chunk_index']}")
+                print(f"     hub={r['hub_score']:.2f} rrf={r['rrf_score']:.2f}")
+                print(f"     {r['chunk_text'][:150]}")
+
+        elif cmd == "path" and rest:
+            tokens = rest.strip().split()
+            if len(tokens) < 2:
+                print("Usage: path <id1> <id2>")
+            else:
+                nodes = router.find_path(tokens[0], tokens[1])
+                if not nodes:
+                    print(f"No path found between '{tokens[0]}' and '{tokens[1]}'.")
+                else:
+                    print(f"Path ({len(nodes)} nodes):")
+                    for i, n in enumerate(nodes, 1):
+                        print(f"  {i}. {n.get('title', '?')} ({n.get('type', '?')})")
+                        print(f"     id: {n['id']}")
+
+        elif cmd == "siblings" and rest:
+            sibs = router._get_siblings(rest.strip())
+            if not sibs:
+                print("No siblings found.")
+            for s in sibs:
+                print(f"  {s['title']} ({s['type']})")
+
+        elif cmd == "ancestry" and rest:
+            path = router._get_ancestry(rest.strip())
+            if not path:
+                print("No directory ancestry.")
+            for a in path:
+                print(f"  {a['title']}")
+
+        elif cmd == "chunks" and rest:
+            chunks = router.get_chunks(rest.strip())
+            if not chunks:
+                print("No chunks found.")
+            for c in chunks:
+                text = c.chunk_text[:120]
+                print(f"  #{c.chunk_index} [{c.block_type}] {text}")
+
+        elif cmd == "reconstruct" and rest:
+            text = router.reconstruct_document(rest.strip())
+            if not text:
+                print("No chunks found for this concept.")
+            else:
+                print(text)
 
         elif cmd == "images" and rest:
             imgs = router.list_images(rest.strip())
@@ -454,7 +697,7 @@ def build_parser():
     p = sub.add_parser("traverse", help="Graph traversal")
     _add_global(p)
     p.add_argument("start_id", help="Starting concept or directory ID")
-    p.add_argument("--relationship", default="CONTAINS", choices=["CONTAINS", "LINKS_TO"])
+    p.add_argument("--relationship", default="CONTAINS", choices=["CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET"])
     p.add_argument("--direction", default="OUTGOING", choices=["OUTGOING", "INCOMING", "BOTH"])
     p.add_argument("--depth", type=int, default=1, help="Max depth (1-5)")
     p.add_argument("--type", help="Target node type filter")
@@ -491,6 +734,61 @@ def build_parser():
     p = sub.add_parser("repair-links", help="Repair broken links by re-checking targets")
     _add_global(p)
 
+    # reindex
+    p = sub.add_parser("reindex", help="Rebuild vector + FTS search indexes")
+    _add_global(p)
+    p.add_argument("--if-dirty", action="store_true",
+                   help="Only rebuild if data changed since the last index build")
+
+    # search-chunks
+    p = sub.add_parser("search-chunks", help="Search document chunks (RRF-fused vector + FTS)")
+    _add_global(p)
+    p.add_argument("query", help="Search query")
+    p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
+    p.add_argument("--no-parent", action="store_true", help="Exclude parent document metadata")
+
+    # chunks
+    p = sub.add_parser("chunks", help="List chunks for a concept")
+    _add_global(p)
+    p.add_argument("concept_id", help="Concept ID")
+
+    # context
+    p = sub.add_parser("context", help="Search with graph neighborhood context")
+    _add_global(p)
+    p.add_argument("query", help="Search query")
+    p.add_argument("--limit", type=int, default=5, help="Max results (default: 5)")
+    p.add_argument("--context-hops", type=int, default=1, help="Graph expansion hops (default: 1)")
+
+    # hub-search
+    p = sub.add_parser("hub-search", help="Chunk search reranked by hub score")
+    _add_global(p)
+    p.add_argument("query", help="Search query")
+    p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
+    p.add_argument("--hub-weight", type=float, default=0.3, help="Hub score weight (default: 0.3)")
+
+    # siblings
+    p = sub.add_parser("siblings", help="List sibling concepts in same directory")
+    _add_global(p)
+    p.add_argument("concept_id", help="Concept ID")
+
+    # ancestry
+    p = sub.add_parser("ancestry", help="Show directory path from root")
+    _add_global(p)
+    p.add_argument("concept_id", help="Concept ID")
+
+    # reconstruct
+    p = sub.add_parser("reconstruct", help="Reconstruct original document from chunks")
+    _add_global(p)
+    p.add_argument("concept_id", help="Concept ID")
+    p.add_argument("--output", help="Output file path (default: stdout)")
+
+    # path
+    p = sub.add_parser("path", help="Find shortest path between two concepts")
+    _add_global(p)
+    p.add_argument("id1", help="Starting concept ID")
+    p.add_argument("id2", help="Ending concept ID")
+    p.add_argument("--max-length", type=int, default=6, help="Max path length (default: 6)")
+
     return parser
 
 
@@ -508,16 +806,28 @@ def main():
         "import": _import,
         "search": _search,
         "search-images": _search_images,
+        "search-chunks": _search_chunks,
+        "context": _context,
+        "hub-search": _hub_search,
         "traverse": _traverse,
         "list": _list,
         "get": _get,
+        "chunks": _chunks,
         "export": _export,
+        "reconstruct": _reconstruct,
+        "path": _path,
         "shell": _shell,
         "broken-links": _broken_links,
         "repair-links": _repair_links,
+        "reindex": _reindex,
+        "siblings": _siblings,
+        "ancestry": _ancestry,
     }
 
-    commands[args.command](args)
+    try:
+        commands[args.command](args)
+    finally:
+        _close_routers()
 
 
 if __name__ == "__main__":

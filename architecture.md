@@ -1,7 +1,7 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 5.0 (Graph-Aware Chunking & Retrieval)  
-**Based on**: Architecture v4.0 (Unified Omni — Multimodal Image Ingestion)  
+**Version**: 5.1 (Delta Detection & Purge)  
+**Based on**: Architecture v5.0 (Graph-Aware Chunking & Retrieval)  
 **Verified against**: LadybugDB v0.17.1, Python 3.13.14
 
 **Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
@@ -84,6 +84,12 @@ CREATE NODE TABLE BrokenLink (
     source_id STRING,
     target_id STRING,
     timestamp TIMESTAMP
+);
+
+CREATE NODE TABLE FileHash (
+    path STRING PRIMARY KEY,
+    hash STRING,                  -- SHA-256 hex digest of file contents
+    concept_id STRING             -- maps file path → Concept.id
 );
 
 CREATE NODE TABLE Chunk (
@@ -300,6 +306,16 @@ class OKFRouter:
         # ... validates dim, loads text model, lazy-loads omni model
 ```
 
+### Auto-Detect Embedding Dimension
+
+When opening an **existing** database, `OKFRouter.__init__()` calls `_adopt_existing_embedding_dim()` which:
+
+1. Queries `CALL TABLE_INFO('Concept')` to read the stored column type (`FLOAT[N]`).
+2. Extracts the dimension `N` from the column type string.
+3. If the stored dimension differs from the requested `embedding_dim`, logs a **warning** and adopts the stored value.
+
+This prevents users from needing to remember `--dim` on re-init. The `--dim` flag acts as an override only for **new** databases; for existing databases, the on-disk dimension always wins. If the database is brand new (no Concept table yet), the requested dimension is used as-is.
+
 ### 4.2. Schema Setup
 
 ```python
@@ -384,6 +400,17 @@ def _encode_omni_text(self, text: str, task: str = "Query") -> List[float]:
 
 The omni model is **lazy-loaded** on first actual use — text-only pipelines pay none of its cost.
 
+### Batch Encoding Algorithm
+
+`_encode_batch(texts, task)` encodes multiple texts sequentially — **not** in a single padded ONNX call. With variable-length texts (80–300 words), padding all inputs to the longest in the batch causes **O(batch × max_len²)** attention compute waste. Sequential single-pass encoding processes each text at its actual token count, yielding **O(Σ len²)** total compute — strictly less than padded batching.
+
+| Approach | Compute | Benchmark (100 concepts) |
+|---|---|---|
+| Padded batch (padding to longest) | O(batch × max_len²) | ~140s |
+| Sequential single-pass | O(Σ len²) | **~128s** (1.1x faster) |
+
+The speedup is modest (1.1x) because the ONNX forward pass is already efficient. The real batch speedup comes from **DB-level optimizations** (single transaction, bulk directory/link building), not from ONNX batching. Sequential encoding is the correct choice for variable-length documents.
+
 ---
 
 ## 4.4. Image Ingestion Modes
@@ -424,19 +451,25 @@ def import_from_okf(self, file_path: Path, mode: str | IngestMode = IngestMode.T
 
 ### Batch Import Pipeline
 
-`import_bundle()` uses a 3-phase pipeline with batched DB operations:
+`import_bundle()` uses a 4-phase pipeline with batched DB operations:
 
 ```python
 def import_bundle(self, bundle_path: Optional[Path] = None, batch_size: int = 32,
-                  mode: str | IngestMode = IngestMode.TEXT) -> List[str]:
+                  mode: str | IngestMode = IngestMode.TEXT,
+                  purge_deleted: bool = False) -> List[str]:
     """Walk bundle, parse all files, encode in batches, upsert in bulk.
 
+    Phase 0: Delta detection — skip unchanged files (SHA-256 hash comparison)
     Phase 1: Parse all .md files (frontmatter + body)
     Phase 2: Batch encode search texts via _encode_batch()
     Phase 3: Batch upsert all concepts in single transaction
     Phase 4: Batch build directory hierarchy
     Phase 5: Batch extract cross-links
     Phase 6: Image ingestion (per concept, honouring the selected mode)
+
+    purge_deleted: If True, concepts whose source files were deleted from
+        disk are removed from the graph (including chunks, links, and
+        orphaned image assets). Orphan check preserves shared assets.
     """
 ```
 
@@ -445,6 +478,35 @@ def import_bundle(self, bundle_path: Optional[Path] = None, batch_size: int = 32
 **`_batch_build_directories()`**: Collects all unique directory paths from concept IDs, sorts shallowest-first, creates directory nodes and CONTAINS relationships in order.
 
 **`_batch_extract_links()`**: Collects all markdown links, batch-checks target existence, creates LINKS_TO or BrokenLink records in bulk.
+
+### Delta Detection (v5.1)
+
+On each `import_bundle()` call, file-level SHA-256 hashes are compared against the `FileHash` node table:
+
+| Method | Role |
+|---|---|
+| `_file_hash(path)` | Compute SHA-256 hex digest of a file |
+| `_store_file_hashes(paths, concept_ids)` | Upsert `FileHash` entries with `path`, `hash`, `concept_id` |
+| `_load_file_hashes()` | Return `{path: hash}` dict from DB |
+| `_load_file_hash_concept_ids()` | Return `{path: concept_id}` dict from DB |
+| `_changed_files(source_files)` | Return `(changed_paths, deleted_paths)` tuple |
+
+- **Unchanged files** are skipped entirely (no parsing, encoding, or DB writes).
+- **Deleted files** appear in the `deleted_paths` list. If `purge_deleted=True`, their concepts are removed via `_purge_concept()`.
+- **`concept_id` column** in `FileHash` enables mapping deleted file paths back to the concepts to purge.
+
+### Purge (v5.1)
+
+`_purge_concept(concept_id)` safely deletes a concept and all its dependents:
+
+1. Collect `ImageAsset` IDs referenced by the concept
+2. `DETACH DELETE` all `Chunk` nodes (`parent_doc_id = concept_id`)
+3. `DETACH DELETE` the `Concept` node (cascades `LINKS_TO`, `CONTAINS`, `INCLUDES_ASSET`)
+4. For each collected asset: if `ref_count == 0` → `DELETE` (**orphan check** — shared assets survive)
+5. `DELETE` `BrokenLink` entries where concept was source or target
+6. `DELETE` `FileHash` entry for this concept
+
+Returns `True` if a concept was found and purged, `False` if not found. All operations are wrapped in a transaction with rollback on failure.
 
 ---
 
@@ -615,7 +677,33 @@ def model_info(cls, model_id: str = "...", cache_dir: Optional[str] = None) -> D
 
 ---
 
-## 4a. Chunking & Graph Retrieval (v5.0)
+## 4.15. Index Lifecycle
+
+Ladybug's vector and FTS indexes are built over a table's **current** contents; rows inserted after an index is created are not returned by search until the index is rebuilt. The system uses a **change-driven rebuild** strategy with two epoch counters stored in the `Meta` node table:
+
+| Key | Meaning |
+|---|---|
+| `write_epoch` | Bumped on every index-affecting write (concept/image upsert or delete) |
+| `indexed_epoch` | Records the `write_epoch` value at the last successful rebuild |
+
+When `write_epoch > indexed_epoch`, the indexes are **dirty** and need rebuilding. Import paths call `_build_search_indexes(rebuild=True)` after data is written; the function checks `_indexes_dirty()` and skips the work if the counters match — so a no-op import or redundant call costs nothing.
+
+### Rebuild Modes
+
+| Mode | Trigger | Behavior |
+|---|---|---|
+| **Construction** (`rebuild=False`) | `OKFRouter.__init__()` | Creates missing indexes only; never drops, never checks dirty, never stamps. Merely opening a DB should not trigger an O(N) rebuild. |
+| **Change-driven** (`rebuild=True, force=False`) | Import paths after data commit | Rebuilds only if `write_epoch > indexed_epoch`. Stamps `indexed_epoch = write_epoch` on success. |
+| **Force** (`rebuild=True, force=True`) | `reindex()` CLI command, crash recovery | Rebuilds regardless of dirty state. Used to repair a DB written by an older build whose markers don't exist. |
+
+### Ladybug Index Quirks
+
+- **DROP INDEX leaves stale internal state** — prevents recreation with the same name. The system relies on `CREATE ... IF NOT EXISTS` semantics (Ladybug silently skips if present) instead of drop-and-recreate.
+- **Index rebuild is O(N)** — proportional to the number of rows in the table. Change-driven rebuilds amortize this cost by only rebuilding when data actually changed.
+
+### CLI Exposure
+
+The `okf reindex [--if-dirty]` command invokes `reindex(force=True)` to rebuild all indexes. The `--if-dirty` flag would invoke `reindex(force=False)` to only rebuild when needed (not yet implemented — deferred to Gap #2 Option B).
 
 ### 4a.1. Chunk Model
 
@@ -790,6 +878,7 @@ okf = "okfgraph.cli:main"
 | `okf model-info` | Show model cache status (location, size, cached/missing) |
 | `okf import <files>` | Import one or more OKF files |
 | `okf import --all` | Import entire bundle recursively |
+| `okf import --all --purge` | Import bundle and purge deleted concepts |
 | `okf search <query>` | Hybrid search (type/tags/parent/limit filters) |
 | `okf search <query> --chunks` | Hybrid search with matched chunks attached |
 | `okf search-images <query>` | Find images via the unified vector index |
@@ -828,6 +917,7 @@ okf = "okfgraph.cli:main"
 | `--mode <mode>` | `text` | Image ingestion mode: `text`, `optional`, `omni` |
 | `--allow-remote-images` | — | Fetch `http(s)://` image URLs during ingestion (off by default) |
 | `--batch-size <int>` | `32` | Batch size for encoding |
+| `--purge` | — | Also purge concepts whose source files were deleted from disk (removes concept, chunks, links, and orphaned image assets) |
 
 ### 5.5. Interactive Shell
 
@@ -954,6 +1044,38 @@ TOOLS = [
                 "max_length": {"type": "integer", "minimum": 1, "maximum": 20},
             },
             "required": ["start_id", "end_id"],
+        },
+    },
+    {
+        "name": "export_bundle",
+        "description": (
+            "Export concepts from the graph to an OKF-compliant bundle directory. "
+            "Each concept is written as a markdown file with YAML frontmatter. "
+            "The body is enriched with graph-derived LINKS_TO links (See Also + Cited By). "
+            "index.md files are generated for every directory."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "output_dir": {
+                    "type": "string",
+                    "description": "Output directory for the bundle.",
+                },
+                "directory_id": {
+                    "type": "string",
+                    "description": "Optional: only export concepts under this directory.",
+                },
+                "concept_type": {
+                    "type": "string",
+                    "description": "Optional: only export concepts of this type.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional: only export concepts with ALL these tags.",
+                },
+            },
+            "required": ["output_dir"],
         },
     },
 ]
@@ -1258,6 +1380,37 @@ ONNX Runtime decouples from CUDA toolkit versions:
 | **Mordant-specific unit tests** | Pure Mordant features; not OKF-specific logic |
 | **ONNX/Rapid end-to-end PDF tests** | Require RapidAI packages + test PDFs; tracked in §10 testing checklist |
 | **Office file conversion (office_oxide)** | Optional dependency; wired through `HybridConverter.convert_office()` |
+
+---
+
+## 10b. Summary of Changes (v5.0 → v5.1)
+
+### Major Additions
+
+| Area | v5.0 | v5.1 | Reason |
+|---|---|---|---|
+| **FileHash node** | Not specified | **Full node table** with `path`, `hash`, `concept_id` | Delta detection for incremental imports |
+| **`concept_id` in FileHash** | Not tracked | **Maps file path → Concept.id** | Enables purge of deleted files |
+| **Delta detection (Phase 0)** | Full re-import | **SHA-256 hash comparison** | Skips unchanged files (no parsing, encoding, or DB writes) |
+| **`_changed_files()`** | Not specified | **Returns `(changed, deleted)` tuple** | Detects both modified and deleted files |
+| **`_purge_concept()`** | Not specified | **Safe cascading delete** | Removes concept, chunks, links, orphaned assets |
+| **Orphan asset check** | Not specified | **Shared assets survive purge** | Two files referencing same `okf-asset://<id>` → asset preserved |
+| **`--purge` CLI flag** | Not specified | **`okf import --all --purge`** | User-controllable deletion of stale concepts |
+| **`purge_deleted` parameter** | Not specified | **`import_bundle(purge_deleted=True)`** | Programmatic purge control |
+| **BrokenLink cleanup on purge** | Not specified | **Auto-clean on concept removal** | No dangling broken links |
+| **FileHash cleanup on purge** | Not specified | **Auto-clean on concept removal** | Consistent state between FileHash and Concept tables |
+| **Test coverage** | 98 tests | **119 tests** (+21 delta/purge tests) |
+
+### Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| **File-level SHA-256** | Simple, deterministic, zero schema migration cost |
+| **`concept_id` in FileHash** | Maps deleted file paths back to concepts for purge |
+| **Orphan check for assets** | Shared assets (same `okf-asset://<id>`) survive if any Concept still references them |
+| **Chunk deletion before Concept** | Ladybug's `DETACH DELETE` on Concept doesn't cascade to separate Chunk nodes |
+| **Transactional purge** | All-or-nothing — rollback on any failure |
+| **Default `purge_deleted=False`** | Safe default — user must opt-in to deletions |
 
 ---
 

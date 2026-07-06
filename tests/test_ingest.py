@@ -21,12 +21,23 @@ class TestConfig:
         cfg = ConverterConfig()
         assert cfg.routing_mode == RoutingMode.AUTO
         assert cfg.use_onnx is True
-        assert cfg.ort_providers == ["CPUExecutionProvider"]
+        assert cfg.device == "cuda"
+        assert cfg.ort_providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
-    def test_gpu_providers(self):
+    def test_cuda_providers(self):
+        cfg = ConverterConfig(device="cuda")
+        assert "CUDAExecutionProvider" in cfg.ort_providers
+        assert "CPUExecutionProvider" in cfg.ort_providers
+
+    def test_gpu_alias_providers(self):
+        """device='gpu' is accepted as an alias for 'cuda'."""
         cfg = ConverterConfig(device="gpu")
         assert "CUDAExecutionProvider" in cfg.ort_providers
         assert "CPUExecutionProvider" in cfg.ort_providers
+
+    def test_cpu_providers(self):
+        cfg = ConverterConfig(device="cpu")
+        assert cfg.ort_providers == ["CPUExecutionProvider"]
 
     def test_explicit_providers(self):
         cfg = ConverterConfig(ort_providers=["DirectMLExecutionProvider"])

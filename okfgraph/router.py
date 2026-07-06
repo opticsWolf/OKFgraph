@@ -319,6 +319,17 @@ class OKFRouter:
             CREATE NODE TABLE IF NOT EXISTS Meta (key STRING PRIMARY KEY, value INT64)
         """)
 
+        # FileHash — per-file SHA-256 mapping for delta detection.
+        # Stores which files changed since the last import_bundle() call.
+        # concept_id maps the file path to its Concept node for safe purge.
+        self.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS FileHash (
+                path STRING PRIMARY KEY,
+                hash STRING,
+                concept_id STRING
+            )
+        """)
+
         # When opening a pre-existing DB, the stored embedding column dimension
         # is authoritative (CREATE TABLE IF NOT EXISTS won't have changed it).
         # Adopt it so query vectors match — otherwise a caller that opened the
@@ -469,6 +480,218 @@ class OKFRouter:
 
     def _indexes_dirty(self) -> bool:
         return self._get_meta("write_epoch") > self._get_meta("indexed_epoch")
+
+    # ------------------------------------------------------------------
+    # Delta detection (file-level hash skip)
+    # ------------------------------------------------------------------
+
+    def _file_hash(self, file_path: Path) -> str:
+        """SHA-256 hex digest of a file's raw bytes."""
+        return hashlib.sha256(file_path.read_bytes()).hexdigest()
+
+    def _store_file_hashes(self, hashes: Dict[str, str]) -> None:
+        """Persist a path→hash mapping in the FileHash table.
+
+        Upserts each row so the table always reflects the current state.
+        Also stores the concept_id for each file to enable safe purge.
+        """
+        try:
+            for path, h in hashes.items():
+                # Derive concept_id from path: strip extension, normalise separators.
+                concept_id = path.rsplit(".", 1)[0]  # remove .md / .txt suffix
+                self.conn.execute(
+                    """
+                    MERGE (f:FileHash {path: $p})
+                    SET f.hash = $h, f.concept_id = $c
+                    """,
+                    {"p": path, "h": h, "c": concept_id},
+                )
+        except Exception as exc:
+            logger.debug("could not store file hashes: %s", exc)
+
+    def _load_file_hashes(self) -> Dict[str, str]:
+        """Load the persisted path→hash mapping, or return empty dict."""
+        try:
+            rows = self.conn.execute(
+                "MATCH (f:FileHash) RETURN f.path AS p, f.hash AS h"
+            ).rows_as_dict().get_all()
+            if rows:
+                return {r["p"]: r["h"] for r in rows}
+        except Exception as exc:
+            logger.debug("could not load file hashes: %s", exc)
+        return {}
+
+    def _load_file_hash_concept_ids(self) -> Dict[str, str]:
+        """Load the persisted path→concept_id mapping, or return empty dict."""
+        try:
+            rows = self.conn.execute(
+                "MATCH (f:FileHash) RETURN f.path AS p, f.concept_id AS c"
+            ).rows_as_dict().get_all()
+            if rows:
+                return {r["p"]: r["c"] for r in rows}
+        except Exception as exc:
+            logger.debug("could not load file hash concept ids: %s", exc)
+        return {}
+
+    def _changed_files(
+        self, source_files: List[Path]
+    ) -> tuple[List[Path], List[str]]:
+        """Return (changed_files, deleted_paths) since last import.
+
+        Compares SHA-256 of each file against the hashes persisted from the
+        previous ``import_bundle()`` call.  New files (not in the stored map)
+        are treated as changed.  Files in the stored map but absent from disk
+        are returned as deleted_paths.
+
+        The stored map is updated after the check.
+        """
+        stored = self._load_file_hashes()
+
+        current: Dict[str, str] = {}
+        changed: List[Path] = []
+        for fp in source_files:
+            rel = str(fp.relative_to(self.bundle_root))
+            h = self._file_hash(fp)
+            current[rel] = h
+            if h != stored.get(rel):
+                changed.append(fp)
+
+        # Detect deleted files: paths in stored map but not on disk.
+        stored_paths = set(stored.keys())
+        current_paths = set(current.keys())
+        deleted = sorted(stored_paths - current_paths)
+
+        # Persist the new mapping for the next run.
+        self._store_file_hashes(current)
+
+        if changed:
+            logger.info(
+                "delta: %d changed / %d total files",
+                len(changed),
+                len(source_files),
+            )
+        else:
+            logger.info("delta: no changes detected")
+
+        if deleted:
+            logger.info(
+                "delta: %d deleted files detected: %s",
+                len(deleted),
+                deleted,
+            )
+
+        return changed, deleted
+
+    # ------------------------------------------------------------------
+    # Purge (safe deletion of a concept and all its dependents)
+    # ------------------------------------------------------------------
+
+    def _purge_concept(self, concept_id: str) -> bool:
+        """Delete a concept and all its dependents from the graph.
+
+        Removes:
+        - The Concept node (and its embedding)
+        - All Chunk nodes linked via PART_OF
+        - All LINKS_TO relationships (incoming and outgoing)
+        - All INCLUDES_ASSET relationships
+        - ImageAsset nodes that have **zero remaining** INCLUDES_ASSET
+          edges (orphan check — shared assets are preserved)
+        - BrokenLink entries where this concept was source or target
+        - FileHash entry for the concept's file path
+
+        Args:
+            concept_id: The ID of the concept to purge.
+
+        Returns:
+            True if a concept was found and purged, False if not found.
+        """
+        # Check if the concept exists
+        rows = self.conn.execute(
+            "MATCH (c:Concept {id: $id}) RETURN count(c) AS cnt",
+            {"id": concept_id},
+        ).rows_as_dict().get_all()
+        if not rows or rows[0]["cnt"] == 0:
+            logger.debug("purge: concept %s not found, skipping", concept_id)
+            return False
+
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            # 1. Find and sever INCLUDES_ASSET edges, collecting asset IDs.
+            asset_rows = self.conn.execute(
+                """
+                MATCH (c:Concept {id: $id})-[:INCLUDES_ASSET]->(i:ImageAsset)
+                RETURN i.id AS aid
+                """,
+                {"id": concept_id},
+            ).rows_as_dict().get_all()
+            asset_ids = [r["aid"] for r in asset_rows]
+
+            # 2. Delete all Chunk nodes for this concept (DETACH DELETE on
+            #    Concept doesn't cascade to Chunk — they are separate nodes).
+            self.conn.execute(
+                """
+                MATCH (ch:Chunk {parent_doc_id: $id})
+                DETACH DELETE ch
+                """,
+                {"id": concept_id},
+            )
+
+            # 3. DETACH DELETE the Concept (cascades LINKS_TO, CONTAINS,
+            #    INCLUDES_ASSET edges).
+            self.conn.execute(
+                "MATCH (c:Concept {id: $id}) DETACH DELETE c",
+                {"id": concept_id},
+            )
+
+            # 4. Clean up orphaned ImageAssets — only delete if no other
+            #    Concept still references them. This handles the case where
+            #    two files share the same okf-asset://<id> URI.
+            for aid in asset_ids:
+                ref_count = self.conn.execute(
+                    """
+                    MATCH (i:ImageAsset {id: $aid})
+                    OPTIONAL MATCH (i)<-[:INCLUDES_ASSET]-(other:Concept)
+                    RETURN count(other) AS refs
+                    """,
+                    {"aid": aid},
+                ).rows_as_dict().get_all()
+                if ref_count and ref_count[0]["refs"] == 0:
+                    self.conn.execute(
+                        "MATCH (i:ImageAsset {id: $aid}) DELETE i",
+                        {"aid": aid},
+                    )
+                    logger.debug("purge: deleted orphaned asset %s", aid)
+
+            # 5. Clean up BrokenLink entries where this concept was source
+            #    or target.
+            self.conn.execute(
+                """
+                MATCH (bl:BrokenLink)
+                WHERE bl.source_id = $id OR bl.target_id = $id
+                DELETE bl
+                """,
+                {"id": concept_id},
+            )
+
+            # 6. Remove FileHash entry for this concept.
+            self.conn.execute(
+                """
+                MATCH (f:FileHash {concept_id: $id})
+                DELETE f
+                """,
+                {"id": concept_id},
+            )
+
+            self.conn.execute("COMMIT")
+            logger.info("purge: deleted concept %s", concept_id)
+            return True
+
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     # ------------------------------------------------------------------
     # Embedding
@@ -953,6 +1176,7 @@ class OKFRouter:
         bundle_path: Optional[Path] = None,
         batch_size: int = 32,
         mode: "str | IngestMode" = IngestMode.TEXT,
+        purge_deleted: bool = False,
     ) -> List[str]:
         """Import an entire OKF bundle directory with batched encoding.
 
@@ -963,6 +1187,9 @@ class OKFRouter:
             bundle_path: Root directory of the OKF bundle (defaults to constructor bundle_root).
             batch_size: Number of texts per ONNX forward pass.
             mode: Image ingestion mode (``text`` | ``optional`` | ``omni``).
+            purge_deleted: If True, concepts whose source files were deleted
+                from disk are removed from the graph (including chunks,
+                links, and orphaned image assets).
 
         Returns:
             List of imported concept IDs.
@@ -975,6 +1202,21 @@ class OKFRouter:
         )
         if not source_files:
             return []
+
+        # Phase 0: Delta detection — skip files that haven't changed.
+        changed, deleted = self._changed_files(source_files)
+
+        # Purge deleted concepts if requested.
+        if purge_deleted and deleted:
+            cid_map = self._load_file_hash_concept_ids()
+            for path in deleted:
+                cid = cid_map.get(path)
+                if cid:
+                    self._purge_concept(cid)
+
+        if not changed and not deleted:
+            return []
+        source_files = changed
 
         # Phase 1: Parse all files
         parsed: List[Dict[str, Any]] = []
@@ -1043,6 +1285,17 @@ class OKFRouter:
 
                 self.conn.execute("BEGIN TRANSACTION")
                 try:
+                    # Delete old chunks for these documents so CREATE doesn't
+                    # hit duplicate-primary-key errors on re-import. Target by
+                    # parent_doc_id directly (Concept node may already be
+                    # DETACH-DELETED in Phase 3, breaking the MATCH path).
+                    doc_ids = [p["cid"] for p in parsed]
+                    for did in doc_ids:
+                        self.conn.execute(
+                            "MATCH (ch:Chunk {parent_doc_id: $id}) DETACH DELETE ch",
+                            {"id": did},
+                        )
+
                     for payload, emb in zip(all_payloads, embeddings):
                         doc_id = payload.pop("_doc_id")
                         chunk_idx = int(payload["chunk_id"].split(":")[-1])

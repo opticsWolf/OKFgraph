@@ -87,10 +87,14 @@ def _model_info(args):
 def _import(args):
     router = _router(args)
     mode = getattr(args, "mode", "text")
+    purge = getattr(args, "purge", False)
     if getattr(args, "import_all", False):
         bundle_path = Path(args.bundle) if args.bundle else None
         ids = router.import_bundle(
-            bundle_path, batch_size=getattr(args, "batch_size", 32) or 32, mode=mode
+            bundle_path,
+            batch_size=getattr(args, "batch_size", 32) or 32,
+            mode=mode,
+            purge_deleted=purge,
         )
         print(f"[OK] Imported {len(ids)} concepts (image mode: {mode})")
         for cid in ids:
@@ -675,6 +679,11 @@ def build_parser():
         help="Image ingestion mode: text (alt-text/filename, no omni), "
              "optional (omni only for images lacking alt-text), "
              "omni (omni for every image). Default: text",
+    )
+    p.add_argument(
+        "--purge", action="store_true", default=False,
+        help="Also purge concepts whose source files were deleted from disk "
+             "(removes concept, chunks, links, and orphaned image assets)",
     )
     p.add_argument(
         "--allow-remote-images", action="store_true",

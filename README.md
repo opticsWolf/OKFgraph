@@ -1,8 +1,8 @@
 # OKFgraph
 
-**Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings and multimodal image ingestion.**
+**Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings, multimodal image ingestion, and delta-aware incremental imports.**
 
-OKFgraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, and — in v4.0 — unified multimodal image embedding into a single SQLite-backed system.
+OKFgraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, chunk-level retrieval, and — in v5.1 — delta detection with safe purge of deleted concepts into a single SQLite-backed system.
 
 ---
 
@@ -14,9 +14,9 @@ OKFgraph is a Python library and CLI tool for building, querying, and managing k
 | **Search** | Hybrid RRF fusion (vector + FTS), graph traversal, chunk-level search with RRF, graph-aware reranking (hub scores), context expansion, direct lookup, image search via unified index |
 | **Storage** | LadybugDB — graph + vector + full-text search in a single SQLite file |
 | **Images** | Three ingestion modes (`text` / `optional` / `omni`), unified vector space for text + image, content-hash dedup, `okf-asset://` protocol |
-| **Import/Export** | OKF Markdown round-trip, batch import with single-transaction upsert, filtered bulk export with graph enrichment (See Also + Cited By), auto-generated index.md files |
+| **Import/Export** | OKF Markdown round-trip, batch import with single-transaction upsert, **delta detection** (SHA-256 hash skip), **purge deleted concepts** (`--purge`), filtered bulk export with graph enrichment (See Also + Cited By), auto-generated index.md files |
 | **PDF Ingestion** | `okfgraph.ingest` sub-module — pdf_oxide fast path + ONNX/Rapid heavy passes (RapidLaTeXOCR, RapidOCR, RapidLayout, RapidTable), four routing modes (NEVER/AUTO/SURGICAL/ALWAYS), Paddle-free |
-| **CLI** | 14 commands + interactive REPL, `--mode` for image ingestion, `--device cuda` with auto-fallback, chunking flags (`--chunk-overlap`, `--no-chunking`) |
+| **CLI** | 14 commands + interactive REPL, `--mode` for image ingestion, `--device cuda` with auto-fallback, chunking flags (`--chunk-overlap`, `--no-chunking`), `--purge` for stale concept cleanup |
 | **LLM Tools** | 13 OpenAI-compatible tool definitions for agent integration (search, traverse, chunks, graph enrichment, path finding, export) |
 
 ---
@@ -92,6 +92,9 @@ okf import ./concepts/intro.md --mode optional
 # Import an entire bundle
 okf import --all --mode omni --allow-remote-images
 
+# Import with delta detection + purge deleted concepts
+okf import --all --purge
+
 # Hybrid search
 okf search "graph neural networks" --type section --limit 5
 
@@ -154,10 +157,10 @@ When `omni` is requested but raw bytes are unavailable (e.g. remote URLs not fet
 ### Database Schema
 
 ```
-Concept        ImageAsset       Directory       BrokenLink     Chunk
-├── id         ├── id           ├── id          ├── id         ├── id
-├── type       ├── file_name    └── (empty)     ├── source_id  ├── parent_doc_id
-├── title      ├── mime_type                 ├── target_id    ├── chunk_index
+Concept        ImageAsset       Directory       BrokenLink     Chunk        FileHash
+├── id         ├── id           ├── id          ├── id         ├── id       ├── path (PK)
+├── type       ├── file_name    └── (empty)     ├── source_id  ├── parent_doc_id  ├── hash
+├── title      ├── mime_type                 ├── target_id    ├── chunk_index      ├── concept_id
 ├── body       ├── alt_text                └── timestamp      ├── chunk_text
 ├── embedding  ├── caption                                  ├── block_type
 └── extra      ├── embed_route                          ├── start_offset
@@ -224,7 +227,7 @@ Key features:
 |---|---|
 | `__init__(db_path, bundle_root, model_id, omni_model_id, embedding_dim, cache_dir, device, allow_remote_images)` | Initialize router |
 | `import_from_okf(file_path, mode)` | Import a single OKF file |
-| `import_bundle(bundle_path, batch_size, mode)` | Import entire bundle with batch encoding |
+| `import_bundle(bundle_path, batch_size, mode, purge_deleted)` | Import entire bundle with batch encoding and delta detection |
 | `export_to_okf(concept_id, output_path)` | Export a single concept to OKF markdown |
 | `export_bundle(output_dir, directory_id, concept_type, tags)` | Export filtered bundle with graph enrichment |
 | `search_hybrid(query, concept_type, tags, parent_id, exclude_reserved, limit)` | Hybrid RRF search |
@@ -245,6 +248,9 @@ Key features:
 | `find_path(start_id, end_id, max_length)` | BFS shortest path between concepts |
 | `expand_with_graph_context(chunk_ids)` | Discover related concepts via graph edges |
 | `rerank_with_hub_score(chunk_results)` | Adjust chunk scores by parent hub score |
+| `_purge_concept(concept_id)` | Safe cascading delete (concept, chunks, links, orphaned assets) |
+| `_changed_files(source_files)` | Delta detection — returns `(changed, deleted)` tuple |
+| `_file_hash(path)` | Compute SHA-256 hex digest of a file |
 
 ### `IngestMode`
 
@@ -321,6 +327,7 @@ class ConceptModel(BaseModel):
 | `--mode` | `text` | Image ingestion mode: `text`, `optional`, `omni` |
 | `--allow-remote-images` | — | Fetch `http(s)://` image URLs |
 | `--batch-size` | `32` | Batch size for encoding |
+| `--purge` | — | Also purge concepts whose source files were deleted from disk |
 
 ---
 
@@ -359,7 +366,8 @@ pytest tests/test_integration.py -v
 | `test_integration.py` | 16 | ✅ All passing |
 | `test_export_compliance.py` | 13 | ✅ All passing |
 | `test_ingest.py` | 25 | ✅ All passing |
-| **Total** | **98** | **All passing (0 warnings)** |
+| `test_delta.py` | 21 | ✅ All passing |
+| **Total** | **119** | **All passing (0 warnings)** |
 
 ---
 
@@ -392,6 +400,7 @@ okfgraph/
 │   ├── test_integration.py    # 16 end-to-end tests
 │   ├── test_export_compliance.py # 13 OKF export compliance tests
 │   ├── test_ingest.py         # 25 ONNX/Rapid ingestion tests
+│   ├── test_delta.py          # 21 delta detection & purge tests
 │   └── fixtures/bundle/       # Test markdown fixtures
 ├── benchmarks/
 │   └── benchmark_500.py
@@ -457,3 +466,5 @@ Contributions welcome! Please open an issue or pull request. Key areas for contr
 - Documentation and examples
 - ONNX/Rapid end-to-end PDF tests (see `docs/ONNX_RAPID_IMPLEMENTATION.md` testing checklist)
 - Office file conversion via `office_oxide`
+- Delta detection: directory-level hash aggregation (skip entire subtrees)
+- Delta detection: soft-delete with recovery window (undo purge within N hours)

@@ -254,6 +254,131 @@ def _reindex(args):
         print("Search indexes already up to date; nothing to do.")
 
 
+def _ingest_pdf(args):
+    """Convert a PDF to markdown and optionally import into the graph.
+
+    Uses the HybridConverter pipeline (pdf_oxide fast path + ONNX/Rapid
+    heavy passes). When ``--auto-import`` is set the produced markdown is
+    imported into the graph via ``import_bundle()`` and the temporary
+    directory is cleaned up automatically.
+    """
+    from tempfile import TemporaryDirectory
+
+    from okfgraph.ingest import ConverterConfig, HybridConverter, RoutingMode
+    from okfgraph.ingest.assets import stage_images_as_okf_assets
+
+    pdf_path = Path(args.pdf_file)
+    if not pdf_path.exists():
+        print(f"[ERROR] File not found: {pdf_path}")
+        return
+
+    # Build converter config from CLI args
+    mode_str = getattr(args, "routing_mode", "auto").lower()
+    routing = RoutingMode(mode_str)
+    device = getattr(args, "device", "cuda")
+
+    config = ConverterConfig(
+        routing_mode=routing,
+        device=device,
+        extract_images=getattr(args, "extract_images", True),
+    )
+
+    converter = HybridConverter(config)
+
+    try:
+        # Ensure ONNX models are loaded (if routing mode requires them)
+        converter.ensure_models()
+
+        if getattr(args, "auto_import", False):
+            # Auto-import: convert to temp dir, import into graph, clean up.
+            router = _router(args)
+
+            with TemporaryDirectory(prefix="okf_ingest_") as tmp:
+                work_dir = Path(tmp)
+                print(f"Converting {pdf_path} → {work_dir} …")
+
+                md = converter.convert_pdf(
+                    path=pdf_path,
+                    work_dir=work_dir,
+                    should_continue=lambda: True,
+                    on_page=lambda idx, total: print(
+                        f"  page {idx + 1}/{total}", end="\r"
+                    ),
+                )
+                print()  # newline after progress
+
+                # Write markdown to temp dir
+                stem = pdf_path.stem
+                md_path = work_dir / f"{stem}.md"
+                md_path.write_text(md, encoding="utf-8")
+
+                # Stage any extracted images as okf-asset:// URIs
+                img_dir = work_dir / "_assets"
+                img_dir.mkdir(exist_ok=True)
+                for img in work_dir.glob("*."):
+                    if img.is_file() and img.suffix.lower() in (
+                        ".png", ".jpg", ".jpeg", ".gif", ".webp",
+                    ):
+                        img.rename(img_dir / img.name)
+
+                stage_images_as_okf_assets(md_path, img_dir)
+
+                # Import into the graph
+                mode = getattr(args, "mode", "text")
+                purge = getattr(args, "purge", False)
+                ids = router.import_bundle(
+                    work_dir,
+                    batch_size=getattr(args, "batch_size", 32) or 32,
+                    mode=mode,
+                    purge_deleted=purge,
+                )
+                print(f"[OK] Imported {len(ids)} concept(s) from {pdf_path}")
+                for cid in ids:
+                    n = len(router.list_images(cid))
+                    suffix = f"  [{n} image(s)]" if n else ""
+                    print(f"  {cid}{suffix}")
+        else:
+            # Output-only: convert to the specified output directory.
+            output_dir = Path(args.output) if args.output else Path(".")
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            print(f"Converting {pdf_path} → {output_dir} …")
+
+            md = converter.convert_pdf(
+                path=pdf_path,
+                work_dir=output_dir,
+                should_continue=lambda: True,
+                on_page=lambda idx, total: print(
+                    f"  page {idx + 1}/{total}", end="\r"
+                ),
+            )
+            print()
+
+            # Write markdown
+            stem = pdf_path.stem
+            md_path = output_dir / f"{stem}.md"
+            md_path.write_text(md, encoding="utf-8")
+
+            # Stage images
+            img_dir = output_dir / "_assets"
+            img_dir.mkdir(exist_ok=True)
+            for img in output_dir.glob("*."):
+                if img.is_file() and img.suffix.lower() in (
+                    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+                ):
+                    img.rename(img_dir / img.name)
+
+            from okfgraph.ingest.assets import stage_images_as_okf_assets
+            stage_images_as_okf_assets(md_path, img_dir)
+
+            print(f"[OK] Written {md_path}")
+            print(f"     Assets in {img_dir}")
+            print(f"     Run 'okf import --all --bundle {output_dir}' to import.")
+
+    finally:
+        converter.close()
+
+
 def _search_chunks(args):
     router = _router(args)
     results = router.search_chunks(
@@ -406,6 +531,7 @@ Commands:
   get <concept_id>           — fetch full concept
   export-bundle <output_dir> — export all concepts
   export <id> <output_dir>   — export single concept
+  ingest <pdf> [--auto-import] — convert PDF to markdown, optionally import
   model-info                 — show model cache status
   help                       — show this help
   quit / exit                — exit shell
@@ -646,6 +772,33 @@ Image modes:
             count = router.repair_links()
             print(f"[OK] Repaired {count} link(s)")
 
+        elif cmd == "ingest" and rest:
+            # Minimal shell dispatch for ingest — delegates to the CLI handler.
+            from okfgraph.cli import _ingest_pdf
+            from types import SimpleNamespace
+            pdf_path = rest.strip()
+            shell_args = SimpleNamespace(
+                pdf_file=pdf_path,
+                auto_import=False,
+                output=None,
+                routing_mode="auto",
+                mode="text",
+                batch_size=32,
+                purge=False,
+                extract_images=True,
+                db=args.db,
+                bundle=args.bundle,
+                dim=args.dim,
+                cache_dir=getattr(args, "cache_dir", None),
+                device=getattr(args, "device", "cpu"),
+                omni_model_id=getattr(args, "omni_model_id", None),
+                chunk_size=getattr(args, "chunk_size", 512),
+                chunk_overlap=getattr(args, "chunk_overlap", 40),
+                no_chunking=False,
+                allow_remote_images=False,
+            )
+            _ingest_pdf(shell_args)
+
         else:
             print(f"Unknown command: {cmd}. Type 'help' for usage.")
 
@@ -757,6 +910,40 @@ def build_parser():
     p.add_argument("--if-dirty", action="store_true",
                    help="Only rebuild if data changed since the last index build")
 
+    # ingest (PDF → markdown → optional import)
+    p = sub.add_parser("ingest", help="Convert PDF to markdown and optionally import")
+    _add_global(p)
+    p.add_argument("pdf_file", help="Path to the PDF file")
+    p.add_argument(
+        "--auto-import", action="store_true",
+        help="Auto-import the converted markdown into the graph",
+    )
+    p.add_argument(
+        "--output", default=None,
+        help="Output directory for converted markdown (default: current dir)",
+    )
+    p.add_argument(
+        "--routing-mode", default="auto",
+        choices=["auto", "surgical", "always", "never"],
+        help="ONNX routing mode (default: auto)",
+    )
+    p.add_argument(
+        "--mode", default="text", choices=["text", "optional", "omni"],
+        help="Image ingestion mode for auto-import (default: text)",
+    )
+    p.add_argument(
+        "--batch-size", type=int, default=32,
+        help="Batch size for encoding during auto-import (default: 32)",
+    )
+    p.add_argument(
+        "--purge", action="store_true", default=False,
+        help="Purge deleted concepts during auto-import",
+    )
+    p.add_argument(
+        "--no-extract-images", action="store_true",
+        help="Do not extract embedded images from the PDF",
+    )
+
     # search-chunks
     p = sub.add_parser("search-chunks", help="Search document chunks (RRF-fused vector + FTS)")
     _add_global(p)
@@ -821,6 +1008,7 @@ def main():
         "init": _init,
         "model-info": _model_info,
         "import": _import,
+        "ingest": _ingest_pdf,
         "search": _search,
         "search-images": _search_images,
         "search-chunks": _search_chunks,

@@ -63,6 +63,71 @@ class OKFRouter:
     # (text-small-retrieval and omni-small-retrieval both support these).
     ALLOWED_DIMS = (32, 64, 128, 256, 512, 768, 1024)
 
+    # ── Schema versioning ─────────────────────────────────────────
+    # Incremented every time the on-disk schema changes in a way that
+    # requires a migration step (new table, new column, new index).
+    SCHEMA_VERSION = 3
+
+    # Migration registry: version → migration function.
+    # Each function receives `self` (the router) and must be idempotent.
+    _MIGRATIONS: Dict[int, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Schema migrations
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _migrate_v1_to_v2(router: "OKFRouter") -> None:
+        """v1 → v2: Add Chunk table, PART_OF rel, Chunk vector/FTS indexes.
+
+        This corresponds to the v4.0 → v5.0 transition (graph-aware chunking).
+        """
+        dim = router.embedding_dim
+        router.conn.execute(f"""
+            CREATE NODE TABLE IF NOT EXISTS Chunk (
+                id STRING PRIMARY KEY,
+                parent_doc_id STRING,
+                chunk_index INT64,
+                chunk_text STRING,
+                block_type STRING,
+                start_offset INT64,
+                end_offset INT64,
+                embedding FLOAT[{dim}]
+            )
+        """)
+        router.conn.execute("""
+            CREATE REL TABLE IF NOT EXISTS PART_OF (
+                FROM Concept TO Chunk
+            )
+        """)
+        # Create Chunk indexes (idempotent — Ladybug skips if present)
+        for table, name, create_sql in router._index_specs():
+            if table == "Chunk":
+                try:
+                    router.conn.execute(create_sql)
+                except Exception as e:
+                    logger.debug("chunk index %s skipped during migration: %s", name, e)
+        logger.info("Schema migrated: v1 → v2 (Chunk + PART_OF)")
+
+    @staticmethod
+    def _migrate_v2_to_v3(router: "OKFRouter") -> None:
+        """v2 → v3: Add FileHash table with concept_id column.
+
+        This corresponds to the v5.1 transition (delta detection & purge).
+        """
+        router.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS FileHash (
+                path STRING PRIMARY KEY,
+                hash STRING,
+                concept_id STRING
+            )
+        """)
+        logger.info("Schema migrated: v2 → v3 (FileHash + concept_id)")
+
+    # Register migrations
+    _MIGRATIONS[1] = _migrate_v1_to_v2
+    _MIGRATIONS[2] = _migrate_v2_to_v3
+
     def __init__(
         self,
         db_path: str,
@@ -330,6 +395,9 @@ class OKFRouter:
             )
         """)
 
+        # Run schema migrations if the on-disk version is behind.
+        self._run_schema_migrations()
+
         # When opening a pre-existing DB, the stored embedding column dimension
         # is authoritative (CREATE TABLE IF NOT EXISTS won't have changed it).
         # Adopt it so query vectors match — otherwise a caller that opened the
@@ -374,6 +442,53 @@ class OKFRouter:
     # ------------------------------------------------------------------
     # Search index (re)build
     # ------------------------------------------------------------------
+
+    def _run_schema_migrations(self) -> None:
+        """Run any pending schema migrations.
+
+        Reads the stored schema version from the Meta table. If it is behind
+        ``SCHEMA_VERSION``, runs each migration function in order and bumps
+        the version. New databases start at version 0 (no migrations needed
+        because ``_ensure_schema`` creates the full schema).
+        """
+        current = self._get_meta("schema_version", 0)
+        target = self.SCHEMA_VERSION
+
+        if current >= target:
+            return  # already up to date
+
+        if current == 0:
+            # Fresh database — schema was created by _ensure_schema above.
+            # Just stamp the version.
+            self._set_meta("schema_version", target)
+            logger.debug("New database — schema version set to %d", target)
+            return
+
+        logger.info(
+            "Schema migration: current=%d, target=%d — running %d migration(s)",
+            current, target, target - current,
+        )
+
+        for v in range(current, target):
+            fn = self._MIGRATIONS.get(v)
+            if fn is None:
+                logger.error(
+                    "No migration function for version %d → %d. "
+                    "Database may be in an inconsistent state.",
+                    v, v + 1,
+                )
+                break
+            try:
+                fn(self)
+            except Exception as e:
+                logger.error(
+                    "Migration v%d → v%d failed: %s. Database may be unusable.",
+                    v, v + 1, e,
+                )
+                raise
+            self._set_meta("schema_version", v + 1)
+
+        logger.info("Schema migrations complete — version %d", target)
 
     # (table, index_name, create-statement) for every vector/FTS index.
     def _index_specs(self):

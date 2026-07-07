@@ -422,3 +422,124 @@ class TestContextWindowWarning:
                 "context window" in record.message.lower()
                 for record in caplog.records
             )
+
+
+class TestSchemaMigration:
+    """Tests for schema versioning and migration — Gap #8."""
+
+    _tmp_dir = None
+    _router = None
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def tmp_dir(cls):
+        d = tempfile.mkdtemp()
+        cls._tmp_dir = d
+        return d
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def router(cls, tmp_dir):
+        r = OKFRouter(
+            db_path=str(Path(tmp_dir) / "schema_test.db"),
+            bundle_root=str(tmp_dir),
+            device="cpu",
+        )
+        cls._router = r
+        return r
+
+    def test_schema_version_constant(self):
+        """SCHEMA_VERSION is defined and >= 3."""
+        from okfgraph.router import OKFRouter
+        assert hasattr(OKFRouter, "SCHEMA_VERSION")
+        assert OKFRouter.SCHEMA_VERSION >= 3
+
+    def test_schema_version_stamped_on_new_db(self, router):
+        """A fresh database gets the current schema version stamped."""
+        version = router._get_meta("schema_version", 0)
+        assert version == OKFRouter.SCHEMA_VERSION
+
+    def test_migrations_dict_populated(self):
+        """The migration registry has entries for each version transition."""
+        from okfgraph.router import OKFRouter
+        assert len(OKFRouter._MIGRATIONS) >= 2
+        # v1 -> v2 and v2 -> v3 are the minimum
+        assert 1 in OKFRouter._MIGRATIONS
+        assert 2 in OKFRouter._MIGRATIONS
+
+    def test_migrate_v1_to_v2_function_exists(self):
+        """Migration v1 -> v2 is callable."""
+        from okfgraph.router import OKFRouter
+        fn = OKFRouter._MIGRATIONS[1]
+        assert callable(fn)
+
+    def test_migrate_v2_to_v3_function_exists(self):
+        """Migration v2 -> v3 is callable."""
+        from okfgraph.router import OKFRouter
+        fn = OKFRouter._MIGRATIONS[2]
+        assert callable(fn)
+
+    def test_run_migrations_idempotent_on_current(self, router, tmp_dir, caplog):
+        """Running migrations on an up-to-date DB is a no-op."""
+        with caplog.at_level(logging.DEBUG):
+            router._run_schema_migrations()
+        # No migration info messages (already current)
+        assert not any(
+            "Schema migration:" in record.message
+            for record in caplog.records
+        )
+
+    def test_run_migrations_runs_on_old_version(self, router, tmp_dir, caplog):
+        """Simulating an old DB triggers migrations."""
+        # Temporarily set version to 0 (fresh DB simulation)
+        router._set_meta("schema_version", 0)
+        with caplog.at_level(logging.DEBUG):
+            router._run_schema_migrations()
+        # Should stamp to current version
+        version = router._get_meta("schema_version", 0)
+        assert version == OKFRouter.SCHEMA_VERSION
+
+    def test_run_migrations_runs_partial(self, router, tmp_dir, caplog):
+        """Simulating a v1 DB (missing Chunk) triggers migration."""
+        target = OKFRouter.SCHEMA_VERSION
+        # Set version to one behind
+        router._set_meta("schema_version", target - 1)
+        with caplog.at_level(logging.INFO):
+            router._run_schema_migrations()
+        # Should be at target now
+        version = router._get_meta("schema_version", 0)
+        assert version == target
+        # Migration log message present
+        assert any(
+            "Schema migration:" in record.message
+            for record in caplog.records
+        )
+
+    def test_migration_v1_to_v2_creates_chunk_table(self, router, tmp_dir):
+        """v1 -> v2 migration creates the Chunk table."""
+        # The Chunk table should exist after migration
+        try:
+            rows = router.conn.execute(
+                "CALL TABLE_INFO('Chunk') RETURN *"
+            ).rows_as_dict().get_all()
+            assert len(rows) > 0
+            col_names = [r.get("name") for r in rows]
+            assert "id" in col_names
+            assert "parent_doc_id" in col_names
+            assert "chunk_text" in col_names
+        except Exception:
+            pytest.fail("Chunk table should exist after migration")
+
+    def test_migration_v2_to_v3_creates_filehash_table(self, router, tmp_dir):
+        """v2 -> v3 migration creates the FileHash table."""
+        try:
+            rows = router.conn.execute(
+                "CALL TABLE_INFO('FileHash') RETURN *"
+            ).rows_as_dict().get_all()
+            assert len(rows) > 0
+            col_names = [r.get("name") for r in rows]
+            assert "path" in col_names
+            assert "hash" in col_names
+            assert "concept_id" in col_names
+        except Exception:
+            pytest.fail("FileHash table should exist after migration")

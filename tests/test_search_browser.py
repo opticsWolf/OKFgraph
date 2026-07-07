@@ -57,7 +57,7 @@ def _install_fake_qt():
 
 _install_fake_qt()
 
-MOD_PATH = Path(__file__).resolve().parents[1] / "okf_search_browser.py"
+MOD_PATH = Path(__file__).resolve().parents[1] / "examples" / "okf_search_browser.py"
 spec = importlib.util.spec_from_file_location("okf_search_browser_under_test", MOD_PATH)
 ui = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = ui

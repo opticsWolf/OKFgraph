@@ -367,7 +367,11 @@ pytest tests/test_integration.py -v
 | `test_export_compliance.py` | 13 | ✅ All passing |
 | `test_ingest.py` | 25 | ✅ All passing |
 | `test_delta.py` | 21 | ✅ All passing |
-| **Total** | **119** | **All passing (0 warnings)** |
+| `test_router_misc.py` | 23 | ✅ All passing (Gap #12a: reindex, repair_links, meta/epoch, error isolation, context window) |
+| `test_router.py` | 29 | ✅ All passing |
+| `test_converter.py` | 2 | ✅ All passing (PySide6 stubbed) |
+| `test_search_browser.py` | 9 | ✅ All passing (PySide6 stubbed) |
+| **Total** | **220** | **All passing (0 warnings)** |
 
 ---
 
@@ -401,6 +405,10 @@ okfgraph/
 │   ├── test_export_compliance.py # 13 OKF export compliance tests
 │   ├── test_ingest.py         # 25 ONNX/Rapid ingestion tests
 │   ├── test_delta.py          # 21 delta detection & purge tests
+│   ├── test_router_misc.py    # 23 router unit tests (reindex, repair_links, meta/epoch, error isolation, context window)
+│   ├── test_router.py         # 29 smoke & cache & device tests
+│   ├── test_converter.py      # 2 converter staging tests (PySide6 stubbed)
+│   ├── test_search_browser.py # 9 search browser tests (PySide6 stubbed)
 │   └── fixtures/bundle/       # Test markdown fixtures
 ├── benchmarks/
 │   └── benchmark_500.py

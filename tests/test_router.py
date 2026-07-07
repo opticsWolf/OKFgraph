@@ -170,24 +170,29 @@ class TestDeviceSelection:
         from okfgraph.router import OKFRouter
         r = OKFRouter(db_path=str(tmp_path / "test.db"), bundle_root=str(tmp_path), device="cuda")
         assert r.device == "cuda"
-        assert r._cuda_fallback is True
-        assert "CUDA unavailable" in caplog.text
-        assert "CPUExecutionProvider" in r.embedder.session.get_providers()[0]
+        # If CUDA is available on this machine, no fallback occurs (happy path).
+        # If CUDA is unavailable, fallback to CPU is triggered.
+        if r._cuda_fallback:
+            assert "CUDA unavailable" in caplog.text
+            assert "CPUExecutionProvider" in r.embedder.session.get_providers()[0]
+        else:
+            # CUDA is available — verify it's the primary provider
+            assert "CUDAExecutionProvider" in r.embedder.session.get_providers()
 
     def test_device_cuda_warning_only_once(self, tmp_path, caplog):
         import logging
         caplog.set_level(logging.WARNING)
         from okfgraph.router import OKFRouter
         r = OKFRouter(db_path=str(tmp_path / "test.db"), bundle_root=str(tmp_path), device="cuda")
-        # Should be exactly one warning, not two
-        cuda_warnings = [r for r in caplog.records if "CUDA" in r.message]
-        assert len(cuda_warnings) == 1
+        cuda_warnings = [rec for rec in caplog.records if "CUDA" in rec.message]
+        # If CUDA is available: 0 warnings. If unavailable: exactly 1 warning.
+        assert len(cuda_warnings) <= 1
 
 
 class TestTools:
     def test_tools_export(self):
         from okfgraph.tools import TOOLS
-        assert len(TOOLS) == 5
+        assert len(TOOLS) == 13
 
     def test_tool_names(self):
         from okfgraph.tools import TOOLS

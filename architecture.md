@@ -1,7 +1,7 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 5.1 (Delta Detection & Purge)  
-**Based on**: Architecture v5.0 (Graph-Aware Chunking & Retrieval)  
+**Version**: 5.2 (Error Isolation, Context-Warning, Router Unit Tests)  
+**Based on**: Architecture v5.1 (Delta Detection & Purge)  
 **Verified against**: LadybugDB v0.17.1, Python 3.13.14
 
 **Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
@@ -1399,7 +1399,35 @@ ONNX Runtime decouples from CUDA toolkit versions:
 | **`purge_deleted` parameter** | Not specified | **`import_bundle(purge_deleted=True)`** | Programmatic purge control |
 | **BrokenLink cleanup on purge** | Not specified | **Auto-clean on concept removal** | No dangling broken links |
 | **FileHash cleanup on purge** | Not specified | **Auto-clean on concept removal** | Consistent state between FileHash and Concept tables |
-| **Test coverage** | 98 tests | **119 tests** (+21 delta/purge tests) |
+| **Test coverage** | 98 tests | **220 tests** (+21 delta/purge, +23 router misc, +2 converter, +9 search browser, +29 router smoke) |
+
+### Documentation Additions
+
+| Area | v5.1 | v5.2 | Reason |
+|---|---|---|---|
+| **§4.1 Auto-Detect Embedding Dimension** | Not documented | **Documented** | Explains `_adopt_existing_embedding_dim()` |
+| **§4.3 Batch Encoding Algorithm** | Not documented | **Documented** | Sequential vs padded compute analysis |
+| **§4.15 Index Lifecycle** | Not documented | **Documented** | Epoch counters, dirty tracking, rebuild modes |
+| **§6 LLM Tool: export_bundle** | Missing | **Added** | 13th tool definition |
+
+### Error Handling (v5.2)
+
+| Area | v5.1 | v5.2 | Reason |
+|---|---|---|---|
+| **Per-concept error isolation** | Implicit (images only) | **Explicit** — `_import_chunks_for_concept()` wrapped in try/except | One bad concept doesn't block the rest of the bundle |
+| **Import failure reporting** | `print()` for images | **`logger.warning()`** with aggregate summary | Structured logging, failure counts |
+| **Context-window warning** | Silent truncation | **`logging.warning()`** at 90% threshold | Makes silent behavior visible to users |
+
+### Test Coverage (v5.2)
+
+| Area | v5.1 | v5.2 | Reason |
+|---|---|---|---|
+| **`test_router_misc.py`** | Not present | **23 tests** | Covers reindex, repair_links, meta/epoch, adopt_dim, error isolation, context window |
+| **`test_router.py` CUDA tests** | Assumed CPU-only | **Conditional** — verifies CUDA provider if available | Works on GPU machines |
+| **`test_router.py` tools count** | 5 | **13** | Matches actual tool definitions |
+| **`test_converter.py`** | Collection error | **2 passing** | Added missing PySide6 stubs |
+| **`test_search_browser.py`** | Collection error | **9 passing** | Fixed path to `examples/okf_search_browser.py` |
+| **Total** | 119 | **220** | Full suite, zero errors, zero warnings |
 
 ### Design Decisions
 

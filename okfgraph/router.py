@@ -1259,81 +1259,25 @@ class OKFRouter:
                 pass
             raise
 
-        # Phase 3.5: Chunk all documents (NEW)
+        # Phase 3.5: Chunk all documents (NEW) — per-concept error isolation
         if self.enable_chunking:
-            all_chunks: List[Dict[str, Any]] = []
+            _import_chunk_errors: List[Tuple[str, Exception]] = []
+
             for p in parsed:
-                chunks = self._split_into_chunks(p["body"], p["cid"])
-                all_chunks.extend(chunks)
-
-            if all_chunks:
-                # Group by parent doc for overlap computation
-                chunks_by_doc: Dict[str, List[Dict]] = {}
-                for c in all_chunks:
-                    chunks_by_doc.setdefault(c["parent_doc_id"], []).append(c)
-
-                all_payloads: List[Dict[str, Any]] = []
-                for doc_id, doc_chunks in chunks_by_doc.items():
-                    payloads = self._compute_overlap_payloads(doc_chunks)
-                    for p in payloads:
-                        p["_doc_id"] = doc_id
-                    all_payloads.extend(payloads)
-
-                # Batch encode
-                texts = [p["text"] for p in all_payloads]
-                embeddings = self._encode_batch(texts, task="Document")
-
-                self.conn.execute("BEGIN TRANSACTION")
                 try:
-                    # Delete old chunks for these documents so CREATE doesn't
-                    # hit duplicate-primary-key errors on re-import. Target by
-                    # parent_doc_id directly (Concept node may already be
-                    # DETACH-DELETED in Phase 3, breaking the MATCH path).
-                    doc_ids = [p["cid"] for p in parsed]
-                    for did in doc_ids:
-                        self.conn.execute(
-                            "MATCH (ch:Chunk {parent_doc_id: $id}) DETACH DELETE ch",
-                            {"id": did},
-                        )
+                    self._import_chunks_for_concept(p)
+                except Exception as e:
+                    _import_chunk_errors.append((p["cid"], e))
+                    logger.warning(
+                        "chunk import failed for %s: %s",
+                        p["cid"], e,
+                    )
 
-                    for payload, emb in zip(all_payloads, embeddings):
-                        doc_id = payload.pop("_doc_id")
-                        chunk_idx = int(payload["chunk_id"].split(":")[-1])
-                        orig_chunk = next(
-                            c for c in chunks_by_doc[doc_id]
-                            if c["chunk_index"] == chunk_idx
-                        )
-                        self.conn.execute("""
-                            CREATE (ch:Chunk {
-                                id: $id, parent_doc_id: $doc_id,
-                                chunk_index: $idx, chunk_text: $text,
-                                block_type: $block_type,
-                                start_offset: $start, end_offset: $end_offset,
-                                embedding: $emb
-                            })
-                        """, {
-                            "id": payload["chunk_id"],
-                            "doc_id": doc_id,
-                            "idx": orig_chunk["chunk_index"],
-                            "text": orig_chunk["chunk_text"],
-                            "block_type": orig_chunk["block_type"],
-                            "start": orig_chunk["start_offset"],
-                            "end_offset": orig_chunk["end_offset"],
-                            "emb": emb,
-                        })
-                        self.conn.execute("""
-                            MATCH (d:Concept {id: $doc})
-                            MATCH (ch:Chunk {id: $cid})
-                            MERGE (d)-[:PART_OF]->(ch)
-                        """, {"doc": doc_id, "cid": payload["chunk_id"]})
-                    self.conn.execute("COMMIT")
-                except Exception:
-                    try:
-                        self.conn.execute("ROLLBACK")
-                    except Exception:
-                        pass
-                    raise
-                self._bump_write_epoch()
+            if _import_chunk_errors:
+                logger.warning(
+                    "chunk import: %d concept(s) failed out of %d",
+                    len(_import_chunk_errors), len(parsed),
+                )
 
         # Phase 4: Batch directory hierarchy (collected from all concept IDs)
         self._batch_build_directories([p["cid"] for p in parsed])
@@ -1342,18 +1286,125 @@ class OKFRouter:
         self._batch_extract_links(parsed)
 
         # Phase 6: Image ingestion (per concept, honouring the selected mode)
+        _import_image_errors: List[Tuple[str, Exception]] = []
         for p in parsed:
             try:
                 self._ingest_concept_images(p["cid"], p["body"], p["dir"], mode)
-            except Exception as e:  # never let one bad image abort the bundle
-                print(f"  [WARN] Image ingestion failed for {p['cid']}: {e}")
+            except Exception as e:
+                _import_image_errors.append((p["cid"], e))
 
         # Phase 7: rebuild vector + FTS indexes once so every concept/image
         # written above is searchable (indexes reflect table contents at build
         # time, not subsequent inserts).
         self._build_search_indexes(rebuild=True)
 
+        # Aggregate failure report
+        total_failures = len(_import_chunk_errors) + len(_import_image_errors)
+        if total_failures > 0:
+            logger.warning(
+                "import_bundle: %d concept(s) had non-fatal errors "
+                "(chunks: %d, images: %d) out of %d total",
+                total_failures,
+                len(_import_chunk_errors),
+                len(_import_image_errors),
+                len(parsed),
+            )
+
         return [p["cid"] for p in parsed]
+
+    def _import_chunks_for_concept(self, parsed_item: Dict[str, Any]) -> None:
+        """Split, encode, and upsert chunks for a single concept.
+
+        Isolated so that a failure for one concept doesn't block the rest of
+        the bundle. Also checks context-window occupancy and logs a warning
+        when a chunk exceeds 90%% of the tokenizer's limit.
+        """
+        body = parsed_item["body"]
+        cid = parsed_item["cid"]
+
+        # Delete old chunks for this document (re-import)
+        self.conn.execute(
+            "MATCH (c:Concept {id: $id})-[:PART_OF]->(ch:Chunk) DELETE ch",
+            {"id": cid},
+        )
+
+        chunks = self._split_into_chunks(body, cid)
+        if not chunks:
+            return
+
+        # Compute overlap payloads for embedding
+        payloads = self._compute_overlap_payloads(chunks)
+        texts = [p["text"] for p in payloads]
+
+        # --- Context-window warning (Gap #14a) ---
+        ctx_window = self.tokenizer.model_max_length
+        threshold = int(ctx_window * 0.9)
+        for i, t in enumerate(texts):
+            token_count = len(self.tokenizer.encode(t, add_special_tokens=False))
+            if token_count >= threshold:
+                logger.warning(
+                    "chunk %s#%d is %d tokens (%.0f%% of context window %d). "
+                    "Consider reducing chunk_size or splitting the document.",
+                    cid, i, token_count,
+                    100.0 * token_count / ctx_window,
+                    ctx_window,
+                )
+
+        embeddings = self._encode_batch(texts, task="Document")
+
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            for payload, emb in zip(payloads, embeddings):
+                chunk_id = payload["chunk_id"]
+                # Find the original chunk for metadata
+                orig_chunk = next(
+                    c for c in chunks
+                    if c["chunk_index"] == int(chunk_id.split(":")[-1])
+                )
+                self.conn.execute("""
+                    CREATE (ch:Chunk {
+                        id: $id, parent_doc_id: $doc_id,
+                        chunk_index: $idx, chunk_text: $text,
+                        block_type: $block_type,
+                        start_offset: $start, end_offset: $end_offset,
+                        embedding: $emb
+                    })
+                """, {
+                    "id": chunk_id,
+                    "doc_id": cid,
+                    "idx": orig_chunk["chunk_index"],
+                    "text": orig_chunk["chunk_text"],
+                    "block_type": orig_chunk["block_type"],
+                    "start": orig_chunk["start_offset"],
+                    "end_offset": orig_chunk["end_offset"],
+                    "emb": emb,
+                })
+            self.conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        self._bump_write_epoch()
+
+        # Create PART_OF relationships between Concept and its Chunks
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            for chunk in chunks:
+                chunk_id = f"{cid}#chunk:{chunk['chunk_index']}"
+                self.conn.execute("""
+                    MATCH (d:Concept {id: $doc})
+                    MATCH (ch:Chunk {id: $cid})
+                    MERGE (d)-[:PART_OF]->(ch)
+                """, {"doc": cid, "cid": chunk_id})
+            self.conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     def _batch_upsert_concepts(
         self,

@@ -33,7 +33,8 @@ def _install_fake_pyside6():
         "PySide6.QtWidgets": [
             "QApplication", "QMainWindow", "QVBoxLayout", "QHBoxLayout",
             "QLabel", "QTextBrowser", "QWidget", "QFileDialog", "QMessageBox",
-            "QPushButton", "QProgressBar", "QFrame", "QCheckBox",
+            "QPushButton", "QProgressBar", "QFrame", "QCheckBox", "QGroupBox",
+            "QComboBox", "QLineEdit", "QFormLayout",
         ],
         "PySide6.QtCore": ["Qt", "QThread", "Signal"],
         "PySide6.QtGui": ["QDragEnterEvent", "QDropEvent"],

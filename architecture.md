@@ -4,7 +4,7 @@
 **Based on**: Architecture v5.3 (Schema Migration + PDF Ingest CLI)  
 **Verified against**: LadybugDB v0.17.1, Python 3.13.14
 
-**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 15 gaps reviewed, 10 closed, 5 open (v5.4).
+**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 15 gaps reviewed, 13 closed, 2 open (v5.4).
 
 **Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
@@ -22,13 +22,11 @@
 
 | Area | v5.3 | v5.4 | Reason |
 |---|---|---|---|
-| **Gap analysis consolidation** | Not present | **15 gaps reviewed, 10 closed, 5 open** | Production-readiness assessment |
-| **Open gap documentation** | Not present | **§15 — 5 open gaps documented** | Concurrent access, security, observability, config management, RapidAI version pinning |
-| **Gap #7 (Concurrent Access)** | Not documented | **Documented** — WAL mode + single-writer constraint recommendation | Data integrity under concurrent use |
-| **Gap #9 (Security)** | Not documented | **Documented** — SSRF risk, URL allowlist recommendation | Security architecture |
-| **Gap #10 (Observability)** | Not documented | **Documented** — structured logging recommendation | Production debugging |
-| **Gap #11 (Config Management)** | Not documented | **Documented** — TOML config + env var recommendation | Developer experience |
-| **Gap #15 (RapidAI Pinning)** | Not documented | **Documented** — version pin + runtime warning recommendation | Reproducible builds |
+| **Gap analysis consolidation** | Not present | **15 gaps reviewed, 13 closed, 2 open** | Production-readiness assessment |
+| **Open gap documentation** | Not present | **§15 — 2 open gaps documented** | Concurrent access, security |
+| **Closed gaps** | — | **#5 PDF→import, #6 error isolation, #8 schema migration, #12 missing tests, #13 index health, #14 chunk limits, #16 LLM tool coverage, #10 observability, #15 RapidAI pinning, #5b ingest_pdf** | Core reliability, feature completeness, observability |
+| **Gap #7 (Concurrent Access)** | Not documented | **Documented** — WAL mode + single-writer constraint recommendation (OPEN) | Data integrity under concurrent use |
+| **Gap #9 (Security)** | Not documented | **Documented** — SSRF risk, URL allowlist recommendation (OPEN) | Security architecture |
 | **Version bump** | 5.3 | **5.4** | Gap analysis artifact |
 
 ---
@@ -1536,7 +1534,7 @@ This specification is **verified against production LadybugDB v0.17.1**. All cod
 
 ## 15. Open Gaps (Production-Readiness)
 
-The [gap analysis](docs/gap-analysis.md) (v3.0, 2026-07-05) reviewed 15 gaps between the architecture spec and implementation. **10 are closed** (v5.1–v5.3). **5 remain open** and are documented below.
+The [gap analysis](docs/gap-analysis.md) (v3.0, 2026-07-05) reviewed 15 gaps between the architecture spec and implementation. **13 are closed** (v5.1–v5.4). **2 remain open** and are documented below.
 
 ### Gap #7 — Concurrent Access / Locking (Medium)
 
@@ -1571,19 +1569,41 @@ The [gap analysis](docs/gap-analysis.md) (v3.0, 2026-07-05) reviewed 15 gaps bet
 
 **Implementation**: Add domain allowlist check in `load_image_bytes()`. Document threat model in README.
 
-### Gap #10 — Observability (Medium)
+### Gap #10 — Observability (Medium) ✅ **CLOSED** (v5.4)
 
-**Problem**: No structured logging, metrics, or tracing. `print()` and `logging.info()` are used inconsistently. No way to track embedding duration, cache hit rates, or query latency.
+**Status**: Closed — structured logging + profiling hooks implemented.
 
-**Recommendation**: **Option A** — structured logging with `loguru`.
+**Implemented**:
+- `okfgraph/cli.py`: `_setup_logging()` with `--verbose / --quiet / --log-file` flags
+- `--profile` flag: on-demand cProfile with `pstats` output
+- `okfgraph/router.py`: Timing instrumentation in `import_bundle()` — logs phase durations
+- stdlib `logging` used (not loguru) — avoids third-party dependency for CLI tool
 
-| Aspect | Detail |
+**CLI flags**:
+| Flag | Description |
 |---|---|
-| **Structured logging** | Replace `print()` calls with `loguru.logger`. Configure log levels (DEBUG for development, INFO for production). Add structured fields (concept_id, duration, phase). |
-| **Profiling hooks** | Add `--profile` CLI flag for on-demand cProfile/py-spy (opt-in, no overhead when disabled). |
-| **Deferred** | Prometheus metrics exporter — overkill for CLI tool. |
+| `--verbose / -v` | Enable DEBUG logging |
+| `--quiet / -q` | Suppress all logging except errors |
+| `--log-file <path>` | Write logs to file with 5MB rotation |
+| `--profile` | Enable cProfile for current invocation |
 
-**Current state**: Uses Python `logging` module (`logger = logging.getLogger(__name__)`). No structured fields, no profiling.
+**Timing logs** (import_bundle phases):
+| Phase | Log message |
+|---|---|
+| Phase 0: Delta | `delta: %d changed, %d deleted (%.1fs)` |
+| Phase 1: Parse | `parsed %d concept(s)` |
+| Phase 2: Encode | `encode: %d texts in %.1fs` |
+| Phase 3: Upsert | `upsert: %d concepts in %.1fs` |
+| Phase 3.5: Chunk | `chunk: %d concepts in %.1fs` |
+| Phase 4: Directories | `directories: %d in %.1fs` |
+| Phase 5: Links | `links: %d concepts in %.1fs` |
+| Phase 6: Images | `images: %d concepts in %.1fs` |
+| Phase 7: Reindex | `reindex: %.1fs` |
+| Summary | `import_bundle: %d concept(s) in %.1fs` |
+
+**Test coverage**: 10 tests in `tests/test_logging.py`.
+
+**Remaining follow-ups**: Prometheus metrics (#10b), query latency tracking (#10c), embedding cache hit rates (#10d).
 
 ### Gap #11 — Configuration Management (Low)
 
@@ -1613,19 +1633,42 @@ batch_size = 64
 
 **Current state**: No config file, no env var support. All settings via CLI args or defaults.
 
-### Gap #15 — RapidAI Version Pinning (Medium)
+### Gap #15 — RapidAI Version Pinning (Medium) ✅ **CLOSED** (v5.4)
 
-**Problem**: The architecture notes `# VERIFY` flags but doesn't specify which versions of the RapidAI packages are compatible. `pyproject.toml` optional deps don't pin versions.
+**Status**: Closed — version pinning + runtime warning implemented.
 
-**Recommendation**: **Option A + C** — pin exact versions + runtime warning.
+**Implemented**:
+- `pyproject.toml` optional-dependencies `pdf-ingest` group with pinned versions
+- `okfgraph/ingest/versions.py` — runtime version checking on import
+- `OKFGRAPH_INGEST_ALLOW_UNPINNED=1` env var to silence warnings
+- 8 tests in `tests/test_ingest.py::TestVersionChecking`
 
-| Aspect | Detail |
+**Pinned versions**:
+| Package | Version |
 |---|---|
-| **Pin versions** | `rapidocr==1.5.2`, `rapid_latex_ocr==1.0.13`, `rapid_layout==0.2.0`, `rapid_table==1.0.3`, `pdf_oxide>=0.2.1` |
-| **Runtime warning** | Check installed versions against known-good list on import. Warn if mismatch. |
-| **# VERIFY flags** | Already present in `okfgraph/ingest/engine.py` — every version-sensitive RapidAI call is flagged. |
+| `rapidocr` | `==1.5.2` |
+| `rapid_latex_ocr` | `==1.0.13` |
+| `rapid_layout` | `==0.2.0` |
+| `rapid_table` | `==1.0.3` |
+| `pdf_oxide` | `>=0.2.1` |
 
-**Current state**: `# VERIFY` flags present in code. No version pinning in `pyproject.toml`. No runtime version check.
+**Remaining follow-ups**: Tighten tolerance to exact version (#15b), automated version bump CI (#15c), runtime error for major version mismatches (#15d).
+
+---
+
+### Gap #5b — Router method `ingest_pdf()` (Medium) ✅ **CLOSED** (v5.4)
+
+**Status**: Closed — `OKFRouter.ingest_pdf()` implemented (v5.4).
+
+**Implemented**:
+- `OKFRouter.ingest_pdf()` — programmatic API for scripts/notebooks
+- Parameters: `pdf_path`, `auto_import`, `output_dir`, `routing_mode`, `mode`, `batch_size`, `purge_deleted`, `extract_images`, `on_page`
+- Returns: Dict with `md_path`, `concept_ids`, `image_dir`, `page_count`
+- Auto-import mode: converts to temp dir, imports via `import_bundle()`, cleans up
+- Output-only mode: converts to disk, stages images as `okf-asset://` URIs
+- Test coverage: 4 tests in `tests/test_ingest.py::TestIngestPdfMethod`
+
+**Remaining follow-ups**: LLM tool definition (#5c), progress callbacks (#5d).
 
 ---
 
@@ -1633,19 +1676,19 @@ batch_size = 64
 
 | Priority | Gaps | Rationale |
 |---|---|---|
-| **P1 — Important** | #15 RapidAI pinning | Reliability, reproducibility |
-| **P2 — Nice-to-have** | #7 Concurrency, #9 Security, #10 Observability, #11 Config management | Operations, documentation, developer experience |
+| **P1 — Important** | #6 follow-ups, #14 follow-ups, ✅ #15 RapidAI pinning | Reliability, correctness, reproducibility |
+| **P2 — Nice-to-have** | #7 Concurrency, #9 Security, ✅ #10 Observability, ✅ #5b ingest_pdf, #11 Config management | Operations, documentation, developer experience |
 
 ### Recommended Implementation Order
 
 ```
 Phase 1 (Documentation + Low-risk)  ✅ COMPLETE
-Phase 2 (Core Reliability)  ✅ #6d, #12a, #8a, #5a COMPLETE
-Phase 3 (Feature Completeness)
-├── #15  Pin RapidAI versions + runtime warning
-├── #10a Structured logging (loguru)
+Phase 2 (Core Reliability)  ✅ #6d, #12a, #8a, #5a, #15 COMPLETE
+Phase 3 (Feature Completeness)  ✅ #10a, #5b COMPLETE
+├── #10a Structured logging (stdlib) + profiling hooks   ✅
+├── #5b  Router method ingest_pdf() for programmatic use ✅
 ├── #12b GPU integration tests
-└── #5b  Router method ingest_pdf() for programmatic use
+└── #5c  LLM tool definition (follow-up)
 Phase 4 (Operations)
 ├── #11a TOML config file + env var support
 ├── #9a  URL allowlist for remote images

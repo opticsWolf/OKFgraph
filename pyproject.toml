@@ -24,6 +24,13 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+pdf-ingest = [
+    "pdf_oxide>=0.2.1",
+    "rapidocr==1.5.2",
+    "rapid_latex_ocr==1.0.13",
+    "rapid_layout==0.2.0",
+    "rapid_table==1.0.3",
+]
 
 [project.scripts]
 okf = "okfgraph.cli:main"

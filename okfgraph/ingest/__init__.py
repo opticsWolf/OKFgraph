@@ -10,6 +10,7 @@ Public API
 - ``OnnxRapidEngine`` — lazy ONNX model manager.
 - ``html_tables_to_gfm`` — HTML table → GFM pipe-table converter.
 - ``stage_images_as_okf_assets`` — okf-asset:// staging for extracted images.
+- ``check_rapid_versions`` — runtime version check (Gap #15).
 """
 
 from okfgraph.ingest.config import ConverterConfig, RoutingMode
@@ -21,6 +22,7 @@ from okfgraph.ingest.assets import (
     asset_id,
     ASSET_STORE_DIRNAME,
 )
+from okfgraph.ingest.versions import check_rapid_versions
 
 __all__ = [
     "ConverterConfig",
@@ -31,4 +33,5 @@ __all__ = [
     "stage_images_as_okf_assets",
     "asset_id",
     "ASSET_STORE_DIRNAME",
+    "check_rapid_versions",
 ]

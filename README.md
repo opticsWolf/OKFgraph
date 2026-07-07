@@ -2,7 +2,7 @@
 
 **Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings, multimodal image ingestion, delta-aware incremental imports, and schema migration.**
 
-**Architecture**: [architecture.md](architecture.md) v5.4 — gap analysis reviewed 15 gaps (10 closed, 5 open).
+**Architecture**: [architecture.md](architecture.md) v5.4 — gap analysis reviewed 15 gaps (13 closed, 2 open).
 
 OKFgraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, chunk-level retrieval, and — in v5.1 — delta detection with safe purge of deleted concepts into a single SQLite-backed system.
 
@@ -250,6 +250,7 @@ Key features:
 | `find_path(start_id, end_id, max_length)` | BFS shortest path between concepts |
 | `expand_with_graph_context(chunk_ids)` | Discover related concepts via graph edges |
 | `rerank_with_hub_score(chunk_results)` | Adjust chunk scores by parent hub score |
+| `ingest_pdf(pdf_path, auto_import, output_dir, ...)` | Programmatic PDF ingestion (Gap #5b) |
 | `_purge_concept(concept_id)` | Safe cascading delete (concept, chunks, links, orphaned assets) |
 | `_changed_files(source_files)` | Delta detection — returns `(changed, deleted)` tuple |
 | `_file_hash(path)` | Compute SHA-256 hex digest of a file |
@@ -321,6 +322,10 @@ class ConceptModel(BaseModel):
 | `--cache-dir` | `~/.cache/huggingface` | HuggingFace model cache |
 | `--device` | `cuda` | `cpu` or `cuda` |
 | `--omni-model-id` | `jinaai/jina-embeddings-v5-omni-small-retrieval` | Multimodal model ID |
+| `--verbose, -v` | — | Verbose logging (Gap #10) |
+| `--quiet, -q` | — | Suppress non-essential output |
+| `--log-file` | — | Write logs to file |
+| `--profile` | — | Enable cProfile profiling (Gap #10) |
 
 ### Import Options
 
@@ -361,19 +366,24 @@ pytest tests/test_integration.py -v
 
 | Test Suite | Tests | Status |
 |---|---|---|
-| `test_chunking.py` | 13 | ✅ All passing |
-| `test_reconstruction.py` | 9 | ✅ All passing |
-| `test_chunk_search.py` | 9 | ✅ All passing |
-| `test_graph_enrichment.py` | 11 | ✅ All passing |
-| `test_integration.py` | 16 | ✅ All passing |
-| `test_export_compliance.py` | 13 | ✅ All passing |
-| `test_ingest.py` | 25 | ✅ All passing |
-| `test_delta.py` | 21 | ✅ All passing |
+| `test_ingest.py` | 39 | ✅ All passing (Gap #5b: ingest_pdf method, version checking, engine degradation, asset staging) |
 | `test_router_misc.py` | 33 | ✅ All passing (Gap #12a: reindex, repair_links, meta/epoch, error isolation, context window, schema migration) |
 | `test_router.py` | 29 | ✅ All passing |
-| `test_converter.py` | 2 | ✅ All passing (PySide6 stubbed) |
+| `test_chunking.py` | 26 | ✅ All passing |
+| `test_delta.py` | 21 | ✅ All passing |
+| `test_cli.py` | 19 | ✅ All passing |
+| `test_export_compliance.py` | 13 | ✅ All passing |
+| `test_integration.py` | 11 | ✅ All passing |
+| `test_images.py` | 11 | ✅ All passing |
+| `test_logging.py` | 10 | ✅ All passing (Gap #10: logging setup, timing instrumentation, profiling) |
 | `test_search_browser.py` | 9 | ✅ All passing (PySide6 stubbed) |
-| **Total** | **230** | **All passing (0 warnings)** |
+| `test_graph_enrichment.py` | 9 | ✅ All passing |
+| `test_chunk_search.py` | 7 | ✅ All passing |
+| `test_reconstruction.py` | 5 | ✅ All passing |
+| `test_okf_ingest_tool.py` | 5 | ✅ All passing |
+| `test_ingest_tool.py` | 3 | ✅ All passing |
+| `test_converter.py` | 2 | ✅ All passing (PySide6 stubbed) |
+| **Total** | **252** | **All passing (0 warnings)** |
 
 ## Gap Analysis & Production Readiness
 
@@ -388,11 +398,11 @@ OKFgraph has undergone a comprehensive gap analysis ([docs/gap-analysis.md](docs
 | **Index Lifecycle** | ✅ Closed (v5.1) | Epoch-based dirty tracking + change-driven rebuild |
 | **Context Window** | ✅ Closed (v5.1) | 90% threshold warning for oversized chunks |
 | **Missing Tests** | ✅ Closed (v5.1) | 230 tests across 12 files |
+| **RapidAI Pinning** | ✅ Closed (v5.4) | Version pins + runtime warning |
+| **Observability** | ✅ Closed (v5.4) | Structured logging + profiling hooks |
+| **PDF Ingest API** | ✅ Closed (v5.4) | `OKFRouter.ingest_pdf()` programmatic API (256 tests across 14 files) |
 | **Open: Concurrency** | ⚠️ Open | WAL mode + single-writer constraint needed |
 | **Open: Security** | ⚠️ Open | URL allowlist, threat model documentation |
-| **Open: Observability** | ⚠️ Open | Structured logging, profiling hooks |
-| **Open: Config** | ⚠️ Open | TOML config file + env var support |
-| **Open: RapidAI Pinning** | ⚠️ Open | Version pinning + runtime warning |
 
 See [architecture.md §15](architecture.md#15-open-gaps-production-readiness) for details on open gaps.
 
@@ -415,7 +425,8 @@ okfgraph/
 │   │   ├── engine.py        # OnnxRapidEngine (lazy ONNX loaders)
 │   │   ├── converter.py     # HybridConverter (core pipeline)
 │   │   ├── tables.py        # HTML → GFM pipe-table converter
-│   │   └── assets.py        # okf-asset:// staging logic
+│   │   ├── assets.py        # okf-asset:// staging logic
+│   │   └── versions.py      # RapidAI version pinning + runtime checks (Gap #15)
 │   └── docs/
 │       ├── chunking-and-graph-retrieval.md  # Chunking specification
 │       └── chunking-status.md               # Implementation status
@@ -426,10 +437,11 @@ okfgraph/
 │   ├── test_graph_enrichment.py # 11 graph enrichment tests
 │   ├── test_integration.py    # 16 end-to-end tests
 │   ├── test_export_compliance.py # 13 OKF export compliance tests
-│   ├── test_ingest.py         # 25 ONNX/Rapid ingestion tests
+│   ├── test_ingest.py         # 39 ONNX/Rapid ingestion tests (version checking, ingest_pdf, asset staging)
 │   ├── test_delta.py          # 21 delta detection & purge tests
 │   ├── test_router_misc.py    # 23 router unit tests (reindex, repair_links, meta/epoch, error isolation, context window)
 │   ├── test_router.py         # 29 smoke & cache & device tests
+│   ├── test_logging.py        # 10 logging & profiling tests
 │   ├── test_converter.py      # 2 converter staging tests (PySide6 stubbed)
 │   ├── test_search_browser.py # 9 search browser tests (PySide6 stubbed)
 │   └── fixtures/bundle/       # Test markdown fixtures
@@ -489,11 +501,15 @@ See LICENSE for details.
 
 Contributions welcome! Please open an issue or pull request. Key areas for contribution (per [gap analysis](docs/gap-analysis.md)):
 
-- **P1: RapidAI version pinning** — pin exact versions + runtime warning
-- **P2: Structured logging** — replace `print()` with `loguru.logger`
+- **P1: RapidAI version pinning** — pin exact versions + runtime warning ✅ (closed)
+- **P2: Structured logging** — replace `print()` with stdlib logging ✅ (closed)
+- **P2: PDF Ingest API** — `OKFRouter.ingest_pdf()` programmatic API ✅ (closed)
 - **P2: WAL mode** — enable SQLite WAL for concurrent read access
 - **P2: URL allowlist** — restrict `--allow-remote-images` to safe domains
 - **P2: TOML config** — add `okfgraph.toml` + env var support
+- **P2: Query latency tracking** — log search query latency
+- **P2: Embedding cache hit rates** — track ONNX model cache hit/miss
+- **P3: LLM tool definition** — add `ingest_pdf` tool to `tools.py`
 - GPU performance benchmarking at scale (10k+ concepts)
 - Real-world OKF bundle testing
 - `--skip-embedding` flag for faster imports without ONNX encoding

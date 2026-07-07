@@ -1,8 +1,10 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 5.2 (Error Isolation, Context-Warning, Router Unit Tests)  
-**Based on**: Architecture v5.1 (Delta Detection & Purge)  
+**Version**: 5.4 (Gap Analysis Consolidation)  
+**Based on**: Architecture v5.3 (Schema Migration + PDF Ingest CLI)  
 **Verified against**: LadybugDB v0.17.1, Python 3.13.14
+
+**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 15 gaps reviewed, 10 closed, 5 open (v5.4).
 
 **Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
@@ -11,6 +13,23 @@
 **Unified Vector Space**: Both encoders write into one `ImageAsset.embedding` column indexed by `image_omni_idx`.  
 **Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
 **Search Modes**: Hybrid (RRF fusion), Traversal (pure graph), Direct (exact ID lookup), Image search (text→image via unified index), **Chunk-level search with graph enrichment**.
+
+---
+
+## Summary of Changes (v5.3 → v5.4)
+
+### Gap Analysis (Gap Analysis v3.0 — 2026-07-05)
+
+| Area | v5.3 | v5.4 | Reason |
+|---|---|---|---|
+| **Gap analysis consolidation** | Not present | **15 gaps reviewed, 10 closed, 5 open** | Production-readiness assessment |
+| **Open gap documentation** | Not present | **§15 — 5 open gaps documented** | Concurrent access, security, observability, config management, RapidAI version pinning |
+| **Gap #7 (Concurrent Access)** | Not documented | **Documented** — WAL mode + single-writer constraint recommendation | Data integrity under concurrent use |
+| **Gap #9 (Security)** | Not documented | **Documented** — SSRF risk, URL allowlist recommendation | Security architecture |
+| **Gap #10 (Observability)** | Not documented | **Documented** — structured logging recommendation | Production debugging |
+| **Gap #11 (Config Management)** | Not documented | **Documented** — TOML config + env var recommendation | Developer experience |
+| **Gap #15 (RapidAI Pinning)** | Not documented | **Documented** — version pin + runtime warning recommendation | Reproducible builds |
+| **Version bump** | 5.3 | **5.4** | Gap analysis artifact |
 
 ---
 
@@ -1442,6 +1461,49 @@ ONNX Runtime decouples from CUDA toolkit versions:
 
 ---
 
+## 10c. Summary of Changes (v5.2 → v5.3)
+
+### Schema Versioning & Migration (Gap #8 — Option A)
+
+| Area | v5.2 | v5.3 | Reason |
+|---|---|---|---|
+| **Schema version tracking** | Not present | **`schema_version` in Meta table** | Detects outdated DBs on startup |
+| **`SCHEMA_VERSION` constant** | Not present | **= 3** | Current schema version |
+| **Migration registry** | Not present | **`_MIGRATIONS` dict** | Maps version → migration function |
+| **v1 → v2 migration** | Not present | **Chunk table + PART_OF + Chunk indexes** | Backports v5.0 features for old DBs |
+| **v2 → v3 migration** | Not present | **FileHash table with concept_id** | Backports v5.1 features for old DBs |
+| **`_run_schema_migrations()`** | Not present | **Auto-runs on startup** | Idempotent, version-stamped, error-reporting |
+| **Fresh DB handling** | Implicit | **Version 0 → stamped to current** | No migrations needed (full schema created) |
+| **Test coverage** | 130 tests | **+10 migration tests** | Version stamping, idempotency, partial migrations |
+
+### PDF Ingestion → Import Integration (Gap #5 — Option A)
+
+| Area | v5.2 | v5.3 | Reason |
+|---|---|---|---|
+| **`okf ingest` CLI command** | Not present | **New subcommand** | End-to-end PDF→graph in one command |
+| **`--auto-import` flag** | Not present | **Temp dir + import + cleanup** | One-shot workflow |
+| **`--routing-mode` flag** | Not present | **auto/surgical/always/never** | Controls ONNX heavy-pass routing |
+| **`--mode` flag** | Not present | **text/optional/omni** | Image ingestion mode for auto-import |
+| **`--batch-size` flag** | Not present | **Batch size for encoding** | Tunes import performance |
+| **`--purge` flag** | Not present | **Purge deleted concepts** | Consistent with `okf import` |
+| **`--no-extract-images` flag** | Not present | **Skip image extraction** | Faster for text-only PDFs |
+| **Shell support** | Not present | **`ingest <pdf>` in REPL** | Interactive use |
+| **Output-only mode** | Not present | **Writes .md + _assets/** | Two-step workflow (convert then import) |
+
+### Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| **Schema version in Meta table** | Reuses existing key/value store; no new tables |
+| **Fresh DB starts at version 0** | Distinguishes "never migrated" from "already at v1" |
+| **Idempotent migrations** | Safe to re-run; Ladybug's `IF NOT EXISTS` handles duplicates |
+| **Error reporting on migration failure** | Logs version, error, and stops — no silent corruption |
+| **Temp dir for auto-import** | Clean resource management; no leftover files on failure |
+| **Output-only mode** | Users can inspect converted markdown before importing |
+| **`--routing-mode` exposed** | Lets users tune ONNX usage (NEVER for speed, ALWAYS for quality) |
+
+---
+
 ## 12. Performance Baseline
 
 **Benchmark**: `benchmarks/benchmark_500.py` — 100 synthetic concepts, in-memory DB.
@@ -1469,3 +1531,128 @@ ONNX Runtime decouples from CUDA toolkit versions:
 ---
 
 This specification is **verified against production LadybugDB v0.17.1**. All code patterns have been tested end-to-end with real data, real model inference, and real database operations.
+
+---
+
+## 15. Open Gaps (Production-Readiness)
+
+The [gap analysis](docs/gap-analysis.md) (v3.0, 2026-07-05) reviewed 15 gaps between the architecture spec and implementation. **10 are closed** (v5.1–v5.3). **5 remain open** and are documented below.
+
+### Gap #7 — Concurrent Access / Locking (Medium)
+
+**Problem**: Two CLI invocations hitting the same DB simultaneously could corrupt indexes or create duplicate concepts. No locking strategy documented or implemented.
+
+**Recommendation**: **Option A + C** — enable WAL mode if Ladybug supports it, and document the single-writer constraint.
+
+| Aspect | Detail |
+|---|---|
+| **WAL mode** | SQLite's recommended concurrent mode. Reads can proceed during writes. Writes are serialized by SQLite's internal locking. |
+| **Risks** | WAL mode adds `-wal` and `-shm` sidecar files. Ladybug may not expose WAL configuration. |
+| **Fallback** | Document single-writer constraint. Multiple readers are safe. |
+
+**Implementation**: Enable `PRAGMA journal_mode = WAL` on the Ladybug connection (if supported). Add a startup check that warns if the DB appears locked.
+
+### Gap #9 — Security (Medium)
+
+**Problem**: No security architecture. Gaps in:
+- `--allow-remote-images` SSRF risks
+- Untrusted markdown execution
+- Database file permissions
+- Model cache integrity
+
+**Recommendation**: **Option A + C** — add URL allowlist for remote images and security documentation.
+
+| Aspect | Detail |
+|---|---|
+| **URL allowlist** | Restrict `--allow-remote-images` to configurable domains. Block `file://`, `http://0.0.0.0`, and internal IP ranges. |
+| **Security docs** | Document threat model, recommend file permissions, add warnings for `--allow-remote-images`. |
+| **Deferred** | Sandboxed markdown parsing (Gap #9B) — significant effort, low current threat. |
+| **Optional** | HuggingFace cache verification (Gap #9D) — pin model revisions, verify hashes on first load. |
+
+**Implementation**: Add domain allowlist check in `load_image_bytes()`. Document threat model in README.
+
+### Gap #10 — Observability (Medium)
+
+**Problem**: No structured logging, metrics, or tracing. `print()` and `logging.info()` are used inconsistently. No way to track embedding duration, cache hit rates, or query latency.
+
+**Recommendation**: **Option A** — structured logging with `loguru`.
+
+| Aspect | Detail |
+|---|---|
+| **Structured logging** | Replace `print()` calls with `loguru.logger`. Configure log levels (DEBUG for development, INFO for production). Add structured fields (concept_id, duration, phase). |
+| **Profiling hooks** | Add `--profile` CLI flag for on-demand cProfile/py-spy (opt-in, no overhead when disabled). |
+| **Deferred** | Prometheus metrics exporter — overkill for CLI tool. |
+
+**Current state**: Uses Python `logging` module (`logger = logging.getLogger(__name__)`). No structured fields, no profiling.
+
+### Gap #11 — Configuration Management (Low)
+
+**Problem**: All config is CLI args or Python defaults. No config file for persistent settings. Users must repeat `--db`, `--dim`, `--device`, etc. on every invocation.
+
+**Recommendation**: **Option A + B** — TOML config file with env var overrides.
+
+| Aspect | Detail |
+|---|---|
+| **Precedence** | CLI > env var > file > defaults |
+| **File location** | `okfgraph.toml` in bundle root or `~/.config/okfgraph/` |
+| **Env vars** | `OKFGRAPH_DB`, `OKFGRAPH_DIM`, `OKFGRAPH_DEVICE`, etc. |
+
+```toml
+[database]
+path = "okfgraph.db"
+dim = 512
+
+[embedding]
+device = "cuda"
+cache_dir = "/mnt/models"
+
+[import]
+mode = "optional"
+batch_size = 64
+```
+
+**Current state**: No config file, no env var support. All settings via CLI args or defaults.
+
+### Gap #15 — RapidAI Version Pinning (Medium)
+
+**Problem**: The architecture notes `# VERIFY` flags but doesn't specify which versions of the RapidAI packages are compatible. `pyproject.toml` optional deps don't pin versions.
+
+**Recommendation**: **Option A + C** — pin exact versions + runtime warning.
+
+| Aspect | Detail |
+|---|---|
+| **Pin versions** | `rapidocr==1.5.2`, `rapid_latex_ocr==1.0.13`, `rapid_layout==0.2.0`, `rapid_table==1.0.3`, `pdf_oxide>=0.2.1` |
+| **Runtime warning** | Check installed versions against known-good list on import. Warn if mismatch. |
+| **# VERIFY flags** | Already present in `okfgraph/ingest/engine.py` — every version-sensitive RapidAI call is flagged. |
+
+**Current state**: `# VERIFY` flags present in code. No version pinning in `pyproject.toml`. No runtime version check.
+
+---
+
+### Priority Matrix (from Gap Analysis)
+
+| Priority | Gaps | Rationale |
+|---|---|---|
+| **P1 — Important** | #15 RapidAI pinning | Reliability, reproducibility |
+| **P2 — Nice-to-have** | #7 Concurrency, #9 Security, #10 Observability, #11 Config management | Operations, documentation, developer experience |
+
+### Recommended Implementation Order
+
+```
+Phase 1 (Documentation + Low-risk)  ✅ COMPLETE
+Phase 2 (Core Reliability)  ✅ #6d, #12a, #8a, #5a COMPLETE
+Phase 3 (Feature Completeness)
+├── #15  Pin RapidAI versions + runtime warning
+├── #10a Structured logging (loguru)
+├── #12b GPU integration tests
+└── #5b  Router method ingest_pdf() for programmatic use
+Phase 4 (Operations)
+├── #11a TOML config file + env var support
+├── #9a  URL allowlist for remote images
+├── #7a  WAL mode + documentation
+└── #12c End-to-end PDF tests
+```
+
+---
+
+*This specification is a living artifact. Update the version and sections as gaps are closed.*

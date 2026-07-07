@@ -1,6 +1,8 @@
 # OKFgraph
 
-**Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings, multimodal image ingestion, and delta-aware incremental imports.**
+**Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings, multimodal image ingestion, delta-aware incremental imports, and schema migration.**
+
+**Architecture**: [architecture.md](architecture.md) v5.4 — gap analysis reviewed 15 gaps (10 closed, 5 open).
 
 OKFgraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, chunk-level retrieval, and — in v5.1 — delta detection with safe purge of deleted concepts into a single SQLite-backed system.
 
@@ -367,11 +369,32 @@ pytest tests/test_integration.py -v
 | `test_export_compliance.py` | 13 | ✅ All passing |
 | `test_ingest.py` | 25 | ✅ All passing |
 | `test_delta.py` | 21 | ✅ All passing |
-| `test_router_misc.py` | 23 | ✅ All passing (Gap #12a: reindex, repair_links, meta/epoch, error isolation, context window) |
+| `test_router_misc.py` | 33 | ✅ All passing (Gap #12a: reindex, repair_links, meta/epoch, error isolation, context window, schema migration) |
 | `test_router.py` | 29 | ✅ All passing |
 | `test_converter.py` | 2 | ✅ All passing (PySide6 stubbed) |
 | `test_search_browser.py` | 9 | ✅ All passing (PySide6 stubbed) |
-| **Total** | **220** | **All passing (0 warnings)** |
+| **Total** | **230** | **All passing (0 warnings)** |
+
+## Gap Analysis & Production Readiness
+
+OKFgraph has undergone a comprehensive gap analysis ([docs/gap-analysis.md](docs/gap-analysis.md)) assessing production-readiness across 15 areas:
+
+| Category | Status | Notes |
+|---|---|---|
+| **Delta Detection** | ✅ Closed (v5.1) | SHA-256 hash skip + purge deleted concepts |
+| **Schema Migration** | ✅ Closed (v5.3) | Versioned migrations (v1→v2→v3) |
+| **PDF Ingestion** | ✅ Closed (v5.3) | CLI `okf ingest` command with `--auto-import` |
+| **Error Isolation** | ✅ Closed (v5.1) | Per-concept error isolation in import pipeline |
+| **Index Lifecycle** | ✅ Closed (v5.1) | Epoch-based dirty tracking + change-driven rebuild |
+| **Context Window** | ✅ Closed (v5.1) | 90% threshold warning for oversized chunks |
+| **Missing Tests** | ✅ Closed (v5.1) | 230 tests across 12 files |
+| **Open: Concurrency** | ⚠️ Open | WAL mode + single-writer constraint needed |
+| **Open: Security** | ⚠️ Open | URL allowlist, threat model documentation |
+| **Open: Observability** | ⚠️ Open | Structured logging, profiling hooks |
+| **Open: Config** | ⚠️ Open | TOML config file + env var support |
+| **Open: RapidAI Pinning** | ⚠️ Open | Version pinning + runtime warning |
+
+See [architecture.md §15](architecture.md#15-open-gaps-production-readiness) for details on open gaps.
 
 ---
 
@@ -417,8 +440,9 @@ okfgraph/
 │   └── oxide_to_markdown_converter.py
 ├── docs/
 │   ├── okf-export-compliance.md   # OKF export specification
-│   └── ONNX_RAPID_IMPLEMENTATION.md # ONNX/Rapid migration guide
-├── architecture.md        # Full architecture specification (v5.0)
+│   ├── ONNX_RAPID_IMPLEMENTATION.md # ONNX/Rapid migration guide
+│   └── gap-analysis.md           # Production-readiness gap analysis (v3.0)
+├── architecture.md        # Full architecture specification (v5.4)
 ├── pyproject.toml         # Project metadata
 └── requirements.txt       # Dependencies
 ```
@@ -463,16 +487,19 @@ See LICENSE for details.
 
 ## Contributing
 
-Contributions welcome! Please open an issue or pull request. Key areas for contribution:
+Contributions welcome! Please open an issue or pull request. Key areas for contribution (per [gap analysis](docs/gap-analysis.md)):
 
+- **P1: RapidAI version pinning** — pin exact versions + runtime warning
+- **P2: Structured logging** — replace `print()` with `loguru.logger`
+- **P2: WAL mode** — enable SQLite WAL for concurrent read access
+- **P2: URL allowlist** — restrict `--allow-remote-images` to safe domains
+- **P2: TOML config** — add `okfgraph.toml` + env var support
 - GPU performance benchmarking at scale (10k+ concepts)
 - Real-world OKF bundle testing
-- Concept temporal dual-tracking (`created_date`/`modified_date`)
-- `okf-asset://` link rewriting on ingest
 - `--skip-embedding` flag for faster imports without ONNX encoding
-- Revert test fixtures to function-scoped for true isolation
-- Documentation and examples
 - ONNX/Rapid end-to-end PDF tests (see `docs/ONNX_RAPID_IMPLEMENTATION.md` testing checklist)
 - Office file conversion via `office_oxide`
 - Delta detection: directory-level hash aggregation (skip entire subtrees)
 - Delta detection: soft-delete with recovery window (undo purge within N hours)
+- `okf index-status` command — report epoch, dirty state, last rebuild time
+- `okf schema --version` command — inspect schema version

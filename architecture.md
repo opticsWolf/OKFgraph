@@ -1,10 +1,10 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 5.4 (Gap Analysis Consolidation)  
-**Based on**: Architecture v5.3 (Schema Migration + PDF Ingest CLI)  
+**Version**: 5.5 (Directory-Level Hash Aggregation)  
+**Based on**: Architecture v5.4 (Gap Analysis Consolidation)  
 **Verified against**: LadybugDB v0.17.1, Python 3.13.14
 
-**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 15 gaps reviewed, 13 closed, 2 open (v5.4).
+**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 15 gaps reviewed, 14 closed, 1 open (v5.5).
 
 **Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
@@ -15,6 +15,17 @@
 **Search Modes**: Hybrid (RRF fusion), Traversal (pure graph), Direct (exact ID lookup), Image search (text→image via unified index), **Chunk-level search with graph enrichment**.
 
 ---
+
+## Summary of Changes (v5.4 → v5.5)
+
+### Directory-Level Hash Aggregation (Gap #1b — 2026-07-08)
+
+| Area | v5.4 | v5.5 | Reason |
+|---|---|---|---|
+| **Directory-level hash aggregation** | Not present | **DirHash table + `_changed_directories()`** | Skip entire subtrees when unchanged |
+| **Purge of deleted directories** | File-level only | **Directory-level with stored file paths** | Purge all concepts in deleted subtrees |
+| **Schema migration** | v3 | **v4 (DirHash table)** | Subtree-level delta detection |
+| **Version bump** | 5.4 | **5.5** | Gap #1b closure |
 
 ## Summary of Changes (v5.3 → v5.4)
 
@@ -1687,7 +1698,7 @@ Phase 2 (Core Reliability)  ✅ #6d, #12a, #8a, #5a, #15 COMPLETE
 Phase 3 (Feature Completeness)  ✅ #10a, #5b COMPLETE
 ├── #10a Structured logging (stdlib) + profiling hooks   ✅
 ├── #5b  Router method ingest_pdf() for programmatic use ✅
-├── #12b GPU integration tests
+├── #12b GPU integration tests ✅
 └── #5c  LLM tool definition (follow-up)
 Phase 4 (Operations)
 ├── #11a TOML config file + env var support

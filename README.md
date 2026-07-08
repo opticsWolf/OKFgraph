@@ -2,7 +2,7 @@
 
 **Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings, multimodal image ingestion, delta-aware incremental imports, and schema migration.**
 
-**Architecture**: [architecture.md](architecture.md) v5.4 — gap analysis reviewed 15 gaps (13 closed, 2 open).
+**Architecture**: [architecture.md](architecture.md) v5.5 — gap analysis reviewed 15 gaps (14 closed, 1 open).
 
 OKFgraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, chunk-level retrieval, and — in v5.1 — delta detection with safe purge of deleted concepts into a single SQLite-backed system.
 
@@ -376,6 +376,7 @@ pytest tests/test_integration.py -v
 | `test_integration.py` | 11 | ✅ All passing |
 | `test_images.py` | 11 | ✅ All passing |
 | `test_logging.py` | 10 | ✅ All passing (Gap #10: logging setup, timing instrumentation, profiling) |
+| `test_directory_hash.py` | 10 | ✅ All passing (Gap #1b: directory-level hash aggregation, purge of deleted subtrees) |
 | `test_search_browser.py` | 9 | ✅ All passing (PySide6 stubbed) |
 | `test_graph_enrichment.py` | 9 | ✅ All passing |
 | `test_chunk_search.py` | 7 | ✅ All passing |
@@ -383,7 +384,7 @@ pytest tests/test_integration.py -v
 | `test_okf_ingest_tool.py` | 5 | ✅ All passing |
 | `test_ingest_tool.py` | 3 | ✅ All passing |
 | `test_converter.py` | 2 | ✅ All passing (PySide6 stubbed) |
-| **Total** | **252** | **All passing (0 warnings)** |
+| **Total** | **262** | **All passing (0 warnings)** |
 
 ## Gap Analysis & Production Readiness
 
@@ -391,18 +392,17 @@ OKFgraph has undergone a comprehensive gap analysis ([docs/gap-analysis.md](docs
 
 | Category | Status | Notes |
 |---|---|---|
-| **Delta Detection** | ✅ Closed (v5.1) | SHA-256 hash skip + purge deleted concepts |
-| **Schema Migration** | ✅ Closed (v5.3) | Versioned migrations (v1→v2→v3) |
+| **Delta Detection** | ✅ Closed (v5.1, v5.5) | File-level SHA-256 + directory-level hash aggregation + purge |
+| **Schema Migration** | ✅ Closed (v5.3) | Versioned migrations (v1→v2→v3→v4) |
 | **PDF Ingestion** | ✅ Closed (v5.3) | CLI `okf ingest` command with `--auto-import` |
 | **Error Isolation** | ✅ Closed (v5.1) | Per-concept error isolation in import pipeline |
 | **Index Lifecycle** | ✅ Closed (v5.1) | Epoch-based dirty tracking + change-driven rebuild |
 | **Context Window** | ✅ Closed (v5.1) | 90% threshold warning for oversized chunks |
-| **Missing Tests** | ✅ Closed (v5.1) | 230 tests across 12 files |
+| **Missing Tests** | ✅ Closed (v5.6) | 277 tests across 22 files (17 GPU tests) |
 | **RapidAI Pinning** | ✅ Closed (v5.4) | Version pins + runtime warning |
 | **Observability** | ✅ Closed (v5.4) | Structured logging + profiling hooks |
-| **PDF Ingest API** | ✅ Closed (v5.4) | `OKFRouter.ingest_pdf()` programmatic API (256 tests across 14 files) |
+| **PDF Ingest API** | ✅ Closed (v5.4) | `OKFRouter.ingest_pdf()` programmatic API |
 | **Open: Concurrency** | ⚠️ Open | WAL mode + single-writer constraint needed |
-| **Open: Security** | ⚠️ Open | URL allowlist, threat model documentation |
 
 See [architecture.md §15](architecture.md#15-open-gaps-production-readiness) for details on open gaps.
 

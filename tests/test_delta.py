@@ -57,11 +57,16 @@ class TestDeltaDetection:
     @pytest.fixture(scope="class")
     @classmethod
     def seeded_bundle(cls, tmp_dir, router):
-        """Create three files, import them, return file paths."""
+        """Create three files in separate subdirs, import them, return file paths.
+
+        Directory-level hashing groups files by parent directory. Placing each
+        file in its own subdirectory ensures that modifying one file only changes
+        that directory's hash, so only that file is re-imported.
+        """
         files = {
-            "a.md": ("Alpha", "This is the first concept. It talks about alpha."),
-            "b.md": ("Beta", "This is the second concept. It talks about beta."),
-            "c.md": ("Gamma", "This is the third concept. It talks about gamma."),
+            "dir_a/a.md": ("Alpha", "This is the first concept. It talks about alpha."),
+            "dir_b/b.md": ("Beta", "This is the second concept. It talks about beta."),
+            "dir_c/c.md": ("Gamma", "This is the third concept. It talks about gamma."),
         }
         paths = {}
         for rel, (title, body) in files.items():
@@ -89,15 +94,17 @@ class TestDeltaDetection:
 
     def test_deleted_file_detected(self, seeded_bundle, tmp_dir, router):
         """Deleting a file from disk → it appears in the deleted list."""
-        # Delete b.md from disk
-        b_path = Path(tmp_dir) / "b.md"
+        # Delete dir_b/b.md from disk
+        b_path = Path(tmp_dir) / "dir_b" / "b.md"
         b_path.unlink()
 
         changed, deleted = router._changed_files(
             [fp for fp in Path(tmp_dir).rglob("*")
              if fp.is_file() and fp.suffix.lower() in (".md", ".txt", ".markdown")]
         )
-        assert "b.md" in deleted, f"Expected b.md in deleted, got {deleted}"
+        # Use native path separator for comparison
+        expected_deleted = str((Path(tmp_dir) / "dir_b" / "b.md").relative_to(tmp_dir))
+        assert expected_deleted in deleted, f"Expected {expected_deleted} in deleted, got {deleted}"
 
     def test_purge_nonexistent_concept_returns_false(self, router):
         """Purging a non-existent concept returns False."""
@@ -113,38 +120,38 @@ class TestDeltaDetection:
 
     def test_modify_one_file_imports_only_that_file(self, seeded_bundle, tmp_dir, router):
         """Edit one file → only that file is re-imported."""
-        # Modify b.md
+        # Modify dir_b/b.md
         _write_okf(
             tmp_dir,
-            "b.md",
+            "dir_b/b.md",
             "Beta Updated",
             "This is the updated second concept. It now talks about beta and delta.",
         )
 
         ids = router.import_bundle()
         assert len(ids) == 1, f"Expected 1 changed file, got {len(ids)}: {ids}"
-        assert ids[0] == "b", f"Expected 'b', got {ids[0]}"
+        assert ids[0] == "dir_b/b", f"Expected 'dir_b/b', got {ids[0]}"
 
     def test_modified_file_has_new_embedding(self, seeded_bundle, tmp_dir, router):
         """Modified file gets a new embedding vector."""
-        # Grab old embedding for b
+        # Grab old embedding for dir_b/b
         old_row = router.conn.execute(
-            "MATCH (c:Concept {id: 'b'}) RETURN c.embedding AS emb"
+            "MATCH (c:Concept {id: 'dir_b/b'}) RETURN c.embedding AS emb"
         ).rows_as_dict().get_all()
         old_emb = old_row[0]["emb"]
 
-        # Modify b.md
+        # Modify dir_b/b.md
         _write_okf(
             tmp_dir,
-            "b.md",
+            "dir_b/b.md",
             "Beta v2",
             "Completely different content for beta now.",
         )
         router.import_bundle()
 
-        # Grab new embedding for b
+        # Grab new embedding for dir_b/b
         new_row = router.conn.execute(
-            "MATCH (c:Concept {id: 'b'}) RETURN c.embedding AS emb"
+            "MATCH (c:Concept {id: 'dir_b/b'}) RETURN c.embedding AS emb"
         ).rows_as_dict().get_all()
         new_emb = new_row[0]["emb"]
 
@@ -152,26 +159,26 @@ class TestDeltaDetection:
 
     def test_unmodified_files_keep_same_embedding(self, seeded_bundle, tmp_dir, router):
         """Files that weren't modified keep their original embeddings."""
-        # Grab old embeddings for a and c
+        # Grab old embeddings for dir_a/a and dir_c/c
         old_embs = {}
-        for cid in ("a", "c"):
+        for cid in ("dir_a/a", "dir_c/c"):
             row = router.conn.execute(
                 "MATCH (c:Concept {id: $id}) RETURN c.embedding AS emb",
                 {"id": cid},
             ).rows_as_dict().get_all()
             old_embs[cid] = row[0]["emb"]
 
-        # Modify only b.md
+        # Modify only dir_b/b.md
         _write_okf(
             tmp_dir,
-            "b.md",
+            "dir_b/b.md",
             "Beta v3",
             "Yet another change to beta.",
         )
         router.import_bundle()
 
-        # Verify a and c embeddings are unchanged
-        for cid in ("a", "c"):
+        # Verify dir_a/a and dir_c/c embeddings are unchanged
+        for cid in ("dir_a/a", "dir_c/c"):
             row = router.conn.execute(
                 "MATCH (c:Concept {id: $id}) RETURN c.embedding AS emb",
                 {"id": cid},
@@ -182,14 +189,14 @@ class TestDeltaDetection:
         """Adding a new file → it's detected as changed and imported."""
         _write_okf(
             tmp_dir,
-            "d.md",
+            "dir_d/d.md",
             "Delta",
             "This is a brand new concept about delta.",
         )
 
         ids = router.import_bundle()
         assert len(ids) == 1
-        assert ids[0] == "d"
+        assert ids[0] == "dir_d/d"
 
         # Verify it's in the DB
         concepts = router.conn.execute(
@@ -212,9 +219,9 @@ class TestDeltaDetection:
         """concept_id mapping is stored and loadable."""
         cid_map = router._load_file_hash_concept_ids()
         assert len(cid_map) > 0, "Should have concept_id mappings"
-        # Verify mapping: path without extension → concept_id
+        # Verify mapping: path without extension → concept_id (forward slashes)
         for path, cid in cid_map.items():
-            expected = path.rsplit(".", 1)[0]
+            expected = str(Path(path).with_suffix("")).replace("\\", "/")
             assert cid == expected, f"Expected {expected}, got {cid}"
 
     def test_combined_hash_sentinel_stored(self, router):
@@ -271,11 +278,16 @@ class TestPurgeDeleted:
     @pytest.fixture(scope="class")
     @classmethod
     def seeded_bundle(cls, tmp_dir, router):
-        """Create three files, import them."""
+        """Create three files in separate subdirs, import them.
+
+        Directory-level hashing groups files by parent directory. Placing each
+        file in its own subdirectory ensures that modifying one file only changes
+        that directory's hash, so only that file is re-imported.
+        """
         files = {
-            "x.md": ("X-Ray", "Content about x-ray imaging."),
-            "y.md": ("Yield", "Content about yield strength."),
-            "z.md": ("Zenith", "Content about zenith angle."),
+            "dir_x/x.md": ("X-Ray", "Content about x-ray imaging."),
+            "dir_y/y.md": ("Yield", "Content about yield strength."),
+            "dir_z/z.md": ("Zenith", "Content about zenith angle."),
         }
         for rel, (title, body) in files.items():
             _write_okf(tmp_dir, rel, title, body)
@@ -284,14 +296,14 @@ class TestPurgeDeleted:
 
     def test_purge_end_to_end_via_import_bundle(self, seeded_bundle, tmp_dir, router):
         """Full flow: add file, import, delete, purge via import_bundle."""
-        # Add a new file
-        _write_okf(tmp_dir, "w.md", "Wave", "Content about wave functions.")
+        # Add a new file in its own directory
+        _write_okf(tmp_dir, "dir_w/w.md", "Wave", "Content about wave functions.")
         ids = router.import_bundle()
         assert len(ids) == 1
-        assert ids[0] == "w"
+        assert ids[0] == "dir_w/w"
 
         # Delete it from disk
-        (Path(tmp_dir) / "w.md").unlink()
+        (Path(tmp_dir) / "dir_w" / "w.md").unlink()
 
         # Purge via import_bundle
         ids = router.import_bundle(purge_deleted=True)
@@ -299,42 +311,42 @@ class TestPurgeDeleted:
 
         # Verify w is gone
         row = router.conn.execute(
-            "MATCH (c:Concept {id: 'w'}) RETURN count(c) AS n"
+            "MATCH (c:Concept {id: 'dir_w/w'}) RETURN count(c) AS n"
         ).rows_as_dict().get_all()
         assert row[0]["n"] == 0, "w should be purged"
 
     def test_without_purge_concept_persists(self, seeded_bundle, tmp_dir, router):
-        """Delete y.md, re-import without purge → y still exists."""
-        (Path(tmp_dir) / "y.md").unlink()
+        """Delete dir_y/y.md, re-import without purge → y still exists."""
+        (Path(tmp_dir) / "dir_y" / "y.md").unlink()
         ids = router.import_bundle(purge_deleted=False)
         assert ids == []  # no changed files
 
         row = router.conn.execute(
-            "MATCH (c:Concept {id: 'y'}) RETURN count(c) AS n"
+            "MATCH (c:Concept {id: 'dir_y/y'}) RETURN count(c) AS n"
         ).rows_as_dict().get_all()
         assert row[0]["n"] == 1, "y should persist without purge"
 
     def test_with_purge_y_removed(self, seeded_bundle, tmp_dir, router):
-        """y.md already deleted. Purge via _purge_concept directly."""
-        result = router._purge_concept("y")
+        """dir_y/y.md already deleted. Purge via _purge_concept directly."""
+        result = router._purge_concept("dir_y/y")
         assert result is True
 
         row = router.conn.execute(
-            "MATCH (c:Concept {id: 'y'}) RETURN count(c) AS n"
+            "MATCH (c:Concept {id: 'dir_y/y'}) RETURN count(c) AS n"
         ).rows_as_dict().get_all()
         assert row[0]["n"] == 0, "y should be purged"
 
     def test_purge_removes_chunks(self, seeded_bundle, tmp_dir, router):
         """Purge removes chunks linked to the deleted concept."""
         chunks = router.conn.execute(
-            "MATCH (ch:Chunk {parent_doc_id: 'y'}) RETURN count(ch) AS n"
+            "MATCH (ch:Chunk {parent_doc_id: 'dir_y/y'}) RETURN count(ch) AS n"
         ).rows_as_dict().get_all()
         assert chunks[0]["n"] == 0, "Chunks for y should be gone"
 
     def test_purge_removes_filehash_entry(self, seeded_bundle, tmp_dir, router):
         """Purge removes the FileHash entry for the deleted concept."""
         fh = router.conn.execute(
-            "MATCH (f:FileHash {concept_id: 'y'}) RETURN count(f) AS n"
+            "MATCH (f:FileHash {concept_id: 'dir_y/y'}) RETURN count(f) AS n"
         ).rows_as_dict().get_all()
         assert fh[0]["n"] == 0, "FileHash for y should be purged"
 

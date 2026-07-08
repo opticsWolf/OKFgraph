@@ -1,11 +1,80 @@
 """OKF CLI — Command-line interface for the OKF knowledge graph."""
 
 import argparse
+import cProfile
+import io
 import json
+import logging
 import sys
 from pathlib import Path
 
 from okfgraph.router import OKFRouter
+
+# ── Logging setup ──────────────────────────────────────────────────────────
+# Structured logging with stdlib (Gap #10).
+# Loguru was rejected: third-party dependency for a CLI tool where stdlib
+# logging is sufficient. The goal is consistent, structured, debuggable
+# logging without adding extra dependencies.
+
+_LOG_HANDLER = None
+
+
+def _setup_logging(verbose: bool = False, quiet: bool = False, log_file: str = "") -> None:
+    """Configure logging for the CLI.
+
+    Precedence: quiet > verbose > default.
+    - quiet: ERROR and above only
+    - default: INFO
+    - verbose: DEBUG
+    """
+    global _LOG_HANDLER
+
+    if quiet:
+        level = logging.ERROR
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    # Configure root logger
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Remove any existing handlers to avoid duplicates across invocations
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+
+    # Console handler with structured format
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    console = logging.StreamHandler(sys.stderr)
+    console.setFormatter(fmt)
+    console.setLevel(level)
+    root.addHandler(console)
+    _LOG_HANDLER = console
+
+    # Optional file handler with rotation
+    if log_file:
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=5 * 1024 * 1024,  # 5MB
+            backupCount=3,
+        )
+        file_handler.setFormatter(fmt)
+        file_handler.setLevel(level)
+        root.addHandler(file_handler)
+
+
+def _teardown_logging() -> None:
+    """Remove handlers to avoid leaks across CLI invocations."""
+    global _LOG_HANDLER
+    root = logging.getLogger()
+    if _LOG_HANDLER and _LOG_HANDLER in root.handlers:
+        root.removeHandler(_LOG_HANDLER)
+    _LOG_HANDLER = None
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -21,6 +90,14 @@ def _add_global(parser):
     parser.add_argument("--chunk-size", type=int, default=512, help="Chunk size in words for overlap (default: 512)")
     parser.add_argument("--chunk-overlap", type=int, default=40, help="Overlap in words between chunks (default: 40)")
     parser.add_argument("--no-chunking", action="store_true", help="Disable chunking during ingestion")
+
+
+def _add_logging_flags(parser):
+    """Add --verbose / --quiet / --log-file / --profile to a subparser."""
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress all logging except errors")
+    parser.add_argument("--log-file", default="", help="Write logs to file (with 5MB rotation)")
+    parser.add_argument("--profile", action="store_true", help="Enable cProfile for the current invocation (outputs to stdout)")
 
 
 # Routers opened during a CLI invocation, closed (checkpointed) on exit so a
@@ -60,31 +137,34 @@ def _close_routers():
 
 def _init(args):
     db_path = str(args.db)
-    print(f"Initializing database at {db_path} (dim={args.dim})...")
+    logger = logging.getLogger("cli")
+    logger.info("initializing database at %s (dim=%d)", db_path, args.dim)
     _router(args)
-    print(f"[OK] Database initialized (embedding_dim={args.dim})")
+    logger.info("database initialized (embedding_dim=%d)", args.dim)
 
 
 def _model_info(args):
     """Show model cache status without loading the model."""
+    logger = logging.getLogger("cli")
     info = OKFRouter.model_info(
         model_id=getattr(args, "model_id", "jinaai/jina-embeddings-v5-text-small-retrieval"),
         cache_dir=getattr(args, "cache_dir", None),
     )
-    print(f"Model:  {info['model_id']}")
-    print(f"Cache:  {info['cache_dir']}")
+    logger.info("model: %s", info['model_id'])
+    logger.info("cache: %s", info['cache_dir'])
     if info["cached"]:
-        print(f"Status: cached")
-        print(f"Path:   {info['snapshot_path']}")
+        logger.info("status: cached")
+        logger.info("path: %s", info['snapshot_path'])
         size_gb = info["disk_usage_bytes"] / (1024 ** 3)
-        print(f"Size:   {size_gb:.2f} GB")
+        logger.info("size: %.2f GB", size_gb)
     else:
         default_cache = OKFRouter.default_cache_dir()
-        print(f"Status: not cached (will download on first use)")
-        print(f"Will use: {default_cache}")
+        logger.info("status: not cached (will download on first use)")
+        logger.info("will use: %s", default_cache)
 
 
 def _import(args):
+    logger = logging.getLogger("cli")
     router = _router(args)
     mode = getattr(args, "mode", "text")
     purge = getattr(args, "purge", False)
@@ -96,21 +176,21 @@ def _import(args):
             mode=mode,
             purge_deleted=purge,
         )
-        print(f"[OK] Imported {len(ids)} concepts (image mode: {mode})")
+        logger.info("imported %d concept(s) (mode: %s)", len(ids), mode)
         for cid in ids:
             n = len(router.list_images(cid))
             suffix = f"  [{n} image(s)]" if n else ""
-            print(f"  {cid}{suffix}")
+            logger.info("  %s%s", cid, suffix)
     else:
         for fp in args.files:
             path = Path(fp)
             if not path.exists():
-                print(f"[WARN] Skipping {fp}: file not found")
+                logger.warning("skipping %s: file not found", fp)
                 continue
             cid = router.import_from_okf(path, mode=mode)
             imgs = router.list_images(cid)
             suffix = f" ({len(imgs)} image(s), mode: {mode})" if imgs else ""
-            print(f"[OK] Imported: {cid}{suffix}")
+            logger.info("imported: %s%s", cid, suffix)
 
 
 def _search_images(args):
@@ -229,29 +309,32 @@ def _export(args):
 
 
 def _broken_links(args):
+    logger = logging.getLogger("cli")
     router = _router(args)
     broken = router.list_broken_links()
     if not broken:
-        print("No broken links found.")
+        logger.info("no broken links found")
         return
-    print(f"Found {len(broken)} broken link(s):\n")
+    logger.info("found %d broken link(s)", len(broken))
     for link in broken:
-        print(f"  {link['source']} → {link['target']}")
+        logger.info("  %s → %s", link['source'], link['target'])
 
 
 def _repair_links(args):
+    logger = logging.getLogger("cli")
     router = _router(args)
     count = router.repair_links()
-    print(f"[OK] Repaired {count} link(s)")
+    logger.info("repaired %d link(s)", count)
 
 
 def _reindex(args):
+    logger = logging.getLogger("cli")
     router = _router(args)
     ran = router.reindex(force=not getattr(args, "if_dirty", False))
     if ran:
-        print("[OK] Search indexes rebuilt")
+        logger.info("search indexes rebuilt")
     else:
-        print("Search indexes already up to date; nothing to do.")
+        logger.info("search indexes already up to date; nothing to do.")
 
 
 def _ingest_pdf(args):
@@ -295,7 +378,8 @@ def _ingest_pdf(args):
 
             with TemporaryDirectory(prefix="okf_ingest_") as tmp:
                 work_dir = Path(tmp)
-                print(f"Converting {pdf_path} → {work_dir} …")
+                logger = logging.getLogger("cli")
+                logger.info("converting %s → %s", pdf_path, work_dir)
 
                 md = converter.convert_pdf(
                     path=pdf_path,
@@ -332,17 +416,18 @@ def _ingest_pdf(args):
                     mode=mode,
                     purge_deleted=purge,
                 )
-                print(f"[OK] Imported {len(ids)} concept(s) from {pdf_path}")
+                logger.info("imported %d concept(s) from %s", len(ids), pdf_path)
                 for cid in ids:
                     n = len(router.list_images(cid))
                     suffix = f"  [{n} image(s)]" if n else ""
-                    print(f"  {cid}{suffix}")
+                    logger.info("  %s%s", cid, suffix)
         else:
             # Output-only: convert to the specified output directory.
+            logger = logging.getLogger("cli")
             output_dir = Path(args.output) if args.output else Path(".")
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            print(f"Converting {pdf_path} → {output_dir} …")
+            logger.info("converting %s → %s", pdf_path, output_dir)
 
             md = converter.convert_pdf(
                 path=pdf_path,
@@ -371,9 +456,9 @@ def _ingest_pdf(args):
             from okfgraph.ingest.assets import stage_images_as_okf_assets
             stage_images_as_okf_assets(md_path, img_dir)
 
-            print(f"[OK] Written {md_path}")
-            print(f"     Assets in {img_dir}")
-            print(f"     Run 'okf import --all --bundle {output_dir}' to import.")
+            logger.info("written %s", md_path)
+            logger.info("assets in %s", img_dir)
+            logger.info("run 'okf import --all --bundle %s' to import.", output_dir)
 
     finally:
         converter.close()
@@ -815,15 +900,18 @@ def build_parser():
     # init
     p = sub.add_parser("init", help="Initialize database and schema")
     _add_global(p)
+    _add_logging_flags(p)
 
     # model-info
     p = sub.add_parser("model-info", help="Show model cache status")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("--model-id", default="jinaai/jina-embeddings-v5-text-small-retrieval", help="Model ID to inspect")
 
     # import
     p = sub.add_parser("import", help="Import OKF files")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("files", nargs="*", help="Files to import")
     p.add_argument("--all", action="store_true", dest="import_all", help="Import entire bundle")
     p.add_argument("--batch-size", type=int, default=32, help="Batch size for encoding (default: 32)")
@@ -846,6 +934,7 @@ def build_parser():
     # search-images
     p = sub.add_parser("search-images", help="Find images from a text query (unified index)")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("query", help="Text query")
     p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
     p.add_argument(
@@ -856,6 +945,7 @@ def build_parser():
     # search
     p = sub.add_parser("search", help="Hybrid search")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("query", help="Search query")
     p.add_argument("--type", help="Concept type filter")
     p.add_argument("--tags", help="Comma-separated tag filters")
@@ -866,6 +956,7 @@ def build_parser():
     # traverse
     p = sub.add_parser("traverse", help="Graph traversal")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("start_id", help="Starting concept or directory ID")
     p.add_argument("--relationship", default="CONTAINS", choices=["CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET"])
     p.add_argument("--direction", default="OUTGOING", choices=["OUTGOING", "INCOMING", "BOTH"])
@@ -875,16 +966,19 @@ def build_parser():
     # list
     p = sub.add_parser("list", help="List directory contents")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("directory", nargs="?", default="", help="Directory ID (empty for root)")
 
     # get
     p = sub.add_parser("get", help="Get concept by ID")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("concept_id", help="Concept ID")
 
     # export
     p = sub.add_parser("export", help="Export concepts")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("--all", action="store_true", dest="export_all", help="Export entire bundle")
     p.add_argument("--output", required=True, help="Output directory")
     p.add_argument("--concept-id", help="Concept ID (for single export)")
@@ -895,24 +989,29 @@ def build_parser():
     # shell
     p = sub.add_parser("shell", help="Interactive REPL")
     _add_global(p)
+    _add_logging_flags(p)
 
     # broken-links
     p = sub.add_parser("broken-links", help="List broken (orphan) links")
     _add_global(p)
+    _add_logging_flags(p)
 
     # repair-links
     p = sub.add_parser("repair-links", help="Repair broken links by re-checking targets")
     _add_global(p)
+    _add_logging_flags(p)
 
     # reindex
     p = sub.add_parser("reindex", help="Rebuild vector + FTS search indexes")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("--if-dirty", action="store_true",
                    help="Only rebuild if data changed since the last index build")
 
     # ingest (PDF → markdown → optional import)
     p = sub.add_parser("ingest", help="Convert PDF to markdown and optionally import")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("pdf_file", help="Path to the PDF file")
     p.add_argument(
         "--auto-import", action="store_true",
@@ -947,6 +1046,7 @@ def build_parser():
     # search-chunks
     p = sub.add_parser("search-chunks", help="Search document chunks (RRF-fused vector + FTS)")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("query", help="Search query")
     p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
     p.add_argument("--no-parent", action="store_true", help="Exclude parent document metadata")
@@ -954,11 +1054,13 @@ def build_parser():
     # chunks
     p = sub.add_parser("chunks", help="List chunks for a concept")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("concept_id", help="Concept ID")
 
     # context
     p = sub.add_parser("context", help="Search with graph neighborhood context")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("query", help="Search query")
     p.add_argument("--limit", type=int, default=5, help="Max results (default: 5)")
     p.add_argument("--context-hops", type=int, default=1, help="Graph expansion hops (default: 1)")
@@ -966,6 +1068,7 @@ def build_parser():
     # hub-search
     p = sub.add_parser("hub-search", help="Chunk search reranked by hub score")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("query", help="Search query")
     p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
     p.add_argument("--hub-weight", type=float, default=0.3, help="Hub score weight (default: 0.3)")
@@ -973,22 +1076,26 @@ def build_parser():
     # siblings
     p = sub.add_parser("siblings", help="List sibling concepts in same directory")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("concept_id", help="Concept ID")
 
     # ancestry
     p = sub.add_parser("ancestry", help="Show directory path from root")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("concept_id", help="Concept ID")
 
     # reconstruct
     p = sub.add_parser("reconstruct", help="Reconstruct original document from chunks")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("concept_id", help="Concept ID")
     p.add_argument("--output", help="Output file path (default: stdout)")
 
     # path
     p = sub.add_parser("path", help="Find shortest path between two concepts")
     _add_global(p)
+    _add_logging_flags(p)
     p.add_argument("id1", help="Starting concept ID")
     p.add_argument("id2", help="Ending concept ID")
     p.add_argument("--max-length", type=int, default=6, help="Max path length (default: 6)")
@@ -1003,6 +1110,21 @@ def main():
     if not args.command:
         parser.print_help()
         sys.exit(0)
+
+    # Setup logging (Gap #10)
+    _setup_logging(
+        verbose=getattr(args, "verbose", False),
+        quiet=getattr(args, "quiet", False),
+        log_file=getattr(args, "log_file", ""),
+    )
+
+    logger = logging.getLogger("cli")
+
+    # Profile flag (Gap #10C)
+    if getattr(args, "profile", False):
+        logger.info("profiling enabled")
+        profiler = cProfile.Profile()
+        profiler.enable()
 
     commands = {
         "init": _init,
@@ -1033,6 +1155,17 @@ def main():
         commands[args.command](args)
     finally:
         _close_routers()
+        _teardown_logging()
+
+    # Profile output (Gap #10C)
+    if getattr(args, "profile", False):
+        profiler.disable()
+        import pstats
+        stream = io.StringIO()
+        stats = pstats.Stats(profiler, stream=stream)
+        stats.sort_stats("cumulative")
+        stats.print_stats(20)
+        print(stream.getvalue(), file=sys.stderr)
 
 
 if __name__ == "__main__":

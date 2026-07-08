@@ -37,3 +37,10 @@ okf = "okfgraph.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["okfgraph*"]
+
+[tool.pytest]
+markers = [
+    "slow: GPU-heavy or large-batch tests",
+    "integration: Tests with real model loading",
+]
+addopts = ["-v", "--tb=short"]

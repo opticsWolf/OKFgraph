@@ -28,9 +28,10 @@ import logging
 import math
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import frontmatter
 import ladybug as lb
@@ -66,7 +67,7 @@ class OKFRouter:
     # ── Schema versioning ─────────────────────────────────────────
     # Incremented every time the on-disk schema changes in a way that
     # requires a migration step (new table, new column, new index).
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     # Migration registry: version → migration function.
     # Each function receives `self` (the router) and must be idempotent.
@@ -124,9 +125,25 @@ class OKFRouter:
         """)
         logger.info("Schema migrated: v2 → v3 (FileHash + concept_id)")
 
+    @staticmethod
+    def _migrate_v3_to_v4(router: "OKFRouter") -> None:
+        """v3 → v4: Add DirHash table for directory-level hash aggregation.
+
+        This corresponds to the v5.5 transition (directory-level delta detection).
+        """
+        router.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS DirHash (
+                path STRING PRIMARY KEY,
+                hash STRING,
+                files STRING
+            )
+        """)
+        logger.info("Schema migrated: v3 → v4 (DirHash)")
+
     # Register migrations
     _MIGRATIONS[1] = _migrate_v1_to_v2
     _MIGRATIONS[2] = _migrate_v2_to_v3
+    _MIGRATIONS[3] = _migrate_v3_to_v4
 
     def __init__(
         self,
@@ -395,6 +412,18 @@ class OKFRouter:
             )
         """)
 
+        # DirHash — per-directory combined hash for subtree-level delta detection.
+        # Stores a SHA-256 hash of all files in a directory subtree. When the
+        # hash hasn't changed, the entire subtree is skipped on re-import.
+        # The 'files' column stores a JSON string of relative file paths for purge tracking.
+        self.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS DirHash (
+                path STRING PRIMARY KEY,
+                hash STRING,
+                files STRING
+            )
+        """)
+
         # Run schema migrations if the on-disk version is behind.
         self._run_schema_migrations()
 
@@ -604,6 +633,145 @@ class OKFRouter:
         """SHA-256 hex digest of a file's raw bytes."""
         return hashlib.sha256(file_path.read_bytes()).hexdigest()
 
+    def _compute_directory_hash(self, dir_path: Path) -> str:
+        """Compute a combined hash for a directory's contents.
+
+        Hashes all .md/.txt files in the directory (recursively) sorted by relative path,
+        then hashes the concatenation of all file hashes. Returns a single
+        SHA-256 hex digest that changes if any file in the subtree changes.
+        """
+        file_hashes = []
+        for fp in sorted(dir_path.rglob("*")):
+            if fp.is_file() and fp.suffix.lower() in self.SUPPORTED_SOURCE_EXTS:
+                rel = str(fp.relative_to(dir_path))
+                fh = self._file_hash(fp)
+                file_hashes.append((rel, fh))
+        combined = "|".join(f"{rel}:{fh}" for rel, fh in file_hashes)
+        return hashlib.sha256(combined.encode("utf-8")).hexdigest()
+
+    def _compute_directory_hash_with_files(self, dir_path: Path) -> tuple[str, List[str]]:
+        """Compute a combined hash for a directory's contents and return file paths.
+
+        Returns (hash, [relative_file_paths]) where file_paths can be used to
+        identify deleted files when the directory is removed.
+        """
+        file_hashes = []
+        file_paths = []
+        for fp in sorted(dir_path.rglob("*")):
+            if fp.is_file() and fp.suffix.lower() in self.SUPPORTED_SOURCE_EXTS:
+                rel = str(fp.relative_to(dir_path))
+                fh = self._file_hash(fp)
+                file_hashes.append((rel, fh))
+                file_paths.append(rel)
+        combined = "|".join(f"{rel}:{fh}" for rel, fh in file_hashes)
+        return hashlib.sha256(combined.encode("utf-8")).hexdigest(), file_paths
+
+    def _load_directory_hashes(self) -> Dict[str, Dict]:
+        """Load the persisted directory→{hash, files} mapping, or return empty dict."""
+        try:
+            rows = self.conn.execute(
+                "MATCH (d:DirHash) RETURN d.path AS p, d.hash AS h, d.files AS f"
+            ).rows_as_dict().get_all()
+            if rows:
+                result = {}
+                for r in rows:
+                    files_str = r.get("f") or ""
+                    try:
+                        files = json.loads(files_str) if files_str else []
+                    except (json.JSONDecodeError, TypeError):
+                        files = []
+                    result[r["p"]] = {"hash": r["h"], "files": files}
+                return result
+        except Exception as exc:
+            logger.debug("could not load directory hashes: %s", exc)
+        return {}
+
+    def _store_directory_hashes(self, hashes: Dict[str, Dict]) -> None:
+        """Persist a path→{hash, files} mapping in the DirHash table."""
+        try:
+            for path, data in hashes.items():
+                files_str = json.dumps(data.get("files", []))
+                self.conn.execute(
+                    """
+                    MERGE (d:DirHash {path: $p})
+                    SET d.hash = $h, d.files = $f
+                    """,
+                    {"p": path, "h": data["hash"], "f": files_str},
+                )
+        except Exception as exc:
+            logger.debug("could not store directory hashes: %s", exc)
+
+    def _changed_directories(self, source_files: List[Path]) -> tuple[List[Path], List[str]]:
+        """Return (changed_files, deleted_paths) using directory-level hash aggregation.
+
+        Groups files by parent directory, computes combined directory hashes,
+        and skips entire subtrees when the directory hash hasn't changed.
+        Only files in changed directories are returned as changed.
+        Deleted paths are relative file paths from the stored map of deleted directories.
+        """
+        stored_dir_hashes = self._load_directory_hashes()
+
+        # Group files by parent directory
+        dir_files: Dict[str, List[Path]] = {}
+        for fp in source_files:
+            parent = str(fp.parent.relative_to(self.bundle_root))
+            dir_files.setdefault(parent, []).append(fp)
+
+        # Compute current directory hashes with file paths
+        current_dir_hashes: Dict[str, Dict] = {}
+        changed: List[Path] = []
+        for dir_rel, files in dir_files.items():
+            dir_path = self.bundle_root / dir_rel
+            if dir_path.exists():
+                dir_hash, file_paths = self._compute_directory_hash_with_files(dir_path)
+            else:
+                dir_hash, file_paths = "", []
+            current_dir_hashes[dir_rel] = {"hash": dir_hash, "files": file_paths}
+
+            # Check if directory hash changed
+            stored_data = stored_dir_hashes.get(dir_rel, {})
+            stored_hash = stored_data.get("hash") if stored_data else None
+            if dir_hash != stored_hash:
+                # Directory changed — add all files in it
+                changed.extend(files)
+
+        # Detect deleted directories: dirs in stored map but not on disk
+        stored_dirs = set(stored_dir_hashes.keys())
+        current_dirs = set(current_dir_hashes.keys())
+        deleted_dirs = sorted(stored_dirs - current_dirs)
+
+        # Collect deleted file paths from deleted directories
+        deleted_paths: List[str] = []
+        for del_dir in deleted_dirs:
+            stored_data = stored_dir_hashes.get(del_dir, {})
+            stored_files = stored_data.get("files", []) if stored_data else []
+            for rel_file in stored_files:
+                # Use native path separator to match FileHash entries
+                deleted_paths.append(str(Path(del_dir) / rel_file))
+
+        # Persist the new directory hashes for the next run
+        self._store_directory_hashes(current_dir_hashes)
+
+        if changed:
+            logger.info(
+                "directory-delta: %d changed dir(s), %d changed files out of %d total",
+                len([d for d in dir_files if current_dir_hashes.get(d, {}).get("hash") != stored_dir_hashes.get(d, {}).get("hash")]),
+                len(changed),
+                len(source_files),
+            )
+        else:
+            logger.info("directory-delta: no changes detected")
+
+        if deleted_paths:
+            logger.info(
+                "directory-delta: %d deleted file(s) in %d deleted directory(s): %s",
+                len(deleted_paths),
+                len(deleted_dirs),
+                deleted_paths[:5],  # Limit output
+            )
+
+        return changed, deleted_paths
+
     def _store_file_hashes(self, hashes: Dict[str, str]) -> None:
         """Persist a path→hash mapping in the FileHash table.
 
@@ -613,7 +781,7 @@ class OKFRouter:
         try:
             for path, h in hashes.items():
                 # Derive concept_id from path: strip extension, normalise separators.
-                concept_id = path.rsplit(".", 1)[0]  # remove .md / .txt suffix
+                concept_id = str(Path(path).with_suffix("")).replace("\\", "/")  # remove .md / .txt suffix, use forward slashes
                 self.conn.execute(
                     """
                     MERGE (f:FileHash {path: $p})
@@ -1197,7 +1365,7 @@ class OKFRouter:
         if self.enable_chunking:
             # Delete old chunks for this document (re-import)
             self.conn.execute(
-                "MATCH (c:Concept {id: $id})-[:PART_OF]->(ch:Chunk) DELETE ch",
+                "MATCH (c:Concept {id: $id})-[:PART_OF]->(ch:Chunk) DETACH DELETE ch",
                 {"id": concept_id},
             )
 
@@ -1318,8 +1486,13 @@ class OKFRouter:
         if not source_files:
             return []
 
-        # Phase 0: Delta detection — skip files that haven't changed.
-        changed, deleted = self._changed_files(source_files)
+        _t0 = time.monotonic()
+
+        # Phase 0: Delta detection — directory-level hash aggregation.
+        # Skips entire subtrees when directory hash is unchanged.
+        _t1 = time.monotonic()
+        changed, deleted = self._changed_directories(source_files)
+        logger.info("directory-delta: %d changed, %d deleted (%.1fs)", len(changed), len(deleted), time.monotonic() - _t1)
 
         # Purge deleted concepts if requested.
         if purge_deleted and deleted:
@@ -1328,12 +1501,23 @@ class OKFRouter:
                 cid = cid_map.get(path)
                 if cid:
                     self._purge_concept(cid)
+            logger.info("purged %d deleted concept(s)", len(deleted))
 
         if not changed and not deleted:
             return []
         source_files = changed
 
+        # Update FileHash table after purge (so deleted entries are removed).
+        # This ensures the cid_map used by purge has the correct entries.
+        file_hashes: Dict[str, str] = {}
+        for fp in source_files:
+            rel = str(fp.relative_to(self.bundle_root))
+            h = self._file_hash(fp)
+            file_hashes[rel] = h
+        self._store_file_hashes(file_hashes)
+
         # Phase 1: Parse all files
+        _t1 = time.monotonic()
         parsed: List[Dict[str, Any]] = []
         for fp in source_files:
             try:
@@ -1347,22 +1531,27 @@ class OKFRouter:
                     "dir": fp.parent,
                 })
             except Exception as e:
-                print(f"  [WARN] Skipping {fp.name}: {e}")
+                logger.warning("parse failed %s: %s", fp.name, e)
 
         # No-op guard: if nothing parsed successfully, do no work (no encode, no
         # transaction, no index rebuild).
         if not parsed:
             return []
 
+        logger.info("parsed %d concept(s)", len(parsed))
+
         # Phase 2: Batch encode (chunked by batch_size)
+        _t1 = time.monotonic()
         all_search_texts = [p["search_text"] for p in parsed]
         all_embeddings: List[List[float]] = []
         for i in range(0, len(all_search_texts), batch_size):
             chunk = all_search_texts[i : i + batch_size]
             batch_embs = self._encode_batch(chunk, task="Document")
             all_embeddings.extend(batch_embs)
+        logger.info("encode: %d texts in %.1fs", len(all_search_texts), time.monotonic() - _t1)
 
         # Phase 3: Batch upsert all concepts in a single transaction
+        _t1 = time.monotonic()
         self.conn.execute("BEGIN TRANSACTION")
         try:
             self._batch_upsert_concepts(parsed, all_embeddings)
@@ -1373,11 +1562,12 @@ class OKFRouter:
             except Exception:
                 pass
             raise
+        logger.info("upsert: %d concepts in %.1fs", len(parsed), time.monotonic() - _t1)
 
         # Phase 3.5: Chunk all documents (NEW) — per-concept error isolation
+        _import_chunk_errors: List[Tuple[str, Exception]] = []
+        _t1 = time.monotonic()
         if self.enable_chunking:
-            _import_chunk_errors: List[Tuple[str, Exception]] = []
-
             for p in parsed:
                 try:
                     self._import_chunks_for_concept(p)
@@ -1394,24 +1584,42 @@ class OKFRouter:
                     len(_import_chunk_errors), len(parsed),
                 )
 
+            logger.info("chunk: %d concepts in %.1fs", len(parsed), time.monotonic() - _t1)
+        else:
+            _t1 = time.monotonic()
+
         # Phase 4: Batch directory hierarchy (collected from all concept IDs)
+        _t1 = time.monotonic()
         self._batch_build_directories([p["cid"] for p in parsed])
+        logger.info("directories: %d in %.1fs", len(parsed), time.monotonic() - _t1)
 
         # Phase 5: Batch link extraction
+        _t1 = time.monotonic()
         self._batch_extract_links(parsed)
+        logger.info("links: %d concepts in %.1fs", len(parsed), time.monotonic() - _t1)
 
         # Phase 6: Image ingestion (per concept, honouring the selected mode)
         _import_image_errors: List[Tuple[str, Exception]] = []
+        _t1 = time.monotonic()
         for p in parsed:
             try:
                 self._ingest_concept_images(p["cid"], p["body"], p["dir"], mode)
             except Exception as e:
                 _import_image_errors.append((p["cid"], e))
 
+        if _import_image_errors:
+            logger.warning(
+                "image ingestion: %d concept(s) failed out of %d",
+                len(_import_image_errors), len(parsed),
+            )
+        logger.info("images: %d concepts in %.1fs", len(parsed), time.monotonic() - _t1)
+
         # Phase 7: rebuild vector + FTS indexes once so every concept/image
         # written above is searchable (indexes reflect table contents at build
         # time, not subsequent inserts).
+        _t1 = time.monotonic()
         self._build_search_indexes(rebuild=True)
+        logger.info("reindex: %.1fs", time.monotonic() - _t1)
 
         # Aggregate failure report
         total_failures = len(_import_chunk_errors) + len(_import_image_errors)
@@ -1424,6 +1632,12 @@ class OKFRouter:
                 len(_import_image_errors),
                 len(parsed),
             )
+
+        elapsed = time.monotonic() - _t0
+        logger.info(
+            "import_bundle: %d concept(s) in %.1fs",
+            len(parsed), elapsed,
+        )
 
         return [p["cid"] for p in parsed]
 
@@ -1439,7 +1653,7 @@ class OKFRouter:
 
         # Delete old chunks for this document (re-import)
         self.conn.execute(
-            "MATCH (c:Concept {id: $id})-[:PART_OF]->(ch:Chunk) DELETE ch",
+            "MATCH (c:Concept {id: $id})-[:PART_OF]->(ch:Chunk) DETACH DELETE ch",
             {"id": cid},
         )
 
@@ -3143,3 +3357,170 @@ class OKFRouter:
         data.update(extra_decoded)
         data.pop("extra", None)
         return ConceptModel.model_validate(data)
+
+    # ------------------------------------------------------------------
+    # PDF Ingestion (Gap #5b)
+    # ------------------------------------------------------------------
+
+    def ingest_pdf(
+        self,
+        pdf_path: str | Path,
+        *,
+        auto_import: bool = True,
+        output_dir: str | Path | None = None,
+        routing_mode: str = "auto",
+        mode: str = "text",
+        batch_size: int = 32,
+        purge_deleted: bool = False,
+        extract_images: bool = True,
+        on_page: Callable[[int, int], None] | None = None,
+    ) -> Dict[str, Any]:
+        """Convert a PDF to markdown and optionally import into the graph.
+
+        This is the programmatic counterpart to the ``okf ingest`` CLI command.
+        It uses the HybridConverter pipeline (pdf_oxide fast path + ONNX/Rapid
+        heavy passes) to convert the PDF, then optionally imports the resulting
+        markdown into the knowledge graph via ``import_bundle()``.
+
+        Args:
+            pdf_path: Path to the PDF file.
+            auto_import: If True, import the converted markdown into the graph.
+                If False, write to disk only.
+            output_dir: Output directory for the markdown (used when
+                auto_import=False). Defaults to the PDF's parent directory.
+            routing_mode: ONNX routing mode — "auto", "surgical", "always",
+                or "never". Controls when ONNX models are invoked.
+            mode: Image ingestion mode for auto-import — "text", "optional",
+                or "omni". Only used when auto_import=True.
+            batch_size: Batch size for encoding during auto-import.
+            purge_deleted: If True, purge deleted concepts during auto-import.
+            extract_images: Whether to extract embedded images from the PDF.
+            on_page: Optional callback(page_index, page_total) for progress.
+
+        Returns:
+            A dict with keys:
+            - "md_path": Path to the converted markdown file (always present)
+            - "concept_ids": List of imported concept IDs (only when auto_import=True)
+            - "image_dir": Path to the staged images directory (always present)
+            - "page_count": Number of pages in the PDF
+
+        Raises:
+            RuntimeError: If pdf_oxide is not installed.
+        """
+        from tempfile import TemporaryDirectory
+
+        from okfgraph.ingest import ConverterConfig, HybridConverter, RoutingMode
+        from okfgraph.ingest.assets import stage_images_as_okf_assets
+
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+        # Build converter config
+        config = ConverterConfig(
+            routing_mode=RoutingMode(routing_mode),
+            device=self.device,
+            extract_images=extract_images,
+        )
+
+        converter = HybridConverter(config, log=logger.info)
+
+        try:
+            # Ensure ONNX models are loaded (if routing mode requires them)
+            converter.ensure_models()
+
+            if auto_import:
+                # Auto-import: convert to temp dir, import into graph, clean up.
+                with TemporaryDirectory(prefix="okf_ingest_") as tmp:
+                    work_dir = Path(tmp)
+                    logger.info("converting %s → %s", pdf_path, work_dir)
+
+                    md = converter.convert_pdf(
+                        path=pdf_path,
+                        work_dir=work_dir,
+                        should_continue=lambda: True,
+                        on_page=on_page or (lambda idx, total: logger.info(
+                            "page %d/%d", idx + 1, total
+                        )),
+                    )
+
+                    # Write markdown to temp dir
+                    stem = pdf_path.stem
+                    md_path = work_dir / f"{stem}.md"
+                    md_path.write_text(md, encoding="utf-8")
+
+                    # Stage any extracted images as okf-asset:// URIs
+                    img_dir = work_dir / "_assets"
+                    img_dir.mkdir(exist_ok=True)
+                    for img in work_dir.glob("*"):
+                        if img.is_file() and img.suffix.lower() in (
+                            ".png", ".jpg", ".jpeg", ".gif", ".webp",
+                        ):
+                            img.rename(img_dir / img.name)
+
+                    md_text = md_path.read_text(encoding="utf-8")
+                    stage_images_as_okf_assets(
+                        md_text, work_dir, pdf_path, work_dir, stem
+                    )
+
+                    # Import into the graph
+                    ids = self.import_bundle(
+                        work_dir,
+                        batch_size=batch_size,
+                        mode=mode,
+                        purge_deleted=purge_deleted,
+                    )
+                    logger.info("imported %d concept(s) from %s", len(ids), pdf_path)
+
+                    return {
+                        "md_path": str(md_path),
+                        "concept_ids": ids,
+                        "image_dir": str(img_dir),
+                        "page_count": len(list(Path(tmp).rglob("*.md"))),
+                    }
+            else:
+                # Output-only: convert to the specified output directory.
+                output_dir = Path(output_dir) if output_dir else pdf_path.parent
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                logger.info("converting %s → %s", pdf_path, output_dir)
+
+                md = converter.convert_pdf(
+                    path=pdf_path,
+                    work_dir=output_dir,
+                    should_continue=lambda: True,
+                    on_page=on_page or (lambda idx, total: logger.info(
+                        "page %d/%d", idx + 1, total
+                    )),
+                )
+
+                # Write markdown
+                stem = pdf_path.stem
+                md_path = output_dir / f"{stem}.md"
+                md_path.write_text(md, encoding="utf-8")
+
+                # Stage images
+                img_dir = output_dir / "_assets"
+                img_dir.mkdir(exist_ok=True)
+                for img in output_dir.glob("*"):
+                    if img.is_file() and img.suffix.lower() in (
+                        ".png", ".jpg", ".jpeg", ".gif", ".webp",
+                    ):
+                        img.rename(img_dir / img.name)
+
+                md_text = md_path.read_text(encoding="utf-8")
+                stage_images_as_okf_assets(
+                    md_text, output_dir, pdf_path, output_dir, stem
+                )
+
+                logger.info("written %s", md_path)
+                logger.info("assets in %s", img_dir)
+
+                return {
+                    "md_path": str(md_path),
+                    "concept_ids": [],
+                    "image_dir": str(img_dir),
+                    "page_count": len(list(output_dir.rglob("*.md"))),
+                }
+        finally:
+            converter.close()

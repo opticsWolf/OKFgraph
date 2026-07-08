@@ -35,7 +35,7 @@
 |---|---|---|---|
 | **Gap analysis consolidation** | Not present | **15 gaps reviewed, 13 closed, 2 open** | Production-readiness assessment |
 | **Open gap documentation** | Not present | **§15 — 2 open gaps documented** | Concurrent access, security |
-| **Closed gaps** | — | **#5 PDF→import, #6 error isolation, #8 schema migration, #12 missing tests, #13 index health, #14 chunk limits, #16 LLM tool coverage, #10 observability, #15 RapidAI pinning, #5b ingest_pdf** | Core reliability, feature completeness, observability |
+| **Closed gaps** | — | **#5 PDF→import, #6 error isolation, #8 schema migration, #12 missing tests, #13 index health, #14 chunk limits, #16 LLM tool coverage, #10 observability, #15 RapidAI pinning, #5b ingest_pdf, #5c ingest_md + ingest_thoughts + linting** | Core reliability, feature completeness, observability |
 | **Gap #7 (Concurrent Access)** | Not documented | **Documented** — WAL mode + single-writer constraint recommendation (OPEN) | Data integrity under concurrent use |
 | **Gap #9 (Security)** | Not documented | **Documented** — SSRF risk, URL allowlist recommendation (OPEN) | Security architecture |
 | **Version bump** | 5.3 | **5.4** | Gap analysis artifact |
@@ -1106,6 +1106,70 @@ TOOLS = [
             "required": ["output_dir"],
         },
     },
+    {
+        "name": "ingest_md",
+        "description": "Import a single markdown file into the knowledge graph. The file is linted with mordant before import — fixable formatting issues (MD009, MD012, MD047) are auto-corrected. Returns the concept ID so the content can be searched or traversed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "md_path": {
+                    "type": "string",
+                    "description": "Path to the markdown file to import.",
+                },
+                "concept_id": {
+                    "type": "string",
+                    "description": "Optional explicit concept ID. If not provided, generated from filename.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional title override.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional description override.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tags to apply.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["text", "optional", "omni"],
+                    "default": "text",
+                    "description": "Image ingestion mode.",
+                },
+            },
+            "required": ["md_path"],
+        },
+    },
+    {
+        "name": "ingest_thoughts",
+        "description": "Store LLM reasoning or thinking as a searchable concept. Wraps the text in OKF-compliant markdown with metadata (type=thought, thought_type=reasoning) so it can be filtered and searched.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "thoughts": {
+                    "type": "string",
+                    "description": "The raw reasoning text from the LLM.",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "High-level topic or domain for the reasoning.",
+                },
+                "concept_id": {
+                    "type": "string",
+                    "description": "Optional explicit concept ID. If not provided, generated from topic + timestamp.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional additional tags.",
+                },
+            },
+            "required": ["thoughts", "topic"],
+        },
+    },
 ]
 ```
 
@@ -1679,7 +1743,7 @@ batch_size = 64
 - Output-only mode: converts to disk, stages images as `okf-asset://` URIs
 - Test coverage: 4 tests in `tests/test_ingest.py::TestIngestPdfMethod`
 
-**Remaining follow-ups**: LLM tool definition (#5c), progress callbacks (#5d).
+**Remaining follow-ups**: progress callbacks (#5d).
 
 ---
 

@@ -3359,6 +3359,204 @@ class OKFRouter:
         return ConceptModel.model_validate(data)
 
     # ------------------------------------------------------------------
+    # Markdown Linting (Gap #5c)
+    # ------------------------------------------------------------------
+
+    def _lint_converted_md(
+        self,
+        md_path: Path,
+        *,
+        auto_fix: bool = True,
+    ) -> Dict[str, Any]:
+        """Lint a markdown file and optionally auto-fix fixable issues.
+
+        Returns a dict with:
+        - "content": the (possibly fixed) markdown content (str)
+        - "fixed": whether content was modified (bool)
+        - "fixed_count": number of auto-fixed issues (int)
+        - "unfixable": list of unfixable diagnostics (list)
+        - "errors": list of error-level diagnostics (list)
+        """
+        content = md_path.read_text(encoding="utf-8")
+        diagnostics = mordant.lint(content, gfm_opts=mordant.GfmOptions.all())
+
+        if not diagnostics:
+            return {
+                "content": content,
+                "fixed": False,
+                "fixed_count": 0,
+                "unfixable": [],
+                "errors": [],
+            }
+
+        # Categorize diagnostics
+        fixable_rules = {"MD009", "MD012", "MD047"}  # whitespace/formatting
+        error_rules = {"MD001", "MD031", "MD033"}    # structural errors
+        unfixable = [d for d in diagnostics if d.rule not in fixable_rules]
+        errors = [d for d in diagnostics if d.rule in error_rules]
+
+        fixed_content = content
+        fixed_count = 0
+
+        if auto_fix:
+            fixable = [d for d in diagnostics if d.rule in fixable_rules]
+            if fixable:
+                result = mordant.fix(content, gfm_opts=mordant.GfmOptions.all())
+                if result.fixed:
+                    fixed_content = result.output
+                    fixed_count = len(result.fixed)
+                    logger.info(
+                        "auto-fixed %d issues in %s",
+                        fixed_count,
+                        md_path.name,
+                    )
+
+        if unfixable:
+            logger.warning(
+                "%d unfixable issues in %s: %s",
+                len(unfixable),
+                md_path.name,
+                ", ".join(f"{d.rule} (line {d.line})" for d in unfixable[:5]),
+            )
+
+        if errors:
+            logger.warning(
+                "%d structural errors in %s — import may produce unexpected results: %s",
+                len(errors),
+                md_path.name,
+                ", ".join(f"{d.rule} (line {d.line})" for d in errors[:3]),
+            )
+
+        return {
+            "content": fixed_content,
+            "fixed": fixed_count > 0,
+            "fixed_count": fixed_count,
+            "unfixable": unfixable,
+            "errors": errors,
+        }
+
+    # ------------------------------------------------------------------
+    # Single-File Import Helpers (Gap #5c)
+    # ------------------------------------------------------------------
+
+    def _import_single_concept(
+        self,
+        concept: "ConceptModel",
+        body: str,
+        mode: "str | IngestMode" = IngestMode.TEXT,
+    ) -> Dict[str, Any]:
+        """Import a single concept using the full pipeline (encode, upsert, chunk, etc.).
+
+        This is the core shared logic between ingest_md() and ingest_thoughts().
+        """
+        mode = IngestMode.coerce(mode)
+
+        # Phase 2: Encode (Document prefix)
+        search_text = (
+            f"{concept.title or ''} {concept.description or ''} {concept.body or ''}"
+        )
+        concept.embedding = self._encode(search_text, task="Document")
+
+        # Phase 3: Upsert in transaction
+        self._insert_concept(concept, body, concept.id)
+
+        # Phase 3.5: Chunk
+        chunk_count = 0
+        if self.enable_chunking:
+            # Delete old chunks for this document (re-import)
+            self.conn.execute(
+                "MATCH (c:Concept {id: $id})-[:PART_OF]->(ch:Chunk) DETACH DELETE ch",
+                {"id": concept.id},
+            )
+
+            chunks = self._split_into_chunks(body, concept.id)
+            if chunks:
+                # Compute overlap payloads for embedding
+                payloads = self._compute_overlap_payloads(chunks)
+                texts = [p["text"] for p in payloads]
+                embeddings = self._encode_batch(texts, task="Document")
+
+                self.conn.execute("BEGIN TRANSACTION")
+                try:
+                    for payload, emb in zip(payloads, embeddings):
+                        chunk_id = payload["chunk_id"]
+                        # Find the original chunk for metadata
+                        orig_chunk = next(
+                            c for c in chunks
+                            if c["chunk_index"] == int(chunk_id.split(":")[-1])
+                        )
+                        self.conn.execute("""
+                            CREATE (ch:Chunk {
+                                id: $id, parent_doc_id: $doc_id,
+                                chunk_index: $idx, chunk_text: $text,
+                                block_type: $block_type,
+                                start_offset: $start, end_offset: $end_offset,
+                                embedding: $emb
+                            })
+                        """, {
+                            "id": chunk_id,
+                            "doc_id": concept.id,
+                            "idx": orig_chunk["chunk_index"],
+                            "text": orig_chunk["chunk_text"],
+                            "block_type": orig_chunk["block_type"],
+                            "start": orig_chunk["start_offset"],
+                            "end_offset": orig_chunk["end_offset"],
+                            "emb": emb,
+                        })
+                    self.conn.execute("COMMIT")
+                except Exception:
+                    try:
+                        self.conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
+                self._bump_write_epoch()
+
+                chunk_count = len(chunks)
+
+                # Create PART_OF relationships
+                self.conn.execute("BEGIN TRANSACTION")
+                try:
+                    for chunk in chunks:
+                        chunk_id = f"{concept.id}#chunk:{chunk['chunk_index']}"
+                        self.conn.execute("""
+                            MATCH (d:Concept {id: $doc})
+                            MATCH (ch:Chunk {id: $cid})
+                            MERGE (d)-[:PART_OF]->(ch)
+                        """, {"doc": concept.id, "cid": chunk_id})
+                    self.conn.execute("COMMIT")
+                except Exception:
+                    try:
+                        self.conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
+
+        # Phase 5: Links
+        self._extract_links_for_concept(concept.id, body)
+
+        # Phase 6: Images
+        image_count = 0
+        try:
+            image_count = len(
+                self._ingest_concept_images(concept.id, body, Path("."), mode)
+            )
+        except Exception:
+            pass
+
+        # Phase 7: Rebuild indexes
+        self._build_search_indexes(rebuild=True)
+
+        return {
+            "concept_id": concept.id,
+            "title": concept.title,
+            "description": concept.description,
+            "tags": concept.tags,
+            "chunk_count": chunk_count,
+            "image_count": image_count,
+        }
+
+    # ------------------------------------------------------------------
     # PDF Ingestion (Gap #5b)
     # ------------------------------------------------------------------
 
@@ -3463,6 +3661,21 @@ class OKFRouter:
                         md_text, work_dir, pdf_path, work_dir, stem
                     )
 
+                    # Lint converted markdown (Gap #5c)
+                    lint_result = self._lint_converted_md(md_path, auto_fix=True)
+                    if lint_result["fixed"]:
+                        md_path.write_text(lint_result["content"], encoding="utf-8")
+                        logger.info(
+                            "linted %s: fixed %d issues",
+                            md_path.name,
+                            lint_result["fixed_count"],
+                        )
+                    if lint_result["errors"]:
+                        logger.warning(
+                            "PDF output has %d structural errors — proceeding anyway",
+                            len(lint_result["errors"]),
+                        )
+
                     # Import into the graph
                     ids = self.import_bundle(
                         work_dir,
@@ -3524,3 +3737,173 @@ class OKFRouter:
                 }
         finally:
             converter.close()
+
+    # ------------------------------------------------------------------
+    # Markdown Ingestion (Gap #5c)
+    # ------------------------------------------------------------------
+
+    def ingest_md(
+        self,
+        md_path: str | Path,
+        *,
+        concept_id: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        tags: list[str] | None = None,
+        mode: str = "text",
+    ) -> Dict[str, Any]:
+        """Import a single markdown file into the knowledge graph.
+
+        This is the programmatic counterpart to ``import_bundle()`` but
+        operates on a single file with explicit metadata control.
+
+        The file is linted with mordant before import. Fixable issues
+        (MD009, MD012, MD047) are auto-corrected. Unfixable issues
+        are logged as warnings but do not block import.
+
+        Args:
+            md_path: Path to the markdown file to import.
+            concept_id: Optional explicit concept ID. If None, generated from filename.
+            title: Optional title override (defaults to frontmatter or filename).
+            description: Optional description override (defaults to frontmatter).
+            tags: Optional tags to apply to the concept.
+            mode: Image ingestion mode (text | optional | omni).
+
+        Returns:
+            Dict with keys:
+            - "concept_id": The imported concept ID
+            - "title": Title used
+            - "description": Description used
+            - "tags": Applied tags
+            - "chunk_count": Number of chunks created (if chunking enabled)
+            - "image_count": Number of images ingested
+            - "lint_issues": Lint result dict (fixed_count, unfixable, errors)
+        """
+        md_path = Path(md_path)
+        if not md_path.exists():
+            raise FileNotFoundError(f"Markdown file not found: {md_path}")
+
+        # Lint the file (may auto-fix in-place)
+        lint_result = self._lint_converted_md(md_path, auto_fix=True)
+        if lint_result["fixed"]:
+            md_path.write_text(lint_result["content"], encoding="utf-8")
+
+        # Parse frontmatter
+        post = frontmatter.load(md_path)
+        fm = dict(post.metadata)
+
+        # Determine metadata
+        cid = concept_id or md_path.stem.replace(" ", "_").lower()
+        t = title or fm.get("title") or md_path.stem
+        desc = description or fm.get("description") or fm.get("summary") or ""
+        file_tags = fm.get("tags", [])
+        all_tags = list(set((tags or []) + file_tags))
+
+        # Build ConceptModel
+        concept = ConceptModel.model_validate({
+            "id": cid,
+            "title": t,
+            "description": desc,
+            "body": post.content,
+            "type": fm.get("type", "note"),
+            "tags": all_tags,
+        })
+
+        # Import via shared single-concept pipeline
+        result = self._import_single_concept(concept, post.content, mode)
+
+        return {
+            "concept_id": result["concept_id"],
+            "title": result["title"],
+            "description": result["description"],
+            "tags": result["tags"],
+            "chunk_count": result["chunk_count"],
+            "image_count": result["image_count"],
+            "lint_issues": {
+                "fixed_count": lint_result["fixed_count"],
+                "unfixable_count": len(lint_result["unfixable"]),
+                "error_count": len(lint_result["errors"]),
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Thought Ingestion (Gap #5c)
+    # ------------------------------------------------------------------
+
+    def ingest_thoughts(
+        self,
+        thoughts: str,
+        *,
+        topic: str,
+        concept_id: str | None = None,
+        tags: list[str] | None = None,
+    ) -> Dict[str, Any]:
+        """Store LLM reasoning/thinking as a searchable concept.
+
+        Wraps the raw reasoning text in OKF-compliant markdown with metadata
+        (type=thought, thought_type=reasoning, topic) so it can be searched,
+        traversed, and used as context for other queries.
+
+        The markdown is linted with mordant before import. Fixable issues
+        are auto-corrected.
+
+        Args:
+            thoughts: The raw reasoning text from the LLM.
+            topic: High-level topic or domain for the reasoning.
+            concept_id: Optional explicit concept ID. If None, generated from topic.
+            tags: Optional additional tags.
+
+        Returns:
+            Dict with keys:
+            - "concept_id": The created concept ID
+            - "topic": Topic used
+            - "tags": Applied tags
+            - "chunk_count": Number of chunks created
+            - "markdown": The generated markdown content
+        """
+        import uuid
+
+        # Generate concept_id from topic if not provided
+        if not concept_id:
+            ts = datetime.now().strftime("%Y%m%d%H%M%S")
+            slug = topic.lower().replace(" ", "_")[:30]
+            concept_id = f"thought_{slug}_{ts}_{str(uuid.uuid4())[:6]}"
+
+        # Build OKF-compliant markdown
+        header_lines = [
+            "---",
+            f'title: "Thought: {topic}"',
+            "type: thought",
+            "thought_type: reasoning",
+            f"topic: {topic}",
+            f"tags: [thought, reasoning, {topic}]",
+            f"created: {datetime.now().isoformat()}",
+            "---",
+            "",
+            thoughts,
+        ]
+        markdown = "\n".join(header_lines)
+
+        # Apply tags
+        all_tags = list(set(["thought", "reasoning", topic] + (tags or [])))
+
+        # Build ConceptModel
+        concept = ConceptModel.model_validate({
+            "id": concept_id,
+            "title": f"Thought: {topic}",
+            "description": f"Reasoning about {topic}",
+            "body": markdown,
+            "type": "thought",
+            "tags": all_tags,
+        })
+
+        # Import via shared single-concept pipeline
+        result = self._import_single_concept(concept, markdown, "text")
+
+        return {
+            "concept_id": result["concept_id"],
+            "topic": topic,
+            "tags": result["tags"],
+            "chunk_count": result["chunk_count"],
+            "markdown": markdown,
+        }

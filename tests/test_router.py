@@ -192,7 +192,7 @@ class TestDeviceSelection:
 class TestTools:
     def test_tools_export(self):
         from okfgraph.tools import TOOLS
-        assert len(TOOLS) == 13
+        assert len(TOOLS) == 15  # 13 original + ingest_md + ingest_thoughts
 
     def test_tool_names(self):
         from okfgraph.tools import TOOLS
@@ -201,6 +201,8 @@ class TestTools:
         assert "traverse" in names
         assert "get_by_id" in names
         assert "list_directory" in names
+        assert "ingest_md" in names
+        assert "ingest_thoughts" in names
 
     def test_search_hybrid_has_query_param(self):
         from okfgraph.tools import TOOLS
@@ -213,3 +215,186 @@ class TestTools:
         tool = next(t for t in TOOLS if t["name"] == "traverse")
         assert "start_id" in tool["parameters"]["properties"]
         assert "start_id" in tool["parameters"]["required"]
+
+    def test_ingest_md_tool_parameters(self):
+        from okfgraph.tools import TOOLS
+        tool = next(t for t in TOOLS if t["name"] == "ingest_md")
+        assert "md_path" in tool["parameters"]["required"]
+        assert "auto_import" not in tool["parameters"]["properties"]  # not exposed to LLM
+        assert tool["parameters"]["properties"]["mode"]["enum"] == ["text", "optional", "omni"]
+
+    def test_ingest_thoughts_tool_parameters(self):
+        from okfgraph.tools import TOOLS
+        tool = next(t for t in TOOLS if t["name"] == "ingest_thoughts")
+        assert set(tool["parameters"]["required"]) == {"thoughts", "topic"}
+        assert "topic" in tool["parameters"]["properties"]
+
+    def test_write_tools_reference_each_other(self):
+        """Write tools should reference each other in descriptions."""
+        from okfgraph.tools import TOOLS
+        ingest_md = next(t for t in TOOLS if t["name"] == "ingest_md")
+        ingest_thoughts = next(t for t in TOOLS if t["name"] == "ingest_thoughts")
+        # ingest_md references ingest_thoughts
+        assert "ingest_thoughts" in ingest_md["description"].lower()
+        # ingest_thoughts references ingest_md
+        assert "ingest_md" in ingest_thoughts["description"].lower()
+
+    def test_read_tools_mention_write_operations(self):
+        """Read-only tools should mention write operations in descriptions."""
+        from okfgraph.tools import TOOLS
+        search = next(t for t in TOOLS if t["name"] == "search_hybrid")
+        assert "ingest_md" in search["description"].lower()
+        traverse = next(t for t in TOOLS if t["name"] == "traverse")
+        assert "ingest_thoughts" in traverse["description"].lower()
+
+
+class TestIngestMd:
+    """Tests for OKFRouter.ingest_md()."""
+
+    def test_import_existing_file(self, tmp_path):
+        """Import a valid markdown file."""
+        from okfgraph.router import OKFRouter
+
+        md_path = tmp_path / "test.md"
+        md_path.write_text(
+            "---\ntitle: Test\n---\n\nHello world.",
+            encoding="utf-8",
+        )
+
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        result = r.ingest_md(md_path)
+
+        assert "concept_id" in result
+        assert result["title"] == "Test"
+        assert result["lint_issues"]["error_count"] == 0
+        r.close()
+
+    def test_import_with_linting(self, tmp_path):
+        """Linting auto-fixes fixable issues."""
+        from okfgraph.router import OKFRouter
+
+        md_path = tmp_path / "test.md"
+        md_path.write_text(
+            "---\ntitle: Test\n---\n\nHello  \n\nWorld",
+            encoding="utf-8",
+        )  # trailing spaces (MD009)
+
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        result = r.ingest_md(md_path)
+
+        assert result["lint_issues"]["fixed_count"] > 0
+        r.close()
+
+    def test_import_nonexistent_file(self, tmp_path):
+        """Importing a non-existent file raises FileNotFoundError."""
+        from okfgraph.router import OKFRouter
+
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        with pytest.raises(FileNotFoundError):
+            r.ingest_md("/nonexistent/path.md")
+        r.close()
+
+    def test_import_with_explicit_metadata(self, tmp_path):
+        """Explicit metadata overrides frontmatter."""
+        from okfgraph.router import OKFRouter
+
+        md_path = tmp_path / "test.md"
+        md_path.write_text(
+            "---\ntitle: Frontmatter\n---\n\nHello world.",
+            encoding="utf-8",
+        )
+
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        result = r.ingest_md(
+            md_path,
+            title="Override",
+            tags=["custom", "test"],
+        )
+
+        assert result["title"] == "Override"
+        assert "custom" in result["tags"]
+        assert "test" in result["tags"]
+        r.close()
+
+
+class TestIngestThoughts:
+    """Tests for OKFRouter.ingest_thoughts()."""
+
+    def test_store_reasoning(self, tmp_path):
+        """Store reasoning as a searchable concept."""
+        from okfgraph.router import OKFRouter
+
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        result = r.ingest_thoughts(
+            thoughts="I think we should use X because Y and Z.",
+            topic="architecture",
+        )
+
+        assert "concept_id" in result
+        assert result["topic"] == "architecture"
+        assert "thought" in result["tags"]
+        assert "reasoning" in result["tags"]
+
+        # Verify it's stored as a concept
+        concept = r.get_by_id(result["concept_id"])
+        assert concept is not None
+        assert concept.type == "thought"
+        r.close()
+
+    def test_searchable_as_concept(self, tmp_path):
+        """Stored thoughts are searchable via graph queries."""
+        from okfgraph.router import OKFRouter
+
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        result = r.ingest_thoughts(
+            thoughts="The best approach is to use a graph database.",
+            topic="database",
+        )
+
+        # Search should find it
+        results = r.search_hybrid("graph database")
+        ids = [r["id"] for r in results]
+        assert result["concept_id"] in ids
+        r.close()
+
+    def test_explicit_concept_id(self, tmp_path):
+        """Explicit concept_id is used as-is."""
+        from okfgraph.router import OKFRouter
+
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        result = r.ingest_thoughts(
+            thoughts="Test reasoning.",
+            topic="test",
+            concept_id="my_custom_id",
+        )
+
+        assert result["concept_id"] == "my_custom_id"
+        r.close()

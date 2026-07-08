@@ -398,7 +398,7 @@ OKFgraph has undergone a comprehensive gap analysis ([docs/gap-analysis.md](docs
 | **Error Isolation** | ✅ Closed (v5.1) | Per-concept error isolation in import pipeline |
 | **Index Lifecycle** | ✅ Closed (v5.1) | Epoch-based dirty tracking + change-driven rebuild |
 | **Context Window** | ✅ Closed (v5.1) | 90% threshold warning for oversized chunks |
-| **Missing Tests** | ✅ Closed (v5.6) | 277 tests across 22 files (17 GPU tests) |
+| **Missing Tests** | ✅ Closed (v5.7) | 288 tests across 22 files (17 GPU tests) |
 | **RapidAI Pinning** | ✅ Closed (v5.4) | Version pins + runtime warning |
 | **Observability** | ✅ Closed (v5.4) | Structured logging + profiling hooks |
 | **PDF Ingest API** | ✅ Closed (v5.4) | `OKFRouter.ingest_pdf()` programmatic API |

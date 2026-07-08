@@ -3,7 +3,7 @@
 TOOLS = [
     {
         "name": "search_hybrid",
-        "description": "Semantic + keyword search over concepts. Use for open-ended questions.",
+        "description": "Semantic + keyword search over concepts. Use for open-ended questions. To add new content to the graph, use ``ingest_md`` or ``ingest_thoughts`` instead.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -30,7 +30,7 @@ TOOLS = [
     },
     {
         "name": "traverse",
-        "description": "Navigate relationships (CONTAINS or LINKS_TO) from a concept.",
+        "description": "Navigate relationships (CONTAINS or LINKS_TO) from a concept. To expand the graph, use ``ingest_md`` to add documents or ``ingest_thoughts`` to persist reasoning.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -296,7 +296,8 @@ TOOLS = [
             "Export concepts from the graph to an OKF-compliant bundle directory. "
             "Each concept is written as a markdown file with YAML frontmatter. "
             "The body is enriched with graph-derived LINKS_TO links (See Also + Cited By). "
-            "index.md files are generated for every directory."
+            "index.md files are generated for every directory. "
+            "To add content back to the graph, use ``ingest_md``."
         ),
         "parameters": {
             "type": "object",
@@ -320,6 +321,91 @@ TOOLS = [
                 },
             },
             "required": ["output_dir"],
+        },
+    },
+    {
+        "name": "ingest_md",
+        "description": (
+            "Import a single markdown file into the knowledge graph. "
+            "Use when a user provides a document path or asks to add content from a file. "
+            "The file is linted with mordant before import — fixable formatting "
+            "issues (MD009, MD012, MD047) are auto-corrected. "
+            "Returns the concept ID so the content can be searched or traversed. "
+            "For storing LLM reasoning, use ``ingest_thoughts`` instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "md_path": {
+                    "type": "string",
+                    "description": "Path to the markdown file to import.",
+                },
+                "concept_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional explicit concept ID. If not provided, "
+                        "generated from filename."
+                    ),
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Optional title override.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional description override.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tags to apply.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["text", "optional", "omni"],
+                    "default": "text",
+                    "description": "Image ingestion mode.",
+                },
+            },
+            "required": ["md_path"],
+        },
+    },
+    {
+        "name": "ingest_thoughts",
+        "description": (
+            "Store LLM reasoning or thinking as a searchable concept in the "
+            "knowledge graph. Use when the agent wants to persist its reasoning "
+            "process, decision logs, or intermediate conclusions. The stored "
+            "thoughts can later be searched, traversed, and used as context "
+            "for other queries. Wraps the text in OKF-compliant markdown with "
+            "metadata (type=thought, thought_type=reasoning) so it can be "
+            "filtered and searched. For importing existing files, use ``ingest_md`` instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "thoughts": {
+                    "type": "string",
+                    "description": "The raw reasoning text from the LLM.",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "High-level topic or domain for the reasoning.",
+                },
+                "concept_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional explicit concept ID. If not provided, "
+                        "generated from topic + timestamp."
+                    ),
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional additional tags.",
+                },
+            },
+            "required": ["thoughts", "topic"],
         },
     },
 ]

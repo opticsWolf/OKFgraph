@@ -29,12 +29,14 @@ import math
 import os
 import re
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import frontmatter
 import ladybug as lb
+from fasteners import InterProcessLock
 import numpy as np
 import yaml
 from optimum.onnxruntime import ORTModelForFeatureExtraction
@@ -204,6 +206,14 @@ class OKFRouter:
             self.conn.execute("PRAGMA journal_mode=WAL")
             logger.debug("WAL mode enabled for %s", db_path)
 
+        # Inter-process write lock (Gap #7b) — prevents concurrent writers
+        # from corrupting the database. Uses a lock file alongside the DB.
+        db_path_obj = Path(db_path)
+        lock_path = str(db_path_obj.with_suffix(db_path_obj.suffix + ".lock"))
+        self._write_lock = InterProcessLock(lock_path)
+        self._write_lock_timeout = 300  # 5 min timeout for acquire()
+        logger.debug("write lock file: %s", lock_path)
+
         self.bundle_root = Path(bundle_root).resolve()
         self.embedding_dim = embedding_dim
         self.model_id = model_id
@@ -317,6 +327,47 @@ class OKFRouter:
                 logger.debug("close failed: %s", e)
         self.conn = None
         self.db = None
+
+        # Release write lock if held (Gap #7b)
+        if hasattr(self, "_write_lock") and self._write_lock is not None:
+            try:
+                self._write_lock.release()
+            except Exception:
+                pass
+            self._write_lock = None
+
+    @contextmanager
+    def _write_lock_ctx(self):
+        """Context manager for inter-process write locking (Gap #7b).
+
+        Acquires the file-based lock before any write operation and releases
+        it on exit. If the lock cannot be acquired within the timeout (5 min),
+        raises a RuntimeError.
+        """
+        if self._write_lock is None:
+            # No lock configured — proceed without locking
+            yield
+            return
+
+        timeout = getattr(self, "_write_lock_timeout", 300)
+        try:
+            acquired = self._write_lock.acquire(timeout=timeout)
+        except Exception as e:
+            raise RuntimeError(f"Failed to acquire write lock: {e}") from e
+
+        if not acquired:
+            raise RuntimeError(
+                "Write lock acquisition timed out (another process is writing). "
+                "Wait for the other writer to finish or increase the timeout."
+            )
+
+        try:
+            yield
+        finally:
+            try:
+                self._write_lock.release()
+            except Exception:
+                pass
 
     def __enter__(self) -> "OKFRouter":
         return self
@@ -619,7 +670,9 @@ class OKFRouter:
         between the data commit and the index build, or when single-file imports
         deferred rebuilding. Returns True if a rebuild ran.
         """
-        return self._build_search_indexes(rebuild=True, force=force)
+        # Acquire write lock (Gap #7b)
+        with self._write_lock_ctx():
+            return self._build_search_indexes(rebuild=True, force=force)
 
     # ------------------------------------------------------------------
     # Index dirty-tracking (Meta key/value markers)
@@ -1026,6 +1079,12 @@ class OKFRouter:
         Returns:
             True if a concept was found and soft-deleted, False if not found.
         """
+        # Acquire write lock (Gap #7b)
+        with self._write_lock_ctx():
+            return self._soft_delete_concept_inner(concept_id)
+
+    def _soft_delete_concept_inner(self, concept_id: str) -> bool:
+        """Inner implementation (called under write lock)."""
         # Check if the concept exists
         rows = self.conn.execute(
             "MATCH (c:Concept {id: $id}) RETURN count(c) AS cnt",
@@ -1085,6 +1144,12 @@ class OKFRouter:
         Returns:
             True if the concept was recovered, False if not found.
         """
+        # Acquire write lock (Gap #7b)
+        with self._write_lock_ctx():
+            return self._recover_concept_inner(concept_id)
+
+    def _recover_concept_inner(self, concept_id: str) -> bool:
+        """Inner implementation (called under write lock)."""
         # Check if the concept exists in DeletedConcept
         rows = self.conn.execute(
             """
@@ -1175,6 +1240,12 @@ class OKFRouter:
         Returns:
             Number of concepts permanently deleted.
         """
+        # Acquire write lock (Gap #7b)
+        with self._write_lock_ctx():
+            return self._purge_deleted_concepts_inner(older_than)
+
+    def _purge_deleted_concepts_inner(self, older_than: Optional[int]) -> int:
+        """Inner implementation (called under write lock)."""
         threshold = older_than if older_than is not None else self.SOFT_DELETE_WINDOW
         cutoff = datetime.now() - __import__("datetime").timedelta(seconds=threshold)
 
@@ -1703,6 +1774,18 @@ class OKFRouter:
         Returns:
             List of imported concept IDs.
         """
+        # Acquire write lock (Gap #7b)
+        with self._write_lock_ctx():
+            return self._import_bundle_inner(bundle_path, batch_size, mode, purge_deleted)
+
+    def _import_bundle_inner(
+        self,
+        bundle_path: Optional[Path],
+        batch_size: int,
+        mode: "str | IngestMode",
+        purge_deleted: bool,
+    ) -> List[str]:
+        """Inner implementation of import_bundle (called under write lock)."""
         mode = IngestMode.coerce(mode)
         root = bundle_path or self.bundle_root
         source_files = sorted(
@@ -2351,6 +2434,7 @@ class OKFRouter:
             concept_id, body, search_dirs=search_dirs,
             allow_remote=self.allow_remote_images,
             allowed_domains=self.allowed_image_domains,
+            bundle_root=self.bundle_root,
         )
 
         stats = {"total": len(images), "text": 0, "omni": 0, "reused": 0, "pruned": 0}
@@ -3950,12 +4034,18 @@ class OKFRouter:
                         )
 
                     # Import into the graph
-                    ids = self.import_bundle(
-                        work_dir,
-                        batch_size=batch_size,
-                        mode=mode,
-                        purge_deleted=purge_deleted,
-                    )
+                    # Temporarily override bundle_root for the temp directory
+                    old_bundle_root = self.bundle_root
+                    self.bundle_root = work_dir
+                    try:
+                        ids = self.import_bundle(
+                            work_dir,
+                            batch_size=batch_size,
+                            mode=mode,
+                            purge_deleted=purge_deleted,
+                        )
+                    finally:
+                        self.bundle_root = old_bundle_root
                     logger.info("imported %d concept(s) from %s", len(ids), pdf_path)
 
                     return {
@@ -4052,6 +4142,20 @@ class OKFRouter:
             - "image_count": Number of images ingested
             - "lint_issues": Lint result dict (fixed_count, unfixable, errors)
         """
+        # Acquire write lock (Gap #7b)
+        with self._write_lock_ctx():
+            return self._ingest_md_inner(md_path, concept_id, title, description, tags, mode)
+
+    def _ingest_md_inner(
+        self,
+        md_path: str | Path,
+        concept_id: str | None,
+        title: str | None,
+        description: str | None,
+        tags: list[str] | None,
+        mode: str,
+    ) -> Dict[str, Any]:
+        """Inner implementation of ingest_md (called under write lock)."""
         md_path = Path(md_path)
         if not md_path.exists():
             raise FileNotFoundError(f"Markdown file not found: {md_path}")
@@ -4134,6 +4238,18 @@ class OKFRouter:
             - "chunk_count": Number of chunks created
             - "markdown": The generated markdown content
         """
+        # Acquire write lock (Gap #7b)
+        with self._write_lock_ctx():
+            return self._ingest_thoughts_inner(thoughts, topic, concept_id, tags)
+
+    def _ingest_thoughts_inner(
+        self,
+        thoughts: str,
+        topic: str,
+        concept_id: str | None,
+        tags: list[str] | None,
+    ) -> Dict[str, Any]:
+        """Inner implementation of ingest_thoughts (called under write lock)."""
         import uuid
 
         # Generate concept_id from topic if not provided

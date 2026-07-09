@@ -213,6 +213,7 @@ def load_image_bytes(
     search_dirs: List[Path],
     allow_remote: bool = False,
     allowed_domains: Optional[List[str]] = None,
+    bundle_root: Optional[Path] = None,
 ) -> Optional[bytes]:
     """Resolve raw image bytes for a markdown ``src``.
 
@@ -224,6 +225,9 @@ def load_image_bytes(
 
     When ``allowed_domains`` is provided, remote URLs are only fetched if the
     domain is in the allowlist (Gap #9a).
+
+    When ``bundle_root`` is provided, local paths are validated to be within
+    the bundle root to prevent path traversal attacks (Gap #9b).
     """
     if src.startswith("data:"):
         return _decode_data_uri(src)
@@ -245,12 +249,12 @@ def load_image_bytes(
     if scheme and scheme not in ("file",):
         return None  # unknown scheme (mailto:, ftp:, ...) — skip
 
-    # Local path (possibly file:// or relative). Normalise.
+    # Block file:// URLs — SSRF risk (Gap #9b)
     if scheme == "file":
-        local = urllib.parse.urlparse(src).path
-    else:
-        local = urllib.parse.unquote(src)
+        return None
 
+    # Local path (relative). Normalise.
+    local = urllib.parse.unquote(src)
     candidate = Path(local)
     tried: List[Path] = []
     if candidate.is_absolute():
@@ -260,11 +264,34 @@ def load_image_bytes(
             tried.append((base / candidate))
     for path in tried:
         try:
+            # Path traversal check (Gap #9b)
+            if bundle_root and not _is_path_within(path, bundle_root):
+                continue  # skip paths outside the bundle root
             if path.is_file():
                 return path.read_bytes()
         except OSError:
             continue
     return None
+
+
+def _is_path_within(file_path: Path, root: Path) -> bool:
+    """Check if a file path is within the given root directory.
+
+    Prevents path traversal attacks where a malicious markdown file references
+    files outside the bundle root (e.g., ``../etc/passwd``).
+
+    Args:
+        file_path: The file path to validate.
+        root: The root directory that all paths must be within.
+
+    Returns:
+        True if the path is within the root, False otherwise.
+    """
+    try:
+        file_path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _load_asset_store_bytes(asset_id: str, search_dirs: List[Path]) -> Optional[bytes]:
@@ -349,6 +376,7 @@ def build_extracted_images(
     search_dirs: List[Path],
     allow_remote: bool = False,
     allowed_domains: Optional[List[str]] = None,
+    bundle_root: Optional[Path] = None,
 ) -> List[ExtractedImage]:
     """Extract every image ref from ``body`` and resolve bytes/metadata."""
     images: List[ExtractedImage] = []
@@ -359,6 +387,7 @@ def build_extracted_images(
             search_dirs=search_dirs,
             allow_remote=allow_remote,
             allowed_domains=allowed_domains,
+            bundle_root=bundle_root,
         )
         images.append(
             ExtractedImage(

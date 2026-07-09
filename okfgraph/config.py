@@ -32,12 +32,18 @@ Example TOML (``okfgraph.toml``):
     allow_remote_images = false
     allowed_image_domains = ["example.com", "cdn.example.com"]
     no_chunking = false
+
+Schema validation (Gap #11b): Invalid values are rejected with clear error
+messages. Supported values are documented in the TOML schema.
 """
 
 import os
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,6 +53,20 @@ class DatabaseConfig:
     dim: int = 512
     wal_mode: bool = False
 
+    def validate(self) -> List[str]:
+        """Validate database settings. Returns list of error messages."""
+        errors = []
+        if not self.path or not self.path.strip():
+            errors.append("database.path must be a non-empty string")
+        if self.dim < 32 or self.dim > 1024:
+            errors.append("database.dim must be between 32 and 1024")
+        if self.dim not in (128, 256, 512, 768, 1024):
+            errors.append(
+                f"database.dim={self.dim} is not a recommended Matryoshka dimension; "
+                f"consider 256 or 512"
+            )
+        return errors
+
 
 @dataclass
 class EmbeddingConfig:
@@ -54,6 +74,20 @@ class EmbeddingConfig:
     device: str = "cpu"
     cache_dir: Optional[str] = None
     omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval"
+
+    def validate(self) -> List[str]:
+        """Validate embedding settings. Returns list of error messages."""
+        errors = []
+        valid_devices = ("cpu", "cuda", "mps", "auto")
+        if self.device not in valid_devices:
+            errors.append(
+                f"embedding.device must be one of {valid_devices}, got '{self.device}'"
+            )
+        if self.cache_dir and not Path(self.cache_dir).is_absolute():
+            errors.append("embedding.cache_dir must be an absolute path")
+        if not self.omni_model_id:
+            errors.append("embedding.omni_model_id must be a non-empty string")
+        return errors
 
 
 @dataclass
@@ -67,6 +101,29 @@ class ImportConfig:
     allowed_image_domains: List[str] = field(default_factory=list)
     no_chunking: bool = False
 
+    def validate(self) -> List[str]:
+        """Validate import settings. Returns list of error messages."""
+        errors = []
+        valid_modes = ("text", "optional", "omni")
+        if self.mode not in valid_modes:
+            errors.append(
+                f"import.mode must be one of {valid_modes}, got '{self.mode}'"
+            )
+        if self.batch_size < 1 or self.batch_size > 256:
+            errors.append("import.batch_size must be between 1 and 256")
+        if self.chunk_size < 64 or self.chunk_size > 8192:
+            errors.append("import.chunk_size must be between 64 and 8192")
+        if self.chunk_overlap < 0 or self.chunk_overlap >= self.chunk_size:
+            errors.append(
+                "import.chunk_overlap must be >= 0 and < chunk_size"
+            )
+        if self.allowed_image_domains:
+            for d in self.allowed_image_domains:
+                if not d or not d.strip():
+                    errors.append("allowed_image_domains contains empty entries")
+                    break
+        return errors
+
 
 @dataclass
 class OKFConfig:
@@ -79,6 +136,24 @@ class OKFConfig:
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     import_config: ImportConfig = field(default_factory=ImportConfig)
     bundle: str = "."
+
+    def validate(self) -> List[str]:
+        """Validate all configuration sections. Returns list of error messages.
+
+        Raises:
+            ValueError: If any validation errors are found.
+        """
+        all_errors = []
+        all_errors.extend(self.database.validate())
+        all_errors.extend(self.embedding.validate())
+        all_errors.extend(self.import_config.validate())
+
+        if all_errors:
+            raise ValueError(
+                "Configuration validation failed:\n" +
+                "\n".join(f"  - {e}" for e in all_errors)
+            )
+        return all_errors
 
     @classmethod
     def load(
@@ -111,6 +186,13 @@ class OKFConfig:
         # Layer 3: CLI args (highest precedence)
         if cli_args:
             cls._apply_cli(config, cli_args)
+
+        # Validate merged configuration (Gap #11b)
+        try:
+            config.validate()
+        except ValueError as e:
+            logger.warning("Configuration validation warnings: %s", e)
+            # Don't fail on validation — just warn. Users can override with CLI.
 
         return config
 

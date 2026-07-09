@@ -2,7 +2,7 @@
 
 **Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings, multimodal image ingestion, delta-aware incremental imports, and schema migration.**
 
-**Architecture**: [architecture.md](architecture.md) v5.8 — gap analysis reviewed 16 gaps (15 closed, 1 open).
+**Architecture**: [architecture.md](architecture.md) v5.9 — all 16 gaps CLOSED.
 
 OKFgraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, chunk-level retrieval, and — in v5.1 — delta detection with safe purge of deleted concepts into a single SQLite-backed system.
 

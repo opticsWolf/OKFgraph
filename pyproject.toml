@@ -19,6 +19,8 @@ dependencies = [
     "sentence-transformers>=3.0",
     "Pillow>=10.0",
     "mcp>=1.0",
+    "fasteners>=0.19",
+
 ]
 
 [project.optional-dependencies]

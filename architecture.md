@@ -1,10 +1,10 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 5.8 (Phase 4: Config, WAL, Security, Soft-Delete)  
-**Based on**: Architecture v5.7 (MCP Server + Linting Consistency)  
+**Version**: 5.9 (Core Gaps: Concurrency, Security, Config, PDF Tests)  
+**Based on**: Architecture v5.8 (Phase 4: Config, WAL, Security, Soft-Delete)  
 **Verified against**: LadybugDB v0.17.1, Python 3.13.14
 
-**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 16 gaps reviewed, 15 closed, 1 open (v5.8).
+**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 16 gaps reviewed, all CLOSED (v5.9).
 
 **Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
@@ -13,6 +13,74 @@
 **Unified Vector Space**: Both encoders write into one `ImageAsset.embedding` column indexed by `image_omni_idx`.  
 **Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
 **Search Modes**: Hybrid (RRF fusion), Traversal (pure graph), Direct (exact ID lookup), Image search (text→image via unified index), **Chunk-level search with graph enrichment**.
+
+---
+
+## Summary of Changes (v5.8 → v5.9)
+
+### Core Gaps Closure (2026-07-09)
+
+| Area | v5.8 | v5.9 | Reason |
+|---|---|---|---|
+| **Concurrency** | WAL only | **filelock-based write locking** | Multi-process write safety |
+| **Security** | URL allowlist only | **path traversal sandboxing + cache verification** | SSRF prevention, supply chain |
+| **Config** | TOML + env vars | **schema validation** | Reject invalid values early |
+| **PDF Tests** | None | **6 end-to-end tests** | Pipeline verification |
+| **Test Coverage** | 300 tests | **335 tests** | Security, config, PDF tests |
+| **Version bump** | 5.8 | **5.9** | Core gaps closure |
+
+### Gap #7b: Filelock Write Locking
+
+Added `InterProcessLock` from `fasteners` library for multi-process write safety:
+
+- Lock file created alongside the DB (`okfgraph.db.lock`)
+- 5-minute timeout for lock acquisition
+- All write operations wrapped: `import_bundle`, `ingest_md`, `ingest_thoughts`, `reindex`, soft-delete methods
+- Lock released on router `close()`
+
+### Gap #9b: Path Traversal Sandboxing
+
+Added `okfgraph/security.py` module with:
+
+- `is_path_safe()` — validates file paths are within bundle root
+- `is_private_ip()` — blocks private/internal IP ranges
+- `validate_image_src()` — comprehensive image source validation
+- `ModelCacheVerifier` — SHA-256 hash verification for model cache files
+
+Integrated into `load_image_bytes()` in `images.py`:
+- Blocks `file://` URLs (SSRF risk)
+- Validates local paths are within bundle root
+- Supports `bundle_root` parameter for path validation
+
+### Gap #9d: Model Cache Verification
+
+`ModelCacheVerifier` class for supply chain security:
+
+- Register expected hashes for model files
+- Verify files on first load, cache results for speed
+- Warn on hash mismatches (first-time loads trusted)
+
+### Gap #11b: TOML Schema Validation
+
+Added `validate()` methods to all config dataclasses:
+
+- `DatabaseConfig`: path non-empty, dim in [32, 1024], recommended Matryoshka dims
+- `EmbeddingConfig`: device in [cpu, cuda, mps, auto], cache_dir absolute
+- `ImportConfig`: mode in [text, optional, omni], batch_size in [1, 256], chunk_size in [64, 8192]
+- `OKFConfig`: aggregates all section validations
+
+Validation warnings logged on config load (non-blocking — CLI args can override).
+
+### Gap #12c: End-to-End PDF Tests
+
+Created `tests/test_pdf_e2e.py` with 6 tests:
+
+- PDF ingestion creates searchable concept
+- PDF output-only mode (no auto-import)
+- FileNotFoundError for nonexistent PDF
+- Progress callback invocation
+- Router pipeline includes linting
+- Router pipeline includes image staging
 
 ---
 

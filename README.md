@@ -555,6 +555,7 @@ Contributions welcome! Please open an issue or pull request. Key areas for contr
 - **P3: LLM tool definition** — add `ingest_pdf` tool to `tools.py` ✅ (closed)
 - **P3: CLI `okf ingest` parity** — fix `stage_images` 5-arg call + mordant linting ✅ (closed)
 - **P3: `ingest_thoughts` linting** — defensive in-memory lint via `_lint_converted_md_str()` ✅ (closed)
+- **P3: Tool parameter parity** — fix `search_hybrid` type filter, `ingest_pdf` bool default, `traverse` defaults ✅ (closed)
 - GPU performance benchmarking at scale (10k+ concepts)
 - Real-world OKF bundle testing
 - `--skip-embedding` flag for faster imports without ONNX encoding

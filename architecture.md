@@ -28,6 +28,7 @@
 | **`ingest_pdf` MCP tool** | Not present | **Full PDF pipeline: convert → stage → lint → import** | PDF ingestion via MCP |
 | **`ingest_thoughts` linting** | Not present | **`_lint_converted_md_str()` in-memory lint** | Defensive linting for LLM-generated markdown |
 | **CLI `okf ingest` parity** | Broken (2-arg `stage_images`, no lint) | **5-arg `stage_images`, mordant linting** | CLI matches router pipeline |
+| **Tool parameter parity** | `search_hybrid` type filter broken, `ingest_pdf` string default, `traverse` missing defaults | **`concept_type` kwarg, bool default, traverse defaults** | LLM/MCP/router signatures aligned |
 | **CLI Entry Point** | `okf` only | **`okf-mcp`** | Stdio transport for MCP clients |
 | **Test Coverage** | 283 tests | **300 tests (+17 MCP + linting)** | Server creation, tool registry, schemas, linting |
 | **Version bump** | 5.6 | **5.7** | MCP `ingest_pdf` + linting consistency |

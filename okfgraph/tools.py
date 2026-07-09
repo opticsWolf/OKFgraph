@@ -11,7 +11,7 @@ TOOLS = [
                     "type": "string",
                     "description": "The search query text.",
                 },
-                "type": {
+                "concept_type": {
                     "type": "string",
                     "description": "Optional concept type filter.",
                 },
@@ -41,17 +41,20 @@ TOOLS = [
                 "relationship": {
                     "type": "string",
                     "enum": ["CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET"],
+                    "default": "CONTAINS",
                     "description": "Relationship type to traverse.",
                 },
                 "direction": {
                     "type": "string",
                     "enum": ["OUTGOING", "INCOMING", "BOTH"],
+                    "default": "OUTGOING",
                     "description": "Traversal direction.",
                 },
                 "depth": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 5,
+                    "default": 1,
                     "description": "Maximum traversal depth.",
                 },
             },
@@ -447,7 +450,7 @@ TOOLS = [
                 },
                 "extract_images": {
                     "type": "boolean",
-                    "default": "true",
+                    "default": True,
                     "description": "Whether to extract embedded images from the PDF.",
                 },
             },

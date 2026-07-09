@@ -155,7 +155,7 @@ def create_mcp_server(
         router = _get_router(ctx)
         kwargs: dict = {"query": query}
         if type_filter is not None:
-            kwargs["type"] = type_filter
+            kwargs["concept_type"] = type_filter
         if tags is not None:
             kwargs["tags"] = tags
         if parent_id is not None:

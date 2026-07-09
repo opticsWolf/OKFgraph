@@ -1,0 +1,46 @@
+"""SearchEngine — all read queries: hybrid search, chunk search, graph
+traversal, hub-score reranking, and convenience lookups.
+
+Extracted from ``okfgraph.router.OKFRouter`` sections:
+  - chunk search / RRF (router.py 2971–3330)
+  - hybrid search (router.py 3331–3464)
+  - graph traversal (router.py 3465–3563)
+  - convenience queries (router.py 3564–3676)
+
+Encoding for query vectors is delegated to ``EmbeddingEngine``.
+"""
+
+from typing import Any, Dict, List, Optional
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class SearchEngine:
+    def __init__(
+        self,
+        conn,
+        tokenizer,
+        embedding_dim: int,
+        embed_engine,
+    ):
+        self.conn = conn
+        self.tokenizer = tokenizer
+        self.embedding_dim = embedding_dim
+        self.embed_engine = embed_engine
+
+    def search_chunks(self, *args, **kwargs) -> List[Dict[str, Any]]: ...
+    def _compute_hub_scores(self, concept_ids: List[str]) -> Dict[str, float]: ...
+    def _get_ancestry(self, concept_id: str, max_depth: int = 5) -> List[Dict[str, Any]]: ...
+    def _get_siblings(self, concept_id: str, limit: int = 5) -> List[Dict[str, Any]]: ...
+    def search_with_context(self, *args, **kwargs) -> str: ...
+    def search_chunks_with_hub_score(self, *args, **kwargs) -> List[Dict[str, Any]]: ...
+    def expand_with_graph_context(self, *args, **kwargs) -> List[Dict[str, Any]]: ...
+    def rerank_with_hub_score(self, *args, **kwargs) -> List[Dict[str, Any]]: ...
+    def search_hybrid(self, *args, **kwargs) -> List[Dict[str, Any]]: ...
+    def find_path(self, *args, **kwargs) -> Optional[List[str]]: ...
+    def traverse(self, *args, **kwargs) -> List[Dict[str, Any]]: ...
+    def get_chunks(self, concept_id: str) -> List[Any]: ...
+    def list_directory(self, directory_id: str) -> List[Dict[str, Any]]: ...
+    def get_by_id(self, concept_id: str) -> Optional[Any]: ...

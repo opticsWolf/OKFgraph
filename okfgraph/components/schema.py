@@ -1,0 +1,53 @@
+"""SchemaManager — table creation, version migrations, search-index lifecycle,
+meta/epoch tracking, and broken-link detection.
+
+Extracted from ``okfgraph.router.OKFRouter`` sections:
+  - schema / migrations        (router.py 82–167, 382–554)
+  - search index (re)build     (router.py 555–676)
+  - meta / dirty tracking      (router.py 677–713)
+  - broken links               (router.py 2909–2970)
+"""
+
+from typing import Any, Callable, Dict, List, Optional
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class SchemaManager:
+    def __init__(
+        self,
+        conn,
+        embedding_dim: int,
+        bundle_root,
+        write_lock_ctx: Callable,
+    ):
+        self.conn = conn
+        self.embedding_dim = embedding_dim
+        self.bundle_root = bundle_root
+        self._write_lock_ctx = write_lock_ctx
+
+    # --- schema / migrations ---
+    def _ensure_schema(self) -> None: ...
+    def _adopt_existing_embedding_dim(self) -> None: ...
+    def _run_schema_migrations(self) -> None: ...
+    def _migrate_v1_to_v2(self) -> None: ...
+    def _migrate_v2_to_v3(self) -> None: ...
+    def _migrate_v3_to_v4(self) -> None: ...
+    def _migrate_v4_to_v5(self) -> None: ...
+
+    # --- search index lifecycle ---
+    def _index_specs(self): ...
+    def _build_search_indexes(self, rebuild: bool, force: bool = False) -> bool: ...
+    def reindex(self, force: bool = True) -> bool: ...
+
+    # --- meta / dirty tracking ---
+    def _get_meta(self, key: str, default: int = 0) -> int: ...
+    def _set_meta(self, key: str, value: int) -> None: ...
+    def _bump_write_epoch(self) -> None: ...
+    def _indexes_dirty(self) -> bool: ...
+
+    # --- broken links ---
+    def list_broken_links(self) -> List[Dict[str, Any]]: ...
+    def repair_links(self) -> int: ...

@@ -2,7 +2,7 @@
 
 **Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings, multimodal image ingestion, delta-aware incremental imports, and schema migration.**
 
-**Architecture**: [architecture.md](architecture.md) v5.7 — gap analysis reviewed 16 gaps (15 closed, 1 open).
+**Architecture**: [architecture.md](architecture.md) v5.8 — gap analysis reviewed 16 gaps (15 closed, 1 open).
 
 OKFgraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, chunk-level retrieval, and — in v5.1 — delta detection with safe purge of deleted concepts into a single SQLite-backed system.
 
@@ -547,9 +547,10 @@ Contributions welcome! Please open an issue or pull request. Key areas for contr
 - **P1: RapidAI version pinning** — pin exact versions + runtime warning ✅ (closed)
 - **P2: Structured logging** — replace `print()` with stdlib logging ✅ (closed)
 - **P2: PDF Ingest API** — `OKFRouter.ingest_pdf()` programmatic API ✅ (closed)
-- **P2: WAL mode** — enable SQLite WAL for concurrent read access
-- **P2: URL allowlist** — restrict `--allow-remote-images` to safe domains
-- **P2: TOML config** — add `okfgraph.toml` + env var support
+- **P2: WAL mode** — enable SQLite WAL for concurrent read access ✅ (closed, v5.8)
+- **P2: URL allowlist** — restrict `--allow-remote-images` to safe domains ✅ (closed, v5.8)
+- **P2: TOML config** — add `okfgraph.toml` + env var support ✅ (closed, v5.8)
+- **P2: Soft-delete recovery** — undo purge within 24h recovery window ✅ (closed, v5.8)
 - **P2: Query latency tracking** — log search query latency
 - **P2: Embedding cache hit rates** — track ONNX model cache hit/miss
 - **P3: LLM tool definition** — add `ingest_pdf` tool to `tools.py` ✅ (closed)

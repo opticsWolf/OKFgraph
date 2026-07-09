@@ -67,11 +67,15 @@ class OKFRouter:
     # ── Schema versioning ─────────────────────────────────────────
     # Incremented every time the on-disk schema changes in a way that
     # requires a migration step (new table, new column, new index).
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
 
     # Migration registry: version → migration function.
     # Each function receives `self` (the router) and must be idempotent.
     _MIGRATIONS: Dict[int, Any] = {}
+
+    # Soft-delete recovery window (seconds). Concepts deleted within this
+    # window can be recovered. Default: 24 hours.
+    SOFT_DELETE_WINDOW = 24 * 60 * 60  # 24 hours
 
     # ------------------------------------------------------------------
     # Schema migrations
@@ -140,10 +144,30 @@ class OKFRouter:
         """)
         logger.info("Schema migrated: v3 → v4 (DirHash)")
 
+    @staticmethod
+    def _migrate_v4_to_v5(router: "OKFRouter") -> None:
+        """v4 → v5: Add DeletedConcept table for soft-delete recovery.
+
+        This corresponds to the v5.8 transition (soft-delete with recovery window).
+        """
+        router.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS DeletedConcept (
+                id STRING PRIMARY KEY,
+                original_id STRING,
+                title STRING,
+                body STRING,
+                deleted_at STRING,
+                type STRING,
+                tags STRING
+            )
+        """)
+        logger.info("Schema migrated: v4 → v5 (DeletedConcept)")
+
     # Register migrations
     _MIGRATIONS[1] = _migrate_v1_to_v2
     _MIGRATIONS[2] = _migrate_v2_to_v3
     _MIGRATIONS[3] = _migrate_v3_to_v4
+    _MIGRATIONS[4] = _migrate_v4_to_v5
 
     def __init__(
         self,
@@ -155,9 +179,11 @@ class OKFRouter:
         cache_dir: Optional[str] = None,
         device: str = "cpu",
         allow_remote_images: bool = False,
+        allowed_image_domains: Optional[List[str]] = None,
         chunk_size: int = 512,
         chunk_overlap: int = 40,
         enable_chunking: bool = True,
+        wal_mode: bool = False,
     ):
         if embedding_dim > 1024:
             raise ValueError(f"embedding_dim must be <= 1024 (model output), got {embedding_dim}")
@@ -172,6 +198,12 @@ class OKFRouter:
 
         self.db = lb.Database(db_path)
         self.conn = lb.Connection(self.db)
+
+        # WAL mode (Gap #7a) — enables concurrent reads during writes.
+        if wal_mode:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            logger.debug("WAL mode enabled for %s", db_path)
+
         self.bundle_root = Path(bundle_root).resolve()
         self.embedding_dim = embedding_dim
         self.model_id = model_id
@@ -179,6 +211,7 @@ class OKFRouter:
         self.cache_dir = cache_dir
         self.device = device
         self.allow_remote_images = allow_remote_images
+        self.allowed_image_domains = allowed_image_domains or []
 
         # Chunking configuration
         self.chunk_size = chunk_size
@@ -975,6 +1008,199 @@ class OKFRouter:
             except Exception:
                 pass
             raise
+
+    # ------------------------------------------------------------------
+    # Soft-Delete with Recovery (Gap #1d)
+    # ------------------------------------------------------------------
+
+    def _soft_delete_concept(self, concept_id: str) -> bool:
+        """Soft-delete a concept by moving it to the DeletedConcept table.
+
+        The concept is preserved with a timestamp so it can be recovered
+        within the recovery window. After the window expires, the concept
+        is permanently deleted.
+
+        Args:
+            concept_id: The ID of the concept to soft-delete.
+
+        Returns:
+            True if a concept was found and soft-deleted, False if not found.
+        """
+        # Check if the concept exists
+        rows = self.conn.execute(
+            "MATCH (c:Concept {id: $id}) RETURN count(c) AS cnt",
+            {"id": concept_id},
+        ).rows_as_dict().get_all()
+        if not rows or rows[0]["cnt"] == 0:
+            logger.debug("soft_delete: concept %s not found, skipping", concept_id)
+            return False
+
+        # Fetch concept data for preservation
+        concept_rows = self.conn.execute(
+            """
+            MATCH (c:Concept {id: $id})
+            RETURN c.title AS title, c.body AS body, c.type AS ctype, c.tags AS tags
+            """,
+            {"id": concept_id},
+        ).rows_as_dict().get_all()
+        if not concept_rows:
+            return False
+
+        concept_data = concept_rows[0]
+        deleted_at = datetime.now().isoformat()
+
+        # Store in DeletedConcept table
+        self.conn.execute(
+            """
+            INSERT INTO DeletedConcept (id, original_id, title, body, deleted_at, type, tags)
+            VALUES ($id, $oid, $title, $body, $deleted_at, $type, $tags)
+            """,
+            {
+                "id": f"deleted_{concept_id}_{int(time.time())}",
+                "oid": concept_id,
+                "title": concept_data.get("title", ""),
+                "body": concept_data.get("body", ""),
+                "deleted_at": deleted_at,
+                "type": concept_data.get("ctype", ""),
+                "tags": json.dumps(concept_data.get("tags", [])),
+            },
+        )
+
+        # Now perform the hard delete
+        self._purge_concept(concept_id)
+
+        logger.info(
+            "soft_delete: concept %s moved to DeletedConcept (recovery until %s)",
+            concept_id,
+            (datetime.now() + __import__("datetime").timedelta(seconds=self.SOFT_DELETE_WINDOW)).isoformat(),
+        )
+        return True
+
+    def _recover_concept(self, concept_id: str) -> bool:
+        """Recover a soft-deleted concept from the DeletedConcept table.
+
+        Args:
+            concept_id: The original ID of the concept to recover.
+
+        Returns:
+            True if the concept was recovered, False if not found.
+        """
+        # Check if the concept exists in DeletedConcept
+        rows = self.conn.execute(
+            """
+            MATCH (d:DeletedConcept {original_id: $id})
+            RETURN d.title AS title, d.body AS body, d.type AS ctype, d.tags AS tags, d.deleted_at AS deleted_at
+            """,
+            {"id": concept_id},
+        ).rows_as_dict().get_all()
+
+        if not rows:
+            logger.debug("recover: concept %s not found in DeletedConcept", concept_id)
+            return False
+
+        deleted_at = datetime.fromisoformat(rows[0]["deleted_at"])
+        now = datetime.now()
+        if (now - deleted_at).total_seconds() > self.SOFT_DELETE_WINDOW:
+            logger.warning(
+                "recover: concept %s deleted at %s is past the recovery window (%ds)",
+                concept_id,
+                deleted_at.isoformat(),
+                self.SOFT_DELETE_WINDOW,
+            )
+            return False
+
+        # Restore the concept
+        concept_data = rows[0]
+        tags = json.loads(concept_data["tags"]) if isinstance(concept_data["tags"], str) else concept_data["tags"]
+
+        self.conn.execute(
+            """
+            INSERT INTO Concept (id, title, body, type, tags)
+            VALUES ($id, $title, $body, $type, $tags)
+            """,
+            {
+                "id": concept_id,
+                "title": concept_data["title"],
+                "body": concept_data["body"],
+                "type": concept_data["ctype"],
+                "tags": tags,
+            },
+        )
+
+        # Remove from DeletedConcept
+        self.conn.execute(
+            "MATCH (d:DeletedConcept {original_id: $id}) DELETE d",
+            {"id": concept_id},
+        )
+
+        logger.info("recover: concept %s restored from DeletedConcept", concept_id)
+        return True
+
+    def list_deleted_concepts(self) -> List[Dict[str, Any]]:
+        """List all soft-deleted concepts with recovery status.
+
+        Returns:
+            List of dicts with concept_id, title, deleted_at, and recoverable status.
+        """
+        rows = self.conn.execute(
+            """
+            MATCH (d:DeletedConcept)
+            RETURN d.original_id AS id, d.title AS title, d.deleted_at AS deleted_at, d.type AS type
+            ORDER BY d.deleted_at DESC
+            """
+        ).rows_as_dict().get_all()
+
+        now = datetime.now()
+        results = []
+        for row in rows:
+            deleted_at = datetime.fromisoformat(row["deleted_at"])
+            age_seconds = (now - deleted_at).total_seconds()
+            results.append({
+                "concept_id": row["id"],
+                "title": row["title"],
+                "type": row["type"],
+                "deleted_at": row["deleted_at"],
+                "age_seconds": age_seconds,
+                "recoverable": age_seconds <= self.SOFT_DELETE_WINDOW,
+            })
+        return results
+
+    def purge_deleted_concepts(self, older_than: Optional[int] = None) -> int:
+        """Permanently delete soft-deleted concepts past the recovery window.
+
+        Args:
+            older_than: Optional override for the recovery window (seconds).
+                        Defaults to SOFT_DELETE_WINDOW.
+
+        Returns:
+            Number of concepts permanently deleted.
+        """
+        threshold = older_than if older_than is not None else self.SOFT_DELETE_WINDOW
+        cutoff = datetime.now() - __import__("datetime").timedelta(seconds=threshold)
+
+        # Find expired entries
+        rows = self.conn.execute(
+            """
+            MATCH (d:DeletedConcept)
+            WHERE d.deleted_at < $cutoff
+            RETURN d.original_id AS id
+            """,
+            {"cutoff": cutoff.isoformat()},
+        ).rows_as_dict().get_all()
+
+        count = 0
+        for row in rows:
+            # Permanently delete (hard purge)
+            if self._purge_concept(row["id"]):
+                count += 1
+            # Remove from DeletedConcept
+            self.conn.execute(
+                "MATCH (d:DeletedConcept {original_id: $id}) DELETE d",
+                {"id": row["id"]},
+            )
+
+        logger.info("purge_deleted: permanently deleted %d expired concept(s)", count)
+        return count
 
     # ------------------------------------------------------------------
     # Embedding
@@ -2122,7 +2348,9 @@ class OKFRouter:
                 search_dirs.append(d)
 
         images = build_extracted_images(
-            concept_id, body, search_dirs=search_dirs, allow_remote=self.allow_remote_images
+            concept_id, body, search_dirs=search_dirs,
+            allow_remote=self.allow_remote_images,
+            allowed_domains=self.allowed_image_domains,
         )
 
         stats = {"total": len(images), "text": 0, "omni": 0, "reused": 0, "pruned": 0}

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from okfgraph.router import OKFRouter
+from okfgraph.config import OKFConfig
 
 # ── Logging setup ──────────────────────────────────────────────────────────
 # Structured logging with stdlib (Gap #10).
@@ -81,15 +82,18 @@ def _teardown_logging() -> None:
 
 def _add_global(parser):
     """Add --db / --bundle / --dim / --cache-dir / --device to any subparser."""
-    parser.add_argument("--db", default="okfgraph.db", help="Database path (default: okfgraph.db)")
-    parser.add_argument("--bundle", default=".", help="Bundle root directory (default: .)")
-    parser.add_argument("--dim", type=int, default=512, help="Embedding dimension (Matryoshka; default: 512)")
-    parser.add_argument("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface)")
-    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Inference device: cpu or cuda (default: cpu)")
-    parser.add_argument("--omni-model-id", default="jinaai/jina-embeddings-v5-omni-small-retrieval", help="Multimodal model ID for image embeddings")
-    parser.add_argument("--chunk-size", type=int, default=512, help="Chunk size in words for overlap (default: 512)")
-    parser.add_argument("--chunk-overlap", type=int, default=40, help="Overlap in words between chunks (default: 40)")
+    parser.add_argument("--db", default=None, help="Database path (default: okfgraph.db, or from okfgraph.toml)")
+    parser.add_argument("--bundle", default=None, help="Bundle root directory (default: ., or from okfgraph.toml)")
+    parser.add_argument("--dim", type=int, default=None, help="Embedding dimension (Matryoshka; default: 512, or from okfgraph.toml)")
+    parser.add_argument("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface, or from okfgraph.toml)")
+    parser.add_argument("--device", default=None, choices=["cpu", "cuda"], help="Inference device: cpu or cuda (default: cpu, or from okfgraph.toml)")
+    parser.add_argument("--omni-model-id", default=None, help="Multimodal model ID for image embeddings (default from okfgraph.toml)")
+    parser.add_argument("--chunk-size", type=int, default=None, help="Chunk size in words for overlap (default: 512, or from okfgraph.toml)")
+    parser.add_argument("--chunk-overlap", type=int, default=None, help="Overlap in words between chunks (default: 40, or from okfgraph.toml)")
     parser.add_argument("--no-chunking", action="store_true", help="Disable chunking during ingestion")
+    parser.add_argument("--wal-mode", action="store_true", help="Enable SQLite WAL mode for concurrent reads (Gap #7a)")
+    parser.add_argument("--allow-remote-images", action="store_true", help="Allow fetching remote images (SSRF risk — use with caution)")
+    parser.add_argument("--allowed-image-domains", default=None, help="Comma-separated list of allowed domains for remote images (Gap #9a)")
 
 
 def _add_logging_flags(parser):
@@ -106,18 +110,45 @@ _OPEN_ROUTERS = []
 
 
 def _router(args):
-    """Build an OKFRouter from parsed args (registered for cleanup on exit)."""
+    """Build an OKFRouter from parsed args (registered for cleanup on exit).
+
+    Uses the config module to merge CLI args with TOML file and env vars.
+    Precedence: CLI > env > file > defaults.
+    """
+    # Build CLI args dict (only non-None values override config)
+    cli_dict = {}
+    for attr in ("db", "bundle", "dim", "cache_dir", "device",
+                 "omni_model_id", "chunk_size", "chunk_overlap",
+                 "no_chunking", "mode", "batch_size",
+                 "allow_remote_images", "wal_mode", "allowed_image_domains"):
+        val = getattr(args, attr, None)
+        if val is not None:
+            cli_dict[attr] = val
+
+    # Resolve bundle root for TOML lookup
+    bundle_root = cli_dict.get("bundle") or "."
+
+    # Load merged config
+    config = OKFConfig.load(bundle_root=bundle_root, cli_args=cli_dict)
+
+    # Build allowed_image_domains list
+    allowed_domains = config.import_config.allowed_image_domains
+    if getattr(args, "allowed_image_domains", None):
+        allowed_domains = [d.strip() for d in args.allowed_image_domains.split(",") if d.strip()]
+
     router = OKFRouter(
-        db_path=str(args.db),
-        bundle_root=str(args.bundle),
-        embedding_dim=args.dim,
-        omni_model_id=getattr(args, "omni_model_id", "jinaai/jina-embeddings-v5-omni-small-retrieval"),
-        cache_dir=getattr(args, "cache_dir", None),
-        device=getattr(args, "device", "cpu"),
-        allow_remote_images=getattr(args, "allow_remote_images", False),
-        chunk_size=getattr(args, "chunk_size", 512),
-        chunk_overlap=getattr(args, "chunk_overlap", 40),
-        enable_chunking=not getattr(args, "no_chunking", False),
+        db_path=config.database.path,
+        bundle_root=str(config.bundle),
+        embedding_dim=config.database.dim,
+        omni_model_id=config.embedding.omni_model_id,
+        cache_dir=config.embedding.cache_dir,
+        device=config.embedding.device,
+        allow_remote_images=config.import_config.allow_remote_images,
+        allowed_image_domains=allowed_domains,
+        chunk_size=config.import_config.chunk_size,
+        chunk_overlap=config.import_config.chunk_overlap,
+        enable_chunking=not config.import_config.no_chunking,
+        wal_mode=config.database.wal_mode,
     )
     _OPEN_ROUTERS.append(router)
     return router
@@ -613,6 +644,41 @@ def _path(args):
         print(f"     id: {n['id']}")
 
 
+def _deleted_list(args):
+    """List soft-deleted concepts with recovery status."""
+    router = _router(args)
+    deleted = router.list_deleted_concepts()
+    if not deleted:
+        print("No soft-deleted concepts found.")
+        return
+    print(f"Soft-deleted concepts ({len(deleted)} total):\n")
+    for d in deleted:
+        status = "recoverable" if d["recoverable"] else "expired"
+        print(f"  [{status}] {d['concept_id']}")
+        print(f"    title: {d['title']}")
+        print(f"    type: {d['type']}")
+        print(f"    deleted: {d['deleted_at']} ({d['age_seconds']:.0f}s ago)")
+        print()
+
+
+def _deleted_recover(args):
+    """Recover a soft-deleted concept."""
+    router = _router(args)
+    success = router._recover_concept(args.concept_id)
+    if success:
+        print(f"[OK] Recovered concept '{args.concept_id}'.")
+    else:
+        print(f"[ERROR] Concept '{args.concept_id}' not found or past recovery window.")
+
+
+def _deleted_purge(args):
+    """Permanently delete expired soft-deleted concepts."""
+    router = _router(args)
+    older_than = getattr(args, "older_than", None)
+    count = router.purge_deleted_concepts(older_than=older_than)
+    print(f"[OK] Permanently deleted {count} expired concept(s).")
+
+
 def _shell(args):
     router = _router(args)
     banner = """OKF Interactive Shell
@@ -948,10 +1014,6 @@ def build_parser():
         help="Also purge concepts whose source files were deleted from disk "
              "(removes concept, chunks, links, and orphaned image assets)",
     )
-    p.add_argument(
-        "--allow-remote-images", action="store_true",
-        help="Fetch http(s) image URLs during ingestion (off by default)",
-    )
 
     # search-images
     p = sub.add_parser("search-images", help="Find images from a text query (unified index)")
@@ -1122,6 +1184,21 @@ def build_parser():
     p.add_argument("id2", help="Ending concept ID")
     p.add_argument("--max-length", type=int, default=6, help="Max path length (default: 6)")
 
+    # Soft-delete commands (Gap #1d)
+    p = sub.add_parser("deleted-list", help="List soft-deleted concepts")
+    _add_global(p)
+    _add_logging_flags(p)
+
+    p = sub.add_parser("deleted-recover", help="Recover a soft-deleted concept")
+    _add_global(p)
+    _add_logging_flags(p)
+    p.add_argument("concept_id", help="Concept ID to recover")
+
+    p = sub.add_parser("deleted-purge", help="Permanently delete expired soft-deleted concepts")
+    _add_global(p)
+    _add_logging_flags(p)
+    p.add_argument("--older-than", type=int, default=None, help="Override recovery window (seconds)")
+
     return parser
 
 
@@ -1171,6 +1248,9 @@ def main():
         "reindex": _reindex,
         "siblings": _siblings,
         "ancestry": _ancestry,
+        "deleted-list": _deleted_list,
+        "deleted-recover": _deleted_recover,
+        "deleted-purge": _deleted_purge,
     }
 
     try:

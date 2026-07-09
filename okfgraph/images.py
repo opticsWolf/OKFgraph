@@ -212,6 +212,7 @@ def load_image_bytes(
     *,
     search_dirs: List[Path],
     allow_remote: bool = False,
+    allowed_domains: Optional[List[str]] = None,
 ) -> Optional[bytes]:
     """Resolve raw image bytes for a markdown ``src``.
 
@@ -220,24 +221,26 @@ def load_image_bytes(
     ``allow_remote`` is set. ``okf-asset://<id>`` links resolve from the
     bundle's on-disk asset store (``<dir>/_assets/<id>.<ext>``); if the bytes
     are not on disk the asset is treated as DB-only and None is returned.
+
+    When ``allowed_domains`` is provided, remote URLs are only fetched if the
+    domain is in the allowlist (Gap #9a).
     """
     if src.startswith("data:"):
         return _decode_data_uri(src)
 
     okf_id = _parse_okf_asset(src)
     if okf_id is not None:
-        # An okf-asset:// reference points at an asset in the bundle's on-disk
-        # store (``<dir>/_assets/<id>.<ext>``). Resolving it here lets the
-        # router embed it under the selected mode (incl. omni) and populate the
-        # BLOB — the asset is owned by the router, not pre-stored by callers.
-        # Returns None when the bytes are not on disk (already DB-only), in
-        # which case planning degrades to the text path.
         return _load_asset_store_bytes(okf_id, search_dirs)
 
     scheme = urllib.parse.urlparse(src).scheme.lower()
     if scheme in ("http", "https"):
         if not allow_remote:
             return None
+        # Domain allowlist check (Gap #9a)
+        if allowed_domains:
+            domain = urllib.parse.urlparse(src).hostname
+            if domain and not _domain_allowed(domain, allowed_domains):
+                return None
         return _fetch_remote(src)
     if scheme and scheme not in ("file",):
         return None  # unknown scheme (mailto:, ftp:, ...) — skip
@@ -313,18 +316,50 @@ def _fetch_remote(src: str) -> Optional[bytes]:
         return None
 
 
+def _domain_allowed(domain: str, allowed_domains: List[str]) -> bool:
+    """Check if a domain is in the allowlist.
+
+    Supports exact matches and wildcard subdomains (*.example.com).
+    Blocks private IP ranges and localhost.
+    """
+    # Block private/internal addresses
+    if domain in ("localhost", "0.0.0.0", "127.0.0.1"):
+        return False
+    # Block private IP ranges
+    if domain.startswith(("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.")):
+        return False
+
+    for pattern in allowed_domains:
+        if pattern.startswith("*."):
+            # Wildcard subdomain match
+            base = pattern[2:]
+            if domain == base or domain.endswith("." + base):
+                return True
+        else:
+            # Exact match
+            if domain == pattern:
+                return True
+    return False
+
+
 def build_extracted_images(
     concept_id: str,
     body: str,
     *,
     search_dirs: List[Path],
     allow_remote: bool = False,
+    allowed_domains: Optional[List[str]] = None,
 ) -> List[ExtractedImage]:
     """Extract every image ref from ``body`` and resolve bytes/metadata."""
     images: List[ExtractedImage] = []
     for i, (alt, src) in enumerate(extract_image_refs(body), start=1):
         filename = filename_from_src(src)
-        data = load_image_bytes(src, search_dirs=search_dirs, allow_remote=allow_remote)
+        data = load_image_bytes(
+            src,
+            search_dirs=search_dirs,
+            allow_remote=allow_remote,
+            allowed_domains=allowed_domains,
+        )
         images.append(
             ExtractedImage(
                 concept_id=concept_id,

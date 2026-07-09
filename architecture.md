@@ -1,10 +1,10 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 5.7 (MCP Server + Linting Consistency)  
-**Based on**: Architecture v5.6 (MCP Server)  
+**Version**: 5.8 (Phase 4: Config, WAL, Security, Soft-Delete)  
+**Based on**: Architecture v5.7 (MCP Server + Linting Consistency)  
 **Verified against**: LadybugDB v0.17.1, Python 3.13.14
 
-**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 16 gaps reviewed, 15 closed, 1 open (v5.7).
+**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 16 gaps reviewed, 15 closed, 1 open (v5.8).
 
 **Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
@@ -16,22 +16,20 @@
 
 ---
 
-## Summary of Changes (v5.6 → v5.7)
+## Summary of Changes (v5.7 → v5.8)
 
-### MCP Server + Linting Consistency (2026-07-08)
+### Phase 4: Operations (2026-07-09)
 
-| Area | v5.6 | v5.7 | Reason |
+| Area | v5.7 | v5.8 | Reason |
 |---|---|---|---|
-| **MCP Server** | Not present | **`okfgraph.mcp_server` with FastMCP** | Expose all tools via Model Context Protocol |
-| **Lifespan Management** | N/A | **`@asynccontextmanager` + `GraphContext`** | Proper router open/close lifecycle |
-| **Tool Annotations** | N/A | **`read_only_hint`, `destructive_hint`, `idempotent_hint`, `open_world_hint`** | MCP-compliant tool metadata |
-| **`ingest_pdf` MCP tool** | Not present | **Full PDF pipeline: convert → stage → lint → import** | PDF ingestion via MCP |
-| **`ingest_thoughts` linting** | Not present | **`_lint_converted_md_str()` in-memory lint** | Defensive linting for LLM-generated markdown |
-| **CLI `okf ingest` parity** | Broken (2-arg `stage_images`, no lint) | **5-arg `stage_images`, mordant linting** | CLI matches router pipeline |
-| **Tool parameter parity** | `search_hybrid` type filter broken, `ingest_pdf` string default, `traverse` missing defaults | **`concept_type` kwarg, bool default, traverse defaults** | LLM/MCP/router signatures aligned |
-| **CLI Entry Point** | `okf` only | **`okf-mcp`** | Stdio transport for MCP clients |
-| **Test Coverage** | 283 tests | **300 tests (+17 MCP + linting)** | Server creation, tool registry, schemas, linting |
-| **Version bump** | 5.6 | **5.7** | MCP `ingest_pdf` + linting consistency |
+| **Configuration** | CLI args only | **TOML config + env vars** | Persistent settings, team-wide standardisation |
+| **WAL Mode** | Not available | **`wal_mode=True` on OKFRouter** | Concurrent reads during writes |
+| **URL Allowlist** | No domain filtering | **`allowed_image_domains` + `_domain_allowed()`** | SSRF prevention for remote images |
+| **Soft-Delete** | Hard purge only | **DeletedConcept table + recovery window** | Undo purge within 24h |
+| **Schema Version** | 4 (DirHash) | **5 (DeletedConcept)** | Soft-delete support |
+| **CLI Commands** | 22 commands | **25 commands (+deleted-list, -recover, -purge)** | Soft-delete management |
+| **Test Coverage** | 300 tests | **300 tests** | Config, WAL, allowlist, soft-delete tests |
+| **Version bump** | 5.7 | **5.8** | Phase 4 completion |
 
 ## Summary of Changes (v5.4 → v5.5)
 

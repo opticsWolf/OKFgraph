@@ -3,7 +3,7 @@
 TOOLS = [
     {
         "name": "search_hybrid",
-        "description": "Semantic + keyword search over concepts. Use for open-ended questions. To add new content to the graph, use ``ingest_md`` or ``ingest_thoughts`` instead.",
+        "description": "Semantic + keyword search over concepts. Use for open-ended questions. To add new content to the graph, use ``ingest_md``, ``ingest_thoughts``, or ``ingest_pdf`` instead.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -30,7 +30,7 @@ TOOLS = [
     },
     {
         "name": "traverse",
-        "description": "Navigate relationships (CONTAINS or LINKS_TO) from a concept. To expand the graph, use ``ingest_md`` to add documents or ``ingest_thoughts`` to persist reasoning.",
+        "description": "Navigate relationships (CONTAINS or LINKS_TO) from a concept. To expand the graph, use ``ingest_md`` to add documents, ``ingest_thoughts`` to persist reasoning, or ``ingest_pdf`` to convert PDFs.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -406,6 +406,52 @@ TOOLS = [
                 },
             },
             "required": ["thoughts", "topic"],
+        },
+    },
+    {
+        "name": "ingest_pdf",
+        "description": (
+            "Convert a PDF to markdown and import into the knowledge graph. "
+            "Uses the HybridConverter pipeline (pdf_oxide fast path + ONNX/Rapid "
+            "heavy passes). The resulting markdown is linted with mordant before "
+            "import — fixable formatting issues are auto-corrected. "
+            "Returns the concept ID(s) so the content can be searched or traversed. "
+            "For importing existing markdown files, use ``ingest_md`` instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pdf_path": {
+                    "type": "string",
+                    "description": "Path to the PDF file to convert and import.",
+                },
+                "routing_mode": {
+                    "type": "string",
+                    "enum": ["auto", "surgical", "always", "never"],
+                    "default": "auto",
+                    "description": (
+                        "ONNX routing mode. 'auto' = use ONNX only when needed, "
+                        "'surgical' = target specific elements, 'always' = force ONNX, "
+                        "'never' = pdf_oxide fast path only."
+                    ),
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["text", "optional", "omni"],
+                    "default": "text",
+                    "description": (
+                        "Image ingestion mode for the converted content. "
+                        "'text' = embed alt-text only, 'optional' = rich for missing alt-text, "
+                        "'omni' = rich for all images."
+                    ),
+                },
+                "extract_images": {
+                    "type": "boolean",
+                    "default": "true",
+                    "description": "Whether to extract embedded images from the PDF.",
+                },
+            },
+            "required": ["pdf_path"],
         },
     },
 ]

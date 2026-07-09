@@ -1,10 +1,10 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 5.5 (Directory-Level Hash Aggregation)  
-**Based on**: Architecture v5.4 (Gap Analysis Consolidation)  
+**Version**: 5.7 (MCP Server + Linting Consistency)  
+**Based on**: Architecture v5.6 (MCP Server)  
 **Verified against**: LadybugDB v0.17.1, Python 3.13.14
 
-**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 15 gaps reviewed, 14 closed, 1 open (v5.5).
+**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 16 gaps reviewed, 15 closed, 1 open (v5.7).
 
 **Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
@@ -15,6 +15,22 @@
 **Search Modes**: Hybrid (RRF fusion), Traversal (pure graph), Direct (exact ID lookup), Image search (text→image via unified index), **Chunk-level search with graph enrichment**.
 
 ---
+
+## Summary of Changes (v5.6 → v5.7)
+
+### MCP Server + Linting Consistency (2026-07-08)
+
+| Area | v5.6 | v5.7 | Reason |
+|---|---|---|---|
+| **MCP Server** | Not present | **`okfgraph.mcp_server` with FastMCP** | Expose all tools via Model Context Protocol |
+| **Lifespan Management** | N/A | **`@asynccontextmanager` + `GraphContext`** | Proper router open/close lifecycle |
+| **Tool Annotations** | N/A | **`read_only_hint`, `destructive_hint`, `idempotent_hint`, `open_world_hint`** | MCP-compliant tool metadata |
+| **`ingest_pdf` MCP tool** | Not present | **Full PDF pipeline: convert → stage → lint → import** | PDF ingestion via MCP |
+| **`ingest_thoughts` linting** | Not present | **`_lint_converted_md_str()` in-memory lint** | Defensive linting for LLM-generated markdown |
+| **CLI `okf ingest` parity** | Broken (2-arg `stage_images`, no lint) | **5-arg `stage_images`, mordant linting** | CLI matches router pipeline |
+| **CLI Entry Point** | `okf` only | **`okf-mcp`** | Stdio transport for MCP clients |
+| **Test Coverage** | 283 tests | **300 tests (+17 MCP + linting)** | Server creation, tool registry, schemas, linting |
+| **Version bump** | 5.6 | **5.7** | MCP `ingest_pdf` + linting consistency |
 
 ## Summary of Changes (v5.4 → v5.5)
 
@@ -1172,6 +1188,119 @@ TOOLS = [
     },
 ]
 ```
+
+---
+
+## 6a. MCP Server (`okfgraph.mcp_server`)
+
+The MCP server exposes all OKFgraph tools via the [Model Context Protocol](https://modelcontextprotocol.io/), allowing any MCP-compatible client (Claude Desktop, Cursor, Continue, etc.) to interact with the knowledge graph directly.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    MCP Client                           │
+│  (Claude Desktop, Cursor, Continue, etc.)               │
+└──────────────────────┬──────────────────────────────────┘
+                       │ stdio transport
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│                 FastMCP Server                           │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              Lifespan Context                     │   │
+│  │                                                   │   │
+│  │  @asynccontextmanager async def _lifespan(mcp):   │   │
+│  │      router = OKFRouter(...)                      │   │
+│  │      try:                                         │   │
+│  │          yield GraphContext(router=router)        │   │
+│  │      finally:                                     │   │
+│  │          router.close()                           │   │
+│  └──────────────────────────────────────────────────┘   │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              Tool Registry (16 tools)             │   │
+│  │                                                   │   │
+│  │  Read (12):  search_hybrid, traverse, get_by_id, │   │
+│  │              list_directory, search_images,       │   │
+│  │              search_chunks, search_with_context,  │   │
+│  │              search_chunks_with_hub_score,        │   │
+│  │              expand_with_graph_context,           │   │
+│  │              get_chunks, reconstruct_document,    │   │
+│  │              find_path                            │   │
+│  │                                                   │   │
+│  │  Write (4):   export_bundle, ingest_md,           │   │
+│  │                ingest_thoughts, ingest_pdf        │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Tool Annotations
+
+All tools carry MCP-compliant annotations:
+
+| Tool Category | `read_only_hint` | `destructive_hint` | `idempotent_hint` | `open_world_hint` |
+|---|---|---|---|---|
+| Read (12 tools) | `True` | `False` | `True` | `False` |
+| Write (4 tools) | `False` | `False` | `True`* | `False` |
+
+*`ingest_thoughts` and `ingest_pdf` are `idempotent_hint=False` since they generate unique IDs per call.
+
+### Context Injection
+
+Each tool function receives the `OKFRouter` instance via the MCP `Context` parameter:
+
+```python
+@mcp.tool()
+def search_hybrid(query: str, ctx: Context) -> str:
+    router = _get_router(ctx)  # extracts OKFRouter from lifespan context
+    results = router.search_hybrid(query)
+    return json.dumps(results, default=str, indent=2)
+```
+
+The `_get_router()` helper extracts the `GraphContext` from `ctx.request_context.lifespan_context`.
+
+### CLI Entry Point
+
+```bash
+# Start MCP server with stdio transport
+okf-mcp --db-path ./my_graph.db
+
+# With GPU acceleration
+okf-mcp --db-path ./my_graph.db --device cuda
+
+# With custom embedding dimension
+okf-mcp --db-path ./my_graph.db --embedding-dim 512
+
+# Disable chunking
+okf-mcp --db-path ./my_graph.db --no-chunking
+```
+
+### Programmatic Usage
+
+```python
+from okfgraph.mcp_server import create_mcp_server
+
+mcp = create_mcp_server(
+    db_path="./my_graph.db",
+    bundle_root="./my-knowledge-base",
+    device="cpu",
+    embedding_dim=1024,
+    enable_chunking=True,
+)
+mcp.run(transport="stdio")
+```
+
+### Configuration
+
+| Parameter | Default | Description |
+|---|---|---|
+| `--db-path` | **(required)** | Path to the Ladybug database file |
+| `--bundle-root` | db parent | Root directory for the OKF bundle |
+| `--device` | `cpu` | Device for ONNX inference (`cpu` or `cuda`) |
+| `--embedding-dim` | `1024` | Dimension of the embedding vectors |
+| `--no-chunking` | `False` | Disable document chunking |
+| `--log-level` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 
 ---
 

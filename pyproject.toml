@@ -18,6 +18,7 @@ dependencies = [
     "torch>=2.5",
     "sentence-transformers>=3.0",
     "Pillow>=10.0",
+    "mcp>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +35,7 @@ pdf-ingest = [
 
 [project.scripts]
 okf = "okfgraph.cli:main"
+okf-mcp = "okfgraph.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["okfgraph*"]

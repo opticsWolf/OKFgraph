@@ -2,7 +2,7 @@
 
 **Ladybug-backed knowledge graph with ONNX-optimized Jina v5 embeddings, multimodal image ingestion, delta-aware incremental imports, and schema migration.**
 
-**Architecture**: [architecture.md](architecture.md) v5.5 — gap analysis reviewed 15 gaps (14 closed, 1 open).
+**Architecture**: [architecture.md](architecture.md) v5.7 — gap analysis reviewed 16 gaps (15 closed, 1 open).
 
 OKFgraph is a Python library and CLI tool for building, querying, and managing knowledge graphs from Markdown/OKF documents. It combines graph traversal, hybrid semantic search, chunk-level retrieval, and — in v5.1 — delta detection with safe purge of deleted concepts into a single SQLite-backed system.
 
@@ -19,7 +19,8 @@ OKFgraph is a Python library and CLI tool for building, querying, and managing k
 | **Import/Export** | OKF Markdown round-trip, batch import with single-transaction upsert, **delta detection** (SHA-256 hash skip), **purge deleted concepts** (`--purge`), filtered bulk export with graph enrichment (See Also + Cited By), auto-generated index.md files |
 | **PDF Ingestion** | `okfgraph.ingest` sub-module — pdf_oxide fast path + ONNX/Rapid heavy passes (RapidLaTeXOCR, RapidOCR, RapidLayout, RapidTable), four routing modes (NEVER/AUTO/SURGICAL/ALWAYS), Paddle-free |
 | **CLI** | 14 commands + interactive REPL, `--mode` for image ingestion, `--device cuda` with auto-fallback, chunking flags (`--chunk-overlap`, `--no-chunking`), `--purge` for stale concept cleanup |
-| **LLM Tools** | 13 OpenAI-compatible tool definitions for agent integration (search, traverse, chunks, graph enrichment, path finding, export) |
+| **LLM Tools** | 16 OpenAI-compatible tool definitions for agent integration (search, traverse, chunks, graph enrichment, path finding, export, ingest_md, ingest_thoughts, ingest_pdf) |
+| **MCP Server** | Model Context Protocol server (`okf-mcp`) — stdio transport, lifespan-managed router, 16 tools with read/write annotations, compatible with Claude Desktop, Cursor, Continue |
 
 ---
 
@@ -129,6 +130,48 @@ okf list concepts
 
 # Interactive shell
 okf shell
+```
+
+### MCP Server
+
+OKFgraph includes a [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes all 16 tools over stdio transport. Compatible with Claude Desktop, Cursor, Continue, and any MCP client.
+
+```bash
+# Start MCP server (stdio transport)
+okf-mcp --db-path ./okfgraph.db
+
+# With GPU acceleration
+okf-mcp --db-path ./okfgraph.db --device cuda
+
+# With custom embedding dimension
+okf-mcp --db-path ./okfgraph.db --embedding-dim 512
+```
+
+**Claude Desktop config** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "okfgraph": {
+      "command": "python",
+      "args": ["-m", "okfgraph.mcp_server", "--db-path", "/path/to/okfgraph.db"]
+    }
+  }
+}
+```
+
+**Programmatic usage**:
+
+```python
+from okfgraph.mcp_server import create_mcp_server
+
+mcp = create_mcp_server(
+    db_path="./okfgraph.db",
+    bundle_root="./my-knowledge-base",
+    device="cpu",
+    embedding_dim=1024,
+)
+mcp.run(transport="stdio")
 ```
 
 ---
@@ -398,7 +441,7 @@ OKFgraph has undergone a comprehensive gap analysis ([docs/gap-analysis.md](docs
 | **Error Isolation** | ✅ Closed (v5.1) | Per-concept error isolation in import pipeline |
 | **Index Lifecycle** | ✅ Closed (v5.1) | Epoch-based dirty tracking + change-driven rebuild |
 | **Context Window** | ✅ Closed (v5.1) | 90% threshold warning for oversized chunks |
-| **Missing Tests** | ✅ Closed (v5.7) | 288 tests across 22 files (17 GPU tests) |
+| **Missing Tests** | ✅ Closed (v5.7) | 300 tests across 16 files (15 GPU tests) |
 | **RapidAI Pinning** | ✅ Closed (v5.4) | Version pins + runtime warning |
 | **Observability** | ✅ Closed (v5.4) | Structured logging + profiling hooks |
 | **PDF Ingest API** | ✅ Closed (v5.4) | `OKFRouter.ingest_pdf()` programmatic API |
@@ -509,7 +552,9 @@ Contributions welcome! Please open an issue or pull request. Key areas for contr
 - **P2: TOML config** — add `okfgraph.toml` + env var support
 - **P2: Query latency tracking** — log search query latency
 - **P2: Embedding cache hit rates** — track ONNX model cache hit/miss
-- **P3: LLM tool definition** — add `ingest_pdf` tool to `tools.py`
+- **P3: LLM tool definition** — add `ingest_pdf` tool to `tools.py` ✅ (closed)
+- **P3: CLI `okf ingest` parity** — fix `stage_images` 5-arg call + mordant linting ✅ (closed)
+- **P3: `ingest_thoughts` linting** — defensive in-memory lint via `_lint_converted_md_str()` ✅ (closed)
 - GPU performance benchmarking at scale (10k+ concepts)
 - Real-world OKF bundle testing
 - `--skip-embedding` flag for faster imports without ONNX encoding

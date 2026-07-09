@@ -399,13 +399,32 @@ def _ingest_pdf(args):
                 # Stage any extracted images as okf-asset:// URIs
                 img_dir = work_dir / "_assets"
                 img_dir.mkdir(exist_ok=True)
-                for img in work_dir.glob("*."):
+                for img in work_dir.glob("*"):
                     if img.is_file() and img.suffix.lower() in (
                         ".png", ".jpg", ".jpeg", ".gif", ".webp",
                     ):
                         img.rename(img_dir / img.name)
 
-                stage_images_as_okf_assets(md_path, img_dir)
+                md_text = md_path.read_text(encoding="utf-8")
+                md_text, img_count = stage_images_as_okf_assets(
+                    md_text, img_dir, pdf_path, work_dir, stem
+                )
+                md_path.write_text(md_text, encoding="utf-8")
+
+                # Lint converted markdown (Gap #5c)
+                lint_result = router._lint_converted_md(md_path, auto_fix=True)
+                if lint_result["fixed"]:
+                    md_path.write_text(lint_result["content"], encoding="utf-8")
+                    logger.info(
+                        "linted %s: fixed %d issues",
+                        md_path.name,
+                        lint_result["fixed_count"],
+                    )
+                if lint_result["errors"]:
+                    logger.warning(
+                        "PDF output has %d structural errors — proceeding anyway",
+                        len(lint_result["errors"]),
+                    )
 
                 # Import into the graph
                 mode = getattr(args, "mode", "text")
@@ -447,14 +466,17 @@ def _ingest_pdf(args):
             # Stage images
             img_dir = output_dir / "_assets"
             img_dir.mkdir(exist_ok=True)
-            for img in output_dir.glob("*."):
+            for img in output_dir.glob("*"):
                 if img.is_file() and img.suffix.lower() in (
                     ".png", ".jpg", ".jpeg", ".gif", ".webp",
                 ):
                     img.rename(img_dir / img.name)
 
-            from okfgraph.ingest.assets import stage_images_as_okf_assets
-            stage_images_as_okf_assets(md_path, img_dir)
+            md_text = md_path.read_text(encoding="utf-8")
+            md_text, img_count = stage_images_as_okf_assets(
+                md_text, img_dir, pdf_path, output_dir, stem
+            )
+            md_path.write_text(md_text, encoding="utf-8")
 
             logger.info("written %s", md_path)
             logger.info("assets in %s", img_dir)

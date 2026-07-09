@@ -192,7 +192,7 @@ class TestDeviceSelection:
 class TestTools:
     def test_tools_export(self):
         from okfgraph.tools import TOOLS
-        assert len(TOOLS) == 15  # 13 original + ingest_md + ingest_thoughts
+        assert len(TOOLS) == 16  # 13 original + ingest_md + ingest_thoughts + ingest_pdf
 
     def test_tool_names(self):
         from okfgraph.tools import TOOLS
@@ -397,4 +397,29 @@ class TestIngestThoughts:
         )
 
         assert result["concept_id"] == "my_custom_id"
+
+    def test_thoughts_linting_applied(self, tmp_path):
+        """ingest_thoughts lints the generated markdown in-memory."""
+        from okfgraph.router import OKFRouter
+
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        # Thoughts with trailing whitespace and extra blank lines
+        bad_thoughts = "   This has trailing spaces.   \n\n\n\n\nParagraph two.   "
+        result = r.ingest_thoughts(
+            thoughts=bad_thoughts,
+            topic="linting_test",
+        )
+        assert result["concept_id"].startswith("thought_")
+        # Lint result should be present
+        assert "lint_issues" in result
+        lint = result["lint_issues"]
+        assert isinstance(lint, dict)
+        assert "fixed_count" in lint
+        # The fixed markdown should have trailing spaces removed
+        assert lint["fixed"] is True
+        assert lint["fixed_count"] > 0
         r.close()

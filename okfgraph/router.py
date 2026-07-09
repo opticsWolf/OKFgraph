@@ -3439,6 +3439,51 @@ class OKFRouter:
     # Single-File Import Helpers (Gap #5c)
     # ------------------------------------------------------------------
 
+    def _lint_converted_md_str(
+        self,
+        content: str,
+        *,
+        auto_fix: bool = True,
+    ) -> Dict[str, Any]:
+        """Lint markdown content in-memory (no file I/O).
+
+        Returns a dict with the same keys as ``_lint_converted_md``.
+        """
+        diagnostics = mordant.lint(content, gfm_opts=mordant.GfmOptions.all())
+
+        if not diagnostics:
+            return {
+                "content": content,
+                "fixed": False,
+                "fixed_count": 0,
+                "unfixable": [],
+                "errors": [],
+            }
+
+        fixable_rules = {"MD009", "MD012", "MD047"}
+        error_rules = {"MD001", "MD031", "MD033"}
+        unfixable = [d for d in diagnostics if d.rule not in fixable_rules]
+        errors = [d for d in diagnostics if d.rule in error_rules]
+
+        fixed_content = content
+        fixed_count = 0
+
+        if auto_fix:
+            fixable = [d for d in diagnostics if d.rule in fixable_rules]
+            if fixable:
+                result = mordant.fix(content, gfm_opts=mordant.GfmOptions.all())
+                if result.fixed:
+                    fixed_content = result.output
+                    fixed_count = len(result.fixed)
+
+        return {
+            "content": fixed_content,
+            "fixed": fixed_count > 0,
+            "fixed_count": fixed_count,
+            "unfixable": [d.rule for d in unfixable],
+            "errors": [d.rule for d in errors],
+        }
+
     def _import_single_concept(
         self,
         concept: "ConceptModel",
@@ -3884,6 +3929,23 @@ class OKFRouter:
         ]
         markdown = "\n".join(header_lines)
 
+        # Defensive lint: the LLM-provided thoughts text may contain
+        # malformed markdown (trailing spaces, blank lines, etc.).
+        lint_result = self._lint_converted_md_str(markdown, auto_fix=True)
+        if lint_result["fixed"]:
+            markdown = lint_result["content"]
+            logger.info(
+                "ingest_thoughts: linted %s, fixed %d issues",
+                concept_id,
+                lint_result["fixed_count"],
+            )
+        if lint_result["errors"]:
+            logger.warning(
+                "ingest_thoughts: %s has %d structural errors",
+                concept_id,
+                len(lint_result["errors"]),
+            )
+
         # Apply tags
         all_tags = list(set(["thought", "reasoning", topic] + (tags or [])))
 
@@ -3906,4 +3968,5 @@ class OKFRouter:
             "tags": result["tags"],
             "chunk_count": result["chunk_count"],
             "markdown": markdown,
+            "lint_issues": lint_result,
         }

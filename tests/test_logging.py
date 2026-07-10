@@ -70,13 +70,14 @@ class TestImportBundleTiming:
 
     def test_import_bundle_logs_phase_durations(self, test_router):
         """import_bundle logs phase durations to the logger."""
-        from okfgraph.router import logger as router_logger
+        from okfgraph.components.import_ import logger as router_logger
 
         # Capture log output
         log_stream = StringIO()
         handler = logging.StreamHandler(log_stream)
         handler.setLevel(logging.DEBUG)
         router_logger.addHandler(handler)
+        router_logger.setLevel(logging.DEBUG)
 
         # Import the test bundle
         bundle_path = Path(__file__).parent / "fixtures" / "bundle"
@@ -90,12 +91,13 @@ class TestImportBundleTiming:
 
     def test_import_bundle_logs_parse_count(self, test_router):
         """import_bundle logs the number of parsed concepts."""
-        from okfgraph.router import logger as router_logger
+        from okfgraph.components.import_ import logger as router_logger
 
         log_stream = StringIO()
         handler = logging.StreamHandler(log_stream)
         handler.setLevel(logging.DEBUG)
         router_logger.addHandler(handler)
+        router_logger.setLevel(logging.DEBUG)
 
         bundle_path = Path(__file__).parent / "fixtures" / "bundle"
         test_router.import_bundle(bundle_path=bundle_path)
@@ -107,12 +109,13 @@ class TestImportBundleTiming:
 
     def test_import_bundle_logs_encode_duration(self, test_router):
         """import_bundle logs encode phase duration."""
-        from okfgraph.router import logger as router_logger
+        from okfgraph.components.import_ import logger as router_logger
 
         log_stream = StringIO()
         handler = logging.StreamHandler(log_stream)
         handler.setLevel(logging.DEBUG)
         router_logger.addHandler(handler)
+        router_logger.setLevel(logging.DEBUG)
 
         bundle_path = Path(__file__).parent / "fixtures" / "bundle"
         test_router.import_bundle(bundle_path=bundle_path)

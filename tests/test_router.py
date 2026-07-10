@@ -82,8 +82,10 @@ class TestOKFRouterSmoke:
         assert OKFRouter is not None
 
     def test_encode_method_exists(self):
-        from okfgraph.router import OKFRouter
-        assert hasattr(OKFRouter, "_encode")
+        # Encoding moved to the EmbeddingEngine component (Phase 1 refactor);
+        # the facade exposes it via router.embed_engine / the bridge.
+        from okfgraph.components import EmbeddingEngine
+        assert hasattr(EmbeddingEngine, "_encode")
 
     def test_search_hybrid_method_exists(self):
         from okfgraph.router import OKFRouter

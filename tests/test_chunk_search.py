@@ -68,18 +68,18 @@ class TestChunkSearch:
         return cls._seeded_docs
 
     def test_search_returns_results(self, router, seeded_docs):
-        results = router.search_chunks("shared query words")
+        results = router.search_engine.search_chunks("shared query words")
         assert len(results) > 0
 
     def test_rrf_scores_ordered_descending(self, router, seeded_docs):
-        results = router.search_chunks("shared query words")
+        results = router.search_engine.search_chunks("shared query words")
         if len(results) < 2:
             pytest.skip("Need at least 2 results for ordering check")
         scores = [r["rrf_score"] for r in results]
         assert scores == sorted(scores, reverse=True)
 
     def test_results_have_required_fields(self, router, seeded_docs):
-        results = router.search_chunks("shared query words")
+        results = router.search_engine.search_chunks("shared query words")
         for r in results:
             assert "chunk_id" in r
             assert "chunk_text" in r
@@ -89,12 +89,12 @@ class TestChunkSearch:
             assert "rrf_score" in r
 
     def test_limit_respected(self, router, seeded_docs):
-        results = router.search_chunks("shared query words", limit=2)
+        results = router.search_engine.search_chunks("shared query words", limit=2)
         assert len(results) <= 2
 
     def test_max_chunks_per_doc(self, router, seeded_docs):
         """Limit results to at most 1 chunk per document."""
-        results = router.search_chunks("shared query words", max_chunks_per_doc=1)
+        results = router.search_engine.search_chunks("shared query words", max_chunks_per_doc=1)
         parent_ids = {r["parent_doc_id"] for r in results}
         # Each parent should appear at most once
         for pid in parent_ids:
@@ -104,12 +104,12 @@ class TestChunkSearch:
     def test_parent_id_filter(self, router, seeded_docs):
         """Filter chunks to only those belonging to a specific document."""
         target_id = seeded_docs[0]
-        results = router.search_chunks("shared query words", parent_id=target_id)
+        results = router.search_engine.search_chunks("shared query words", parent_id=target_id)
         for r in results:
             assert r["parent_doc_id"] == target_id
 
     def test_empty_results_on_no_match(self, router, seeded_docs):
         """A very specific query that shouldn't match anything."""
-        results = router.search_chunks("xyzzyplughthudethquux")
+        results = router.search_engine.search_chunks("xyzzyplughthudethquux")
         # May still get some vector hits, but should be limited
         assert isinstance(results, list)

@@ -274,7 +274,7 @@ def create_mcp_server(
     ) -> str:
         """Search document chunks using RRF-fused vector + FTS. Returns chunk-level results with parent document metadata."""
         router = _get_router(ctx)
-        results = router.search_chunks(query, limit=limit)
+        results = router.search_engine.search_chunks(query, limit=limit)
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
@@ -299,7 +299,7 @@ def create_mcp_server(
     ) -> str:
         """Search chunks + expand results with graph neighborhood context."""
         router = _get_router(ctx)
-        results = router.search_with_context(
+        results = router.search_engine.search_with_context(
             query, limit=limit, context_hops=context_hops
         )
         return json.dumps(results, default=str, indent=2)
@@ -326,7 +326,7 @@ def create_mcp_server(
     ) -> str:
         """Search chunks and rerank by graph hub score (incoming link count)."""
         router = _get_router(ctx)
-        results = router.search_chunks_with_hub_score(
+        results = router.search_engine.search_chunks_with_hub_score(
             query, limit=limit, hub_weight=hub_weight
         )
         return json.dumps(results, default=str, indent=2)
@@ -356,7 +356,7 @@ def create_mcp_server(
     ) -> str:
         """Expand chunk search results with graph-context neighbours."""
         router = _get_router(ctx)
-        results = router.expand_with_graph_context(
+        results = router.search_engine.expand_with_graph_context(
             chunk_ids, hops=hops, max_results=max_results
         )
         return json.dumps(results, default=str, indent=2)
@@ -377,7 +377,7 @@ def create_mcp_server(
     ) -> str:
         """Get all chunks for a concept, ordered by chunk index."""
         router = _get_router(ctx)
-        results = router.get_chunks(concept_id)
+        results = router.search_engine.get_chunks(concept_id)
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
@@ -396,7 +396,7 @@ def create_mcp_server(
     ) -> str:
         """Reconstruct the original markdown document from its stored chunks."""
         router = _get_router(ctx)
-        result = router.reconstruct_document(concept_id)
+        result = router.embed_engine.reconstruct_document(concept_id)
         return json.dumps(result, default=str, indent=2)
 
     @mcp.tool(
@@ -418,7 +418,7 @@ def create_mcp_server(
     ) -> str:
         """Find the shortest path between two concepts in the knowledge graph."""
         router = _get_router(ctx)
-        results = router.find_path(start_id, end_id, max_length=max_length)
+        results = router.search_engine.find_path(start_id, end_id, max_length=max_length)
         return json.dumps(results, default=str, indent=2)
 
     # ------------------------------------------------------------------
@@ -460,7 +460,7 @@ def create_mcp_server(
             kwargs["concept_type"] = concept_type
         if tags is not None:
             kwargs["tags"] = tags
-        result = router.export_bundle(**kwargs)
+        result = router.export_mgr.export_bundle(**kwargs)
         return json.dumps(result, default=str, indent=2)
 
     @mcp.tool(
@@ -513,7 +513,7 @@ def create_mcp_server(
             kwargs["description"] = description
         if tags is not None:
             kwargs["tags"] = tags
-        result = router.ingest_md(**kwargs)
+        result = router.ingest_mgr.ingest_md(**kwargs)
         return json.dumps(result, default=str, indent=2)
 
     @mcp.tool(
@@ -554,7 +554,7 @@ def create_mcp_server(
             kwargs["concept_id"] = concept_id
         if tags is not None:
             kwargs["tags"] = tags
-        result = router.ingest_thoughts(**kwargs)
+        result = router.ingest_mgr.ingest_thoughts(**kwargs)
         return json.dumps(result, default=str, indent=2)
 
     @mcp.tool(
@@ -599,7 +599,7 @@ def create_mcp_server(
     ) -> str:
         """Convert a PDF to markdown and import into the knowledge graph. Uses the HybridConverter pipeline (pdf_oxide fast path + ONNX/Rapid heavy passes). The resulting markdown is linted with mordant before import — fixable formatting issues are auto-corrected. Returns the concept ID(s) so the content can be searched or traversed. For importing existing markdown files, use ingest_md instead."""
         router = _get_router(ctx)
-        result = router.ingest_pdf(
+        result = router.ingest_mgr.ingest_pdf(
             pdf_path=pdf_path,
             auto_import=True,
             routing_mode=routing_mode,

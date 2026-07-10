@@ -201,7 +201,7 @@ def _import(args):
     purge = getattr(args, "purge", False)
     if getattr(args, "import_all", False):
         bundle_path = Path(args.bundle) if args.bundle else None
-        ids = router.import_bundle(
+        ids = router.import_mgr.import_bundle(
             bundle_path,
             batch_size=getattr(args, "batch_size", 32) or 32,
             mode=mode,
@@ -209,7 +209,7 @@ def _import(args):
         )
         logger.info("imported %d concept(s) (mode: %s)", len(ids), mode)
         for cid in ids:
-            n = len(router.list_images(cid))
+            n = len(router.image_mgr.list_images(cid))
             suffix = f"  [{n} image(s)]" if n else ""
             logger.info("  %s%s", cid, suffix)
     else:
@@ -219,14 +219,14 @@ def _import(args):
                 logger.warning("skipping %s: file not found", fp)
                 continue
             cid = router.import_from_okf(path, mode=mode)
-            imgs = router.list_images(cid)
+            imgs = router.image_mgr.list_images(cid)
             suffix = f" ({len(imgs)} image(s), mode: {mode})" if imgs else ""
             logger.info("imported: %s%s", cid, suffix)
 
 
 def _search_images(args):
     router = _router(args)
-    results = router.search_images_with_text(
+    results = router.image_mgr.search_images_with_text(
         text_query=args.query,
         use_text_model=not getattr(args, "use_omni", False),
         limit=args.limit,
@@ -325,7 +325,7 @@ def _export(args):
     router = _router(args)
     if getattr(args, "export_all", False):
         tags = args.tags.split(",") if args.tags else None
-        ids = router.export_bundle(
+        ids = router.export_mgr.export_bundle(
             output_dir=Path(args.output),
             directory_id=args.parent,
             concept_type=args.type,
@@ -361,7 +361,7 @@ def _repair_links(args):
 def _reindex(args):
     logger = logging.getLogger("cli")
     router = _router(args)
-    ran = router.reindex(force=not getattr(args, "if_dirty", False))
+    ran = router.schema_mgr.reindex(force=not getattr(args, "if_dirty", False))
     if ran:
         logger.info("search indexes rebuilt")
     else:
@@ -443,7 +443,7 @@ def _ingest_pdf(args):
                 md_path.write_text(md_text, encoding="utf-8")
 
                 # Lint converted markdown (Gap #5c)
-                lint_result = router._lint_converted_md(md_path, auto_fix=True)
+                lint_result = router.ingest_mgr._lint_converted_md(md_path, auto_fix=True)
                 if lint_result["fixed"]:
                     md_path.write_text(lint_result["content"], encoding="utf-8")
                     logger.info(
@@ -460,7 +460,7 @@ def _ingest_pdf(args):
                 # Import into the graph
                 mode = getattr(args, "mode", "text")
                 purge = getattr(args, "purge", False)
-                ids = router.import_bundle(
+                ids = router.import_mgr.import_bundle(
                     work_dir,
                     batch_size=getattr(args, "batch_size", 32) or 32,
                     mode=mode,
@@ -468,7 +468,7 @@ def _ingest_pdf(args):
                 )
                 logger.info("imported %d concept(s) from %s", len(ids), pdf_path)
                 for cid in ids:
-                    n = len(router.list_images(cid))
+                    n = len(router.image_mgr.list_images(cid))
                     suffix = f"  [{n} image(s)]" if n else ""
                     logger.info("  %s%s", cid, suffix)
         else:
@@ -519,7 +519,7 @@ def _ingest_pdf(args):
 
 def _search_chunks(args):
     router = _router(args)
-    results = router.search_chunks(
+    results = router.search_engine.search_chunks(
         query=args.query,
         limit=args.limit,
         include_parent=not getattr(args, "no-parent", False),
@@ -540,7 +540,7 @@ def _search_chunks(args):
 
 def _chunks(args):
     router = _router(args)
-    chunks = router.get_chunks(args.concept_id)
+    chunks = router.search_engine.get_chunks(args.concept_id)
     if not chunks:
         print("No chunks found for this concept.")
         return
@@ -552,7 +552,7 @@ def _chunks(args):
 
 def _context(args):
     router = _router(args)
-    results = router.search_with_context(
+    results = router.search_engine.search_with_context(
         query=args.query,
         limit=args.limit,
         context_hops=getattr(args, "context_hops", 1),
@@ -580,7 +580,7 @@ def _context(args):
 
 def _hub_search(args):
     router = _router(args)
-    results = router.search_chunks_with_hub_score(
+    results = router.search_engine.search_chunks_with_hub_score(
         query=args.query,
         limit=args.limit,
         hub_weight=getattr(args, "hub_weight", 0.3),
@@ -598,7 +598,7 @@ def _hub_search(args):
 
 def _siblings(args):
     router = _router(args)
-    sibs = router._get_siblings(args.concept_id)
+    sibs = router.search_engine._get_siblings(args.concept_id)
     if not sibs:
         print("No siblings found.")
         return
@@ -610,7 +610,7 @@ def _siblings(args):
 
 def _ancestry(args):
     router = _router(args)
-    path = router._get_ancestry(args.concept_id)
+    path = router.search_engine._get_ancestry(args.concept_id)
     if not path:
         print(f"No directory ancestry for '{args.concept_id}'.")
         return
@@ -621,7 +621,7 @@ def _ancestry(args):
 
 def _reconstruct(args):
     router = _router(args)
-    text = router.reconstruct_document(args.concept_id)
+    text = router.embed_engine.reconstruct_document(args.concept_id)
     if not text:
         print("No chunks found for this concept.")
         return
@@ -634,7 +634,7 @@ def _reconstruct(args):
 
 def _path(args):
     router = _router(args)
-    nodes = router.find_path(args.id1, args.id2, max_length=getattr(args, "max_length", 6))
+    nodes = router.search_engine.find_path(args.id1, args.id2, max_length=getattr(args, "max_length", 6))
     if not nodes:
         print(f"No path found between '{args.id1}' and '{args.id2}'.")
         return
@@ -647,7 +647,7 @@ def _path(args):
 def _deleted_list(args):
     """List soft-deleted concepts with recovery status."""
     router = _router(args)
-    deleted = router.list_deleted_concepts()
+    deleted = router.purge_mgr.list_deleted_concepts()
     if not deleted:
         print("No soft-deleted concepts found.")
         return
@@ -664,7 +664,7 @@ def _deleted_list(args):
 def _deleted_recover(args):
     """Recover a soft-deleted concept."""
     router = _router(args)
-    success = router._recover_concept(args.concept_id)
+    success = router.purge_mgr._recover_concept(args.concept_id)
     if success:
         print(f"[OK] Recovered concept '{args.concept_id}'.")
     else:
@@ -675,7 +675,7 @@ def _deleted_purge(args):
     """Permanently delete expired soft-deleted concepts."""
     router = _router(args)
     older_than = getattr(args, "older_than", None)
-    count = router.purge_deleted_concepts(older_than=older_than)
+    count = router.purge_mgr.purge_deleted_concepts(older_than=older_than)
     print(f"[OK] Permanently deleted {count} expired concept(s).")
 
 
@@ -748,7 +748,7 @@ Image modes:
                 print(f"Error: {fp} not found")
                 continue
             cid = router.import_from_okf(fp, mode=mode)
-            imgs = router.list_images(cid)
+            imgs = router.image_mgr.list_images(cid)
             suffix = f" ({len(imgs)} image(s), mode: {mode})" if imgs else ""
             print(f"[OK] Imported: {cid}{suffix}")
 
@@ -759,7 +759,7 @@ Image modes:
                 mode = tokens[-1].lower()
                 tokens = tokens[:-1]
             bundle_path = Path(" ".join(tokens)) if tokens else None
-            ids = router.import_bundle(bundle_path, mode=mode)
+            ids = router.import_mgr.import_bundle(bundle_path, mode=mode)
             print(f"[OK] Imported {len(ids)} concepts (image mode: {mode})")
 
         elif cmd == "search" and rest:
@@ -784,7 +784,7 @@ Image modes:
                     print(f"     {desc[:120]}")
 
         elif cmd == "search-images" and rest:
-            results = router.search_images_with_text(rest.strip())
+            results = router.image_mgr.search_images_with_text(rest.strip())
             if not results:
                 print("No image results found.")
             for i, r in enumerate(results, 1):
@@ -793,7 +793,7 @@ Image modes:
                 print(f"     id: {r['id']}")
 
         elif cmd == "search-chunks" and rest:
-            results = router.search_chunks(rest.strip())
+            results = router.search_engine.search_chunks(rest.strip())
             if not results:
                 print("No chunk results found.")
             for i, r in enumerate(results, 1):
@@ -803,7 +803,7 @@ Image modes:
                     print(f"     parent: {r['parent_title']}")
 
         elif cmd == "context" and rest:
-            results = router.search_with_context(rest.strip())
+            results = router.search_engine.search_with_context(rest.strip())
             if not results:
                 print("No results found.")
             for i, r in enumerate(results, 1):
@@ -818,7 +818,7 @@ Image modes:
                     print(f"     → links to: {', '.join(titles)}")
 
         elif cmd == "hub-search" and rest:
-            results = router.search_chunks_with_hub_score(rest.strip())
+            results = router.search_engine.search_chunks_with_hub_score(rest.strip())
             if not results:
                 print("No results found.")
             for i, r in enumerate(results, 1):
@@ -831,7 +831,7 @@ Image modes:
             if len(tokens) < 2:
                 print("Usage: path <id1> <id2>")
             else:
-                nodes = router.find_path(tokens[0], tokens[1])
+                nodes = router.search_engine.find_path(tokens[0], tokens[1])
                 if not nodes:
                     print(f"No path found between '{tokens[0]}' and '{tokens[1]}'.")
                 else:
@@ -841,21 +841,21 @@ Image modes:
                         print(f"     id: {n['id']}")
 
         elif cmd == "siblings" and rest:
-            sibs = router._get_siblings(rest.strip())
+            sibs = router.search_engine._get_siblings(rest.strip())
             if not sibs:
                 print("No siblings found.")
             for s in sibs:
                 print(f"  {s['title']} ({s['type']})")
 
         elif cmd == "ancestry" and rest:
-            path = router._get_ancestry(rest.strip())
+            path = router.search_engine._get_ancestry(rest.strip())
             if not path:
                 print("No directory ancestry.")
             for a in path:
                 print(f"  {a['title']}")
 
         elif cmd == "chunks" and rest:
-            chunks = router.get_chunks(rest.strip())
+            chunks = router.search_engine.get_chunks(rest.strip())
             if not chunks:
                 print("No chunks found.")
             for c in chunks:
@@ -863,14 +863,14 @@ Image modes:
                 print(f"  #{c.chunk_index} [{c.block_type}] {text}")
 
         elif cmd == "reconstruct" and rest:
-            text = router.reconstruct_document(rest.strip())
+            text = router.embed_engine.reconstruct_document(rest.strip())
             if not text:
                 print("No chunks found for this concept.")
             else:
                 print(text)
 
         elif cmd == "images" and rest:
-            imgs = router.list_images(rest.strip())
+            imgs = router.image_mgr.list_images(rest.strip())
             if not imgs:
                 print("No images attached.")
             for im in imgs:
@@ -908,7 +908,7 @@ Image modes:
                 print(f"Concept '{rest.strip()}' not found")
 
         elif cmd == "export-bundle" and rest:
-            ids = router.export_bundle(Path(rest.strip()))
+            ids = router.export_mgr.export_bundle(Path(rest.strip()))
             print(f"[OK] Exported {len(ids)} concepts to {rest.strip()}")
 
         elif cmd == "export" and rest:

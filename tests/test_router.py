@@ -268,7 +268,7 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_md(md_path)
+        result = r.ingest_mgr.ingest_md(md_path)
 
         assert "concept_id" in result
         assert result["title"] == "Test"
@@ -290,7 +290,7 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_md(md_path)
+        result = r.ingest_mgr.ingest_md(md_path)
 
         assert result["lint_issues"]["fixed_count"] > 0
         r.close()
@@ -305,7 +305,7 @@ class TestIngestMd:
             device="cpu",
         )
         with pytest.raises(FileNotFoundError):
-            r.ingest_md("/nonexistent/path.md")
+            r.ingest_mgr.ingest_md("/nonexistent/path.md")
         r.close()
 
     def test_import_with_explicit_metadata(self, tmp_path):
@@ -323,7 +323,7 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_md(
+        result = r.ingest_mgr.ingest_md(
             md_path,
             title="Override",
             tags=["custom", "test"],
@@ -347,7 +347,7 @@ class TestIngestThoughts:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_thoughts(
+        result = r.ingest_mgr.ingest_thoughts(
             thoughts="I think we should use X because Y and Z.",
             topic="architecture",
         )
@@ -372,7 +372,7 @@ class TestIngestThoughts:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_thoughts(
+        result = r.ingest_mgr.ingest_thoughts(
             thoughts="The best approach is to use a graph database.",
             topic="database",
         )
@@ -392,7 +392,7 @@ class TestIngestThoughts:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_thoughts(
+        result = r.ingest_mgr.ingest_thoughts(
             thoughts="Test reasoning.",
             topic="test",
             concept_id="my_custom_id",
@@ -411,7 +411,7 @@ class TestIngestThoughts:
         )
         # Thoughts with trailing whitespace and extra blank lines
         bad_thoughts = "   This has trailing spaces.   \n\n\n\n\nParagraph two.   "
-        result = r.ingest_thoughts(
+        result = r.ingest_mgr.ingest_thoughts(
             thoughts=bad_thoughts,
             topic="linting_test",
         )

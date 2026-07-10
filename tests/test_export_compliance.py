@@ -65,7 +65,7 @@ class TestOKFExportCompliance:
     def test_export_has_see_also(self):
         """doc_a should have 'See Also' with doc_b (outgoing link)."""
         out = Path(self.tmp_dir) / "export"
-        self.router.export_bundle(out)
+        self.router.export_mgr.export_bundle(out)
         body = (out / "doc_a.md").read_text()
         assert "## See Also" in body
         assert "doc_b.md" in body
@@ -73,7 +73,7 @@ class TestOKFExportCompliance:
     def test_export_has_cited_by(self):
         """doc_a should have 'Cited By' with doc_c (incoming link)."""
         out = Path(self.tmp_dir) / "export"
-        self.router.export_bundle(out)
+        self.router.export_mgr.export_bundle(out)
         body = (out / "doc_a.md").read_text()
         assert "## Cited By" in body
         assert "doc_c.md" in body
@@ -81,7 +81,7 @@ class TestOKFExportCompliance:
     def test_export_no_duplicate_links(self):
         """If a link already exists in the body, it should not be duplicated."""
         out = Path(self.tmp_dir) / "export"
-        self.router.export_bundle(out)
+        self.router.export_mgr.export_bundle(out)
         body = (out / "doc_b.md").read_text()
         # doc_b has no outgoing LINKS_TO edges, so no "See Also"
         assert "## See Also" not in body
@@ -89,20 +89,20 @@ class TestOKFExportCompliance:
     def test_export_has_index_files(self):
         """index.md files should be generated for each directory."""
         out = Path(self.tmp_dir) / "export"
-        self.router.export_bundle(out)
+        self.router.export_mgr.export_bundle(out)
         # Root-level concepts don't generate index.md (no parent directory)
         # But nested concepts do. Add a nested concept and re-export.
         nested = Path(self.tmp_dir) / "nested/item.md"
         nested.parent.mkdir(exist_ok=True)
         nested.write_text("---\ntype: note\ntitle: Nested Item\n---\nNested.")
         self.router.import_from_okf(nested)
-        self.router.export_bundle(out)
+        self.router.export_mgr.export_bundle(out)
         assert (out / "nested" / "index.md").exists()
 
     def test_export_preserves_original_body(self):
         """Original body content is preserved, sections are appended."""
         out = Path(self.tmp_dir) / "export"
-        self.router.export_bundle(out)
+        self.router.export_mgr.export_bundle(out)
         body = (out / "doc_a.md").read_text()
         assert "Content of A." in body
         assert "description: First doc." in body
@@ -110,7 +110,7 @@ class TestOKFExportCompliance:
     def test_export_filters_by_type(self):
         """Only concepts of the specified type are exported."""
         out = Path(self.tmp_dir) / "export"
-        self.router.export_bundle(out, concept_type="note")
+        self.router.export_mgr.export_bundle(out, concept_type="note")
         assert (out / "doc_a.md").exists()
         assert (out / "doc_b.md").exists()
         assert (out / "doc_c.md").exists()
@@ -123,7 +123,7 @@ class TestOKFExportCompliance:
         nested.write_text("---\ntype: note\ntitle: Nested\n---\nNested content.")
         self.router.import_from_okf(nested)
         out = Path(self.tmp_dir) / "export_sub"
-        self.router.export_bundle(out, directory_id="sub")
+        self.router.export_mgr.export_bundle(out, directory_id="sub")
         assert (out / "sub" / "nested.md").exists()
         assert not (out / "doc_a.md").exists()  # not under "sub"
 
@@ -138,13 +138,13 @@ class TestOKFExportCompliance:
 
     def test_enrich_body_no_outgoing_links(self):
         """Concept with no outgoing links gets no See Also section."""
-        body = self.router._enrich_body_with_graph_links("doc_b", "Some content.")
+        body = self.router.export_mgr._enrich_body_with_graph_links("doc_b", "Some content.")
         assert "## See Also" not in body
 
     def test_enrich_body_no_incoming_links(self):
         """Concept with no incoming links gets no Cited By section."""
         # doc_b has incoming link from doc_a, so use a concept with no links
-        body = self.router._enrich_body_with_graph_links("doc_c", "Some content.")
+        body = self.router.export_mgr._enrich_body_with_graph_links("doc_c", "Some content.")
         # doc_c has outgoing link to doc_a but no incoming links
         assert "## Cited By" not in body
 
@@ -152,14 +152,14 @@ class TestOKFExportCompliance:
         """Empty concept dict generates no index files."""
         out = Path(self.tmp_dir) / "export_empty"
         out.mkdir(exist_ok=True)
-        self.router._generate_index_files(out, {})
+        self.router.export_mgr._generate_index_files(out, {})
         # No index.md should be created for empty dict
         assert not (out / "index.md").exists()
 
     def test_export_bundle_returns_ids(self):
         """export_bundle returns list of exported concept IDs."""
         out = Path(self.tmp_dir) / "export"
-        exported = self.router.export_bundle(out)
+        exported = self.router.export_mgr.export_bundle(out)
         assert "doc_a" in exported
         assert "doc_b" in exported
         assert "doc_c" in exported
@@ -167,5 +167,5 @@ class TestOKFExportCompliance:
     def test_export_bundle_empty(self):
         """export_bundle returns empty list when no concepts match."""
         out = Path(self.tmp_dir) / "export"
-        exported = self.router.export_bundle(out, concept_type="nonexistent")
+        exported = self.router.export_mgr.export_bundle(out, concept_type="nonexistent")
         assert exported == []

@@ -64,40 +64,40 @@ class TestMetaAndEpoch:
 
     def test_get_meta_default_zero(self, router):
         """Non-existent keys return 0."""
-        assert router._get_meta("nonexistent_key") == 0
+        assert router.schema_mgr._get_meta("nonexistent_key") == 0
 
     def test_get_meta_custom_default(self, router):
         """Custom default is returned when key doesn't exist."""
-        assert router._get_meta("nonexistent_key", default=42) == 42
+        assert router.schema_mgr._get_meta("nonexistent_key", default=42) == 42
 
     def test_set_meta_and_get_meta(self, router):
         """Round-trip: set a value, read it back."""
-        router._set_meta("test_key", 123)
-        assert router._get_meta("test_key") == 123
+        router.schema_mgr._set_meta("test_key", 123)
+        assert router.schema_mgr._get_meta("test_key") == 123
 
     def test_bump_write_epoch_increments(self, router):
         """Each bump increments write_epoch by 1."""
-        router._set_meta("write_epoch", 0)
-        router._bump_write_epoch()
-        assert router._get_meta("write_epoch") >= 1
+        router.schema_mgr._set_meta("write_epoch", 0)
+        router.schema_mgr._bump_write_epoch()
+        assert router.schema_mgr._get_meta("write_epoch") >= 1
 
     def test_indexes_dirty_after_bump(self, router):
         """After bumping write_epoch, indexes are dirty."""
-        router._set_meta("write_epoch", 10)
-        router._set_meta("indexed_epoch", 5)
-        assert router._indexes_dirty() is True
+        router.schema_mgr._set_meta("write_epoch", 10)
+        router.schema_mgr._set_meta("indexed_epoch", 5)
+        assert router.schema_mgr._indexes_dirty() is True
 
     def test_indexes_clean_when_epochs_match(self, router):
         """When write_epoch == indexed_epoch, indexes are clean."""
-        router._set_meta("write_epoch", 7)
-        router._set_meta("indexed_epoch", 7)
-        assert router._indexes_dirty() is False
+        router.schema_mgr._set_meta("write_epoch", 7)
+        router.schema_mgr._set_meta("indexed_epoch", 7)
+        assert router.schema_mgr._indexes_dirty() is False
 
     def test_indexes_clean_on_fresh_db(self, router):
         """Fresh DB: both epochs are 0, indexes are clean."""
         # After init, both should be 0 (or both absent, treated as 0)
-        we = router._get_meta("write_epoch")
-        ie = router._get_meta("indexed_epoch")
+        we = router.schema_mgr._get_meta("write_epoch")
+        ie = router.schema_mgr._get_meta("indexed_epoch")
         # If neither has been bumped, they should be equal
         assert we == ie or (we == 0 and ie == 0)
 
@@ -131,39 +131,39 @@ class TestReindex:
 
     def test_reindex_returns_bool(self, router):
         """reindex() returns a boolean."""
-        result = router.reindex()
+        result = router.schema_mgr.reindex()
         assert isinstance(result, bool)
 
     def test_reindex_force_rebuilds(self, router):
         """reindex(force=True) rebuilds regardless of dirty state."""
         # Ensure epochs match (clean)
-        router._set_meta("write_epoch", 1)
-        router._set_meta("indexed_epoch", 1)
-        assert not router._indexes_dirty()
+        router.schema_mgr._set_meta("write_epoch", 1)
+        router.schema_mgr._set_meta("indexed_epoch", 1)
+        assert not router.schema_mgr._indexes_dirty()
         # Force rebuild should still return True (or False if no search available)
-        result = router.reindex(force=True)
+        result = router.schema_mgr.reindex(force=True)
         assert isinstance(result, bool)
 
     def test_reindex_skips_when_clean(self, router):
         """reindex(force=False) skips when indexes are clean."""
-        router._set_meta("write_epoch", 2)
-        router._set_meta("indexed_epoch", 2)
-        result = router.reindex(force=False)
+        router.schema_mgr._set_meta("write_epoch", 2)
+        router.schema_mgr._set_meta("indexed_epoch", 2)
+        result = router.schema_mgr.reindex(force=False)
         # Should skip (False) when clean
         assert result is False
 
     def test_reindex_rebuilds_when_dirty(self, router):
         """reindex(force=False) rebuilds when indexes are dirty."""
-        if not getattr(router, "_search_available", False):
+        if not getattr(router.schema_mgr, "_search_available", False):
             pytest.skip("Search extensions not available")
-        router._set_meta("write_epoch", 100)
-        router._set_meta("indexed_epoch", 50)
-        assert router._indexes_dirty()
-        result = router.reindex(force=False)
+        router.schema_mgr._set_meta("write_epoch", 100)
+        router.schema_mgr._set_meta("indexed_epoch", 50)
+        assert router.schema_mgr._indexes_dirty()
+        result = router.schema_mgr.reindex(force=False)
         # If indexes were built, indexed_epoch should be stamped to 100.
         # If indexes already existed and CREATE was skipped, result is False
         # but indexed_epoch is still stamped (the rebuild path stamps regardless).
-        assert router._get_meta("indexed_epoch") == 100
+        assert router.schema_mgr._get_meta("indexed_epoch") == 100
 
 
 # ── Broken Links / Repair ──────────────────────────────────────────────────
@@ -293,7 +293,7 @@ class TestAdoptExistingDim:
         # We already have a Concept table from init, but the method should
         # handle the case where it doesn't
         try:
-            router._adopt_existing_embedding_dim()
+            router.schema_mgr._adopt_existing_embedding_dim()
         except Exception:
             pytest.fail("_adopt_existing_embedding_dim should not raise")
 
@@ -337,7 +337,7 @@ class TestPerConceptErrorIsolation:
         subdir.mkdir(exist_ok=True)
         for i in range(3):
             _write_okf(str(subdir), f"good_{i}.md", f"Good {i}", f"Content {i} " * 50)
-        ids = router.import_bundle(subdir)
+        ids = router.import_mgr.import_bundle(subdir)
         assert len(ids) == 3
 
     def test_import_bundle_continues_after_parse_error(self, router, tmp_dir):
@@ -347,19 +347,19 @@ class TestPerConceptErrorIsolation:
         subdir.mkdir(exist_ok=True)
         _write_okf(str(subdir), "ok1.md", "OK1", "Content " * 50)
         _write_okf(str(subdir), "ok2.md", "OK2", "Content " * 50)
-        ids = router.import_bundle(subdir)
+        ids = router.import_mgr.import_bundle(subdir)
         assert len(ids) == 2
 
     def test_import_chunks_for_concept_exists(self, router):
         """_import_chunks_for_concept method exists (Gap #6d)."""
-        assert hasattr(router, "_import_chunks_for_concept")
+        assert hasattr(router.import_mgr, "_import_chunks_for_concept")
 
     def test_import_chunks_for_concept_handles_empty_body(self, router):
         """_import_chunks_for_concept handles a parsed item with empty body."""
         parsed_item = {"body": "", "cid": "nonexistent_doc"}
         # Should not raise — just returns early (no chunks to create)
         try:
-            router._import_chunks_for_concept(parsed_item)
+            router.import_mgr._import_chunks_for_concept(parsed_item)
         except Exception:
             # Concept doesn't exist, so PART_OF creation may fail — that's OK
             # The key is that chunk splitting/encoding doesn't crash
@@ -456,7 +456,7 @@ class TestSchemaMigration:
 
     def test_schema_version_stamped_on_new_db(self, router):
         """A fresh database gets the current schema version stamped."""
-        version = router._get_meta("schema_version", 0)
+        version = router.schema_mgr._get_meta("schema_version", 0)
         assert version == OKFRouter.SCHEMA_VERSION
 
     def test_migrations_dict_populated(self):
@@ -482,7 +482,7 @@ class TestSchemaMigration:
     def test_run_migrations_idempotent_on_current(self, router, tmp_dir, caplog):
         """Running migrations on an up-to-date DB is a no-op."""
         with caplog.at_level(logging.DEBUG):
-            router._run_schema_migrations()
+            router.schema_mgr._run_schema_migrations()
         # No migration info messages (already current)
         assert not any(
             "Schema migration:" in record.message
@@ -492,22 +492,22 @@ class TestSchemaMigration:
     def test_run_migrations_runs_on_old_version(self, router, tmp_dir, caplog):
         """Simulating an old DB triggers migrations."""
         # Temporarily set version to 0 (fresh DB simulation)
-        router._set_meta("schema_version", 0)
+        router.schema_mgr._set_meta("schema_version", 0)
         with caplog.at_level(logging.DEBUG):
-            router._run_schema_migrations()
+            router.schema_mgr._run_schema_migrations()
         # Should stamp to current version
-        version = router._get_meta("schema_version", 0)
+        version = router.schema_mgr._get_meta("schema_version", 0)
         assert version == OKFRouter.SCHEMA_VERSION
 
     def test_run_migrations_runs_partial(self, router, tmp_dir, caplog):
         """Simulating a v1 DB (missing Chunk) triggers migration."""
         target = OKFRouter.SCHEMA_VERSION
         # Set version to one behind
-        router._set_meta("schema_version", target - 1)
+        router.schema_mgr._set_meta("schema_version", target - 1)
         with caplog.at_level(logging.INFO):
-            router._run_schema_migrations()
+            router.schema_mgr._run_schema_migrations()
         # Should be at target now
-        version = router._get_meta("schema_version", 0)
+        version = router.schema_mgr._get_meta("schema_version", 0)
         assert version == target
         # Migration log message present
         assert any(

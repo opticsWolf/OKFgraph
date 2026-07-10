@@ -48,10 +48,10 @@ class TestDirectoryHash:
         _write_okf(str(tmp_path), "dir_a/a2.md", "Alpha2", "Body of alpha 2.")
         _write_okf(str(tmp_path), "dir_b/b1.md", "Beta1", "Body of beta 1.")
 
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 3
 
-        dir_hashes = router._load_directory_hashes()
+        dir_hashes = router.delta_mgr._load_directory_hashes()
         assert "dir_a" in dir_hashes
         assert "dir_b" in dir_hashes
         assert len(dir_hashes["dir_a"]["hash"]) == 64  # SHA-256 hex digest length
@@ -65,11 +65,11 @@ class TestDirectoryHash:
         _write_okf(str(tmp_path), "b.md", "Beta", "Body of beta.")
 
         # First import
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 2
 
         # Second import — no files changed
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert ids == [], f"Expected empty list for unchanged bundle, got {ids}"
         router.close()
 
@@ -80,14 +80,14 @@ class TestDirectoryHash:
         _write_okf(str(tmp_path), "dir_a/a2.md", "Alpha2", "Body of alpha 2.")
 
         # First import
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 2
 
         # Modify a file
         _write_okf(str(tmp_path), "dir_a/a1.md", "Alpha1 Updated", "Modified body of alpha 1.")
 
         # Import — dir_a files should be re-imported
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 2, f"Expected 2 imported IDs (dir_a files), got {len(ids)}"
         router.close()
 
@@ -97,14 +97,14 @@ class TestDirectoryHash:
         _write_okf(str(tmp_path), "dir_a/a1.md", "Alpha1", "Body of alpha 1.")
 
         # First import
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 1
 
         # Add a new file to dir_a
         _write_okf(str(tmp_path), "dir_a/a2.md", "Alpha2", "Body of alpha 2.")
 
         # Import — dir_a should be re-imported (now has 2 files)
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 2, f"Expected 2 imported IDs (dir_a files), got {len(ids)}"
         router.close()
 
@@ -114,14 +114,14 @@ class TestDirectoryHash:
         _write_okf(str(tmp_path), "dir_a/a1.md", "Alpha1", "Body of alpha 1.")
 
         # First import
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 1
 
         # Add a new directory with a file
         _write_okf(str(tmp_path), "dir_b/b1.md", "Beta1", "Body of beta 1.")
 
         # Import — dir_b should be imported
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 1, f"Expected 1 imported ID (dir_b file), got {len(ids)}"
         assert any("dir_b/b1" in cid for cid in ids)
         router.close()
@@ -133,14 +133,14 @@ class TestDirectoryHash:
         _write_okf(str(tmp_path), "dir_b/b1.md", "Beta1", "Body of beta 1.")
 
         # First import
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 2
 
         # Delete dir_b
         shutil.rmtree(Path(tmp_path) / "dir_b")
 
         # Import with purge — dir_b concepts should be purged
-        ids = router.import_bundle(purge_deleted=True)
+        ids = router.import_mgr.import_bundle(purge_deleted=True)
         assert ids == [], f"Expected empty list (dir_b deleted, dir_a unchanged), got {ids}"
 
         # Verify dir_b concepts are purged (1 concept remains: dir_a/a1)
@@ -163,8 +163,8 @@ class TestDirectoryHash:
         (d / "file1.md").write_text("content1", encoding="utf-8")
         (d / "file2.md").write_text("content2", encoding="utf-8")
 
-        h1 = r._compute_directory_hash(d)
-        h2 = r._compute_directory_hash(d)
+        h1 = r.delta_mgr._compute_directory_hash(d)
+        h2 = r.delta_mgr._compute_directory_hash(d)
         r.close()
 
         assert h1 == h2
@@ -181,11 +181,11 @@ class TestDirectoryHash:
         d.mkdir(exist_ok=True)
         (d / "file1.md").write_text("content1", encoding="utf-8")
 
-        h1 = r._compute_directory_hash(d)
+        h1 = r.delta_mgr._compute_directory_hash(d)
 
         # Modify file
         (d / "file1.md").write_text("modified content1", encoding="utf-8")
-        h2 = r._compute_directory_hash(d)
+        h2 = r.delta_mgr._compute_directory_hash(d)
 
         r.close()
 
@@ -202,11 +202,11 @@ class TestDirectoryHash:
         d.mkdir(exist_ok=True)
         (d / "file1.md").write_text("content1", encoding="utf-8")
 
-        h1 = r._compute_directory_hash(d)
+        h1 = r.delta_mgr._compute_directory_hash(d)
 
         # Add new file
         (d / "file2.md").write_text("content2", encoding="utf-8")
-        h2 = r._compute_directory_hash(d)
+        h2 = r.delta_mgr._compute_directory_hash(d)
 
         r.close()
 
@@ -225,7 +225,7 @@ class TestDirectoryHash:
         (d / "z_file.md").write_text("content_z", encoding="utf-8")
         (d / "a_file.md").write_text("content_a", encoding="utf-8")
 
-        h1 = r._compute_directory_hash(d)
+        h1 = r.delta_mgr._compute_directory_hash(d)
 
         # Recreate directory with files in different order
         shutil.rmtree(d)
@@ -233,7 +233,7 @@ class TestDirectoryHash:
         (d / "a_file.md").write_text("content_a", encoding="utf-8")
         (d / "z_file.md").write_text("content_z", encoding="utf-8")
 
-        h2 = r._compute_directory_hash(d)
+        h2 = r.delta_mgr._compute_directory_hash(d)
 
         r.close()
 

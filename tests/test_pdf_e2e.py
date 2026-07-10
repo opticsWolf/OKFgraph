@@ -72,7 +72,7 @@ class TestEndToEndPDFIngestion:
         router = OKFRouter(db_path=str(db_path), bundle_root=str(tmp_path))
 
         try:
-            result = router.ingest_pdf(
+            result = router.ingest_mgr.ingest_pdf(
                 synthetic_pdf,
                 auto_import=True,
                 extract_images=False,
@@ -93,7 +93,7 @@ class TestEndToEndPDFIngestion:
         router = OKFRouter(db_path=str(db_path), bundle_root=str(tmp_path))
 
         try:
-            result = router.ingest_pdf(
+            result = router.ingest_mgr.ingest_pdf(
                 synthetic_pdf,
                 auto_import=False,
                 output_dir=tmp_path,
@@ -113,7 +113,7 @@ class TestEndToEndPDFIngestion:
 
         try:
             with pytest.raises(FileNotFoundError):
-                router.ingest_pdf("/nonexistent/file.pdf")
+                router.ingest_mgr.ingest_pdf("/nonexistent/file.pdf")
 
         finally:
             router.close()
@@ -128,7 +128,7 @@ class TestEndToEndPDFIngestion:
             pages_seen.append((idx, total))
 
         try:
-            result = router.ingest_pdf(
+            result = router.ingest_mgr.ingest_pdf(
                 synthetic_pdf,
                 auto_import=False,
                 output_dir=tmp_path,
@@ -153,8 +153,8 @@ class TestPDFPipelineConsistency:
 
         try:
             # Verify linting methods exist
-            assert hasattr(router, "_lint_converted_md")
-            assert hasattr(router, "_lint_converted_md_str")
+            assert hasattr(router.ingest_mgr, "_lint_converted_md")
+            assert hasattr(router.ingest_mgr, "_lint_converted_md_str")
 
         finally:
             router.close()

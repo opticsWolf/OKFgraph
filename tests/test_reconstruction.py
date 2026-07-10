@@ -73,33 +73,33 @@ class TestReconstruction:
 
     def test_reconstruct_returns_text(self, router, multi_section_doc):
         cid, _ = multi_section_doc
-        text = router.reconstruct_document(cid)
+        text = router.embed_engine.reconstruct_document(cid)
         assert text is not None
         assert len(text) > 0
 
     def test_reconstruct_contains_section_headings(self, router, multi_section_doc):
         cid, _ = multi_section_doc
-        text = router.reconstruct_document(cid)
+        text = router.embed_engine.reconstruct_document(cid)
         assert "First Section" in text
         assert "Second Section" in text
         assert "Third Section" in text
 
     def test_reconstruct_preserves_order(self, router, multi_section_doc):
         cid, _ = multi_section_doc
-        text = router.reconstruct_document(cid)
+        text = router.embed_engine.reconstruct_document(cid)
         first_idx = text.index("First Section")
         second_idx = text.index("Second Section")
         third_idx = text.index("Third Section")
         assert first_idx < second_idx < third_idx
 
     def test_reconstruct_nonexistent(self, router):
-        text = router.reconstruct_document("nonexistent-id")
+        text = router.embed_engine.reconstruct_document("nonexistent-id")
         assert text is None
 
     def test_reconstruct_has_content_fidelity(self, router, multi_section_doc):
         """Reconstructed text should contain key phrases from original."""
         cid, original_body = multi_section_doc
-        text = router.reconstruct_document(cid)
+        text = router.embed_engine.reconstruct_document(cid)
         # Overlap may cause some duplication, but key phrases must be present
         assert "enough words" in text
         assert "different text" in text

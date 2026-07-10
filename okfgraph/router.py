@@ -241,9 +241,8 @@ class OKFRouter:
         )
         self.delta_mgr = DeltaDetector(self.conn, self.bundle_root)
         self.purge_mgr = PurgeManager(self.conn, self._write_lock_ctx)
-        self._components = (self.schema_mgr, self.delta_mgr, self.purge_mgr)
 
-        self._ensure_schema()
+        self.schema_mgr._ensure_schema()
 
         # SchemaManager may have adopted a stored embedding dimension
         # (e.g. opening a 512-dim DB with dim=12). Sync it back so the
@@ -275,11 +274,6 @@ class OKFRouter:
             self.import_mgr, self.delta_mgr,
         )
         self.export_mgr = ExportManager(self.conn, self.search_engine)
-        self._components = (
-            self.schema_mgr, self.delta_mgr, self.embed_engine, self.purge_mgr,
-            self.image_mgr, self.search_engine, self.import_mgr,
-            self.ingest_mgr, self.export_mgr,
-        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -357,30 +351,11 @@ class OKFRouter:
         self.close()
 
     # ------------------------------------------------------------------
-    # Component bridge (Phase 1 refactor)
-    # ------------------------------------------------------------------
-
-    def __getattr__(self, name: str):
-        """Resolve moved helpers via the injected component objects.
-
-        Only invoked for attributes NOT found by normal lookup. Reads
-        ``self.__dict__`` directly so it never triggers itself (no recursion).
-        Acts as a migration bridge: methods extracted into
-        ``okfgraph.components.*`` remain reachable as ``router.X``.
-        """
-        components = self.__dict__.get("_components", ())
-        for comp in components:
-            if hasattr(comp, name):
-                return getattr(comp, name)
-        raise AttributeError(
-            f"{type(self).__name__!r} object has no attribute {name!r}"
-        )
-
-    # ------------------------------------------------------------------
     # Component-backed public API (Phase 2 refactor)
     # Explicit 1-line proxies so the public surface stays on the facade.
-    # The __getattr__ bridge above also resolves these, but proxies make the
-    # API explicit and survive class-level ``hasattr`` checks in tests.
+    # These make the API explicit and survive class-level ``hasattr``
+    # checks in tests; all remaining methods live on the components and
+    # are reached directly (the Phase 1 __getattr__ bridge was removed in Phase 4).
     # ------------------------------------------------------------------
 
     def get_by_id(self, concept_id: str):

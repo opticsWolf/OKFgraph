@@ -93,7 +93,7 @@ class TestIntegration:
 
     def test_bundle_has_chunks(self, router, full_bundle):
         for title, cid in full_bundle.items():
-            chunks = router.get_chunks(cid)
+            chunks = router.search_engine.get_chunks(cid)
             assert len(chunks) >= 1, f"Expected chunks for {title}"
 
     def test_hybrid_search_finds_concepts(self, router, full_bundle):
@@ -101,7 +101,7 @@ class TestIntegration:
         assert len(results) > 0
 
     def test_chunk_search_finds_content(self, router, full_bundle):
-        results = router.search_chunks("detailed information")
+        results = router.search_engine.search_chunks("detailed information")
         assert len(results) > 0
         assert all("rrf_score" in r for r in results)
 
@@ -116,13 +116,13 @@ class TestIntegration:
 
     def test_reconstruct_document(self, router, full_bundle):
         cid = full_bundle["details"]
-        text = router.reconstruct_document(cid)
+        text = router.embed_engine.reconstruct_document(cid)
         assert text is not None
         assert len(text) > 0
         assert "Detailed information" in text or "detailed information" in text.lower()
 
     def test_search_with_context_returns_enriched(self, router, full_bundle):
-        results = router.search_with_context("overview", limit=3)
+        results = router.search_engine.search_with_context("overview", limit=3)
         if results:
             r = results[0]
             assert "chunk" in r
@@ -137,13 +137,13 @@ class TestIntegration:
     def test_reindex_preserves_chunks(self, router, full_bundle):
         """Reindexing should not lose chunk data."""
         cid = full_bundle["reference"]
-        chunks_before = len(router.get_chunks(cid))
-        router.reindex(force=True)
-        chunks_after = len(router.get_chunks(cid))
+        chunks_before = len(router.search_engine.get_chunks(cid))
+        router.schema_mgr.reindex(force=True)
+        chunks_after = len(router.search_engine.get_chunks(cid))
         assert chunks_after == chunks_before
 
     def test_find_path_between_linked_docs(self, router, full_bundle):
         overview_id = full_bundle["overview"]
         details_id = full_bundle["details"]
-        path = router.find_path(overview_id, details_id)
+        path = router.search_engine.find_path(overview_id, details_id)
         assert isinstance(path, list)

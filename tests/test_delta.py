@@ -73,7 +73,7 @@ class TestDeltaDetection:
             paths[rel] = _write_okf(tmp_dir, rel, title, body)
 
         # First import — all files are new
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 3, f"Expected 3 imported IDs, got {len(ids)}"
         cls._file_paths = paths
         return paths
@@ -89,7 +89,7 @@ class TestDeltaDetection:
 
     def test_reimport_unchanged_returns_empty(self, router):
         """Re-import with no changes → empty list (nothing to do)."""
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert ids == [], f"Expected no changes, got {len(ids)} IDs"
 
     def test_deleted_file_detected(self, seeded_bundle, tmp_dir, router):
@@ -98,7 +98,7 @@ class TestDeltaDetection:
         b_path = Path(tmp_dir) / "dir_b" / "b.md"
         b_path.unlink()
 
-        changed, deleted = router._changed_files(
+        changed, deleted = router.delta_mgr._changed_files(
             [fp for fp in Path(tmp_dir).rglob("*")
              if fp.is_file() and fp.suffix.lower() in (".md", ".txt", ".markdown")]
         )
@@ -108,7 +108,7 @@ class TestDeltaDetection:
 
     def test_purge_nonexistent_concept_returns_false(self, router):
         """Purging a non-existent concept returns False."""
-        result = router._purge_concept("nonexistent")
+        result = router.purge_mgr._purge_concept("nonexistent")
         assert result is False
 
     def test_reimport_unchanged_preserves_count(self, router):
@@ -128,7 +128,7 @@ class TestDeltaDetection:
             "This is the updated second concept. It now talks about beta and delta.",
         )
 
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 1, f"Expected 1 changed file, got {len(ids)}: {ids}"
         assert ids[0] == "dir_b/b", f"Expected 'dir_b/b', got {ids[0]}"
 
@@ -147,7 +147,7 @@ class TestDeltaDetection:
             "Beta v2",
             "Completely different content for beta now.",
         )
-        router.import_bundle()
+        router.import_mgr.import_bundle()
 
         # Grab new embedding for dir_b/b
         new_row = router.conn.execute(
@@ -175,7 +175,7 @@ class TestDeltaDetection:
             "Beta v3",
             "Yet another change to beta.",
         )
-        router.import_bundle()
+        router.import_mgr.import_bundle()
 
         # Verify dir_a/a and dir_c/c embeddings are unchanged
         for cid in ("dir_a/a", "dir_c/c"):
@@ -194,7 +194,7 @@ class TestDeltaDetection:
             "This is a brand new concept about delta.",
         )
 
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 1
         assert ids[0] == "dir_d/d"
 
@@ -217,7 +217,7 @@ class TestDeltaDetection:
 
     def test_file_hash_concept_id_mapping(self, router):
         """concept_id mapping is stored and loadable."""
-        cid_map = router._load_file_hash_concept_ids()
+        cid_map = router.delta_mgr._load_file_hash_concept_ids()
         assert len(cid_map) > 0, "Should have concept_id mappings"
         # Verify mapping: path without extension → concept_id (forward slashes)
         for path, cid in cid_map.items():
@@ -241,8 +241,8 @@ class TestDeltaDetection:
             bundle_root=tmp_dir,
             device="cpu",
         )
-        h1 = r._file_hash(p)
-        h2 = r._file_hash(p)
+        h1 = r.delta_mgr._file_hash(p)
+        h2 = r.delta_mgr._file_hash(p)
         r.close()
         assert h1 == h2
         assert len(h1) == 64  # SHA-256 hex digest
@@ -291,14 +291,14 @@ class TestPurgeDeleted:
         }
         for rel, (title, body) in files.items():
             _write_okf(tmp_dir, rel, title, body)
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 3
 
     def test_purge_end_to_end_via_import_bundle(self, seeded_bundle, tmp_dir, router):
         """Full flow: add file, import, delete, purge via import_bundle."""
         # Add a new file in its own directory
         _write_okf(tmp_dir, "dir_w/w.md", "Wave", "Content about wave functions.")
-        ids = router.import_bundle()
+        ids = router.import_mgr.import_bundle()
         assert len(ids) == 1
         assert ids[0] == "dir_w/w"
 
@@ -306,7 +306,7 @@ class TestPurgeDeleted:
         (Path(tmp_dir) / "dir_w" / "w.md").unlink()
 
         # Purge via import_bundle
-        ids = router.import_bundle(purge_deleted=True)
+        ids = router.import_mgr.import_bundle(purge_deleted=True)
         assert ids == []  # no changed files
 
         # Verify w is gone
@@ -318,7 +318,7 @@ class TestPurgeDeleted:
     def test_without_purge_concept_persists(self, seeded_bundle, tmp_dir, router):
         """Delete dir_y/y.md, re-import without purge → y still exists."""
         (Path(tmp_dir) / "dir_y" / "y.md").unlink()
-        ids = router.import_bundle(purge_deleted=False)
+        ids = router.import_mgr.import_bundle(purge_deleted=False)
         assert ids == []  # no changed files
 
         row = router.conn.execute(
@@ -328,7 +328,7 @@ class TestPurgeDeleted:
 
     def test_with_purge_y_removed(self, seeded_bundle, tmp_dir, router):
         """dir_y/y.md already deleted. Purge via _purge_concept directly."""
-        result = router._purge_concept("dir_y/y")
+        result = router.purge_mgr._purge_concept("dir_y/y")
         assert result is True
 
         row = router.conn.execute(
@@ -382,11 +382,11 @@ class TestChangedFilesEmptyBundle:
         cls._router.close()
 
     def test_no_files_returns_empty_tuple(self, router):
-        changed, deleted = router._changed_files([])
+        changed, deleted = router.delta_mgr._changed_files([])
         assert changed == []
         assert deleted == []
 
     def test_purge_nonexistent_returns_false(self, router):
         """Purging a non-existent concept returns False."""
-        result = router._purge_concept("does_not_exist")
+        result = router.purge_mgr._purge_concept("does_not_exist")
         assert result is False

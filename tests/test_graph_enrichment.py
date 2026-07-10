@@ -76,7 +76,7 @@ class TestGraphEnrichment:
 
     def test_compute_hub_scores(self, router, linked_docs):
         hub_id, spoke_ids = linked_docs
-        scores = router._compute_hub_scores([hub_id] + spoke_ids)
+        scores = router.search_engine._compute_hub_scores([hub_id] + spoke_ids)
         assert isinstance(scores, dict)
         # Hub should have incoming links from spokes
         assert hub_id in scores
@@ -84,7 +84,7 @@ class TestGraphEnrichment:
 
     def test_search_with_context(self, router, linked_docs):
         hub_id, spoke_ids = linked_docs
-        results = router.search_with_context("central hub concept", limit=5)
+        results = router.search_engine.search_with_context("central hub concept", limit=5)
         assert isinstance(results, list)
         if results:
             # Each result has chunk + context fields
@@ -97,18 +97,18 @@ class TestGraphEnrichment:
 
     def test_get_ancestry(self, router, linked_docs):
         hub_id, _ = linked_docs
-        path = router._get_ancestry(hub_id)
+        path = router.search_engine._get_ancestry(hub_id)
         # Returns list of ancestors (may be empty if at root)
         assert isinstance(path, list)
 
     def test_get_siblings(self, router, linked_docs):
         hub_id, spoke_ids = linked_docs
         # Hub and spokes share the root directory, so siblings exist
-        siblings = router._get_siblings(hub_id)
+        siblings = router.search_engine._get_siblings(hub_id)
         assert isinstance(siblings, list)
 
     def test_search_chunks_with_hub_score(self, router, linked_docs):
-        results = router.search_chunks_with_hub_score("content", limit=10)
+        results = router.search_engine.search_chunks_with_hub_score("content", limit=10)
         assert isinstance(results, list)
         if results:
             r = results[0]
@@ -117,10 +117,10 @@ class TestGraphEnrichment:
             assert "rrf_score" in r
 
     def test_rerank_with_hub_score(self, router, linked_docs):
-        base = router.search_chunks("content")
+        base = router.search_engine.search_chunks("content")
         if not base:
             pytest.skip("No chunk search results")
-        ranked = router.rerank_with_hub_score(base)
+        ranked = router.search_engine.rerank_with_hub_score(base)
         assert isinstance(ranked, list)
         if ranked:
             assert "final_score" in ranked[0]
@@ -128,17 +128,17 @@ class TestGraphEnrichment:
 
     def test_expand_with_graph_context(self, router, linked_docs):
         hub_id, _ = linked_docs
-        chunks = router.get_chunks(hub_id)
+        chunks = router.search_engine.get_chunks(hub_id)
         if not chunks:
             pytest.skip("No chunks for hub")
         chunk_ids = [c.id for c in chunks]
-        neighbours = router.expand_with_graph_context(chunk_ids)
+        neighbours = router.search_engine.expand_with_graph_context(chunk_ids)
         assert isinstance(neighbours, list)
 
     def test_find_path(self, router, linked_docs):
         hub_id, spoke_ids = linked_docs
         # Hub and spokes are linked via LINKS_TO
-        path = router.find_path(hub_id, spoke_ids[0])
+        path = router.search_engine.find_path(hub_id, spoke_ids[0])
         assert isinstance(path, list)
         if path:
             # Path includes start and end nodes
@@ -149,5 +149,5 @@ class TestGraphEnrichment:
     def test_find_path_no_path(self, router, linked_docs):
         """A nonexistent ID should yield empty path."""
         hub_id, _ = linked_docs
-        path = router.find_path(hub_id, "nonexistent-id")
+        path = router.search_engine.find_path(hub_id, "nonexistent-id")
         assert path == []

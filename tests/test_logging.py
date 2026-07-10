@@ -81,7 +81,7 @@ class TestImportBundleTiming:
 
         # Import the test bundle
         bundle_path = Path(__file__).parent / "fixtures" / "bundle"
-        test_router.import_bundle(bundle_path=bundle_path)
+        test_router.import_mgr.import_bundle(bundle_path=bundle_path)
 
         # Check that phase durations were logged
         log_output = log_stream.getvalue()
@@ -100,7 +100,7 @@ class TestImportBundleTiming:
         router_logger.setLevel(logging.DEBUG)
 
         bundle_path = Path(__file__).parent / "fixtures" / "bundle"
-        test_router.import_bundle(bundle_path=bundle_path)
+        test_router.import_mgr.import_bundle(bundle_path=bundle_path)
 
         log_output = log_stream.getvalue()
         assert "parsed" in log_output or "import_bundle:" in log_output
@@ -118,7 +118,7 @@ class TestImportBundleTiming:
         router_logger.setLevel(logging.DEBUG)
 
         bundle_path = Path(__file__).parent / "fixtures" / "bundle"
-        test_router.import_bundle(bundle_path=bundle_path)
+        test_router.import_mgr.import_bundle(bundle_path=bundle_path)
 
         log_output = log_stream.getvalue()
         assert "encode:" in log_output or "import_bundle:" in log_output

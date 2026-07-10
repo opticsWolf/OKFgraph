@@ -109,9 +109,9 @@ class TestPhase1_Schema:
         assert rows is not None
 
     def test_chunking_methods_present(self, router):
-        assert hasattr(router, "_split_into_chunks")
-        assert hasattr(router, "_compute_overlap_payloads")
-        assert hasattr(router, "reconstruct_document")
+        assert hasattr(router.embed_engine, "_split_into_chunks")
+        assert hasattr(router.embed_engine, "_compute_overlap_payloads")
+        assert hasattr(router.embed_engine, "reconstruct_document")
 
 
 # ── Phase 1: Chunking (class-scoped router — model loads once per class) ──
@@ -163,11 +163,11 @@ class TestPhase1_Chunking:
         return cls._long_doc
 
     def test_splits_into_multiple_chunks(self, router, long_doc):
-        chunks = router.get_chunks(long_doc)
+        chunks = router.search_engine.get_chunks(long_doc)
         assert len(chunks) >= 2
 
     def test_chunks_ordered_by_index(self, router, long_doc):
-        chunks = router.get_chunks(long_doc)
+        chunks = router.search_engine.get_chunks(long_doc)
         indices = [c.chunk_index for c in chunks]
         assert indices == sorted(indices)
 
@@ -182,12 +182,12 @@ class TestPhase1_Chunking:
         assert any(r["has_emb"] for r in rows), "Chunks should have embeddings"
 
     def test_reconstruct_document(self, router, long_doc):
-        reconstructed = router.reconstruct_document(long_doc)
+        reconstructed = router.embed_engine.reconstruct_document(long_doc)
         assert reconstructed is not None
         assert len(reconstructed) > 0
 
     def test_overlap_payloads(self, router, long_doc):
-        chunks = router.get_chunks(long_doc)
+        chunks = router.search_engine.get_chunks(long_doc)
         assert len(chunks) > 0
         rows = router.conn.execute(
             """
@@ -251,7 +251,7 @@ class TestPhase2_Ingestion:
         body = "Word " * 200
         _write_okf(str(subdir), "a.md", "A", body)
         _write_okf(str(subdir), "b.md", "B", body)
-        ids = router.import_bundle(subdir)
+        ids = router.import_mgr.import_bundle(subdir)
         assert len(ids) == 2
         rows = router.conn.execute("MATCH (c:Chunk) RETURN count(c) AS n").rows_as_dict().get_all()
         assert rows[0]["n"] >= 2
@@ -316,23 +316,23 @@ class TestPhase3_Search:
             router.import_from_okf(Path(tmp_dir) / f"topic_{i}.md")
 
     def test_search_chunks_returns_results(self, router, seeded_db):
-        results = router.search_chunks("alpha beta gamma")
+        results = router.search_engine.search_chunks("alpha beta gamma")
         assert len(results) > 0
 
     def test_search_chunks_has_rrf_score(self, router, seeded_db):
-        results = router.search_chunks("alpha beta gamma")
+        results = router.search_engine.search_chunks("alpha beta gamma")
         for r in results:
             assert "rrf_score" in r
             assert r["rrf_score"] > 0
 
     def test_search_chunks_has_block_type(self, router, seeded_db):
-        results = router.search_chunks("alpha beta gamma")
+        results = router.search_engine.search_chunks("alpha beta gamma")
         for r in results:
             assert "block_type" in r
 
     def test_search_chunks_with_parent(self, router, seeded_db):
         # Parent info is always included in search_chunks results
-        results = router.search_chunks("alpha beta gamma")
+        results = router.search_engine.search_chunks("alpha beta gamma")
         for r in results:
             assert "parent_title" in r or "parent_doc_id" in r
 
@@ -387,26 +387,26 @@ class TestPhase4_Graph:
 
     def test_expand_with_graph_context(self, router, linked_db):
         id_a, _ = linked_db
-        chunks = router.get_chunks(id_a)
+        chunks = router.search_engine.get_chunks(id_a)
         if not chunks:
             pytest.skip("No chunks created")
         chunk_ids = [c.id for c in chunks]
-        neighbours = router.expand_with_graph_context(chunk_ids)
+        neighbours = router.search_engine.expand_with_graph_context(chunk_ids)
         assert isinstance(neighbours, list)
 
     def test_rerank_with_hub_score(self, router, linked_db):
         id_a, id_b = linked_db
-        results = router.search_chunks("Document")
+        results = router.search_engine.search_chunks("Document")
         if not results:
             pytest.skip("No chunk search results")
-        ranked = router.rerank_with_hub_score(results)
+        ranked = router.search_engine.rerank_with_hub_score(results)
         assert isinstance(ranked, list)
         if ranked:
             assert "final_score" in ranked[0]
 
     def test_traverse_part_of(self, router, linked_db):
         id_a, _ = linked_db
-        chunks = router.get_chunks(id_a)
+        chunks = router.search_engine.get_chunks(id_a)
         if not chunks:
             pytest.skip("No chunks created")
         results = router.traverse(id_a, "PART_OF", "OUTGOING", 1)
@@ -523,7 +523,7 @@ class TestIndexRebuild:
         body = "Index test content. " * 100
         _write_okf(tmp_dir, "idx.md", "Idx", body)
         router.import_from_okf(Path(tmp_dir) / "idx.md")
-        router.reindex(force=True)
+        router.schema_mgr.reindex(force=True)
         rows = router.conn.execute(
             """
             MATCH (c:Chunk)

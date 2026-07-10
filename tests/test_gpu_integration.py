@@ -92,7 +92,7 @@ def gpu_router(tmp_dir, seed_bundle):
         device="cuda",
     )
     # Warm up the CUDA kernels
-    _ = r._encode_batch(["warmup sentence"] * 5, task="Document")
+    _ = r.embed_engine._encode_batch(["warmup sentence"] * 5, task="Document")
     yield r
     r.close()
 
@@ -107,7 +107,7 @@ def cpu_router(tmp_dir):
         device="cpu",
     )
     # Warm up the CPU inference
-    _ = r._encode_batch(["warmup sentence"] * 5, task="Document")
+    _ = r.embed_engine._encode_batch(["warmup sentence"] * 5, task="Document")
     yield r
     r.close()
 
@@ -221,7 +221,7 @@ class TestGPUBatchEncoding:
             enable_chunking=True,
             device="cuda",
         )
-        ids = r.import_bundle()
+        ids = r.import_mgr.import_bundle()
         assert len(ids) == 3, f"Expected 3 concepts, got {len(ids)}"
 
         # Verify embeddings exist
@@ -246,7 +246,7 @@ class TestGPUBatchEncoding:
             embedding_dim=512,
             device="cpu",
         )
-        emb_cpu = np.array(r_cpu._encode_batch(texts, task="Document"))
+        emb_cpu = np.array(r_cpu.embed_engine._encode_batch(texts, task="Document"))
 
         r_gpu = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_align_gpu.db"),
@@ -254,7 +254,7 @@ class TestGPUBatchEncoding:
             embedding_dim=512,
             device="cuda",
         )
-        emb_gpu = np.array(r_gpu._encode_batch(texts, task="Document"))
+        emb_gpu = np.array(r_gpu.embed_engine._encode_batch(texts, task="Document"))
 
         # GPU and CPU may differ slightly due to floating-point precision
         np.testing.assert_allclose(emb_cpu, emb_gpu, rtol=1e-3, atol=1e-4)
@@ -278,7 +278,7 @@ class TestGPUBatchEncoding:
             device="cuda",
         )
         start = time.monotonic()
-        ids = r.import_bundle()
+        ids = r.import_mgr.import_bundle()
         elapsed = time.monotonic() - start
 
         assert len(ids) == 3
@@ -317,16 +317,16 @@ class TestGPUMemoryHandling:
         )
 
         # First import
-        ids1 = r.import_bundle()
+        ids1 = r.import_mgr.import_bundle()
         assert len(ids1) == 2
 
         # Second import (no changes) — should be fast (delta skip)
-        ids2 = r.import_bundle()
+        ids2 = r.import_mgr.import_bundle()
         assert ids2 == []
 
         # Third import with changes (new file in its own directory)
         _write_okf(str(test_dir), "dir_c/doc_c.md", "Doc C", "Gamma concept. " * 50)
-        ids3 = r.import_bundle()
+        ids3 = r.import_mgr.import_bundle()
         assert len(ids3) == 1  # only new file
 
         r.close()
@@ -349,7 +349,7 @@ class TestGPUMemoryHandling:
             embedding_dim=512,
             device="cpu",  # Use CPU since CUDA may not be available
         )
-        ids = r.import_bundle()
+        ids = r.import_mgr.import_bundle()
         assert len(ids) == 2
 
         # Close and verify DB connection is properly closed
@@ -382,12 +382,12 @@ class TestGPUMultimodal:
             embedding_dim=512,
             device="cpu",  # Use CPU since CUDA may not be available
         )
-        ids = r.import_bundle(mode="omni")
+        ids = r.import_mgr.import_bundle(mode="omni")
         assert len(ids) == 1
 
         # Verify the omni encoder was loaded by checking _encode_omni_text works
         try:
-            emb = r._encode_omni_text("test sentence")
+            emb = r.embed_engine._encode_omni_text("test sentence")
             assert emb is not None
             assert len(emb) == 512
         except ImportError:
@@ -416,7 +416,7 @@ class TestGPUMultimodal:
             enable_chunking=True,
             device="cpu",  # Use CPU since CUDA may not be available
         )
-        ids = r.import_bundle(mode="omni")
+        ids = r.import_mgr.import_bundle(mode="omni")
         assert len(ids) == 1
 
         concept = r.get_by_id(ids[0])
@@ -474,7 +474,7 @@ class TestGPUDeviceEdgeCases:
         )
 
         texts = ["test sentence one", "test sentence two"]
-        embeddings = np.array(r._encode_batch(texts, task="Document"))
+        embeddings = np.array(r.embed_engine._encode_batch(texts, task="Document"))
         assert isinstance(embeddings, np.ndarray)
         assert embeddings.shape == (2, 512)
         r.close()
@@ -492,7 +492,7 @@ class TestGPUDeviceEdgeCases:
             embedding_dim=512,
             device="cpu",
         )
-        emb_cpu = np.array(r_cpu._encode_batch(texts, task="Document"))
+        emb_cpu = np.array(r_cpu.embed_engine._encode_batch(texts, task="Document"))
 
         r_gpu = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_align_gpu.db"),
@@ -500,7 +500,7 @@ class TestGPUDeviceEdgeCases:
             embedding_dim=512,
             device="cuda",
         )
-        emb_gpu = np.array(r_gpu._encode_batch(texts, task="Document"))
+        emb_gpu = np.array(r_gpu.embed_engine._encode_batch(texts, task="Document"))
 
         # GPU and CPU may differ slightly due to floating-point precision
         np.testing.assert_allclose(emb_cpu, emb_gpu, rtol=1e-3, atol=1e-4)

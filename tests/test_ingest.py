@@ -308,8 +308,8 @@ class TestIngestPdfMethod:
 
     def test_ingest_pdf_method_exists(self, test_router):
         """OKFRouter has an ingest_pdf() method."""
-        assert hasattr(test_router, "ingest_pdf")
-        assert callable(test_router.ingest_pdf)
+        assert hasattr(test_router.ingest_mgr, "ingest_pdf")
+        assert callable(test_router.ingest_mgr.ingest_pdf)
 
     def test_ingest_pdf_returns_result_dict(self, test_router, tmp_path):
         """ingest_pdf returns a dict with expected keys."""
@@ -333,7 +333,7 @@ startxref
 """
         pdf_path.write_bytes(pdf_content)
 
-        result = test_router.ingest_pdf(
+        result = test_router.ingest_mgr.ingest_pdf(
             pdf_path,
             auto_import=False,
             routing_mode="never",
@@ -370,7 +370,7 @@ startxref
         output_dir = tmp_path / "output"
         output_dir.mkdir()
 
-        result = test_router.ingest_pdf(
+        result = test_router.ingest_mgr.ingest_pdf(
             pdf_path,
             auto_import=False,
             output_dir=str(output_dir),
@@ -402,7 +402,7 @@ startxref
 """
         pdf_path.write_bytes(pdf_content)
 
-        result = test_router.ingest_pdf(
+        result = test_router.ingest_mgr.ingest_pdf(
             pdf_path,
             auto_import=False,
             routing_mode="never",

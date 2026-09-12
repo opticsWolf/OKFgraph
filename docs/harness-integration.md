@@ -51,11 +51,14 @@ args = ["run", "--project", "D:/path/to/OKFgraph", "okf-mcp",
 Any harness that speaks MCP over stdio: command `uv`, same args as above
 with absolute paths. No auth, no headers, no sidecars.
 
-### Skill
+### Skills
 
-`skills/okfgraph/SKILL.md` tells an agent *when* to reach for the graph
-(search vs traverse vs ingest). Copy/symlink it into the harness's skill
-dir (Claude Code: `.claude/skills/`).
+- `skills/okfgraph/SKILL.md` (`okfgraph`) — the MCP skill: when to reach
+  for the graph and which tool to use. Install when `okf-mcp` is wired.
+- `skills/okfgraph-cli/SKILL.md` (`okfgraph-cli`) — the CLI skill: same
+  routing table as shell commands, plus cold-boot batching conventions.
+  Install for shell-only environments. The two descriptions cross-reference
+  so only the applicable one triggers.
 
 ## CLI fallback
 

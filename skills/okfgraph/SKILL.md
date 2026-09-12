@@ -1,23 +1,19 @@
 ---
 name: okfgraph
 description: >
-  Ladybug-backed knowledge graph with Jina v5 semantic search. Use when the
-  task needs persistent project knowledge: search past decisions and docs
-  (search), navigate concept relationships (traverse), read stored
-  documents (read), or persist new knowledge (ingest). Prefers
-  graph lookup over re-deriving context the project already recorded.
+  Ladybug-backed knowledge graph with Jina v5 semantic search, via MCP
+  tools (search, read, traverse, ingest, export_bundle). Use when the
+  task needs persistent project knowledge and okf-mcp is wired: search
+  past decisions and docs, navigate concept relationships, read stored
+  documents, or persist new knowledge. Prefers graph lookup over
+  re-deriving context the project already recorded. For shell-only
+  environments without MCP, use the okfgraph-cli skill instead.
 ---
 
-# OKFgraph skill
+# OKFgraph skill (MCP)
 
 OKFgraph is a persistent knowledge graph: markdown concepts with semantic
-(vector) + keyword (FTS) search and graph traversal. Two access paths:
-
-1. **MCP tools** (preferred when the harness wires `okf-mcp`): 5 tools —
-   `search`, `read`, `traverse`, `ingest`, `export_bundle`.
-2. **CLI fallback**: `okf <command>` with the same five verbs (`search`,
-   `read`, `traverse`, `ingest`, `export`).
-   Run `okf --help` for flags.
+(vector) + keyword (FTS) search and graph traversal, exposed as 5 MCP tools.
 
 ## Which tool when
 
@@ -44,5 +40,5 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
   chunked, embedded (Jina v5), and linked into the graph.
 - Image search (`search` target=images) matches text queries against image assets
   in the shared vector space.
-- If an MCP tool errors with "Search is unavailable", the vector/FTS
+- If a tool errors with "Search is unavailable", the vector/FTS
   extensions failed to load — ingestion and graph reads still work.

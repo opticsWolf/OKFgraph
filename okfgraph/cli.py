@@ -559,6 +559,40 @@ def _repair_links(args):
     logger.info("repaired %d link(s)", count)
 
 
+def _lint(args):
+    """Pre-import bundle gate: frontmatter + link validation.
+
+    Deliberately router-free (no DB, no ~30s model cold-boot): lint answers
+    "is this bundle well-formed?" before an import cycle is spent.
+    Exit 0 = clean (warnings ok), 1 = errors, 2 = usage (bad dir).
+    """
+    from okfgraph.components.lint import lint_bundle
+    from okfgraph.config import OKFConfig
+
+    given = getattr(args, "dir", None) or getattr(args, "bundle", None) or "."
+    # bundle_root is only the TOML lookup location; the value itself rides
+    # in cli_args (same split as _router's cli_dict).
+    config = OKFConfig.load(bundle_root=given, cli_args={"bundle": given})
+    target = Path(str(config.bundle))
+    if not target.is_dir():
+        print(f"[ERROR] not a bundle directory: {target}")
+        return 2
+    report = lint_bundle(target)
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(f"{report['files']} file(s): "
+              f"{len(report['errors'])} error(s), "
+              f"{len(report['warnings'])} warning(s)")
+        for e in report["errors"]:
+            print(f"  [ERROR] {e['file']} {e['rule']}: {e['message']}")
+        for w in report["warnings"]:
+            print(f"  [warn] {w['file']} {w['rule']}: {w['message']}")
+        if report["clean"]:
+            print("Bundle is lint-clean (safe to import).")
+    return 0 if report["clean"] else 1
+
+
 def _diff(args):
     """Structural diff: snapshot (dir vs dir) or drift (graph vs dir).
 
@@ -1213,6 +1247,14 @@ def build_parser():
                    help="Age threshold for 'stale' findings (default: 365)")
     p.add_argument("--json", action="store_true", help="Machine-readable report")
 
+    # lint (pre-import bundle gate: no DB, no model load)
+    p = sub.add_parser("lint", help="Validate bundle frontmatter + links before import")
+    _add_global(p)
+    _add_logging_flags(p)
+    p.add_argument("dir", nargs="?", default=None,
+                   help="Bundle directory (default: --bundle, okfgraph.toml, or .)")
+    p.add_argument("--json", action="store_true", help="Machine-readable report")
+
     # shell
     p = sub.add_parser("shell", help="Interactive REPL")
     _add_global(p)
@@ -1290,6 +1332,7 @@ def main():
         "repair-links": _repair_links,
         "diff": _diff,
         "doctor": _doctor,
+        "lint": _lint,
         "reindex": _reindex,
         "deleted-list": _deleted_list,
         "deleted-recover": _deleted_recover,

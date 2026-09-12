@@ -1,138 +1,118 @@
-"""Markdown linting helpers for OKFgraph ingestion.
+"""Pre-import bundle gate: frontmatter + link validation, no DB, no model.
 
-These functions wrap ``mordant.lint`` / ``mordant.fix`` with OKFgraph's
-non-blocking policy: fixable whitespace/formatting issues (MD009, MD012,
-MD047) are auto-fixed; structural errors (MD001, MD031, MD033) are reported
-as warnings but never block ingestion.
+``lint_bundle()`` checks the file side (what ``import --all`` is *about*
+to ingest); doctor checks the row side (what is *already* indexed).
+Same ``links.py`` pure helpers, same resolution rules as import —
+a lint-clean bundle must import with zero ``broken_link`` findings
+(locked by the consistency test in ``tests/test_lint.py``).
 
-Extracted from ``okfgraph.router.OKFRouter._lint_converted_md`` /
-``_lint_converted_md_str`` (Gap #5c).
+Report shape (JSON-stable, all lists sorted)::
+    {"dir": str, "files": int,
+     "errors": [{"file", "rule", "message", ...}],
+     "warnings": [{"file", "rule", "message"}],
+     "clean": bool}  # True when errors is empty (warnings allowed)
 """
 
-from pathlib import Path
-from typing import Any, Dict
+from __future__ import annotations
 
 import logging
-import mordant
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+import frontmatter
+
+from okfgraph.components.import_ import is_concept_file, parse_source_file
+from okfgraph.components.links import (
+    build_name_index,
+    extract_md_links,
+    extract_wikilinks,
+    is_external,
+    normalize_path_link,
+    resolve_wiki,
+)
 
 logger = logging.getLogger(__name__)
 
-# Whitespace/formatting rules that mordant can auto-fix.
-FIXABLE_RULES = {"MD009", "MD012", "MD047"}
-# Structural rules that indicate malformed markdown — warn only.
-ERROR_RULES = {"MD001", "MD031", "MD033"}
+
+def _err(file: str, rule: str, message: str, **extra: Any) -> Dict[str, Any]:
+    item: Dict[str, Any] = {"file": file, "rule": rule, "message": message}
+    item.update(extra)
+    return item
 
 
-def lint_converted_md(
-    md_path: Path,
-    *,
-    auto_fix: bool = True,
-) -> Dict[str, Any]:
-    """Lint a markdown file and optionally auto-fix fixable issues.
+def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
+    """Validate a bundle directory without touching any database or model."""
+    root = Path(bundle_dir)
+    files = sorted(fp for fp in root.rglob("*") if is_concept_file(fp))
 
-    Returns a dict with:
-    - ``content``: the (possibly fixed) markdown content (str)
-    - ``fixed``: whether content was modified (bool)
-    - ``fixed_count``: number of auto-fixed issues (int)
-    - ``unfixable``: list of unfixable diagnostics (list)
-    - ``errors``: list of error-level diagnostics (list)
-    """
-    content = Path(md_path).read_text(encoding="utf-8")
-    diagnostics = mordant.lint(content, gfm_opts=mordant.GfmOptions.all())
+    errors: List[Dict[str, Any]] = []
+    warnings: List[Dict[str, Any]] = []
+    parsed: List[Tuple[str, Any, str, str]] = []  # (cid, concept, body, rel)
 
-    if not diagnostics:
-        return {
-            "content": content,
-            "fixed": False,
-            "fixed_count": 0,
-            "unfixable": [],
-            "errors": [],
-        }
+    for fp in files:
+        rel = str(fp.relative_to(root)).replace("\\", "/")
+        try:
+            concept, body, cid = parse_source_file(fp, root)
+        except Exception as e:  # noqa: BLE001 — every failure mode is a finding
+            errors.append(_err(rel, "parse", f"{type(e).__name__}: {e}"))
+            continue
+        try:
+            raw_fm = dict(frontmatter.load(fp).metadata)
+        except Exception as e:  # noqa: BLE001 — same finding class as above
+            errors.append(_err(rel, "parse", f"{type(e).__name__}: {e}"))
+            continue
+        # Import synthesizes both (note / stem), so these warn — erroring
+        # would contradict import behaviour (deliberate deviation from
+        # google-okf, whose pipeline has no synthesis step).
+        if not raw_fm.get("type"):
+            warnings.append(_err(
+                rel, "missing_type", "no 'type:' frontmatter; will import as 'note'"))
+        if not raw_fm.get("title"):
+            warnings.append(_err(
+                rel, "missing_title", "no 'title:' frontmatter; will use filename stem"))
+        parsed.append((cid, concept, body, rel))
 
-    unfixable = [d for d in diagnostics if d.rule not in FIXABLE_RULES]
-    errors = [d for d in diagnostics if d.rule in ERROR_RULES]
+    # Resolution context mirrors ImportManager: known ids + name index.
+    known_ids = {cid for cid, _, _, _ in parsed}
+    index_entries = []
+    for cid, concept, _, _ in parsed:
+        extra = concept.model_extra or {}
+        index_entries.append({
+            "id": cid,
+            "title": concept.title,
+            "uid": extra.get("uid"),
+            "aliases": extra.get("aliases", extra.get("alias")),
+        })
+    maps, _ambiguous = build_name_index(index_entries)
 
-    fixed_content = content
-    fixed_count = 0
+    for cid, _concept, body, rel in parsed:
+        # Same extraction + skip rules as _resolve_body_links: only
+        # *.md-anchored targets match; externals never resolve-or-fail.
+        for raw in extract_md_links(body):
+            if is_external(raw):
+                continue
+            target = normalize_path_link(raw.split("#", 1)[0])
+            if target not in known_ids:
+                errors.append(_err(
+                    rel, "dangling_link",
+                    f"would import as BrokenLink (target has no concept)",
+                    link=raw, target=target or "(empty)"))
+        for raw in extract_wikilinks(body):
+            if not raw or is_external(raw):
+                continue
+            if resolve_wiki(raw, maps, known_ids) is None:
+                errors.append(_err(
+                    rel, "dangling_wikilink",
+                    "would import as BrokenLink (name resolves to nothing; "
+                    "ambiguous names never resolve)",
+                    link=raw))
 
-    if auto_fix:
-        fixable = [d for d in diagnostics if d.rule in FIXABLE_RULES]
-        if fixable:
-            result = mordant.fix(content, gfm_opts=mordant.GfmOptions.all())
-            if result.fixed:
-                fixed_content = result.output
-                fixed_count = len(result.fixed)
-                logger.info(
-                    "auto-fixed %d issues in %s",
-                    fixed_count,
-                    Path(md_path).name,
-                )
-
-    if unfixable:
-        logger.warning(
-            "%d unfixable issues in %s: %s",
-            len(unfixable),
-            Path(md_path).name,
-            ", ".join(f"{d.rule} (line {d.line})" for d in unfixable[:5]),
-        )
-
-    if errors:
-        logger.warning(
-            "%d structural errors in %s — import may produce unexpected results: %s",
-            len(errors),
-            Path(md_path).name,
-            ", ".join(f"{d.rule} (line {d.line})" for d in errors[:3]),
-        )
-
+    errors.sort(key=lambda e: (e["file"], e["rule"], e["message"]))
+    warnings.sort(key=lambda w: (w["file"], w["rule"], w["message"]))
     return {
-        "content": fixed_content,
-        "fixed": fixed_count > 0,
-        "fixed_count": fixed_count,
-        "unfixable": unfixable,
+        "dir": str(root),
+        "files": len(files),
         "errors": errors,
-    }
-
-
-def lint_converted_md_str(
-    content: str,
-    *,
-    auto_fix: bool = True,
-) -> Dict[str, Any]:
-    """Lint markdown content in-memory (no file I/O).
-
-    Returns a dict with the same keys as :func:`lint_converted_md`, but
-    ``unfixable`` / ``errors`` contain rule-name strings (not diagnostic
-    objects) for easier programmatic inspection.
-    """
-    diagnostics = mordant.lint(content, gfm_opts=mordant.GfmOptions.all())
-
-    if not diagnostics:
-        return {
-            "content": content,
-            "fixed": False,
-            "fixed_count": 0,
-            "unfixable": [],
-            "errors": [],
-        }
-
-    unfixable = [d for d in diagnostics if d.rule not in FIXABLE_RULES]
-    errors = [d for d in diagnostics if d.rule in ERROR_RULES]
-
-    fixed_content = content
-    fixed_count = 0
-
-    if auto_fix:
-        fixable = [d for d in diagnostics if d.rule in FIXABLE_RULES]
-        if fixable:
-            result = mordant.fix(content, gfm_opts=mordant.GfmOptions.all())
-            if result.fixed:
-                fixed_content = result.output
-                fixed_count = len(result.fixed)
-
-    return {
-        "content": fixed_content,
-        "fixed": fixed_count > 0,
-        "fixed_count": fixed_count,
-        "unfixable": [d.rule for d in unfixable],
-        "errors": [d.rule for d in errors],
+        "warnings": warnings,
+        "clean": not errors,
     }

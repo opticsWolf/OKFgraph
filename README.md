@@ -1,4 +1,4 @@
-# OKFgraph 0.2.3
+# OKFgraph 0.2.4
 
 [![PyPI](https://img.shields.io/pypi/v/okfgraph)](https://pypi.org/project/okfgraph/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
@@ -82,6 +82,7 @@ okf read savanna --include context --max-tokens 1500
 okf traverse savanna --relationship LINKS_TO --direction BOTH
 okf diff                                  # drift: graph vs bundle dir
 okf doctor                                # health score + findings
+okf lint kb/                               # pre-import gate: frontmatter + links, no model
 ```
 
 ### Programmatic usage
@@ -150,6 +151,7 @@ accepted everywhere, and usually live in `okfgraph.toml`.
 | `okf ingest --kind md\|pdf\|thoughts …` | `--md-file`, `--pdf-file` (`--routing-mode`, `--auto-import`), `--thoughts --topic` |
 | `okf export --all\|--concept-id ID --output DIR [--flavor okf\|obsidian]` | Bundle export; obsidian = `[[Title]]` links, no index files |
 | `okf diff [OLD] [NEW] [--json]` | Snapshot (two dirs, no model) or drift (graph vs dir); exit 0 identical / 1 different |
+| `okf lint [DIR] [--json]` | Pre-import gate (no DB, no model); exit 0 clean / 1 errors / 2 bad dir |
 | `okf doctor [--fix] [--strict] [--stale-days N] [--json]` | Score + findings; `--fix` repairs safely, `--strict` exits 1 on any finding |
 | `okf import [--all] [--purge] [--mode text\|optional\|omni]` | Bulk/single import, delta-aware |
 | `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf deleted-*` | Setup, cache inspection, REPL, index rebuild, link + soft-delete maintenance |

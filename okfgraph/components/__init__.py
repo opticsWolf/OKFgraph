@@ -30,6 +30,7 @@ from okfgraph.components.links import (
 )
 from okfgraph.components.diff import DiffManager, DiffState, state_of_dir
 from okfgraph.components.doctor import DoctorManager
+from okfgraph.components.lint import lint_bundle
 
 __all__ = [
     "SchemaManager",
@@ -56,4 +57,5 @@ __all__ = [
     "DiffState",
     "state_of_dir",
     "DoctorManager",
+    "lint_bundle",
 ]

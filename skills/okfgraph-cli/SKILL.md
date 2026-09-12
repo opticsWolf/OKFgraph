@@ -47,6 +47,7 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
 | Same, capped to a token budget (PPR-ranked neighbours) | `read --max-tokens N ID` |
 | Links + ancestry + siblings of one concept | `read --include context ID` |
 | Store a markdown file / PDF / reasoning | `ingest --kind ...` |
+| Validate a bundle before importing (frontmatter + links, no model load) | `lint [DIR]` (exit 0 clean / 1 errors) |
 
 ## Conventions
 

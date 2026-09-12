@@ -166,17 +166,21 @@ class TestDeviceSelection:
         assert r.device == "cpu"
         assert r.encoder.used_cuda is False
 
-    def test_device_cuda_uses_gpu_when_available(self, tmp_path, capsys):
+    def test_device_cuda_uses_gpu_when_available(self, tmp_path, caplog):
+        # The fallback warning travels via logging (bound to the real stderr
+        # fd at handler creation), so capsys can never see it — assert on the
+        # log record instead. Deterministic on GPU and CPU machines alike.
+        import logging
         from okfgraph.router import OKFRouter
-        r = OKFRouter(db_path=str(tmp_path / "test.db"), bundle_root=str(tmp_path), device="cuda")
+        with caplog.at_level(logging.WARNING, logger="okfgraph.router"):
+            r = OKFRouter(db_path=str(tmp_path / "test.db"), bundle_root=str(tmp_path), device="cuda")
         assert r.device == "cuda"
-        err = capsys.readouterr().err
         if r.encoder.used_cuda:
             # Happy path: GPU active, no fallback warning.
-            assert "CUDA" not in err
+            assert not any("CUDA" in m for m in caplog.messages)
         else:
-            # CPU fallback: the Rust core warns on stderr.
-            assert "CUDA" in err
+            # CPU fallback: the router warns about the missing EP.
+            assert any("no CUDA execution provider" in m for m in caplog.messages)
 
     def test_device_cuda_warning_only_once(self, tmp_path, capsys):
         from okfgraph.router import OKFRouter

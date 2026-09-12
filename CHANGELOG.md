@@ -14,6 +14,15 @@ commit history, newest first.
   helpers (behavior pinned by the Python parity suite — wheel rebuilt and
   re-verified). CI runs `cargo test --locked` on Ubuntu.
 
+### Fixed
+- Replaced three-clause `MERGE` hierarchy writes with equivalent separate
+  node and edge statements after isolating a deterministic ladybug 0.20.3
+  access violation on repeated sibling imports. `test_integration.py` now
+  passes (11/11).
+- Updated stale CLI contract tests for the consolidated five-verb CLI and
+  made the CUDA fallback test deterministic on machines without a CUDA
+  execution provider.
+
 ## [0.2.4] — 2026-09-12
 
 ### Added

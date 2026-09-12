@@ -449,26 +449,27 @@ class TestPhase5_CLI:
     actual commands with real data and verify output formatting.
     """
 
-    def test_cli_has_search_chunks_command(self):
+    def test_removed_granular_commands_gone(self, capsys):
+        # search-chunks/chunks/reconstruct were folded into search/read in the
+        # 0.2.0 16→5 consolidation; assert argparse rejects them outright.
         from okfgraph.cli import build_parser
         parser = build_parser()
-        args = parser.parse_args(["search-chunks", "test"])
-        assert args.command == "search-chunks"
-        assert args.query == "test"
+        for dead in ("search-chunks", "chunks", "reconstruct"):
+            with pytest.raises(SystemExit):
+                parser.parse_args([dead, "test"])
+        capsys.readouterr()  # swallow argparse usage noise
 
-    def test_cli_has_chunks_command(self):
+    def test_replacement_verbs_cover_removed_commands(self):
+        # search --target chunks ≙ search-chunks; read --include chunks ≙ chunks;
+        # read --include document ≙ reconstruct.
         from okfgraph.cli import build_parser
         parser = build_parser()
-        args = parser.parse_args(["chunks", "some_id"])
-        assert args.command == "chunks"
-        assert args.concept_id == "some_id"
-
-    def test_cli_has_reconstruct_command(self):
-        from okfgraph.cli import build_parser
-        parser = build_parser()
-        args = parser.parse_args(["reconstruct", "some_id"])
-        assert args.command == "reconstruct"
-        assert args.concept_id == "some_id"
+        args = parser.parse_args(["search", "test", "--target", "chunks"])
+        assert args.command == "search" and args.target == "chunks"
+        args = parser.parse_args(["read", "--include", "chunks", "some_id"])
+        assert args.concept_id == "some_id" and args.include == "chunks"
+        args = parser.parse_args(["read", "--include", "document", "some_id"])
+        assert args.concept_id == "some_id" and args.include == "document"
 
     def test_cli_has_chunking_options(self):
         from okfgraph.cli import build_parser

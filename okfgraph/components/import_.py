@@ -145,6 +145,36 @@ class ImportManager:
         self.image_mgr = image_mgr
         self.purge_mgr = purge_mgr
 
+    def _merge_directory_contains(self, parent_id: str, child_id: str):
+        """Create a Directory→Directory CONTAINS edge without crashing Ladybug.
+
+        Ladybug 0.20.3 segfaults when one Cypher statement combines an
+        existing-node ``MERGE``, a new-node ``MERGE``, and a relationship
+        ``MERGE`` on a long-lived connection. Separate idempotent statements
+        preserve the same graph while avoiding that planner path.
+        """
+        self.conn.execute("MERGE (p:Directory {id: $id})", {"id": parent_id})
+        self.conn.execute("MERGE (d:Directory {id: $id})", {"id": child_id})
+        self.conn.execute("""
+            MATCH (p:Directory {id: $parent}), (d:Directory {id: $child})
+            MERGE (p)-[:CONTAINS]->(d)
+        """, {"parent": parent_id, "child": child_id})
+
+    def _merge_concept_contains(self, parent_id: str, child_id: str):
+        """Create a Directory→Concept CONTAINS edge without crashing Ladybug.
+
+        See ``_merge_directory_contains``: a single three-clause ``MERGE`` can
+        segfault ladybug 0.20.3 after matching an existing Directory and
+        creating the next sibling Concept. The separate statements below are
+        semantically equivalent.
+        """
+        self.conn.execute("MERGE (d:Directory {id: $id})", {"id": parent_id})
+        self.conn.execute("MERGE (c:Concept {id: $id})", {"id": child_id})
+        self.conn.execute("""
+            MATCH (d:Directory {id: $parent}), (c:Concept {id: $child})
+            MERGE (d)-[:CONTAINS]->(c)
+        """, {"parent": parent_id, "child": child_id})
+
     def _batch_build_directories(self, cids: List[str]):
         """Build directory hierarchy for a batch of concept IDs.
 
@@ -166,11 +196,7 @@ class ImportManager:
         for d in sorted_dirs:
             parent = "/".join(d.split("/")[:-1]) if "/" in d else None
             if parent and parent in dir_paths:
-                self.conn.execute("""
-                    MERGE (p:Directory {id: $parent})
-                    MERGE (d:Directory {id: $child})
-                    MERGE (p)-[:CONTAINS]->(d)
-                """, {"parent": parent, "child": d})
+                self._merge_directory_contains(parent, d)
             elif parent:
                 # Parent is root (not a directory node)
                 self.conn.execute("""
@@ -186,11 +212,7 @@ class ImportManager:
             parts = cid.split("/")
             if len(parts) > 1:
                 parent_dir = "/".join(parts[:-1])
-                self.conn.execute("""
-                    MERGE (d:Directory {id: $parent})
-                    MERGE (c:Concept {id: $child})
-                    MERGE (d)-[:CONTAINS]->(c)
-                """, {"parent": parent_dir, "child": cid})
+                self._merge_concept_contains(parent_dir, cid)
 
 
     def _load_link_index(self):
@@ -867,17 +889,9 @@ class ImportManager:
                 parent = "/".join(path_parts[:i])
                 child = "/".join(path_parts[: i + 1])
                 if i == len(path_parts) - 1:
-                    self.conn.execute("""
-                        MERGE (d:Directory {id: $parent})
-                        MERGE (c:Concept {id: $child})
-                        MERGE (d)-[:CONTAINS]->(c)
-                    """, {"parent": parent, "child": child})
+                    self._merge_concept_contains(parent, child)
                 else:
-                    self.conn.execute("""
-                        MERGE (p:Directory {id: $parent})
-                        MERGE (d:Directory {id: $child})
-                        MERGE (p)-[:CONTAINS]->(d)
-                    """, {"parent": parent, "child": child})
+                    self._merge_directory_contains(parent, child)
 
         # NOTE: link extraction intentionally lives outside _insert_concept
         # (callers run _extract_links_for_concept after the node exists), so

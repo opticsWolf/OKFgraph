@@ -20,6 +20,15 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
 - `okf ingest --kind md|pdf|thoughts ...`
 - `okf export --all|--concept-id ID --output DIR`
 
+## Setup (once per project)
+
+1. `okf init --db kb.db --bundle kb/` creates the database and bundle root.
+2. Persist them in `okfgraph.toml` so later commands need no flags.
+3. Verify: `okf traverse` lists the root (empty graph prints a message,
+   which still proves the wiring works).
+4. Prefer `uv run --project <root> okf ...` so dependencies resolve from
+   the project instead of the ambient environment.
+
 ## Which command when
 
 | Need | Command |
@@ -46,5 +55,3 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
 - `search` prints concept/chunk hits with ids; drill in with `read`.
 - `traverse` needs a concept id — search first, then traverse from hits.
   Chunk hits carry `parent_doc_id`, so pivots rarely need re-search.
-- Prefer `uv run --project <root> okf ...` so dependencies resolve from
-  the project instead of the ambient environment.

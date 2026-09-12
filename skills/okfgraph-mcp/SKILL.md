@@ -15,6 +15,16 @@ description: >
 OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 (vector) + keyword (FTS) search and graph traversal, exposed as 5 MCP tools.
 
+## Setup (once per project)
+
+1. The harness must wire `okf-mcp` with a stable `--db-path` and `--bundle`
+   (a temp dir means an empty graph every session).
+2. First server boot creates the schema automatically — no init call needed.
+3. `ingest` / `export_bundle` are write tools: they need harness approval
+   unless pre-approved. For a knowledge workflow, pre-approve them.
+4. Verify: `search` anything (empty graph returns `[]`, which still proves
+   the wiring works).
+
 ## Which tool when
 
 | Need | Tool |

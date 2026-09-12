@@ -2,8 +2,8 @@ name: release
 
 # Publish okfgraph 0.2.0+ (and its okf-embed Rust wheel) to PyPI.
 #
-# Flow: create a GitHub Release whose tag is `v<pyproject version>`
-# (e.g. v0.2.0). This workflow then:
+# Flow: push a tag named `v<pyproject version>` (e.g. v0.2.0). This workflow
+# then:
 #   1. builds okf-embed wheels (maturin, linux/macOS/Windows x py3.11-3.13),
 #   2. publishes them to PyPI,
 #   3. builds the okfgraph sdist+wheel and publishes it.
@@ -18,8 +18,8 @@ name: release
 # Rust wheels must be live before anyone pip-installs okfgraph.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -40,7 +40,7 @@ jobs:
           print('version ok:', tag)
           "
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.ref_name }}
 
   wheels-okf-embed:
     name: okf-embed wheels (${{ matrix.os }}, py${{ matrix.python }})

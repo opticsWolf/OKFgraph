@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
-from okfgraph.components.import_ import parse_source_file
+from okfgraph.components.import_ import is_concept_file, parse_source_file
 from okfgraph.components.links import (
     build_name_index,
     extract_md_links,
@@ -29,7 +29,8 @@ from okfgraph.components.links import (
 
 logger = logging.getLogger(__name__)
 
-SOURCE_EXTS = (".md", ".markdown", ".txt")
+# NOTE: file enumeration uses is_concept_file() from import_ (extensions +
+# reserved-name skip) so diff and import agree on what a concept file is.
 
 
 def content_hash(body: str) -> str:
@@ -50,10 +51,7 @@ class DiffState:
 def state_of_dir(bundle_dir: Path) -> DiffState:
     """Parse a bundle directory into a DiffState (no database, no import)."""
     state = DiffState()
-    files = sorted(
-        fp for fp in Path(bundle_dir).rglob("*")
-        if fp.is_file() and fp.suffix.lower() in SOURCE_EXTS
-    )
+    files = sorted(fp for fp in Path(bundle_dir).rglob("*") if is_concept_file(fp))
     raw_links: Dict[str, Dict[str, List[str]]] = {}
     index_concepts = []
     for fp in files:

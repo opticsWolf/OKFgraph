@@ -9,6 +9,9 @@ import json
 import logging
 from pathlib import Path
 from typing import Dict, List
+
+from okfgraph.components.import_ import is_concept_file
+
 logger = logging.getLogger(__name__)
 
 class DeltaDetector:
@@ -34,7 +37,7 @@ class DeltaDetector:
         """
         file_hashes = []
         for fp in sorted(dir_path.rglob("*")):
-            if fp.is_file() and fp.suffix.lower() in self.SUPPORTED_SOURCE_EXTS:
+            if is_concept_file(fp):
                 rel = str(fp.relative_to(dir_path))
                 fh = self._file_hash(fp)
                 file_hashes.append((rel, fh))
@@ -51,7 +54,7 @@ class DeltaDetector:
         file_hashes = []
         file_paths = []
         for fp in sorted(dir_path.rglob("*")):
-            if fp.is_file() and fp.suffix.lower() in self.SUPPORTED_SOURCE_EXTS:
+            if is_concept_file(fp):
                 rel = str(fp.relative_to(dir_path))
                 fh = self._file_hash(fp)
                 file_hashes.append((rel, fh))

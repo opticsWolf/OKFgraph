@@ -32,6 +32,29 @@ from okfgraph.components.links import (
 
 logger = logging.getLogger(__name__)
 
+#: Bulk import skips these filenames: generated navigation files are graph
+#: noise (self-linking ``*/index`` nodes that dilute PPR), never knowledge.
+#: Explicit single-file ``import <path>/index.md`` still works — explicit
+#: beats implicit. Mirrors google-okf's ``RESERVED_FILENAMES``.
+RESERVED_FILENAMES = frozenset({"index.md"})
+
+#: Extensions import (and diff/delta/lint) treat as concept sources.
+SOURCE_EXTS = (".md", ".markdown", ".txt")
+
+
+def is_concept_file(fp: Path) -> bool:
+    """True when ``fp`` is a bulk-importable concept file.
+
+    Single choke point shared by import, diff, delta, and lint so all agree
+    on what a "concept file" is (drift mode would otherwise flag every
+    exported bundle as changed: import skips index.md, diff counts it).
+    """
+    return (
+        fp.is_file()
+        and fp.suffix.lower() in SOURCE_EXTS
+        and fp.name.lower() not in RESERVED_FILENAMES
+    )
+
 def parse_source_file(
     file_path: Path, root: Path
 ) -> Tuple["ConceptModel", str, str]:
@@ -350,10 +373,19 @@ class ImportManager:
         """Inner implementation of import_bundle (called under write lock)."""
         mode = IngestMode.coerce(mode)
         root = bundle_path or self.bundle_root
-        source_files = sorted(
+        # Single walk, partitioned: reserved names (index.md, ...) are graph
+        # noise, never knowledge — but counted in the log so silent loss is
+        # impossible. Shared predicate with diff/delta/lint (is_concept_file).
+        candidates = sorted(
             fp for fp in root.rglob("*")
-            if fp.is_file() and fp.suffix.lower() in self.SUPPORTED_SOURCE_EXTS
+            if fp.is_file() and fp.suffix.lower() in SOURCE_EXTS
         )
+        source_files = [fp for fp in candidates if is_concept_file(fp)]
+        if len(source_files) != len(candidates):
+            logger.info(
+                "skipping %d reserved file(s) (index.md, ...)",
+                len(candidates) - len(source_files),
+            )
         if not source_files:
             return []
 

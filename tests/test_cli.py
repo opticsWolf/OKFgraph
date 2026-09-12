@@ -42,6 +42,16 @@ class TestCLIHelp:
         )
         assert result.returncode == 0
         assert "Search query" in result.stdout
+        assert "--target" in result.stdout
+
+    def test_read_help(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "okfgraph.cli", "read", "--help"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "concept_id" in result.stdout
+        assert "--include" in result.stdout
 
     def test_traverse_help(self):
         result = subprocess.run(
@@ -50,22 +60,15 @@ class TestCLIHelp:
         )
         assert result.returncode == 0
         assert "start_id" in result.stdout
+        assert "--target" in result.stdout
 
-    def test_list_help(self):
+    def test_ingest_help(self):
         result = subprocess.run(
-            [sys.executable, "-m", "okfgraph.cli", "list", "--help"],
+            [sys.executable, "-m", "okfgraph.cli", "ingest", "--help"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
-        assert "directory" in result.stdout
-
-    def test_get_help(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "okfgraph.cli", "get", "--help"],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0
-        assert "concept_id" in result.stdout
+        assert "--kind" in result.stdout
 
     def test_export_help(self):
         result = subprocess.run(
@@ -143,13 +146,17 @@ class TestCLIFullWorkflow:
         assert "Hello World" in result.stdout
 
     def test_list_shows_root(self):
-        result = self._run(["list", "--db", self.db_path, "--bundle", self.bundle])
+        result = self._run(["traverse", "--db", self.db_path, "--bundle", self.bundle])
         assert "Hello World" in result.stdout
 
     def test_get_returns_json(self):
-        result = self._run(["get", "--db", self.db_path, "--bundle", self.bundle, "hello"])
+        result = self._run(["read", "--db", self.db_path, "--bundle", self.bundle, "hello"])
         assert '"title"' in result.stdout
         assert "Hello World" in result.stdout
+
+    def test_read_chunks_runs(self):
+        result = self._run(["read", "--db", self.db_path, "--bundle", self.bundle, "hello", "--include", "context"])
+        assert result.returncode == 0
 
     def test_export_single_creates_file(self):
         exported = Path(self.export_dir) / "hello.md"

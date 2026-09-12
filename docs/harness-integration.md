@@ -59,17 +59,16 @@ dir (Claude Code: `.claude/skills/`).
 
 ## CLI fallback
 
-`uv run --project . okf --help` — 25 commands mirroring the MCP tools
-(`search`, `search-chunks`, `traverse`, `get`, `ingest`, `context`,
-`hub-search`, `path`, `reconstruct`, ...). Useful when MCP is unavailable
+`uv run --project . okf --help` — the same five verbs (`search`, `read`,
+`traverse`, `ingest`, `export`) plus maintenance commands (`init`, `import`,
+`shell`, `reindex`, `broken-links`, ...). Useful when MCP is unavailable
 or for shell scripting.
 
-## Tool surface (16 MCP tools)
+## Tool surface (5 MCP tools)
 
-Read: `search_hybrid`, `search_chunks`, `search_with_context`,
-`search_chunks_with_hub_score`, `search_images`, `traverse`, `find_path`,
-`get_by_id`, `get_chunks`, `reconstruct_document`, `list_directory`,
-`expand_with_graph_context`, `export_bundle`.
-Write: `ingest_md`, `ingest_thoughts`, `ingest_pdf`.
+- `search` (concepts/chunks/images, expand, hub_rerank),
+  `read` (body/chunks/document/context),
+  `traverse` (relationships, directory listing, shortest path),
+  `ingest` (md/pdf/thoughts), `export_bundle`.
 All tools carry descriptions, JSON schemas, and read-only/destructive
 annotations — harnesses can gate writes on those.

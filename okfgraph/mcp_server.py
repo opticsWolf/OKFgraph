@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from okfgraph.router import OKFRouter
@@ -46,16 +47,15 @@ def make_lifespan(
     embedding_dim: int,
     enable_chunking: bool,
 ):
-    """Factory that returns a lifespan async-context-manager for FastMCP."""
+    """Factory that returns a lifespan async-context-manager for MCPServer."""
 
     @asynccontextmanager
-    async def _lifespan(mcp: FastMCP):
-        if bundle_root is None:
-            bundle_root = str(Path(db_path).parent)
+    async def _lifespan(mcp: MCPServer):
+        root = bundle_root if bundle_root is not None else str(Path(db_path).parent)
 
         router = OKFRouter(
             db_path=db_path,
-            bundle_root=bundle_root,
+            bundle_root=root,
             device=device,
             embedding_dim=embedding_dim,
             enable_chunking=enable_chunking,
@@ -92,7 +92,7 @@ def create_mcp_server(
     device: str = "cpu",
     embedding_dim: int = 1024,
     enable_chunking: bool = True,
-) -> FastMCP:
+) -> MCPServer:
     """Create an MCP server instance connected to an OKFgraph database.
 
     Args:
@@ -103,7 +103,7 @@ def create_mcp_server(
         enable_chunking: Whether to enable document chunking.
 
     Returns:
-        Configured FastMCP server instance.
+        Configured MCPServer server instance.
     """
     lifespan_fn = make_lifespan(
         db_path=db_path,
@@ -113,7 +113,7 @@ def create_mcp_server(
         enable_chunking=enable_chunking,
     )
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         name="OKFgraph MCP Server",
         instructions=(
             "OKF knowledge graph with ONNX + Jina v5 embeddings. "
@@ -128,12 +128,7 @@ def create_mcp_server(
     # ------------------------------------------------------------------
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def search_hybrid(
         query: Annotated[str, Field(description="The search query text.")],
@@ -164,12 +159,7 @@ def create_mcp_server(
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def traverse(
         start_id: Annotated[str, Field(description="ID of the starting concept or directory.")],
@@ -193,12 +183,7 @@ def create_mcp_server(
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def get_by_id(
         concept_id: Annotated[str, Field(description="ID of the concept to fetch.")],
@@ -216,12 +201,7 @@ def create_mcp_server(
         )
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def list_directory(
         directory_id: Annotated[
@@ -236,12 +216,7 @@ def create_mcp_server(
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def search_images(
         query: Annotated[str, Field(description="Text describing the image(s) to find.")],
@@ -257,12 +232,7 @@ def create_mcp_server(
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def search_chunks(
         query: Annotated[str, Field(description="The search query text.")],
@@ -278,12 +248,7 @@ def create_mcp_server(
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def search_with_context(
         query: Annotated[str, Field(description="The search query text.")],
@@ -305,12 +270,7 @@ def create_mcp_server(
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def search_chunks_with_hub_score(
         query: Annotated[str, Field(description="The search query text.")],
@@ -332,12 +292,7 @@ def create_mcp_server(
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def expand_with_graph_context(
         chunk_ids: Annotated[
@@ -362,12 +317,7 @@ def create_mcp_server(
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def get_chunks(
         concept_id: Annotated[
@@ -381,12 +331,7 @@ def create_mcp_server(
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def reconstruct_document(
         concept_id: Annotated[
@@ -400,12 +345,7 @@ def create_mcp_server(
         return json.dumps(result, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": True,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def find_path(
         start_id: Annotated[str, Field(description="ID of the starting concept.")],
@@ -426,12 +366,7 @@ def create_mcp_server(
     # ------------------------------------------------------------------
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": False,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def export_bundle(
         output_dir: Annotated[
@@ -464,12 +399,7 @@ def create_mcp_server(
         return json.dumps(result, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": False,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def ingest_md(
         md_path: Annotated[
@@ -517,12 +447,7 @@ def create_mcp_server(
         return json.dumps(result, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": False,
-            "destructive_hint": False,
-            "idempotent_hint": False,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False),
     )
     def ingest_thoughts(
         thoughts: Annotated[
@@ -558,12 +483,7 @@ def create_mcp_server(
         return json.dumps(result, default=str, indent=2)
 
     @mcp.tool(
-        annotations={
-            "read_only_hint": False,
-            "destructive_hint": False,
-            "idempotent_hint": True,
-            "open_world_hint": False,
-        },
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
     )
     def ingest_pdf(
         pdf_path: Annotated[

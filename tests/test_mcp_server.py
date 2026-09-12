@@ -184,3 +184,48 @@ class TestMCPServer:
             assert mcp.name == "OKFgraph MCP Server"
             assert "ONNX" in mcp.instructions
             assert "Jina v5" in mcp.instructions
+
+    @pytest.mark.anyio
+    async def test_lifespan_yields_router_and_closes(self, tmp_path, monkeypatch):
+        """Lifespan builds the router, yields GraphContext, and closes it.
+
+        Regression test: the lifespan closure used to rebind bundle_root
+        (UnboundLocalError), so the MCP server could never start.
+        OKFRouter is stubbed — this guards the wiring, not the engine.
+        """
+        import okfgraph.mcp_server as ms
+
+        built = {}
+        closed = []
+
+        class StubRouter:
+            def __init__(self, **kwargs):
+                built.update(kwargs)
+
+            def close(self):
+                closed.append(True)
+
+        monkeypatch.setattr(ms, "OKFRouter", StubRouter)
+        mcp = create_mcp_server(
+            db_path=str(tmp_path / "t.db"), bundle_root=str(tmp_path),
+        )
+        async with mcp.settings.lifespan(mcp) as gctx:
+            assert isinstance(gctx, ms.GraphContext)
+            assert isinstance(gctx.router, StubRouter)
+            assert built["db_path"] == str(tmp_path / "t.db")
+            assert built["bundle_root"] == str(tmp_path)
+            assert closed == []
+        assert closed == [True]
+
+    def test_get_router_resolves_from_lifespan_context(self):
+        """_get_router extracts the router from a v2 lifespan context."""
+        from types import SimpleNamespace
+        from okfgraph.mcp_server import GraphContext, _get_router
+
+        sentinel = object()
+        ctx = SimpleNamespace(
+            request_context=SimpleNamespace(
+                lifespan_context=GraphContext(router=sentinel),
+            ),
+        )
+        assert _get_router(ctx) is sentinel

@@ -53,7 +53,7 @@ with absolute paths. No auth, no headers, no sidecars.
 
 ### Skills
 
-- `skills/okfgraph/SKILL.md` (`okfgraph`) — the MCP skill: when to reach
+- `skills/okfgraph-mcp/SKILL.md` (`okfgraph-mcp`) — the MCP skill: when to reach
   for the graph and which tool to use. Install when `okf-mcp` is wired.
 - `skills/okfgraph-cli/SKILL.md` (`okfgraph-cli`) — the CLI skill: same
   routing table as shell commands, plus cold-boot batching conventions.

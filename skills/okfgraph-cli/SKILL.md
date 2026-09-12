@@ -7,7 +7,7 @@ description: >
   decisions and docs, navigate relationships, read stored documents, or
   persist new knowledge. Prefers graph lookup over re-deriving context
   the project already recorded. When MCP tools are available, use the
-  okfgraph skill instead.
+  okfgraph-mcp skill instead.
 ---
 
 # OKFgraph skill (CLI)

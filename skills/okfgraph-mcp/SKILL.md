@@ -1,5 +1,5 @@
 ---
-name: okfgraph
+name: okfgraph-mcp
 description: >
   Ladybug-backed knowledge graph with Jina v5 semantic search, via MCP
   tools (search, read, traverse, ingest, export_bundle). Use when the

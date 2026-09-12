@@ -6,6 +6,11 @@ commit history, newest first.
 
 ## [Unreleased]
 
+### Changed
+- `okf ingest` now requires an explicit `--kind md|pdf|thoughts`. This removes
+  the unsafe implicit PDF default and aligns the CLI discriminator with the
+  required MCP `ingest` `kind` parameter.
+
 ### Added
 - Rust unit tests for `okf-embed` (`cargo test`): device parsing, task-
   prefix idempotence, the L2 → truncate → re-normalise Matryoshka math,

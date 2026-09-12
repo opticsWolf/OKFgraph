@@ -74,6 +74,14 @@ class TestCLIHelp:
         assert result.returncode == 0
         assert "--kind" in result.stdout
 
+    def test_ingest_kind_required(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "okfgraph.cli", "ingest", "--md-file", "note.md"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 2
+        assert "--kind" in result.stderr
+
     def test_export_help(self):
         result = subprocess.run(
             [sys.executable, "-m", "okfgraph.cli", "export", "--help"],

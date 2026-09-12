@@ -695,7 +695,10 @@ def _ingest(args):
     """
     logger = logging.getLogger("cli")
     router = _router(args)
-    kind = getattr(args, "kind", "pdf") or "pdf"
+    kind = getattr(args, "kind", None)
+    if kind not in ("md", "pdf", "thoughts"):
+        print("[ERROR] --kind is required: md|pdf|thoughts")
+        return
     tags = args.tags.split(",") if getattr(args, "tags", None) else None
     if kind == "md":
         md_file = getattr(args, "md_file", None)
@@ -1171,8 +1174,8 @@ def build_parser():
     p = sub.add_parser("ingest", help="Add content: markdown file, PDF, or thoughts")
     _add_global(p)
     _add_logging_flags(p)
-    p.add_argument("--kind", default="pdf", choices=["md", "pdf", "thoughts"],
-                   help="What to ingest (default: pdf)")
+    p.add_argument("--kind", required=True, choices=["md", "pdf", "thoughts"],
+                   help="What to ingest")
     p.add_argument("--md-file", default=None, help="Markdown file (--kind md)")
     p.add_argument("--pdf-file", default=None, help="PDF file (--kind pdf)")
     p.add_argument("--thoughts", default=None, help="Raw reasoning text (--kind thoughts)")

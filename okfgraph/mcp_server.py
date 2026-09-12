@@ -149,7 +149,13 @@ def create_mcp_server(
         hub_weight: Annotated[float, Field(ge=0, le=1, description="Hub-score weight when hub_rerank=True.")] = 0.3,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
-        """Search the knowledge graph. Start here for any question over stored knowledge: target='concepts' for open-ended questions, 'chunks' for exact passages, 'images' for image assets. To read a known concept use read; to navigate relationships use traverse; to add content use ingest."""
+        """Search the knowledge graph — start here for any question over stored knowledge.
+
+        Routing: target='concepts' for open-ended questions; 'chunks' for exact
+        passages (expand=true adds graph neighborhood, hub_rerank=true ranks by
+        importance); 'images' for image assets. If you already have a concept
+        ID, use read instead of searching. If you want related concepts, use
+        traverse. To add content, use ingest."""
         router = _get_router(ctx)
         if target == "images":
             return json.dumps(router.search_images(query, limit=limit), default=str, indent=2)
@@ -191,7 +197,12 @@ def create_mcp_server(
         ] = "body",
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
-        """Read a known concept (search first to find IDs). For questions over the graph use search; for navigating relationships use traverse."""
+        """Read a known concept — search first to find IDs.
+
+        Routing: include='body' for full text; 'chunks' for passages;
+        'document' to rebuild the original markdown; 'context' for links,
+        ancestry, and siblings. For open questions use search; to walk
+        relationships use traverse."""
         router = _get_router(ctx)
         if include == "chunks":
             return json.dumps(router.search_engine.get_chunks(concept_id), default=str, indent=2)
@@ -231,7 +242,11 @@ def create_mcp_server(
         max_path_length: Annotated[int, Field(ge=1, le=10, description="Maximum path length, only used with target.")] = 6,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
-        """Navigate graph relationships or find how two concepts connect (target=...). Search first to find IDs. To add content use ingest."""
+        """Navigate graph relationships, browse directories, or connect two concepts.
+
+        Routing: default CONTAINS depth 1 lists a directory (empty id = root);
+        LINKS_TO follows references; target=<id> finds the shortest path
+        instead. Search first to find IDs. To add content use ingest."""
         router = _get_router(ctx)
         if not start_id:
             return json.dumps(router.list_directory(""), default=str, indent=2)
@@ -264,7 +279,11 @@ def create_mcp_server(
         extract_images: Annotated[bool, Field(description="Extract embedded images (kind='pdf').")] = True,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
-        """Add content to the knowledge graph. Returns concept ID(s) so the content can be searched or traversed. Markdown is mordant-linted before import."""
+        """Add content to the knowledge graph. Returns concept ID(s) for search/traverse.
+
+        Routing: kind='md' imports a markdown file; 'pdf' converts a PDF
+        ('never' routing = fast, no ONNX); 'thoughts' persists reasoning.
+        Markdown is mordant-linted before import."""
         from okfgraph.components.converters import BobineConverter
         router = _get_router(ctx)
         if kind == "md":

@@ -36,8 +36,12 @@ class ImageAssetManager:
         allow_remote_images: bool,
         allowed_image_domains: List[str],
         bundle_root,
+        db=None,
     ):
         self.conn = conn
+        # Ladybug Database handle for short-lived index connections
+        # (same QUERY_*_INDEX segfault workaround as SearchEngine).
+        self._db = db
         self.embed_engine = embed_engine
         self.schema_mgr = schema_mgr
         self.allow_remote_images = allow_remote_images
@@ -277,12 +281,27 @@ class ImageAssetManager:
         else:
             query_vec = self.embed_engine._encode_omni_text(text_query, task="Query")
 
-        result = self.conn.execute(
-            "CALL QUERY_VECTOR_INDEX('ImageAsset', 'image_omni_idx', $vec, $k) "
-            "RETURN node, distance",
-            {"vec": query_vec, "k": limit},
-        )
-        rows = result.rows_as_dict().get_all()
+        if self._db is None:
+            result = self.conn.execute(
+                "CALL QUERY_VECTOR_INDEX('ImageAsset', 'image_omni_idx', $vec, $k) "
+                "RETURN node, distance",
+                {"vec": query_vec, "k": limit},
+            )
+            rows = result.rows_as_dict().get_all()
+        else:
+            import ladybug as lb
+
+            c = lb.Connection(self._db)
+            try:
+                c.execute("LOAD EXTENSION VECTOR")
+                result = c.execute(
+                    "CALL QUERY_VECTOR_INDEX('ImageAsset', 'image_omni_idx', $vec, $k) "
+                    "RETURN node, distance",
+                    {"vec": query_vec, "k": limit},
+                )
+                rows = result.rows_as_dict().get_all()
+            finally:
+                c.close()
         out: List[Dict[str, Any]] = []
         for row in rows:
             node = row.get("node", {})

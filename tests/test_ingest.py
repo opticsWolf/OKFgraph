@@ -1,7 +1,7 @@
-"""Tests for the ONNX/Rapid PDF ingestion engine.
+"""Tests for IngestManager.ingest_pdf() (bobine engine).
 
-These tests verify the module structure, graceful degradation when RapidAI
-packages are not installed, and the HTML table converter.
+Legacy okfgraph.ingest unit tests were removed with the engine
+(PDF conversion now lives in the bobine wheel).
 """
 
 from __future__ import annotations
@@ -9,283 +9,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from okfgraph.ingest.config import ConverterConfig, RoutingMode
-from okfgraph.ingest.engine import OnnxRapidEngine
-from okfgraph.ingest.converter import HybridConverter
-from okfgraph.ingest.tables import html_tables_to_gfm, _SimpleTableParser
-from okfgraph.ingest.assets import stage_images_as_okf_assets, asset_id, ASSET_STORE_DIRNAME
+
+from okfgraph.components.converters import BobineConverter
 
 
-class TestConfig:
-    """ConverterConfig and RoutingMode."""
-
-    def test_default_config(self):
-        cfg = ConverterConfig()
-        assert cfg.routing_mode == RoutingMode.AUTO
-        assert cfg.use_onnx is True
-        assert cfg.device == "cuda"
-        assert cfg.ort_providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
-
-    def test_cuda_providers(self):
-        cfg = ConverterConfig(device="cuda")
-        assert "CUDAExecutionProvider" in cfg.ort_providers
-        assert "CPUExecutionProvider" in cfg.ort_providers
-
-    def test_gpu_alias_providers(self):
-        """device='gpu' is accepted as an alias for 'cuda'."""
-        cfg = ConverterConfig(device="gpu")
-        assert "CUDAExecutionProvider" in cfg.ort_providers
-        assert "CPUExecutionProvider" in cfg.ort_providers
-
-    def test_cpu_providers(self):
-        cfg = ConverterConfig(device="cpu")
-        assert cfg.ort_providers == ["CPUExecutionProvider"]
-
-    def test_explicit_providers(self):
-        cfg = ConverterConfig(ort_providers=["DirectMLExecutionProvider"])
-        assert cfg.ort_providers == ["DirectMLExecutionProvider"]
-
-    def test_routing_mode_values(self):
-        assert RoutingMode.AUTO.value == "auto"
-        assert RoutingMode.SURGICAL.value == "surgical"
-        assert RoutingMode.ALWAYS.value == "always"
-        assert RoutingMode.NEVER.value == "never"
-
-
-class TestEngineGracefulDegradation:
-    """OnnxRapidEngine degrades gracefully when RapidAI is not installed."""
-
-    def test_formula_returns_none_when_not_installed(self):
-        eng = OnnxRapidEngine()
-        result = eng.formula()
-        # Will be None if rapid_latex_ocr not installed
-        # If installed, will be a LatexOCR instance
-        assert result is None or hasattr(result, "predict") or hasattr(result, "__call__")
-
-    def test_ocr_returns_none_when_not_installed(self):
-        eng = OnnxRapidEngine()
-        result = eng.ocr()
-        assert result is None or hasattr(result, "predict") or hasattr(result, "__call__")
-
-    def test_layout_returns_none_when_not_installed(self):
-        eng = OnnxRapidEngine()
-        result = eng.layout()
-        assert result is None or hasattr(result, "predict") or hasattr(result, "__call__")
-
-    def test_table_returns_none_when_not_installed(self):
-        eng = OnnxRapidEngine()
-        result = eng.table()
-        assert result is None or hasattr(result, "predict") or hasattr(result, "__call__")
-
-    def test_close_clears_references(self):
-        eng = OnnxRapidEngine()
-        eng.formula()
-        eng.ocr()
-        eng.close()
-        assert eng._formula is None
-        assert eng._ocr is None
-        assert eng._layout is None
-        assert eng._table is None
-
-
-class TestHTMLTablesToGFM:
-    """html_tables_to_gfm converts simple HTML tables to GFM pipe tables."""
-
-    def test_simple_table(self):
-        html = "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>"
-        result = html_tables_to_gfm(html)
-        assert "| A | B |" in result
-        assert "| --- | --- |" in result
-        assert "| 1 | 2 |" in result
-
-    def test_table_with_data_rows(self):
-        html = (
-            "<table>"
-            "<tr><th>Name</th><th>Value</th></tr>"
-            "<tr><td>alpha</td><td>1</td></tr>"
-            "<tr><td>beta</td><td>2</td></tr>"
-            "</table>"
-        )
-        result = html_tables_to_gfm(html)
-        assert "| Name | Value |" in result
-        assert "| alpha | 1 |" in result
-
-    def test_complex_table_with_colspan_kept_as_html(self):
-        html = "<table><tr><td colspan=\"2\">merged</td></tr></table>"
-        result = html_tables_to_gfm(html)
-        # Complex tables are left as-is
-        assert "<table>" in result or "<td" in result
-
-    def test_empty_table_returns_none(self):
-        html = "<table></table>"
-        result = html_tables_to_gfm(html)
-        # Empty table is left as-is
-        assert result == html
-
-    def test_table_with_pipes_escaped(self):
-        html = "<table><tr><th>A</th></tr><tr><td>a|b</td></tr></table>"
-        result = html_tables_to_gfm(html)
-        assert r"\|" in result  # pipe chars should be escaped
-
-    def test_multiple_tables(self):
-        html = (
-            "<table><tr><th>X</th></tr><tr><td>1</td></tr></table>"
-            "\n\nSome text\n\n"
-            "<table><tr><th>Y</th></tr><tr><td>2</td></tr></table>"
-        )
-        result = html_tables_to_gfm(html)
-        assert "| X |" in result
-        assert "| Y |" in result
-
-
-class TestAssetStaging:
-    """okf-asset:// staging logic."""
-
-    def test_asset_id_is_deterministic(self):
-        id1 = asset_id("doc", 1, b"test data")
-        id2 = asset_id("doc", 1, b"test data")
-        assert id1 == id2
-        assert id1.startswith("img_")
-
-    def test_asset_id_differs_for_different_data(self):
-        id1 = asset_id("doc", 1, b"data A")
-        id2 = asset_id("doc", 1, b"data B")
-        assert id1 != id2
-
-    def test_asset_id_differs_for_different_occurrence(self):
-        id1 = asset_id("doc", 1, b"data")
-        id2 = asset_id("doc", 2, b"data")
-        assert id1 != id2
-
-    def test_stage_images_rewrites_local_links(self, tmp_path):
-        from pathlib import Path
-        # Create a dummy image file
-        img_file = tmp_path / "test.png"
-        img_file.write_bytes(b"\x89PNG\r\n\x1a\n")
-        out_dir = tmp_path / "out"
-        out_dir.mkdir()
-
-        md = f"Text ![alt]({img_file.name})"
-        new_md, count = stage_images_as_okf_assets(
-            md, tmp_path, img_file, out_dir, "concept"
-        )
-        assert count == 1
-        assert "okf-asset://" in new_md
-        assert img_file.name not in new_md
-
-    def test_stage_images_skips_remote_links(self, tmp_path):
-        out_dir = tmp_path / "out"
-        out_dir.mkdir()
-
-        md = "Text ![alt](https://example.com/img.png)"
-        new_md, count = stage_images_as_okf_assets(
-            md, tmp_path, tmp_path / "source.pdf", out_dir, "concept"
-        )
-        assert count == 0
-        assert "https://example.com/img.png" in new_md
-
-    def test_stage_images_skips_okf_asset_links(self, tmp_path):
-        out_dir = tmp_path / "out"
-        out_dir.mkdir()
-
-        md = "Text ![alt](okf-asset://img_abc123)"
-        new_md, count = stage_images_as_okf_assets(
-            md, tmp_path, tmp_path / "source.pdf", out_dir, "concept"
-        )
-        assert count == 0
-        assert "okf-asset://img_abc123" in new_md
-
-
-class TestHybridConverterInit:
-    """HybridConverter initializes correctly."""
-
-    def test_never_mode_no_models(self):
-        cfg = ConverterConfig(routing_mode=RoutingMode.NEVER, use_onnx=False)
-        conv = HybridConverter(cfg)
-        conv.ensure_models()
-        # No models should be loaded
-        assert conv.rapid._formula is None
-        assert conv.rapid._ocr is None
-        conv.close()
-
-    def test_converter_close(self):
-        cfg = ConverterConfig()
-        conv = HybridConverter(cfg)
-        conv.close()
-        assert conv.rapid._formula is None
-        assert conv.rapid._ocr is None
-        assert conv.rapid._layout is None
-        assert conv.rapid._table is None
-
-    def test_math_unicode_detection(self):
-        from okfgraph.ingest.converter import _is_math_unicode
-        assert _is_math_unicode("α")  # Greek
-        assert _is_math_unicode("∑")  # Math operator
-        assert not _is_math_unicode("a")  # Regular ASCII
-
-    def test_mono_font_detection(self):
-        from okfgraph.ingest.converter import _is_mono_font
-        assert _is_mono_font("Courier New")
-        assert _is_mono_font("Consolas")
-        assert not _is_mono_font("Arial")
-
-
-class TestVersionChecking:
-    """Gap #15 — RapidAI version pinning and runtime warning."""
-
-    def test_parse_version_basic(self):
-        from okfgraph.ingest.versions import _parse_version
-        assert _parse_version("1.5.2") == (1, 5, 2)
-        assert _parse_version("0.2.0") == (0, 2, 0)
-        assert _parse_version("10.1.3") == (10, 1, 3)
-        assert _parse_version("1") == (1, 0, 0)
-        assert _parse_version("1.2") == (1, 2, 0)
-
-    def test_is_within_tolerance_exact_match(self):
-        from okfgraph.ingest.versions import _is_within_tolerance
-        assert _is_within_tolerance("1.5.2", "1.5.2") is True
-
-    def test_is_within_tolerance_same_minor_different_patch(self):
-        from okfgraph.ingest.versions import _is_within_tolerance
-        assert _is_within_tolerance("1.5.1", "1.5.2") is True
-        assert _is_within_tolerance("1.5.3", "1.5.2") is True
-        assert _is_within_tolerance("1.5.4", "1.5.2") is False
-
-    def test_is_within_tolerance_different_minor(self):
-        from okfgraph.ingest.versions import _is_within_tolerance
-        # ±1 minor is allowed
-        assert _is_within_tolerance("1.4.9", "1.5.2") is True
-        assert _is_within_tolerance("1.6.0", "1.5.2") is True
-        # ±2 minor is not allowed
-        assert _is_within_tolerance("1.3.0", "1.5.2") is False
-        assert _is_within_tolerance("1.7.0", "1.5.2") is False
-
-    def test_is_within_tolerance_different_major(self):
-        from okfgraph.ingest.versions import _is_within_tolerance
-        assert _is_within_tolerance("2.0.0", "1.5.2") is False
-        assert _is_within_tolerance("0.5.2", "1.5.2") is False
-
-    def test_check_rapid_versions_env_silence(self, monkeypatch):
-        from okfgraph.ingest.versions import check_rapid_versions
-        monkeypatch.setenv("OKFGRAPH_INGEST_ALLOW_UNPINNED", "1")
-        warnings = check_rapid_versions()
-        # Should return empty list when env var is set
-        assert warnings == []
-
-    def test_check_rapid_versions_no_warn_flag(self, monkeypatch):
-        from okfgraph.ingest.versions import check_rapid_versions
-        monkeypatch.delenv("OKFGRAPH_INGEST_ALLOW_UNPINNED", raising=False)
-        # With warn=False, no logging should happen
-        warnings = check_rapid_versions(warn=False)
-        # Still returns warnings list, just doesn't log
-        assert isinstance(warnings, list)
-
-    def test_check_rapid_versions_returns_list(self, monkeypatch):
-        from okfgraph.ingest.versions import check_rapid_versions
-        monkeypatch.delenv("OKFGRAPH_INGEST_ALLOW_UNPINNED", raising=False)
-        warnings = check_rapid_versions()
-        assert isinstance(warnings, list)
-        # May be empty if all packages are within tolerance or not installed
+def _never(**kwargs):
+    """BobineConverter pinned to the pdf_oxide fast path (no ONNX)."""
+    return BobineConverter(routing_mode="never", **kwargs)
 
 
 class TestIngestPdfMethod:
@@ -336,7 +66,7 @@ startxref
         result = test_router.ingest_mgr.ingest_pdf(
             pdf_path,
             auto_import=False,
-            routing_mode="never",
+            converter=_never(),
         )
 
         assert isinstance(result, dict)
@@ -374,7 +104,7 @@ startxref
             pdf_path,
             auto_import=False,
             output_dir=str(output_dir),
-            routing_mode="never",
+            converter=_never(),
         )
 
         assert Path(result["md_path"]).exists()
@@ -405,7 +135,246 @@ startxref
         result = test_router.ingest_mgr.ingest_pdf(
             pdf_path,
             auto_import=False,
-            routing_mode="never",
+            converter=_never(),
         )
 
         assert result["page_count"] >= 1
+
+
+MINIMAL_PDF = b"""%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]
+   /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 44 >>
+stream
+BT /F1 12 Tf 100 700 Td (Hello World from PDF) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f
+0000000009 00000 n
+0000000058 00000 n
+0000000115 00000 n
+0000000266 00000 n
+0000000359 00000 n
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+434
+%%EOF
+"""
+
+
+class TestIngestPdfBobinePaths:
+    """Bobine wiring: paths, callbacks, error order, work-dir hygiene."""
+
+    @pytest.fixture(scope="function")
+    def test_router(self, tmp_path):
+        from okfgraph.router import OKFRouter
+        db_path = str(tmp_path / "test.db")
+        bundle_path = Path(__file__).parent / "fixtures" / "bundle"
+        router = OKFRouter(
+            db_path=db_path,
+            bundle_root=str(bundle_path),
+            embedding_dim=64,
+            device="cpu",
+            enable_chunking=False,
+        )
+        yield router
+        router.close()
+
+    @staticmethod
+    def _pdf(tmp_path, name="doc.pdf"):
+        pdf_path = tmp_path / name
+        pdf_path.write_bytes(MINIMAL_PDF)
+        return pdf_path
+
+    def test_missing_bobine_raises_runtime_error(self, test_router, tmp_path, monkeypatch):
+        """Without bobine, ingest_pdf fails fast with RuntimeError (not ImportError)."""
+        import sys
+        monkeypatch.setitem(sys.modules, "bobine", None)
+        pdf_path = self._pdf(tmp_path)
+        with pytest.raises(RuntimeError, match="bobine is required"):
+            test_router.ingest_mgr.ingest_pdf(pdf_path, auto_import=False)
+
+    def test_invalid_routing_mode_rejected_at_construction(self, tmp_path):
+        """Bad routing_mode → ValueError before any work is done."""
+        with pytest.raises(ValueError, match="routing_mode"):
+            BobineConverter(routing_mode="bogus")
+        assert list(tmp_path.glob("*.md")) == []
+
+    def test_output_dir_is_respected(self, test_router, tmp_path):
+        """auto_import=False + output_dir → <stem>.md + assets under output_dir."""
+        pdf_path = self._pdf(tmp_path)
+        out = tmp_path / "custom_out"
+        result = test_router.ingest_mgr.ingest_pdf(
+            pdf_path, auto_import=False, output_dir=out, converter=_never(),
+        )
+        assert Path(result["md_path"]) == out / "doc.md"
+        assert Path(result["md_path"]).exists()
+        assert Path(result["image_dir"]).parent == out
+        assert Path(result["image_dir"]).exists()
+        assert result["concept_ids"] == []
+        assert result["page_count"] == 1
+
+    def test_default_output_dir_is_pdf_parent(self, test_router, tmp_path):
+        """No output_dir → markdown lands next to the PDF."""
+        pdf_path = self._pdf(tmp_path)
+        result = test_router.ingest_mgr.ingest_pdf(
+            pdf_path, auto_import=False, converter=_never(),
+        )
+        assert Path(result["md_path"]).parent == tmp_path
+        assert Path(result["md_path"]).exists()
+
+    def test_on_page_callback_invoked(self, test_router, tmp_path):
+        """Progress callback receives 0-based (page_index, page_total)."""
+        pdf_path = self._pdf(tmp_path)
+        calls = []
+        test_router.ingest_mgr.ingest_pdf(
+            pdf_path, auto_import=False, converter=_never(),
+            on_page=lambda idx, total: calls.append((idx, total)),
+        )
+        assert calls == [(0, 1)]
+
+    def test_extract_images_false_returns_full_dict(self, test_router, tmp_path):
+        """extract_images=False still honors the result contract."""
+        pdf_path = self._pdf(tmp_path)
+        result = test_router.ingest_mgr.ingest_pdf(
+            pdf_path, auto_import=False, converter=_never(extract_images=False),
+        )
+        assert set(result) == {"md_path", "concept_ids", "image_dir", "page_count"}
+        assert result["page_count"] == 1
+
+    def test_bundle_root_restored_on_import_failure(self, test_router, tmp_path, monkeypatch):
+        """A failing import_bundle must not leak the temp work_dir as bundle_root."""
+        pdf_path = self._pdf(tmp_path)
+        before = test_router.ingest_mgr.bundle_root
+
+        def _boom(*a, **k):
+            raise RuntimeError("simulated import failure")
+
+        monkeypatch.setattr(
+            test_router.ingest_mgr.import_mgr, "import_bundle", _boom,
+        )
+        with pytest.raises(RuntimeError, match="simulated import failure"):
+            test_router.ingest_mgr.ingest_pdf(
+                pdf_path, auto_import=True, converter=_never(),
+            )
+        mgr = test_router.ingest_mgr
+        assert mgr.bundle_root == before
+        assert mgr.import_mgr.bundle_root == before
+        assert mgr.delta_mgr.bundle_root == before
+
+    def test_auto_import_returns_transient_md_path(self, test_router, tmp_path):
+        """auto_import=True: content lands in the graph; md_path was temp-only."""
+        pdf_path = self._pdf(tmp_path)
+        result = test_router.ingest_mgr.ingest_pdf(
+            pdf_path, auto_import=True, converter=_never(),
+        )
+        assert len(result["concept_ids"]) >= 1
+        # Conversion ran in a TemporaryDirectory — the returned md_path
+        # documents *what* was imported, not a durable file.
+        assert not Path(result["md_path"]).exists()
+
+
+class TestCustomConverter:
+    """The DocumentConverter seam: a non-bobine pipeline plugs in cleanly."""
+
+    @pytest.fixture(scope="function")
+    def test_router(self, tmp_path):
+        from okfgraph.router import OKFRouter
+        db_path = str(tmp_path / "test.db")
+        bundle_path = Path(__file__).parent / "fixtures" / "bundle"
+        router = OKFRouter(
+            db_path=db_path,
+            bundle_root=str(bundle_path),
+            embedding_dim=64,
+            device="cpu",
+            enable_chunking=False,
+        )
+        yield router
+        router.close()
+
+    @staticmethod
+    def _stub_converter():
+        from okfgraph.components.converters import ConvertedDocument
+
+        class StubConverter:
+            """Minimal third-party pipeline: writes its own markdown."""
+
+            def __init__(self):
+                self.calls = []
+
+            def convert(self, pdf_path, output_dir, *, on_page=None):
+                from pathlib import Path as _P
+                self.calls.append((_P(pdf_path), _P(output_dir)))
+                out = _P(output_dir)
+                out.mkdir(parents=True, exist_ok=True)
+                md = out / (_P(pdf_path).stem + ".md")
+                md.write_text("# Stub pipeline\n\nConverted without bobine.\n", encoding="utf-8")
+                assets = out / "_assets"
+                assets.mkdir(exist_ok=True)
+                if on_page:
+                    on_page(0, 1)
+                return ConvertedDocument(md_path=md, image_dir=assets, page_count=7)
+
+        return StubConverter()
+
+    def test_per_call_converter_override(self, test_router, tmp_path):
+        stub = self._stub_converter()
+        pdf_path = tmp_path / "doc.pdf"
+        pdf_path.write_bytes(MINIMAL_PDF)
+        result = test_router.ingest_mgr.ingest_pdf(
+            pdf_path, auto_import=False, converter=stub,
+        )
+        assert result["page_count"] == 7
+        assert Path(result["md_path"]).read_text(encoding="utf-8").startswith("# Stub pipeline")
+        assert len(stub.calls) == 1
+
+    def test_per_call_converter_with_auto_import(self, test_router, tmp_path):
+        stub = self._stub_converter()
+        pdf_path = tmp_path / "doc.pdf"
+        pdf_path.write_bytes(MINIMAL_PDF)
+        result = test_router.ingest_mgr.ingest_pdf(
+            pdf_path, auto_import=True, converter=stub,
+        )
+        assert len(result["concept_ids"]) >= 1
+        assert result["page_count"] == 7
+
+    def test_router_level_converter_injection(self, tmp_path):
+        from okfgraph.router import OKFRouter
+        stub = self._stub_converter()
+        bundle_path = Path(__file__).parent / "fixtures" / "bundle"
+        router = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(bundle_path),
+            embedding_dim=64,
+            device="cpu",
+            enable_chunking=False,
+            converter=stub,
+        )
+        try:
+            pdf_path = tmp_path / "doc.pdf"
+            pdf_path.write_bytes(MINIMAL_PDF)
+            result = router.ingest_mgr.ingest_pdf(pdf_path, auto_import=False)
+            assert result["page_count"] == 7
+            assert len(stub.calls) == 1
+        finally:
+            router.close()
+
+    def test_default_resolves_to_bobine(self, test_router):
+        from okfgraph.components.converters import BobineConverter
+        resolved = test_router.ingest_mgr._resolve_converter(None)
+        assert isinstance(resolved, BobineConverter)

@@ -25,12 +25,17 @@ from okfgraph.models import ChunkModel, ConceptModel
 logger = logging.getLogger(__name__)
 
 class IngestManager:
-    def __init__(self, _write_lock_ctx, bundle_root, device, import_mgr, delta_mgr):
+    def __init__(self, _write_lock_ctx, bundle_root, device, import_mgr, delta_mgr,
+                 converter=None):
         self._write_lock_ctx = _write_lock_ctx
         self.bundle_root = bundle_root
         self.device = device
         self.import_mgr = import_mgr
         self.delta_mgr = delta_mgr
+        # DocumentConverter (see okfgraph.components.converters). None =
+        # default BobineConverter, built lazily so router construction
+        # never requires bobine — only actual conversion does.
+        self._converter = converter
 
     def _ingest_md_inner(
         self,
@@ -325,25 +330,36 @@ class IngestManager:
             return self._ingest_md_inner(md_path, concept_id, title, description, tags, mode)
 
 
+    def _resolve_converter(self, converter):
+        """Per-call override → manager default → lazy BobineConverter."""
+        if converter is not None:
+            return converter
+        if self._converter is None:
+            from okfgraph.components.converters import BobineConverter
+            self._converter = BobineConverter()
+        return self._converter
+
     def ingest_pdf(
         self,
         pdf_path: str | Path,
         *,
         auto_import: bool = True,
         output_dir: str | Path | None = None,
-        routing_mode: str = "auto",
         mode: str = "text",
         batch_size: int = 32,
         purge_deleted: bool = False,
-        extract_images: bool = True,
         on_page: Callable[[int, int], None] | None = None,
+        converter=None,
     ) -> Dict[str, Any]:
         """Convert a PDF to markdown and optionally import into the graph.
 
+        Conversion is delegated to a DocumentConverter (see
+        ``okfgraph.components.converters``) — bobine by default, swappable
+        for any other pipeline.
+
         This is the programmatic counterpart to the ``okf ingest`` CLI command.
-        It uses the HybridConverter pipeline (pdf_oxide fast path + ONNX/Rapid
-        heavy passes) to convert the PDF, then optionally imports the resulting
-        markdown into the knowledge graph via ``import_bundle()``.
+        It converts the PDF, then optionally imports the resulting markdown
+        into the knowledge graph via ``import_bundle()``.
 
         Args:
             pdf_path: Path to the PDF file.
@@ -351,171 +367,96 @@ class IngestManager:
                 If False, write to disk only.
             output_dir: Output directory for the markdown (used when
                 auto_import=False). Defaults to the PDF's parent directory.
-            routing_mode: ONNX routing mode — "auto", "surgical", "always",
-                or "never". Controls when ONNX models are invoked.
             mode: Image ingestion mode for auto-import — "text", "optional",
                 or "omni". Only used when auto_import=True.
             batch_size: Batch size for encoding during auto-import.
             purge_deleted: If True, purge deleted concepts during auto-import.
-            extract_images: Whether to extract embedded images from the PDF.
             on_page: Optional callback(page_index, page_total) for progress.
+            converter: DocumentConverter to use for this call. Defaults to
+                the manager's converter (bobine unless overridden).
 
         Returns:
             A dict with keys:
-            - "md_path": Path to the converted markdown file (always present)
+            - "md_path": Path to the converted markdown file. Transient
+              when auto_import=True (conversion runs in a temp dir that is
+              removed after import — the content lives in the graph).
             - "concept_ids": List of imported concept IDs (only when auto_import=True)
             - "image_dir": Path to the staged images directory (always present)
             - "page_count": Number of pages in the PDF
 
         Raises:
-            RuntimeError: If pdf_oxide is not installed.
+            RuntimeError: If the default converter needs bobine and it is
+                not installed.
         """
         from tempfile import TemporaryDirectory
-
-        from okfgraph.ingest import ConverterConfig, HybridConverter, RoutingMode
-        from okfgraph.ingest.assets import stage_images_as_okf_assets
 
         pdf_path = Path(pdf_path)
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-        # Build converter config
-        config = ConverterConfig(
-            routing_mode=RoutingMode(routing_mode),
-            device=self.device,
-            extract_images=extract_images,
-        )
+        converter = self._resolve_converter(converter)
 
-        converter = HybridConverter(config, log=logger.info)
-
-        try:
-            # Ensure ONNX models are loaded (if routing mode requires them)
-            converter.ensure_models()
-
-            if auto_import:
-                # Auto-import: convert to temp dir, import into graph, clean up.
-                with TemporaryDirectory(prefix="okf_ingest_") as tmp:
-                    work_dir = Path(tmp)
-                    logger.info("converting %s → %s", pdf_path, work_dir)
-
-                    md = converter.convert_pdf(
-                        path=pdf_path,
-                        work_dir=work_dir,
-                        should_continue=lambda: True,
-                        on_page=on_page or (lambda idx, total: logger.info(
-                            "page %d/%d", idx + 1, total
-                        )),
+        if auto_import:
+            with TemporaryDirectory(prefix="okf_ingest_") as tmp:
+                work_dir = Path(tmp)
+                logger.info("converting %s → %s", pdf_path, work_dir)
+                doc = converter.convert(pdf_path, work_dir, on_page=on_page)
+                md_path = Path(doc.md_path)
+                lint_result = self._lint_converted_md(md_path, auto_fix=True)
+                if lint_result["fixed"]:
+                    md_path.write_text(lint_result["content"], encoding="utf-8")
+                if lint_result["errors"]:
+                    logger.warning(
+                        "PDF output has %d structural errors — proceeding anyway",
+                        len(lint_result["errors"]),
                     )
-
-                    # Write markdown to temp dir
-                    stem = pdf_path.stem
-                    md_path = work_dir / f"{stem}.md"
-                    md_path.write_text(md, encoding="utf-8")
-
-                    # Stage any extracted images as okf-asset:// URIs
-                    img_dir = work_dir / "_assets"
-                    img_dir.mkdir(exist_ok=True)
-                    for img in work_dir.glob("*"):
-                        if img.is_file() and img.suffix.lower() in (
-                            ".png", ".jpg", ".jpeg", ".gif", ".webp",
-                        ):
-                            img.rename(img_dir / img.name)
-
-                    md_text = md_path.read_text(encoding="utf-8")
-                    stage_images_as_okf_assets(
-                        md_text, work_dir, pdf_path, work_dir, stem
-                    )
-
-                    # Lint converted markdown (Gap #5c)
-                    lint_result = self._lint_converted_md(md_path, auto_fix=True)
-                    if lint_result["fixed"]:
-                        md_path.write_text(lint_result["content"], encoding="utf-8")
-                        logger.info(
-                            "linted %s: fixed %d issues",
-                            md_path.name,
-                            lint_result["fixed_count"],
-                        )
-                    if lint_result["errors"]:
-                        logger.warning(
-                            "PDF output has %d structural errors — proceeding anyway",
-                            len(lint_result["errors"]),
-                        )
-
-                    # Import into the graph
-                    # Temporarily override bundle_root for the temp directory
-                    old_bundle_root = self.bundle_root
-                    self.bundle_root = work_dir
-                    # Keep the injected DeltaDetector and ImportManager in sync:
-                    # each stores its own bundle_root copy, and import_bundle /
-                    # _changed_directories rely on it (Phase 3 refactor).
-                    self.delta_mgr.bundle_root = work_dir
-                    self.import_mgr.bundle_root = work_dir
-                    try:
-                        ids = self.import_mgr.import_bundle(
-                            work_dir,
-                            batch_size=batch_size,
-                            mode=mode,
-                            purge_deleted=purge_deleted,
-                        )
-                    finally:
-                        self.bundle_root = old_bundle_root
-                        self.delta_mgr.bundle_root = old_bundle_root
-                        self.import_mgr.bundle_root = old_bundle_root
-                    logger.info("imported %d concept(s) from %s", len(ids), pdf_path)
-
-                    return {
-                        "md_path": str(md_path),
-                        "concept_ids": ids,
-                        "image_dir": str(img_dir),
-                        "page_count": len(list(Path(tmp).rglob("*.md"))),
-                    }
-            else:
-                # Output-only: convert to the specified output directory.
-                output_dir = Path(output_dir) if output_dir else pdf_path.parent
-                output_dir.mkdir(parents=True, exist_ok=True)
-
-                logger.info("converting %s → %s", pdf_path, output_dir)
-
-                md = converter.convert_pdf(
-                    path=pdf_path,
-                    work_dir=output_dir,
-                    should_continue=lambda: True,
-                    on_page=on_page or (lambda idx, total: logger.info(
-                        "page %d/%d", idx + 1, total
-                    )),
+                ids = self._import_work_dir(
+                    work_dir, batch_size, mode, purge_deleted, pdf_path
                 )
-
-                # Write markdown
-                stem = pdf_path.stem
-                md_path = output_dir / f"{stem}.md"
-                md_path.write_text(md, encoding="utf-8")
-
-                # Stage images
-                img_dir = output_dir / "_assets"
-                img_dir.mkdir(exist_ok=True)
-                for img in output_dir.glob("*"):
-                    if img.is_file() and img.suffix.lower() in (
-                        ".png", ".jpg", ".jpeg", ".gif", ".webp",
-                    ):
-                        img.rename(img_dir / img.name)
-
-                md_text = md_path.read_text(encoding="utf-8")
-                stage_images_as_okf_assets(
-                    md_text, output_dir, pdf_path, output_dir, stem
-                )
-
-                logger.info("written %s", md_path)
-                logger.info("assets in %s", img_dir)
-
                 return {
                     "md_path": str(md_path),
-                    "concept_ids": [],
-                    "image_dir": str(img_dir),
-                    "page_count": len(list(output_dir.rglob("*.md"))),
+                    "concept_ids": ids,
+                    "image_dir": str(doc.image_dir),
+                    "page_count": doc.page_count,
                 }
-        finally:
-            converter.close()
+        output_dir = Path(output_dir) if output_dir else pdf_path.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("converting %s → %s", pdf_path, output_dir)
+        doc = converter.convert(pdf_path, output_dir, on_page=on_page)
+        md_path = Path(doc.md_path)
+        lint_result = self._lint_converted_md(md_path, auto_fix=True)
+        if lint_result["fixed"]:
+            md_path.write_text(lint_result["content"], encoding="utf-8")
+        logger.info("written %s", md_path)
+        return {
+            "md_path": str(md_path),
+            "concept_ids": [],
+            "image_dir": str(doc.image_dir),
+            "page_count": doc.page_count,
+        }
 
+    def _import_work_dir(self, work_dir, batch_size, mode, purge_deleted, pdf_path):
+        """Import a converted-PDF work dir, keeping bundle_root overrides in sync."""
+        old_bundle_root = self.bundle_root
+        self.bundle_root = work_dir
+        # Keep the injected DeltaDetector and ImportManager in sync:
+        # each stores its own bundle_root copy, and import_bundle /
+        # _changed_directories rely on it (Phase 3 refactor).
+        self.delta_mgr.bundle_root = work_dir
+        self.import_mgr.bundle_root = work_dir
+        try:
+            ids = self.import_mgr.import_bundle(
+                work_dir,
+                batch_size=batch_size,
+                mode=mode,
+                purge_deleted=purge_deleted,
+            )
+        finally:
+            self.bundle_root = old_bundle_root
+            self.delta_mgr.bundle_root = old_bundle_root
+            self.import_mgr.bundle_root = old_bundle_root
+        logger.info("imported %d concept(s) from %s", len(ids), pdf_path)
+        return ids
 
     def ingest_thoughts(
         self,

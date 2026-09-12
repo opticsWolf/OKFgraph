@@ -24,14 +24,38 @@ class SearchEngine:
     def __init__(
         self,
         conn,
-        tokenizer,
         embedding_dim: int,
         embed_engine,
+        db=None,
     ):
         self.conn = conn
-        self.tokenizer = tokenizer
         self.embedding_dim = embedding_dim
         self.embed_engine = embed_engine
+        # Ladybug Database handle for short-lived index connections
+        # (see _index_rows). None = reuse self.conn (legacy/tests).
+        self._db = db
+
+    def _index_rows(self, cypher, params):
+        """Run a CALL QUERY_*_INDEX on a short-lived connection.
+
+        Works around a ladybug 0.20.3 defect: repeated index queries
+        (notably QUERY_FTS_INDEX) on one connection segfault the process.
+        Connections are cheap; each index query gets its own, with the
+        extensions loaded explicitly (LOAD is per-connection).
+        """
+        if self._db is None:
+            res = self.conn.execute(cypher, params)
+            return res.rows_as_dict().get_all()
+        import ladybug as lb
+
+        c = lb.Connection(self._db)
+        try:
+            c.execute("LOAD EXTENSION FTS")
+            c.execute("LOAD EXTENSION VECTOR")
+            res = c.execute(cypher, params)
+            return res.rows_as_dict().get_all()
+        finally:
+            c.close()
 
     def search_chunks(
         self,
@@ -58,11 +82,10 @@ class SearchEngine:
         query_vec = self.embed_engine._encode(query, task="Query")
 
         # Stage 1: Vector search on chunks
-        vec_results = self.conn.execute(
+        vec_rows = self._index_rows(
             "CALL QUERY_VECTOR_INDEX('Chunk', 'chunk_embedding', $vec, $k) RETURN node, distance",
             {"vec": query_vec, "k": limit * 3},
         )
-        vec_rows = vec_results.rows_as_dict().get_all()
         vec_scores: Dict[str, float] = {}
         for row in vec_rows:
             node = row.get("node", {})
@@ -71,11 +94,10 @@ class SearchEngine:
                 vec_scores[node_id] = 1 - row.get("distance", 0)
 
         # Stage 2: Full-text search on chunks
-        fts_results = self.conn.execute(
+        fts_rows = self._index_rows(
             "CALL QUERY_FTS_INDEX('Chunk', 'chunk_fts', $query) RETURN node, score",
             {"query": query},
         )
-        fts_rows = fts_results.rows_as_dict().get_all()
         fts_scores: Dict[str, float] = {}
         for row in fts_rows:
             node = row.get("node", {})
@@ -418,11 +440,10 @@ class SearchEngine:
         query_vec = self.embed_engine._encode(query, task="Query")
 
         # Stage 1: Vector search (ANN)
-        vec_results = self.conn.execute(
+        vec_rows = self._index_rows(
             "CALL QUERY_VECTOR_INDEX('Concept', 'concept_embedding', $vec, $k) RETURN node, distance",
             {"vec": query_vec, "k": limit * 3},
         )
-        vec_rows = vec_results.rows_as_dict().get_all()
         vec_scores: Dict[str, float] = {}
         for row in vec_rows:
             node = row.get("node", {})
@@ -431,11 +452,10 @@ class SearchEngine:
                 vec_scores[node_id] = 1 - row.get("distance", 0)
 
         # Stage 2: Full-text search
-        fts_results = self.conn.execute(
+        fts_rows = self._index_rows(
             "CALL QUERY_FTS_INDEX('Concept', 'concept_fts', $query) RETURN node, score",
             {"query": query},
         )
-        fts_rows = fts_results.rows_as_dict().get_all()
         fts_scores: Dict[str, float] = {}
         for row in fts_rows:
             node = row.get("node", {})

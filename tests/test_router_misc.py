@@ -404,11 +404,10 @@ class TestContextWindowWarning:
         a chunk with >7372 tokens to trigger the 90% threshold. We simulate
         this by checking the warning logic path exists.
         """
-        # Verify the warning logic is in place by checking the method
-        # references tokenizer.model_max_length
-        assert hasattr(router.tokenizer, "model_max_length")
-        ctx_window = router.tokenizer.model_max_length
-        assert ctx_window > 0
+        # Verify the warning logic is in place: the import pipeline carries
+        # an explicit context window + token counter (Rust encoder).
+        assert router.import_mgr.context_window > 0
+        assert callable(router.import_mgr.token_counter)
 
     def test_normal_chunks_no_warning(self, router, tmp_dir, caplog):
         """Normal-sized chunks don't trigger the context window warning."""

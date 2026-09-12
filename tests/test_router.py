@@ -158,37 +158,32 @@ class TestCacheManagement:
 
 
 class TestDeviceSelection:
-    """Tests for device/provider selection with CUDA fallback."""
+    """Tests for device selection with CUDA fallback (Rust backend)."""
 
     def test_device_cpu_default(self, tmp_path):
         from okfgraph.router import OKFRouter
         r = OKFRouter(db_path=str(tmp_path / "test.db"), bundle_root=str(tmp_path), device="cpu")
         assert r.device == "cpu"
-        assert r._cuda_fallback is False
+        assert r.encoder.used_cuda is False
 
-    def test_device_cuda_fallback(self, tmp_path, caplog):
-        import logging
-        caplog.set_level(logging.WARNING)
+    def test_device_cuda_uses_gpu_when_available(self, tmp_path, capsys):
         from okfgraph.router import OKFRouter
         r = OKFRouter(db_path=str(tmp_path / "test.db"), bundle_root=str(tmp_path), device="cuda")
         assert r.device == "cuda"
-        # If CUDA is available on this machine, no fallback occurs (happy path).
-        # If CUDA is unavailable, fallback to CPU is triggered.
-        if r._cuda_fallback:
-            assert "CUDA unavailable" in caplog.text
-            assert "CPUExecutionProvider" in r.embedder.session.get_providers()[0]
+        err = capsys.readouterr().err
+        if r.encoder.used_cuda:
+            # Happy path: GPU active, no fallback warning.
+            assert "CUDA" not in err
         else:
-            # CUDA is available — verify it's the primary provider
-            assert "CUDAExecutionProvider" in r.embedder.session.get_providers()
+            # CPU fallback: the Rust core warns on stderr.
+            assert "CUDA" in err
 
-    def test_device_cuda_warning_only_once(self, tmp_path, caplog):
-        import logging
-        caplog.set_level(logging.WARNING)
+    def test_device_cuda_warning_only_once(self, tmp_path, capsys):
         from okfgraph.router import OKFRouter
         r = OKFRouter(db_path=str(tmp_path / "test.db"), bundle_root=str(tmp_path), device="cuda")
-        cuda_warnings = [rec for rec in caplog.records if "CUDA" in rec.message]
-        # If CUDA is available: 0 warnings. If unavailable: exactly 1 warning.
-        assert len(cuda_warnings) <= 1
+        err = capsys.readouterr().err
+        # One construction warns at most once.
+        assert err.count("falling back to CPU") <= 1
 
 
 class TestTools:

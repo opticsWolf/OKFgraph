@@ -19,6 +19,7 @@ from okfgraph.components.search import SearchEngine
 from okfgraph.components.import_ import ImportManager
 from okfgraph.components.export import ExportManager
 from okfgraph.components.ingest import IngestManager
+from okfgraph.components.converters import BobineConverter, ConvertedDocument
 
 __all__ = [
     "SchemaManager",
@@ -30,4 +31,6 @@ __all__ = [
     "ImportManager",
     "ExportManager",
     "IngestManager",
+    "BobineConverter",
+    "ConvertedDocument",
 ]

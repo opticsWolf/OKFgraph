@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local wheels (vendored binaries, not source)
+whl/
+
+# CodeRadar local index (regenerable, large)
+.coderadar/
+.coderadar.toml
+
+# CodeRadar
+.coderadar/

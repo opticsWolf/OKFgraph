@@ -10,6 +10,7 @@ from pathlib import Path
 
 from okfgraph.router import OKFRouter
 from okfgraph.config import OKFConfig
+from okfgraph.components.converters import BobineConverter
 
 # ── Logging setup ──────────────────────────────────────────────────────────
 # Structured logging with stdlib (Gap #10).
@@ -371,150 +372,57 @@ def _reindex(args):
 def _ingest_pdf(args):
     """Convert a PDF to markdown and optionally import into the graph.
 
-    Uses the HybridConverter pipeline (pdf_oxide fast path + ONNX/Rapid
-    heavy passes). When ``--auto-import`` is set the produced markdown is
-    imported into the graph via ``import_bundle()`` and the temporary
-    directory is cleaned up automatically.
+    Delegates to IngestManager.ingest_pdf (bobine engine). When
+    ``--auto-import`` is set the produced markdown is imported into the
+    graph via ``import_bundle()`` and the temporary directory is cleaned
+    up automatically.
     """
-    from tempfile import TemporaryDirectory
-
-    from okfgraph.ingest import ConverterConfig, HybridConverter, RoutingMode
-    from okfgraph.ingest.assets import stage_images_as_okf_assets
+    logger = logging.getLogger("cli")
+    router = _router(args)
 
     pdf_path = Path(args.pdf_file)
     if not pdf_path.exists():
         print(f"[ERROR] File not found: {pdf_path}")
         return
 
-    # Build converter config from CLI args
-    mode_str = getattr(args, "routing_mode", "auto").lower()
-    routing = RoutingMode(mode_str)
-    device = getattr(args, "device", "cuda")
+    auto_import = getattr(args, "auto_import", False)
+    output_dir = getattr(args, "output", None)
+    if not auto_import and not output_dir:
+        output_dir = Path(".")
 
-    config = ConverterConfig(
-        routing_mode=routing,
-        device=device,
-        extract_images=getattr(args, "extract_images", True),
-    )
-
-    converter = HybridConverter(config)
+    def on_page(idx, total):
+        print(f"  page {idx + 1}/{total}", end="\r")
 
     try:
-        # Ensure ONNX models are loaded (if routing mode requires them)
-        converter.ensure_models()
+        from okfgraph.components.converters import BobineConverter
+        converter = BobineConverter(
+            routing_mode=getattr(args, "routing_mode", "auto") or "auto",
+            extract_images=getattr(args, "extract_images", True),
+        )
+        result = router.ingest_mgr.ingest_pdf(
+            pdf_path,
+            auto_import=auto_import,
+            output_dir=output_dir,
+            mode=getattr(args, "mode", "text") or "text",
+            batch_size=getattr(args, "batch_size", 32) or 32,
+            purge_deleted=getattr(args, "purge", False),
+            on_page=on_page,
+            converter=converter,
+        )
+    except RuntimeError as e:
+        print(f"[ERROR] {e}")
+        return
+    print()  # newline after progress
 
-        if getattr(args, "auto_import", False):
-            # Auto-import: convert to temp dir, import into graph, clean up.
-            router = _router(args)
-
-            with TemporaryDirectory(prefix="okf_ingest_") as tmp:
-                work_dir = Path(tmp)
-                logger = logging.getLogger("cli")
-                logger.info("converting %s → %s", pdf_path, work_dir)
-
-                md = converter.convert_pdf(
-                    path=pdf_path,
-                    work_dir=work_dir,
-                    should_continue=lambda: True,
-                    on_page=lambda idx, total: print(
-                        f"  page {idx + 1}/{total}", end="\r"
-                    ),
-                )
-                print()  # newline after progress
-
-                # Write markdown to temp dir
-                stem = pdf_path.stem
-                md_path = work_dir / f"{stem}.md"
-                md_path.write_text(md, encoding="utf-8")
-
-                # Stage any extracted images as okf-asset:// URIs
-                img_dir = work_dir / "_assets"
-                img_dir.mkdir(exist_ok=True)
-                for img in work_dir.glob("*"):
-                    if img.is_file() and img.suffix.lower() in (
-                        ".png", ".jpg", ".jpeg", ".gif", ".webp",
-                    ):
-                        img.rename(img_dir / img.name)
-
-                md_text = md_path.read_text(encoding="utf-8")
-                md_text, img_count = stage_images_as_okf_assets(
-                    md_text, img_dir, pdf_path, work_dir, stem
-                )
-                md_path.write_text(md_text, encoding="utf-8")
-
-                # Lint converted markdown (Gap #5c)
-                lint_result = router.ingest_mgr._lint_converted_md(md_path, auto_fix=True)
-                if lint_result["fixed"]:
-                    md_path.write_text(lint_result["content"], encoding="utf-8")
-                    logger.info(
-                        "linted %s: fixed %d issues",
-                        md_path.name,
-                        lint_result["fixed_count"],
-                    )
-                if lint_result["errors"]:
-                    logger.warning(
-                        "PDF output has %d structural errors — proceeding anyway",
-                        len(lint_result["errors"]),
-                    )
-
-                # Import into the graph
-                mode = getattr(args, "mode", "text")
-                purge = getattr(args, "purge", False)
-                ids = router.import_mgr.import_bundle(
-                    work_dir,
-                    batch_size=getattr(args, "batch_size", 32) or 32,
-                    mode=mode,
-                    purge_deleted=purge,
-                )
-                logger.info("imported %d concept(s) from %s", len(ids), pdf_path)
-                for cid in ids:
-                    n = len(router.image_mgr.list_images(cid))
-                    suffix = f"  [{n} image(s)]" if n else ""
-                    logger.info("  %s%s", cid, suffix)
-        else:
-            # Output-only: convert to the specified output directory.
-            logger = logging.getLogger("cli")
-            output_dir = Path(args.output) if args.output else Path(".")
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            logger.info("converting %s → %s", pdf_path, output_dir)
-
-            md = converter.convert_pdf(
-                path=pdf_path,
-                work_dir=output_dir,
-                should_continue=lambda: True,
-                on_page=lambda idx, total: print(
-                    f"  page {idx + 1}/{total}", end="\r"
-                ),
-            )
-            print()
-
-            # Write markdown
-            stem = pdf_path.stem
-            md_path = output_dir / f"{stem}.md"
-            md_path.write_text(md, encoding="utf-8")
-
-            # Stage images
-            img_dir = output_dir / "_assets"
-            img_dir.mkdir(exist_ok=True)
-            for img in output_dir.glob("*"):
-                if img.is_file() and img.suffix.lower() in (
-                    ".png", ".jpg", ".jpeg", ".gif", ".webp",
-                ):
-                    img.rename(img_dir / img.name)
-
-            md_text = md_path.read_text(encoding="utf-8")
-            md_text, img_count = stage_images_as_okf_assets(
-                md_text, img_dir, pdf_path, output_dir, stem
-            )
-            md_path.write_text(md_text, encoding="utf-8")
-
-            logger.info("written %s", md_path)
-            logger.info("assets in %s", img_dir)
-            logger.info("run 'okf import --all --bundle %s' to import.", output_dir)
-
-    finally:
-        converter.close()
+    logger.info("written %s", result["md_path"])
+    logger.info("assets in %s", result["image_dir"])
+    if auto_import:
+        for cid in result["concept_ids"]:
+            n = len(router.image_mgr.list_images(cid))
+            suffix = f"  [{n} image(s)]" if n else ""
+            logger.info("  %s%s", cid, suffix)
+    else:
+        logger.info("run 'okf import --all --bundle %s' to import.", output_dir)
 
 
 def _search_chunks(args):

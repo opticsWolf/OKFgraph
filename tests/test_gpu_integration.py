@@ -124,7 +124,7 @@ class TestGPUInitialization:
     @pytest.mark.skipif(not _has_onnxruntime_gpu(), reason="onnxruntime-gpu not installed")
     @pytest.mark.skipif(not _has_cuda(), reason="CUDA not available on this machine")
     def test_gpu_device_requests_cuda_provider(self, tmp_dir):
-        """When device='cuda' and CUDA is available, the embedder uses CUDAExecutionProvider."""
+        """When device='cuda' and CUDA is available, the Rust encoder uses it."""
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_gpu_init.db"),
             bundle_root=tmp_dir,
@@ -132,18 +132,12 @@ class TestGPUInitialization:
             device="cuda",
         )
         assert r.device == "cuda"
-        assert r._cuda_fallback is False
-
-        # Verify the embedder session reports CUDAExecutionProvider
-        providers = r.embedder.session.get_providers()
-        assert "CUDAExecutionProvider" in providers, (
-            f"Expected CUDAExecutionProvider, got {providers}"
-        )
+        assert r.encoder.used_cuda is True
         r.close()
 
     @pytest.mark.skipif(not _has_onnxruntime_gpu(), reason="onnxruntime-gpu not installed")
     def test_cpu_device_uses_cpu_provider(self, tmp_dir):
-        """When device='cpu', the embedder uses CPUExecutionProvider."""
+        """When device='cpu', the Rust encoder stays on CPU."""
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_cpu_init.db"),
             bundle_root=tmp_dir,
@@ -151,11 +145,7 @@ class TestGPUInitialization:
             device="cpu",
         )
         assert r.device == "cpu"
-
-        providers = r.embedder.session.get_providers()
-        assert "CPUExecutionProvider" in providers, (
-            f"Expected CPUExecutionProvider, got {providers}"
-        )
+        assert r.encoder.used_cuda is False
         r.close()
 
     # -- GPU unavailable path (fallback) --
@@ -169,35 +159,21 @@ class TestGPUInitialization:
             embedding_dim=512,
             device="cuda",
         )
-        assert r._cuda_fallback is True
-
-        providers = r.embedder.session.get_providers()
-        assert "CPUExecutionProvider" in providers
+        assert r.device == "cuda"
+        assert r.encoder.used_cuda is False
         r.close()
 
     @pytest.mark.skipif(_has_onnxruntime_gpu(), reason="onnxruntime-gpu is installed")
-    def test_no_gpu_runtime_warns_on_cuda_request(self, tmp_dir):
-        """When onnxruntime-gpu is not installed and device='cuda', a warning is logged."""
-        import logging
-        import io
-
-        log_stream = io.StringIO()
-        handler = logging.StreamHandler(log_stream)
-        logger = logging.getLogger("okfgraph.router")
-        logger.addHandler(handler)
-        logger.setLevel(logging.WARNING)
-
+    def test_no_gpu_runtime_warns_on_cuda_request(self, tmp_dir, capsys):
+        """When the loaded ORT has no CUDA EP and device='cuda', warn on stderr."""
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_no_gpu.db"),
             bundle_root=tmp_dir,
             embedding_dim=512,
             device="cuda",
         )
-        assert r._cuda_fallback is True
-
-        log_output = log_stream.getvalue()
-        assert "CUDA unavailable" in log_output or "falling back to CPU" in log_output.lower()
-        logger.removeHandler(handler)
+        assert r.encoder.used_cuda is False
+        assert "CUDA" in capsys.readouterr().err
         r.close()
 
 
@@ -448,17 +424,14 @@ class TestGPUDeviceEdgeCases:
     @pytest.mark.skipif(not _has_onnxruntime_gpu(), reason="onnxruntime-gpu not installed")
     @pytest.mark.skipif(not _has_cuda(), reason="CUDA not available on this machine")
     def test_cuda_provider_order_when_available(self, tmp_dir):
-        """When CUDA is available, CUDAExecutionProvider should be first."""
+        """When CUDA is available, the Rust encoder runs on it."""
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_provider_order.db"),
             bundle_root=tmp_dir,
             embedding_dim=512,
             device="cuda",
         )
-        providers = r.embedder.session.get_providers()
-        assert providers[0] == "CUDAExecutionProvider", (
-            f"Expected CUDAExecutionProvider first, got {providers}"
-        )
+        assert r.encoder.used_cuda is True
         r.close()
 
     @pytest.mark.skipif(not _has_cuda(), reason="CUDA not available")

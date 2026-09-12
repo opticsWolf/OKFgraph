@@ -27,12 +27,16 @@ logger = logging.getLogger(__name__)
 
 class ImportManager:
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
-    def __init__(self, conn, bundle_root, _write_lock_ctx, tokenizer, enable_chunking,
-                 schema_mgr, delta_mgr, embed_engine, image_mgr, purge_mgr):
+    def __init__(self, conn, bundle_root, _write_lock_ctx, enable_chunking,
+                 schema_mgr, delta_mgr, embed_engine, image_mgr, purge_mgr,
+                 token_counter, context_window=8192):
         self.conn = conn
         self.bundle_root = bundle_root
         self._write_lock_ctx = _write_lock_ctx
-        self.tokenizer = tokenizer
+        # Token counting for the context-window guard comes from the Rust
+        # encoder (count_tokens); no transformers tokenizer exists anymore.
+        self.token_counter = token_counter
+        self.context_window = context_window
         self.enable_chunking = enable_chunking
         self.schema_mgr = schema_mgr
         self.delta_mgr = delta_mgr
@@ -488,10 +492,10 @@ class ImportManager:
         texts = [p["text"] for p in payloads]
 
         # --- Context-window warning (Gap #14a) ---
-        ctx_window = self.tokenizer.model_max_length
+        ctx_window = self.context_window
         threshold = int(ctx_window * 0.9)
         for i, t in enumerate(texts):
-            token_count = len(self.tokenizer.encode(t, add_special_tokens=False))
+            token_count = self.token_counter(t)
             if token_count >= threshold:
                 logger.warning(
                     "chunk %s#%d is %d tokens (%.0f%% of context window %d). "

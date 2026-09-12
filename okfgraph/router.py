@@ -1,21 +1,14 @@
-"""OKFRouter — Ladybug-backed knowledge graph with ONNX + Jina v5 embeddings.
+"""OKFRouter — Ladybug-backed knowledge graph with Jina v5 embeddings.
 
 Design choices:
-    - **No torch dependency for inference**: The ONNX model (via optimum)
-      returns numpy arrays. All post-processing (last-token pooling, L2
-      normalisation, Matryoshka truncation) is done with numpy, avoiding
-      the need for a CUDA-compiled torch. This lets the router run on any
-      Python environment that has numpy and onnxruntime-gpu, without
-      requiring torch at all.
-    - **ONNX via optimum**: The jina-embeddings-v5 model is loaded as an
-      ORTModelForFeatureExtraction (export=False) so it runs the raw ONNX
-      graph through ONNX Runtime. Providers can be set to
-      CUDAExecutionProvider for GPU acceleration or CPUExecutionProvider
-      for CPU-only environments.
-    - **Numpy tensors**: Tokenizer output uses ``return_tensors="np"`` so
-      the entire pipeline stays on numpy. The ONNX model accepts numpy
-      inputs and returns numpy outputs, keeping the code free of torch
-      tensor operations.
+    - **Rust embedding core**: The jina-embeddings-v5 model runs through
+      the okf-embed wheel (ONNX Runtime, no torch / optimum / transformers
+      anywhere in the process). Task prefix, tokenization, last-token
+      pooling, L2 normalisation and Matryoshka truncation all live in Rust;
+      ``tests/test_parity.py`` pins the numerics.
+    - **CUDA is opportunistic**: the loaded ORT build decides (CUDA EP
+      present or not); a missing GPU warns once and falls back to CPU,
+      never fatal.
     - **Last-token pooling**: Required by jina-embeddings-v5. Mean pooling
       produces vectors in a different embedding space that will NOT align
       with the omni model's image embeddings in the unified ImageAsset
@@ -39,8 +32,6 @@ import ladybug as lb
 from fasteners import InterProcessLock
 import numpy as np
 import yaml
-from optimum.onnxruntime import ORTModelForFeatureExtraction
-from transformers import AutoTokenizer
 
 from okfgraph.images import (
     EmbedRoute,
@@ -120,7 +111,31 @@ class OKFRouter:
         chunk_overlap: int = 40,
         enable_chunking: bool = True,
         wal_mode: bool = False,
+        converter=None,
     ):
+        """Open (or create) the graph database and wire up all managers.
+
+        Args:
+            db_path: Path to the Ladybug database file.
+            bundle_root: Root directory of the OKF markdown bundle.
+            model_id: HuggingFace ID of the Jina v5 text embedding model.
+            omni_model_id: HuggingFace ID of the Jina v5 omni model (images).
+            embedding_dim: Truncated Matryoshka dimension (<= 1024).
+            cache_dir: Model cache directory (defaults per-platform).
+            device: "cpu" (CUDA is opportunistic inside the Rust loader).
+            allow_remote_images: Whether http(s) image URLs may be fetched.
+            allowed_image_domains: Domain allowlist for remote images.
+            chunk_size: Target chunk size in tokens.
+            chunk_overlap: Overlap between consecutive chunks in tokens.
+            enable_chunking: If False, store whole documents (no chunks).
+            wal_mode: Enable Ladybug WAL mode for concurrent readers.
+            converter: DocumentConverter used for PDF ingestion (see
+                ``okfgraph.components.converters``). Defaults to
+                ``BobineConverter()`` built lazily — any object with a
+                ``convert(pdf_path, output_dir, *, on_page=None)`` method
+                returning a ``ConvertedDocument`` works. Per-call override
+                via ``ingest_mgr.ingest_pdf(..., converter=...)``.
+        """
         if embedding_dim > 1024:
             raise ValueError(f"embedding_dim must be <= 1024 (model output), got {embedding_dim}")
         if embedding_dim < 32:
@@ -166,76 +181,39 @@ class OKFRouter:
         # pays the cost of pulling in the ~1.5B-param vision tower.
         self._omni = None
 
-        # ONNX tokenizer + model
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        # Text embeddings: Rust okf_embed wheel (Jina v5 via ORT). No Python
+        # fallback — a mid-run stack switch would silently mix vector spaces
+        # in one index.
+        from okfgraph.components.embedding import resolve_ort_dylib
+        try:
+            import okf_embed
+        except ImportError:
+            raise RuntimeError(
+                "the okf-embed wheel is required for text embeddings: "
+                "build rust/okf-embed (maturin build --release) and install it"
+            ) from None
+        resolve_ort_dylib()
+        # The Rust crate knows auto/cpu/cuda; map torch-style aliases.
+        rust_device = {"mps": "auto"}.get(device, device)
+        self.encoder = okf_embed.JinaV5.open(
             model_id,
-            trust_remote_code=True,  # Required for Jina's custom tokenizer
+            truncate_dim=embedding_dim,
+            device=rust_device,
             cache_dir=cache_dir,
         )
-
-        # Provider selection with fallback
-        self._cuda_fallback = False
-
-        try:
-            if device == "cuda":
-                # NOTE: optimum 2.1.0 has a bug where passing a list as the
-                # "provider" arg causes double-wrapping (['CUDA','CPU'] ->
-                # [['CUDA','CPU']]) and validation fails.  We work around it
-                # by passing the list via the "providers" kwarg instead.
-                #
-                # Also: IO binding with CUDA provider allocates torch tensors
-                # via torch.empty(..., device=self.device), which fails when
-                # torch was built without CUDA support.  Disable IO binding so
-                # optimum uses numpy arrays internally and lets ONNX Runtime
-                # handle GPU memory directly.
-                self.embedder = ORTModelForFeatureExtraction.from_pretrained(
-                    model_id,
-                    export=False,
-                    subfolder="onnx",
-                    cache_dir=cache_dir,
-                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-                    use_io_binding=False,
-                )
-            else:
-                self.embedder = ORTModelForFeatureExtraction.from_pretrained(
-                    model_id,
-                    export=False,
-                    subfolder="onnx",
-                    cache_dir=cache_dir,
-                )
-        except ValueError as e:
-            # CUDA not available — fall back to CPU
-            if device == "cuda":
-                self._cuda_fallback = True
-                logger.warning(
-                    f"CUDA unavailable ({e}) — falling back to CPUExecutionProvider. "
-                    f"Install onnxruntime-gpu for GPU acceleration: pip install onnxruntime-gpu"
-                )
-                self.embedder = ORTModelForFeatureExtraction.from_pretrained(
-                    model_id,
-                    export=False,
-                    subfolder="onnx",
-                    cache_dir=cache_dir,
-                )
-            else:
-                raise
-
-        # Detect actual provider used (skip if already warned via fallback)
-        if not self._cuda_fallback:
-            try:
-                actual_provider = self.embedder.session.get_providers()[0]
-            except Exception:
-                actual_provider = "CPUExecutionProvider"
-            if device == "cuda" and actual_provider != "CUDAExecutionProvider":
-                logger.warning(
-                    f"CUDA requested but {actual_provider} is active. "
-                    f"Install onnxruntime-gpu for GPU acceleration: pip install onnxruntime-gpu"
-                )
+        logger.info(
+            "text embeddings: %s dim=%d cuda=%s",
+            model_id, embedding_dim, self.encoder.used_cuda,
+        )
+        if device == "cuda" and not self.encoder.used_cuda:
+            logger.warning(
+                "CUDA requested but the loaded ONNX Runtime has no CUDA execution "
+                "provider — running on CPU. Install onnxruntime-gpu for acceleration."
+            )
 
         # ── Component wiring (Phase 1-3 refactor) ───────────────────
-        # The facade owns the resources (conn, embedder, tokenizer, lock)
-        # and injects them into focused component objects. ImportManager,
-        # IngestManager and ExportManager are wired in Phase 3.
+        # The facade owns the resources (conn, encoder, lock) and injects
+        # them into focused component objects.
         self.schema_mgr = SchemaManager(
             self.conn, self.embedding_dim, self._write_lock_ctx
         )
@@ -249,7 +227,7 @@ class OKFRouter:
         # facade and the embedding engine agree.
         self.embedding_dim = self.schema_mgr.embedding_dim
         self.embed_engine = EmbeddingEngine(
-            self.embedder, self.tokenizer, self.embedding_dim,
+            self.encoder, self.embedding_dim,
             self.device, self.cache_dir, self.model_id, self.omni_model_id,
             self._omni, self.chunk_size, self.chunk_overlap, self.enable_chunking,
             self.conn,
@@ -257,21 +235,23 @@ class OKFRouter:
         self.image_mgr = ImageAssetManager(
             self.conn, self.embed_engine, self.schema_mgr,
             self.allow_remote_images, self.allowed_image_domains, self.bundle_root,
+            self.db,
         )
         self.search_engine = SearchEngine(
-            self.conn, self.tokenizer, self.embedding_dim, self.embed_engine,
+            self.conn, self.embedding_dim, self.embed_engine, self.db,
         )
         # `_search_available` is owned by SchemaManager (set in `_ensure_schema`);
         # SearchEngine needs it to decide whether to raise on unavailable search.
         self.search_engine._search_available = self.schema_mgr._search_available
         self.import_mgr = ImportManager(
-            self.conn, self.bundle_root, self._write_lock_ctx, self.tokenizer,
+            self.conn, self.bundle_root, self._write_lock_ctx,
             self.enable_chunking, self.schema_mgr, self.delta_mgr, self.embed_engine,
             self.image_mgr, self.purge_mgr,
+            self.encoder.count_tokens, okf_embed.MAX_LENGTH,
         )
         self.ingest_mgr = IngestManager(
             self._write_lock_ctx, self.bundle_root, self.device,
-            self.import_mgr, self.delta_mgr,
+            self.import_mgr, self.delta_mgr, converter,
         )
         self.export_mgr = ExportManager(self.conn, self.search_engine)
 

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from okfgraph.components.converters import BobineConverter
 from okfgraph.router import OKFRouter
 
 
@@ -75,7 +76,7 @@ class TestEndToEndPDFIngestion:
             result = router.ingest_mgr.ingest_pdf(
                 synthetic_pdf,
                 auto_import=True,
-                extract_images=False,
+                converter=BobineConverter(extract_images=False),
             )
 
             # Verify result structure
@@ -97,7 +98,7 @@ class TestEndToEndPDFIngestion:
                 synthetic_pdf,
                 auto_import=False,
                 output_dir=tmp_path,
-                extract_images=False,
+                converter=BobineConverter(extract_images=False),
             )
 
             # Verify output files exist
@@ -132,8 +133,8 @@ class TestEndToEndPDFIngestion:
                 synthetic_pdf,
                 auto_import=False,
                 output_dir=tmp_path,
-                extract_images=False,
                 on_page=on_page,
+                converter=BobineConverter(extract_images=False),
             )
 
             # Verify callback was invoked
@@ -159,12 +160,24 @@ class TestPDFPipelineConsistency:
         finally:
             router.close()
 
-    def test_router_pipeline_has_image_staging(self, tmp_path):
+    def test_router_pipeline_has_image_staging(self, tmp_path, synthetic_pdf):
         """Test that the router pipeline stages images as okf-asset URIs."""
-        from okfgraph.ingest.assets import stage_images_as_okf_assets
+        from okfgraph.router import OKFRouter
 
-        # Verify the function exists and has correct signature
-        import inspect
-        sig = inspect.signature(stage_images_as_okf_assets)
-        params = list(sig.parameters.keys())
-        assert len(params) >= 5  # md_text, img_dir, pdf_path, work_dir, stem
+        router = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            embedding_dim=64,
+            device="cpu",
+        )
+        try:
+            # Staging now lives in bobine's ingest_document: the result
+            # carries the image dir and any staged data files.
+            result = router.ingest_mgr.ingest_pdf(
+                synthetic_pdf, auto_import=False,
+                converter=BobineConverter(routing_mode="never"),
+            )
+            assert Path(result["image_dir"]).exists()
+            assert isinstance(result["concept_ids"], list)
+        finally:
+            router.close()

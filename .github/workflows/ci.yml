@@ -59,13 +59,12 @@ jobs:
         run: uvx twine check dist/*
 
       - name: Requires-Dist sanity (okf-embed must be a plain PyPI pin)
-        run: >
+        run: |
           uv run --frozen --no-sync python -c "
           import zipfile, glob
           whl = sorted(glob.glob('dist/*.whl'))[-1]
-          meta = zipfile.ZipFile(whl).read(
-              next(n for n in zipfile.ZipFile(whl).namelist()
-                   if n.endswith('METADATA'))).decode()
+          zf = zipfile.ZipFile(whl)
+          meta = zf.read(next(n for n in zf.namelist() if n.endswith('METADATA'))).decode()
           assert 'okf-embed>=0.1' in meta, meta
           assert 'path' not in meta and 'file:' not in meta, meta
           print('wheel metadata PyPI-clean')

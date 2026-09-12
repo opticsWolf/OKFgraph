@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Compare release tag with okfgraph version
-        run: >
+        run: |
           python -c "
           import os, tomllib
           tag = os.environ['TAG']

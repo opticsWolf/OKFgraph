@@ -30,7 +30,8 @@ class ExportManager:
         self.search_engine = search_engine
 
     def _enrich_body_with_graph_links(
-        self, concept_id: str, body: str
+        self, concept_id: str, body: str, flavor: str = "okf",
+        title_counts: Optional[Dict[str, int]] = None,
     ) -> str:
         """Enrich body with graph-derived links so the exported markdown
         faithfully reflects the LINKS_TO graph.
@@ -45,8 +46,30 @@ class ExportManager:
 
         This preserves the original body's links (which may have richer anchor
         text) while ensuring the graph structure is expressed in the export.
+
+        ``flavor="obsidian"`` renders appended links as ``[[Title]]``
+        (unique titles) or ``[[id|Title]]`` instead of ``[t](id.md)``; the
+        original body is never rewritten in either flavor. The obsidian
+        flavor omits the "Cited By" section: backlinks re-imported as
+        forward wikilinks would reverse their direction, and Obsidian
+        renders backlinks natively anyway.
         """
         import re
+
+        wiki_refs = {
+            m.split("|", 1)[0].strip()
+            for m in re.findall(r"\[\[([^\]]+)\]\]", body or "")
+        }
+        wiki_refs_lower = {r.lower() for r in wiki_refs}
+
+        def _link(target_id: str, title: str) -> str:
+            label = title or target_id.split("/")[-1]
+            if flavor == "obsidian":
+                if label and (title_counts or {}).get(label.lower(), 0) == 1:
+                    return f"- [[{label}]]"
+                return f"- [[{target_id}|{label}]]"
+            return f"- [{label}]({target_id}.md)"
+
         parts: List[str] = []
 
         # --- Outgoing links (See Also) ---
@@ -58,11 +81,15 @@ class ExportManager:
         outgoing_rows = result.rows_as_dict().get_all()
 
         if outgoing_rows:
-            # Determine which targets are already linked in the body
-            # by scanning for link URLs containing the target_id
+            # Determine which targets are already linked in the body:
+            # either a [t](...target...) URL or an equivalent [[ref]].
             existing_link_targets = set()
             for row in outgoing_rows:
                 target_id = row["target_id"]
+                title = row["title"] or ""
+                if target_id in wiki_refs or title.lower() in wiki_refs_lower:
+                    existing_link_targets.add(target_id)
+                    continue
                 # Check if target_id appears in any link URL in the body
                 link_pattern = re.compile(
                     r"\]\(([^)]*?" + re.escape(target_id) + r"[^)]*)\)"
@@ -76,12 +103,14 @@ class ExportManager:
                 target_id = row["target_id"]
                 if target_id not in existing_link_targets:
                     title = row["title"] or target_id.split("/")[-1]
-                    new_links.append(f"- [{title}]({target_id}.md)")
+                    new_links.append(_link(target_id, title))
 
             if new_links:
                 parts.append("\n## See Also\n" + "\n".join(new_links))
 
-        # --- Incoming links (Cited By) ---
+        # --- Incoming links (Cited By: okf flavor only) ---
+        # Obsidian renders backlinks natively; emitting them as forward
+        # [[wikilinks]] would reverse the edge on re-import (round-trip loss).
         result = self.conn.execute("""
             MATCH (s:Concept)-[:LINKS_TO]->(t:Concept {id: $cid})
             RETURN s.id AS source_id, s.title AS title, s.type AS type
@@ -89,12 +118,12 @@ class ExportManager:
         """, {"cid": concept_id})
         incoming_rows = result.rows_as_dict().get_all()
 
-        if incoming_rows:
+        if incoming_rows and flavor == "okf":
             cited_lines = ["\n## Cited By\n"]
             for row in incoming_rows:
                 source_id = row["source_id"]
                 title = row["title"] or source_id.split("/")[-1]
-                cited_lines.append(f"- [{title}]({source_id}.md)")
+                cited_lines.append(_link(source_id, title))
             parts.append("\n".join(cited_lines))
 
         return body + "".join(parts)
@@ -201,16 +230,41 @@ class ExportManager:
         return rows[0]["cnt"] > 0 if rows else False
 
 
-    def _write_okf(self, concept: ConceptModel, output_path: Path) -> None:
+    def _title_counts(self) -> Dict[str, int]:
+        """Count concepts per (lowercased) title.
+
+        Lowercased to match the case-insensitive name index on import: two
+        titles differing only by case are ambiguous as ``[[Title]]`` and
+        must both export disambiguated.
+        """
+        counts: Dict[str, int] = {}
+        for r in self.conn.execute(
+            "MATCH (c:Concept) RETURN c.title"
+        ).rows_as_dict().get_all():
+            title = (r.get("c.title") or "").lower()
+            counts[title] = counts.get(title, 0) + 1
+        return counts
+
+    def _write_okf(
+        self, concept: ConceptModel, output_path: Path,
+        flavor: str = "okf", title_counts: Optional[Dict[str, int]] = None,
+    ) -> None:
         """Internal: serialize a ConceptModel to an OKF .md file.
 
         Enriches the body with LINKS_TO relationships from the graph so that
         exported markdown faithfully reflects the graph structure.
+
+        ``flavor="obsidian"`` renders appended graph links as ``[[Title]]``
+        wikilinks; the default ``okf`` flavor uses ``[t](id.md)`` links.
+        Either way the stored ``uid`` (frontmatter ``id:`` on import) is
+        written back as ``id:`` so re-import is lossless.
         """
         data = concept.model_dump()
         body = data.pop("body", "")
         data.pop("id", None)
         data.pop("embedding", None)
+        if "uid" in data:
+            data["id"] = data.pop("uid")
 
         if isinstance(data.get("timestamp"), datetime):
             data["timestamp"] = data["timestamp"].isoformat()
@@ -220,7 +274,9 @@ class ExportManager:
         )
 
         # ENRICH: add graph-derived links to the body
-        body = self._enrich_body_with_graph_links(concept.id, body)
+        body = self._enrich_body_with_graph_links(
+            concept.id, body, flavor=flavor, title_counts=title_counts,
+        )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(f"---\n{yaml_str}---\n\n{body}", encoding="utf-8")
@@ -232,6 +288,7 @@ class ExportManager:
         directory_id: Optional[str] = None,
         concept_type: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        flavor: str = "okf",
     ) -> List[str]:
         """Export concepts from the graph back to an OKF bundle directory.
 
@@ -243,10 +300,15 @@ class ExportManager:
             directory_id: If set, only export concepts under this directory.
             concept_type: If set, only export concepts of this type.
             tags: If set, only export concepts with ALL these tags.
+            flavor: ``"okf"`` (``[t](id.md)`` graph links + index.md files)
+                or ``"obsidian"`` (``[[Title]]`` wikilinks, no index files —
+                a vault re-imports losslessly via the name index).
 
         Returns:
             List of exported concept IDs.
         """
+        if flavor not in ("okf", "obsidian"):
+            raise ValueError(f"flavor must be 'okf' or 'obsidian', got {flavor!r}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Fetch all concepts (optionally filtered)
@@ -265,6 +327,8 @@ class ExportManager:
         if not concepts:
             return []
 
+        title_counts = self._title_counts() if flavor == "obsidian" else None
+
         # Export each concept, reconstructing path from its ID
         exported: List[str] = []
         for cid, concept in sorted(concepts.items()):
@@ -272,22 +336,28 @@ class ExportManager:
             rel_path = cid.replace("/", os.sep)
             file_path = output_dir / (rel_path + ".md")
             try:
-                self._write_okf(concept, file_path)
+                self._write_okf(concept, file_path, flavor=flavor,
+                                title_counts=title_counts)
                 exported.append(cid)
             except Exception as e:
                 print(f"  [WARN] Failed to export {cid}: {e}")
 
-        # Generate index.md files for progressive disclosure
-        self._generate_index_files(output_dir, concepts)
+        if flavor == "okf":
+            # Generate index.md files for progressive disclosure.
+            # Obsidian vaults don't have them (they'd import as stray concepts).
+            self._generate_index_files(output_dir, concepts)
 
         return exported
 
-
-    def export_to_okf(self, concept_id: str, output_path: Path) -> None:
-        """Export a concept back to an OKF .md file."""
+    def export_to_okf(
+        self, concept_id: str, output_path: Path, flavor: str = "okf",
+    ) -> None:
+        """Export a concept back to an OKF .md file (see ``export_bundle``)."""
         concept = self.search_engine.get_by_id(concept_id)
         if not concept:
             raise FileNotFoundError(f"Concept {concept_id} not found")
 
-        self._write_okf(concept, output_path)
+        title_counts = self._title_counts() if flavor == "obsidian" else None
+        self._write_okf(concept, output_path, flavor=flavor,
+                        title_counts=title_counts)
 

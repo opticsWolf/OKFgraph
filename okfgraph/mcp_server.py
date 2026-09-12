@@ -146,19 +146,34 @@ def create_mcp_server(
         expand: Annotated[bool, Field(description="Chunks only: attach graph neighborhood (incoming/outgoing links, ancestry, siblings) to each hit.")] = False,
         context_hops: Annotated[int, Field(ge=1, le=3, description="Expansion depth when expand=True.")] = 1,
         hub_rerank: Annotated[bool, Field(description="Chunks only: rerank by graph hub score (incoming link count). Wins over expand.")] = False,
-        hub_weight: Annotated[float, Field(ge=0, le=1, description="Hub-score weight when hub_rerank=True.")] = 0.3,
+        hub_weight: Annotated[float, Field(ge=0, le=1, description="Hub weight for hub_rerank (chunks) or rank='hub' (concepts).")] = 0.3,
+        rank: Annotated[
+            Literal["none", "hub", "ppr"],
+            Field(
+                description=(
+                    "Concepts only: 'none' = RRF order. 'hub' = blend RRF with "
+                    "incoming-link authority. 'ppr' = model-free lexical-seed "
+                    "PPR: no ONNX load, deterministic — use when cold, when "
+                    "the model is unavailable, or when the query names topics."
+                ),
+            ),
+        ] = "none",
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Search the knowledge graph — start here for any question over stored knowledge.
 
         Routing: target='concepts' for open-ended questions; 'chunks' for exact
         passages (expand=true adds graph neighborhood, hub_rerank=true ranks by
-        importance); 'images' for image assets. If you already have a concept
-        ID, use read instead of searching. If you want related concepts, use
-        traverse. To add content, use ingest."""
+        importance); 'images' for image assets. rank='ppr' answers from the
+        link graph alone when the embedder is cold or unavailable. If you
+        already have a concept ID, use read instead of searching. If you want
+        related concepts, use traverse. To add content, use ingest."""
         router = _get_router(ctx)
         if target == "images":
-            return json.dumps(router.search_images(query, limit=limit), default=str, indent=2)
+            return json.dumps(
+                router.image_mgr.search_images_with_text(text_query=query, limit=limit),
+                default=str, indent=2,
+            )
         filt: dict = {}
         if type_filter is not None:
             filt["concept_type"] = type_filter
@@ -167,6 +182,8 @@ def create_mcp_server(
         if parent_id is not None:
             filt["parent_id"] = parent_id
         if target == "chunks":
+            if rank != "none":
+                return "error: rank is concepts-only; use hub_rerank/expand for chunks"
             if hub_rerank:
                 results = router.search_engine.search_chunks_with_hub_score(
                     query, limit=limit, hub_weight=hub_weight
@@ -178,7 +195,7 @@ def create_mcp_server(
             else:
                 results = router.search_engine.search_chunks(query, limit=limit, **filt)
             return json.dumps(results, default=str, indent=2)
-        results = router.search_hybrid(query, limit=limit, **filt)
+        results = router.search_hybrid(query, limit=limit, rank=rank, hub_weight=hub_weight, **filt)
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(annotations=_RO)
@@ -195,15 +212,35 @@ def create_mcp_server(
                 ),
             ),
         ] = "body",
+        max_tokens: Annotated[
+            Optional[int],
+            Field(
+                ge=100,
+                description=(
+                    "Token budget: assemble the concept plus PPR-ranked link "
+                    "neighbours (index-first for context), truncating the last "
+                    "section to fit. Omit for the full uncapped shapes."
+                ),
+            ),
+        ] = None,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Read a known concept — search first to find IDs.
 
         Routing: include='body' for full text; 'chunks' for passages;
         'document' to rebuild the original markdown; 'context' for links,
-        ancestry, and siblings. For open questions use search; to walk
+        ancestry, and siblings. max_tokens caps the reading to a budgeted
+        section list. For open questions use search; to walk
         relationships use traverse."""
         router = _get_router(ctx)
+        if max_tokens is not None:
+            try:
+                reading = router.search_engine.read_with_budget(
+                    concept_id, include=include, max_tokens=max_tokens,
+                )
+            except KeyError:
+                return f"Concept not found: {concept_id}"
+            return json.dumps(reading, default=str, indent=2)
         if include == "chunks":
             return json.dumps(router.search_engine.get_chunks(concept_id), default=str, indent=2)
         if include == "document":
@@ -322,11 +359,15 @@ def create_mcp_server(
         directory_id: Annotated[Optional[str], Field(description="Only export concepts under this directory.")] = None,
         concept_type: Annotated[Optional[str], Field(description="Only export concepts of this type.")] = None,
         tags: Annotated[Optional[list[str]], Field(description="Only export concepts with ALL these tags.")] = None,
+        flavor: Annotated[
+            Literal["okf", "obsidian"],
+            Field(description="'okf' = [t](id.md) links + index files. 'obsidian' = [[Title]] wikilinks, no index files, re-imports losslessly."),
+        ] = "okf",
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Export concepts from the graph to an OKF-compliant bundle directory. To add content back to the graph, use ingest."""
         router = _get_router(ctx)
-        kwargs: dict = {"output_dir": output_dir}
+        kwargs: dict = {"output_dir": output_dir, "flavor": flavor}
         if directory_id is not None:
             kwargs["directory_id"] = directory_id
         if concept_type is not None:

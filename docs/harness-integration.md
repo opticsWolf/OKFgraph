@@ -68,14 +68,23 @@ with absolute paths. No auth, no headers, no sidecars.
 
 `uv run --project . okf --help` — the same five verbs (`search`, `read`,
 `traverse`, `ingest`, `export`) plus maintenance commands (`init`, `import`,
-`shell`, `reindex`, `broken-links`, ...). Useful when MCP is unavailable
-or for shell scripting.
+`diff`, `doctor`, `shell`, `reindex`, `broken-links`, ...). Useful when MCP
+is unavailable or for shell scripting.
+
+## Cold search (no model load)
+
+`search` with `rank=ppr` (MCP) / `--rank ppr` (CLI) answers from the link
+graph alone — lexical seeds into exact Personalized PageRank, no ONNX load,
+deterministic across runs. Route topic-naming queries there when the
+embedder is cold or unavailable; keep hybrid ranking for phrasing-sensitive
+questions. `read --max-tokens N` / `max_tokens` caps any reading to a
+budgeted section list (self first, then PPR-ranked neighbours).
 
 ## Tool surface (5 MCP tools)
 
-- `search` (concepts/chunks/images, expand, hub_rerank),
-  `read` (body/chunks/document/context),
+- `search` (concepts/chunks/images, expand, hub_rerank, rank),
+  `read` (body/chunks/document/context, max_tokens),
   `traverse` (relationships, directory listing, shortest path),
-  `ingest` (md/pdf/thoughts), `export_bundle`.
+  `ingest` (md/pdf/thoughts), `export_bundle` (okf/obsidian flavors).
 All tools carry descriptions, JSON schemas, and read-only/destructive
 annotations — harnesses can gate writes on those.

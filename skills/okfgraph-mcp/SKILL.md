@@ -33,17 +33,22 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 | Exact passage inside long documents | `search` target=chunks |
 | Answer + supporting graph neighborhood | `search` target=chunks expand=true |
 | Importance-ranked chunk hits | `search` target=chunks hub_rerank=true |
+| Cold / deterministic topic search (no model load) | `search` rank=ppr |
 | Image assets | `search` target=images |
 | Follow CONTAINS / LINKS_TO relationships | `traverse` (depth 1–3 first) |
 | How two concepts connect | `traverse` target=<id> |
 | Browse a directory | `traverse` (CONTAINS, depth 1; empty id = root) |
 | Full text / chunks / rebuilt doc of one concept | `read` include=body\|chunks\|document |
+| Same, capped to a token budget | `read` include=... max_tokens=N |
 | Links + ancestry + siblings of one concept | `read` include=context |
 | Store a markdown file / PDF / reasoning | `ingest` kind=md\|pdf\|thoughts |
 
 ## Conventions
 
 - `search` returns concept or chunk hits; drill in with `read`.
+  `rank=ppr` answers from the link graph alone (lexical seeds → graph
+  walk): use it when the embedder is cold, when results must be
+  deterministic, or when the query names topics rather than phrases.
 - `traverse` needs a concept id — search first, then traverse from hits.
   Chunk hits carry `parent_doc_id`, so graph pivots rarely need re-search.
 - Ingestion lints with mordant and auto-fixes formatting; content is

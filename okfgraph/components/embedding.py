@@ -65,6 +65,17 @@ class EmbeddingEngine:
         """
         return self.encoder.encode(text, task=task)
 
+    def count_tokens(self, text: str) -> int:
+        """Count tokens with the Rust encoder, falling back to chars/4.
+
+        Used for token-budgeted reads and the context-window guard. Never
+        raises: without a tokenizer a rough estimate beats no answer.
+        """
+        try:
+            return int(self.encoder.count_tokens(text))
+        except Exception:
+            return max(1, len(text) // 4)
+
 
     def _truncate_normalize(self, vec: List[float]) -> List[float]:
         """Truncate to the configured Matryoshka dimension and L2-renormalise.

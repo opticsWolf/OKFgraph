@@ -305,7 +305,11 @@ def _search(args):
         "parent_id": getattr(args, "parent", None),
     }
     filt = {k: v for k, v in filt.items() if v is not None}
+    rank = getattr(args, "rank", "none") or "none"
     if target == "chunks":
+        if rank != "none":
+            print("[ERROR] --rank is concepts-only; for chunks use --hub-rerank/--expand")
+            return
         if getattr(args, "hub_rerank", False):
             results = router.search_engine.search_chunks_with_hub_score(
                 query=args.query,
@@ -370,6 +374,8 @@ def _search(args):
         query=args.query,
         limit=limit,
         include_chunks=getattr(args, "chunks", False),
+        rank=rank,
+        hub_weight=getattr(args, "hub_weight", 0.3) or 0.3,
         **filt,
     )
     if not results:
@@ -443,6 +449,22 @@ def _read(args):
     router = _router(args)
     include = getattr(args, "include", "body") or "body"
     cid = args.concept_id
+    max_tokens = getattr(args, "max_tokens", None)
+    if max_tokens:
+        try:
+            reading = router.search_engine.read_with_budget(
+                cid, include=include, max_tokens=max_tokens,
+            )
+        except KeyError:
+            print(f"Concept '{cid}' not found.")
+            return
+        flag = " (truncated)" if reading["truncated"] else ""
+        print(f"[{reading['used']}/{reading['budget']} tokens{flag}] {cid}\n")
+        for sec in reading["sections"]:
+            print(f"## {sec['title'] or sec['id']} [{sec['kind']} | {sec['id']}]")
+            print(sec["text"])
+            print()
+        return
     if include == "chunks":
         chunks = router.search_engine.get_chunks(cid)
         if not chunks:
@@ -501,6 +523,7 @@ def _read(args):
 
 def _export(args):
     router = _router(args)
+    flavor = getattr(args, "flavor", "okf") or "okf"
     if getattr(args, "export_all", False):
         tags = args.tags.split(",") if args.tags else None
         ids = router.export_mgr.export_bundle(
@@ -508,13 +531,14 @@ def _export(args):
             directory_id=args.parent,
             concept_type=args.type,
             tags=tags,
+            flavor=flavor,
         )
-        print(f"[OK] Exported {len(ids)} concepts to {args.output}")
+        print(f"[OK] Exported {len(ids)} concepts to {args.output} (flavor: {flavor})")
     else:
         cid = args.concept_id
         output_path = Path(args.output) / f"{cid}.md"
-        router.export_to_okf(cid, output_path)
-        print(f"[OK] Exported {cid} → {output_path}")
+        router.export_mgr.export_to_okf(cid, output_path, flavor=flavor)
+        print(f"[OK] Exported {cid} → {output_path} (flavor: {flavor})")
 
 
 def _broken_links(args):
@@ -534,6 +558,90 @@ def _repair_links(args):
     router = _router(args)
     count = router.repair_links()
     logger.info("repaired %d link(s)", count)
+
+
+def _diff(args):
+    """Structural diff: snapshot (dir vs dir) or drift (graph vs dir).
+
+    Returns an exit code (0 = identical, 1 = different) for CI gating;
+    main() propagates int returns to sys.exit.
+    """
+    from okfgraph.components.diff import DiffManager
+
+    old = getattr(args, "old", None)
+    new = getattr(args, "new", None)
+    as_json = getattr(args, "json", False)
+    if old and new and Path(old).is_dir() and Path(new).is_dir():
+        # Snapshot mode needs no database (and no model load).
+        result = DiffManager(None).diff_dirs(Path(old), Path(new))
+    elif old and new:
+        print("[ERROR] diff needs two bundle directories (or one + --db/--bundle)")
+        return 2
+    else:
+        router = _router(args)
+        side = Path(old or new) if (old or new) else router.bundle_root
+        if not side.is_dir():
+            print(f"[ERROR] not a bundle directory: {side}")
+            return 2
+        result = router.diff_db_dir(side)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        _print_diff(result)
+    return 0 if result["identical"] else 1
+
+
+def _print_diff(result) -> None:
+    """Human-readable rendering of a structural diff report."""
+    if result["identical"]:
+        print("No structural differences.")
+        return
+    for cid in result["added"]:
+        print(f"  + concept {cid}")
+    for cid in result["removed"]:
+        print(f"  - concept {cid}")
+    for cid in result["changed"]:
+        print(f"  ~ body {cid}")
+    for r in result["retitled"]:
+        print(f"  ~ title {r['id']}: {r['old']!r} -> {r['new']!r}")
+    for r in result["retyped"]:
+        print(f"  ~ type {r['id']}: {r['old']!r} -> {r['new']!r}")
+    for s, t in result["edges_added"]:
+        print(f"  + edge {s} -> {t}")
+    for s, t in result["edges_removed"]:
+        print(f"  - edge {s} -> {t}")
+    for s, t in result["broken_new"]:
+        print(f"  + broken {s} -> {t}")
+    for s, t in result["broken_fixed"]:
+        print(f"  - broken {s} -> {t}")
+
+
+def _doctor(args):
+    """Scored health scan, optionally with safe --fix repairs.
+
+    Returns an exit code with --strict (1 when any finding exists).
+    """
+    router = _router(args)
+    if getattr(args, "fix", False):
+        fixed = router.doctor_fix()
+        print(f"[OK] repaired {fixed['repaired_links']} link(s), "
+              f"normalized {fixed['normalized_timestamps']} timestamp(s)")
+        if fixed["skipped_reviewed"]:
+            print(f"  skipped reviewed: {', '.join(fixed['skipped_reviewed'])}")
+    report = router.diagnose(
+        stale_days=getattr(args, "stale_days", 365) or 365,
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(f"Health score: {report['score']}/100 ({report['concepts']} concepts)")
+        for f in report["findings"]:
+            print(f"  [{f['severity']}] {f['rule']} {f['path']}: {f['message']}")
+        for i in report["info"]:
+            print(f"  (info) {i['rule']}: {i['message']}")
+    if getattr(args, "strict", False) and report["findings"]:
+        return 1
+    return 0
 
 
 def _reindex(args):
@@ -998,6 +1106,10 @@ def build_parser():
     p.add_argument("--hub-rerank", action="store_true", help="Chunks: rerank by graph hub score")
     p.add_argument("--hub-weight", type=float, default=0.3, help="Hub weight with --hub-rerank (default: 0.3)")
     p.add_argument("--use-omni", action="store_true", help="Images: encode query with omni text side")
+    p.add_argument("--rank", default="none", choices=["none", "hub", "ppr"],
+                   help="Concepts: ranking — none (RRF order), hub (blend incoming-link "
+                   "authority), ppr (model-free lexical-seed PPR, no ONNX load). "
+                   "Default: none")
 
     # read (unified: body, chunks, document, context)
     p = sub.add_parser("read", help="Read a concept: body, chunks, document, or context")
@@ -1007,6 +1119,9 @@ def build_parser():
     p.add_argument("--include", default="body", choices=["body", "chunks", "document", "context"],
                    help="What to return (default: body)")
     p.add_argument("--output", help="Output file for --include document (default: stdout)")
+    p.add_argument("--max-tokens", type=int, default=None,
+                   help="Token budget: assemble self + PPR-ranked neighbours "
+                   "(index-first for context), truncating to fit")
 
     # traverse (unified: relationships, directory listing, shortest path)
     p = sub.add_parser("traverse", help="Traverse relationships, list directories, find paths")
@@ -1074,6 +1189,31 @@ def build_parser():
     p.add_argument("--type", help="Concept type filter")
     p.add_argument("--tags", help="Comma-separated tag filters")
     p.add_argument("--parent", help="Parent directory ID")
+    p.add_argument("--flavor", default="okf", choices=["okf", "obsidian"],
+                   help="Link flavor: okf ([t](id.md) + index files) or obsidian "
+                   "([[Title]] wikilinks, no index files). Default: okf")
+
+    # diff (structural: snapshot dir-vs-dir, or drift graph-vs-dir)
+    p = sub.add_parser("diff", help="Structural diff: concepts/edges/broken-link deltas")
+    _add_global(p)
+    _add_logging_flags(p)
+    p.add_argument("old", nargs="?", default=None,
+                   help="Old side: bundle dir (with NEW: snapshot; alone: drift vs graph)")
+    p.add_argument("new", nargs="?", default=None, help="New side: bundle dir (snapshot mode)")
+    p.add_argument("--json", action="store_true", help="Machine-readable report")
+
+    # doctor (scored health + safe repairs)
+    p = sub.add_parser("doctor", help="Health scan: score, findings, safe --fix")
+    _add_global(p)
+    _add_logging_flags(p)
+    p.add_argument("--strict", action="store_true",
+                   help="Exit 1 when any finding exists (CI gate)")
+    p.add_argument("--fix", action="store_true",
+                   help="Apply safe repairs (link re-points, timestamp normalization; "
+                   "never touches reviewed:true concepts)")
+    p.add_argument("--stale-days", type=int, default=365,
+                   help="Age threshold for 'stale' findings (default: 365)")
+    p.add_argument("--json", action="store_true", help="Machine-readable report")
 
     # shell
     p = sub.add_parser("shell", help="Interactive REPL")
@@ -1150,6 +1290,8 @@ def main():
         "shell": _shell,
         "broken-links": _broken_links,
         "repair-links": _repair_links,
+        "diff": _diff,
+        "doctor": _doctor,
         "reindex": _reindex,
         "deleted-list": _deleted_list,
         "deleted-recover": _deleted_recover,
@@ -1157,10 +1299,14 @@ def main():
     }
 
     try:
-        commands[args.command](args)
+        ret = commands[args.command](args)
     finally:
         _close_routers()
         _teardown_logging()
+    # Handlers return an int exit code when CI-gateable (diff/doctor);
+    # everything else returns None (= success).
+    if isinstance(ret, int) and ret != 0:
+        sys.exit(ret)
 
     # Profile output (Gap #10C)
     if getattr(args, "profile", False):

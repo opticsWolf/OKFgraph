@@ -1,0 +1,49 @@
+{
+  "concepts": [
+    {
+      "body": "fearless defense",
+      "description": "thick skin",
+      "id": "a",
+      "tags": [
+        "wildlife"
+      ],
+      "title": "Honey Badger Defense"
+    },
+    {
+      "body": "links honey badger and lion",
+      "description": "predators",
+      "id": "b",
+      "tags": [],
+      "title": "Savanna Food Web"
+    },
+    {
+      "body": "savanna hunters",
+      "description": "hunting",
+      "id": "c",
+      "tags": [],
+      "title": "Lion Prides"
+    },
+    {
+      "body": "barriers",
+      "description": "physics",
+      "id": "d",
+      "tags": [],
+      "title": "Quantum Tunneling"
+    }
+  ],
+  "edges": [
+    [
+      "a",
+      "b"
+    ],
+    [
+      "b",
+      "c"
+    ],
+    [
+      "c",
+      "d"
+    ]
+  ],
+  "query": "honey badger defense"
+}

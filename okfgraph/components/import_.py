@@ -7,7 +7,6 @@ import json
 import logging
 import math
 import os
-import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -22,8 +21,59 @@ import yaml
 import frontmatter
 from okfgraph.models import ChunkModel, ConceptModel
 from okfgraph.images import IngestMode
+from okfgraph.components.links import (
+    build_name_index,
+    extract_md_links,
+    extract_wikilinks,
+    is_external,
+    normalize_path_link,
+    resolve_wiki,
+)
 
 logger = logging.getLogger(__name__)
+
+def parse_source_file(
+    file_path: Path, root: Path
+) -> Tuple["ConceptModel", str, str]:
+    """Parse a .md/.txt source into ``(ConceptModel, body, concept_id)``.
+
+    Module-level so the structural diff can parse bundle directories without
+    a database-backed manager. ``ImportManager._parse_source_file`` delegates
+    here; behaviour is identical (path-derived id, ``type``/``title``
+    synthesis, frontmatter ``id:`` preserved as ``uid``).
+    """
+    post = frontmatter.load(file_path)
+    body = post.content
+    fm = dict(post.metadata)
+
+    rel_path = file_path.relative_to(root) if file_path.is_relative_to(root) else None
+    if rel_path is not None:
+        # with_suffix("") strips only the final extension (.md/.txt/.markdown),
+        # avoiding the old str.replace(".md","") which could corrupt paths.
+        concept_id = str(rel_path.with_suffix("")).replace("\\", "/")
+    else:
+        # File lives outside bundle_root (common when a GUI writes each .md
+        # next to its source). Fall back to the bare stem so the import
+        # doesn't crash with a relative_to ValueError.
+        concept_id = file_path.stem
+
+    if not fm.get("type"):
+        fm["type"] = "note"
+    if not fm.get("title"):
+        stem = file_path.stem.replace("_", " ").replace("-", " ").strip()
+        fm["title"] = stem or concept_id
+
+    # A frontmatter ``id:`` (Foam/Dendron-style stable identity) must not
+    # overwrite the path-derived concept id — but dropping it would lose
+    # a wikilink name. Preserve it as ``uid`` (extra MAP): the name index
+    # resolves it, and export writes it back as ``id:``.
+    fm_id = fm.pop("id", None)
+    if fm_id is not None and str(fm_id) != concept_id:
+        fm["uid"] = str(fm_id)
+
+    concept = ConceptModel.model_validate({**fm, "id": concept_id, "body": body})
+    return concept, body, concept_id
+
 
 class ImportManager:
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
@@ -92,60 +142,96 @@ class ImportManager:
                 """, {"parent": parent_dir, "child": cid})
 
 
-    def _batch_extract_links(self, parsed: List[Dict[str, Any]]):
-        """Extract and create LINKS_TO relationships for a batch of concepts.
+    def _load_link_index(self):
+        """Load the known-id set + wikilink name index over all concepts.
 
-        Collects all markdown links, checks which targets exist, and
-        creates relationships or BrokenLink records in bulk.
+        Single pair of queries feeding every link-resolution site (batch,
+        single, repair). ``aliases``/``alias``/``uid``/``title`` come from
+        the ``extra`` MAP (JSON-decoded when needed); ambiguous names resolve
+        to nothing (see ``okfgraph.components.links``).
         """
-        # Collect all (source, target) pairs
-        all_links: List[Tuple[str, str]] = []
-        link_pattern = re.compile(r"\[.*?\]\((.*?\.md)\)")
-        wikilink_pattern = re.compile(r"\[\[(.*?)\]\]")
-        for item in parsed:
-            source_id = item["cid"]
-            body = item["body"]
-            for raw_link in link_pattern.findall(body):
-                target_id = raw_link.lstrip("./").replace("\\", "/").replace(".md", "").lstrip("/")
-                all_links.append((source_id, target_id))
-            # Also handle wikilinks [[target]]
-            for raw_link in wikilink_pattern.findall(body):
-                target_id = raw_link.strip().lstrip("./").replace("\\", "/").replace(".md", "").lstrip("/")
-                all_links.append((source_id, target_id))
-
-        if not all_links:
-            return
-
-        # Collect all unique target IDs
-        all_targets = list(set(t for _, t in all_links))
-
-        # Batch check which targets exist
-        existing_targets = set()
-        for target_id in all_targets:
-            result = self.conn.execute(
-                "MATCH (c:Concept {id: $id}) RETURN count(c) AS cnt",
-                {"id": target_id},
+        rows = self.conn.execute(
+            "MATCH (c:Concept) RETURN c.id, c.title, c.extra"
+        ).rows_as_dict().get_all()
+        concepts = []
+        for r in rows:
+            extra = r.get("c.extra") or {}
+            entry: Dict[str, Any] = {"id": r["c.id"], "title": r.get("c.title")}
+            for key in ("uid", "aliases", "alias"):
+                val = extra.get(key)
+                if isinstance(val, str) and val.startswith("["):
+                    try:
+                        val = json.loads(val)
+                    except json.JSONDecodeError:
+                        pass
+                if val is not None:
+                    entry[key] = val
+            concepts.append(entry)
+        maps, ambiguous = build_name_index(concepts)
+        if ambiguous:
+            shown = sorted(ambiguous)[:10]
+            logger.warning(
+                "wikilinks: %d ambiguous name(s), resolving to nothing (e.g. %s)",
+                len(ambiguous), ", ".join(shown),
             )
-            cnt = result.rows_as_dict().get_all()[0]["cnt"]
-            if cnt > 0:
-                existing_targets.add(target_id)
+        return maps, {c["id"] for c in concepts}
 
-        # Create LINKS_TO for existing targets
-        for source_id, target_id in all_links:
-            if target_id in existing_targets:
+    def _record_links(self, links: List[Tuple[str, Optional[str], str]]):
+        """Persist resolved/unresolved ``(source, target_or_None, raw)`` links.
+
+        Resolved targets get ``MERGE (source)-[:LINKS_TO]->(target)``;
+        misses become ``BrokenLink`` records for ``repair_links``/doctor.
+        """
+        for source_id, target_id, raw in links:
+            if target_id is not None:
                 self.conn.execute("""
                     MATCH (source:Concept {id: $source})
                     MATCH (target:Concept {id: $target})
                     MERGE (source)-[:LINKS_TO]->(target)
                 """, {"source": source_id, "target": target_id})
             else:
-                # Record broken link for later repair
-                link_id = f"{source_id}\u2192{target_id}"
+                link_id = f"{source_id}\u2192{raw}"
                 now = datetime.now()
                 self.conn.execute("""
                     MERGE (bl:BrokenLink {id: $id})
                     SET bl.source_id = $source, bl.target_id = $target, bl.timestamp = $ts
-                """, {"id": link_id, "source": source_id, "target": target_id, "ts": now})
+                """, {"id": link_id, "source": source_id, "target": raw, "ts": now})
+
+    def _resolve_body_links(
+        self, source_id: str, body: str, maps, known_ids
+    ) -> List[Tuple[str, Optional[str], str]]:
+        """Resolve one body to ``(source, target_or_None, raw)`` triples.
+
+        Markdown ``](path.md)`` links resolve by path; ``[[wikilinks]]`` by
+        name (uid → alias → title → stem). External URLs are skipped.
+        """
+        out: List[Tuple[str, Optional[str], str]] = []
+        for raw in extract_md_links(body):
+            if is_external(raw):
+                continue
+            target = normalize_path_link(raw.split("#", 1)[0])
+            out.append((source_id, target if target in known_ids else None, target))
+        for raw in extract_wikilinks(body):
+            if not raw or is_external(raw):
+                continue
+            out.append((source_id, resolve_wiki(raw, maps, known_ids), raw))
+        return out
+
+    def _batch_extract_links(self, parsed: List[Dict[str, Any]]):
+        """Extract and create LINKS_TO relationships for a batch of concepts.
+
+        Collects markdown links (by path) and wikilinks (by name) over the
+        batch, resolves against every concept in the graph, and persists
+        hits/misses in bulk via ``_record_links``.
+        """
+        maps, known_ids = self._load_link_index()
+        all_links: List[Tuple[str, Optional[str], str]] = []
+        for item in parsed:
+            all_links.extend(
+                self._resolve_body_links(item["cid"], item["body"], maps, known_ids)
+            )
+        if all_links:
+            self._record_links(all_links)
 
 
     def _batch_upsert_concepts(
@@ -236,53 +322,13 @@ class ImportManager:
     def _extract_links_for_concept(self, concept_id: str, body: str):
         """Extract and create LINKS_TO relationships for a single concept.
 
-        Handles both markdown links [text](file.md) and wikilinks [[target]].
+        Handles markdown links [text](file.md) by path and [[wikilinks]] by
+        name (uid → alias → title → stem); misses become BrokenLink records.
         """
-        link_pattern = re.compile(r"\[.*?\]\((.*?\.md)\)")
-        wikilink_pattern = re.compile(r"\[\[(.*?)\]\]")
-
-        all_links: List[Tuple[str, str]] = []
-        for raw_link in link_pattern.findall(body):
-            target_id = raw_link.lstrip("./").replace("\\", "/").replace(".md", "").lstrip("/")
-            all_links.append((concept_id, target_id))
-        for raw_link in wikilink_pattern.findall(body):
-            target_id = raw_link.strip().lstrip("./").replace("\\", "/").replace(".md", "").lstrip("/")
-            all_links.append((concept_id, target_id))
-
-        if not all_links:
-            return
-
-        # Collect all unique target IDs
-        all_targets = list(set(t for _, t in all_links))
-
-        # Batch check which targets exist
-        existing_targets = set()
-        for target_id in all_targets:
-            result = self.conn.execute(
-                "MATCH (c:Concept {id: $id}) RETURN count(c) AS cnt",
-                {"id": target_id},
-            )
-            cnt = result.rows_as_dict().get_all()[0]["cnt"]
-            if cnt > 0:
-                existing_targets.add(target_id)
-
-        # Create LINKS_TO for existing targets
-        for source_id, target_id in all_links:
-            if target_id in existing_targets:
-                self.conn.execute("""
-                    MATCH (source:Concept {id: $source})
-                    MATCH (target:Concept {id: $target})
-                    MERGE (source)-[:LINKS_TO]->(target)
-                """, {"source": source_id, "target": target_id})
-            else:
-                # Record broken link for later repair
-                link_id = f"{source_id}\u2192{target_id}"
-                now = datetime.now()
-                self.conn.execute("""
-                    MERGE (bl:BrokenLink {id: $id})
-                    SET bl.source_id = $source, bl.target_id = $target, bl.timestamp = $ts
-                """, {"id": link_id, "source": source_id, "target": target_id, "ts": now})
-
+        maps, known_ids = self._load_link_index()
+        links = self._resolve_body_links(concept_id, body, maps, known_ids)
+        if links:
+            self._record_links(links)
 
     def _get_property(self, cid: str, prop: str) -> Any:
         """Retrieve a single property from a concept node."""
@@ -773,30 +819,9 @@ class ImportManager:
                         MERGE (p)-[:CONTAINS]->(d)
                     """, {"parent": parent, "child": child})
 
-        # Extract Markdown links
-        link_pattern = re.compile(r"\[.*?\]\((.*?\.md)\)")
-        for raw_link in link_pattern.findall(body_text):
-            target_id = raw_link.lstrip("./").replace("\\", "/").replace(".md", "").lstrip("/")
-            # Check if target exists
-            result = self.conn.execute(
-                "MATCH (c:Concept {id: $id}) RETURN count(c) AS cnt",
-                {"id": target_id},
-            )
-            cnt = result.rows_as_dict().get_all()[0]["cnt"]
-            if cnt > 0:
-                self.conn.execute("""
-                    MATCH (source:Concept {id: $source})
-                    MATCH (target:Concept {id: $target})
-                    MERGE (source)-[:LINKS_TO]->(target)
-                """, {"source": concept_id_val, "target": target_id})
-            else:
-                # Record broken link for later repair
-                link_id = f"{concept_id_val}→{target_id}"
-                now = datetime.now()
-                self.conn.execute("""
-                    MERGE (bl:BrokenLink {id: $id})
-                    SET bl.source_id = $source, bl.target_id = $target, bl.timestamp = $ts
-                """, {"id": link_id, "source": concept_id_val, "target": target_id, "ts": now})
+        # NOTE: link extraction intentionally lives outside _insert_concept
+        # (callers run _extract_links_for_concept after the node exists), so
+        # path-links and [[wikilinks]] share one resolution path.
 
         return concept_id_val
 
@@ -810,30 +835,10 @@ class ImportManager:
         frontmatter) get a synthesized ``type`` ('note') and a ``title`` derived
         from the filename, so the simplified text-only pipeline can ingest .txt
         alongside .md without every file needing OKF frontmatter.
+
+        Delegates to :func:`parse_source_file` (shared with the diff tool).
         """
-        post = frontmatter.load(file_path)
-        body = post.content
-        fm = dict(post.metadata)
-
-        rel_path = file_path.relative_to(root) if file_path.is_relative_to(root) else None
-        if rel_path is not None:
-            # with_suffix("") strips only the final extension (.md/.txt/.markdown),
-            # avoiding the old str.replace(".md","") which could corrupt paths.
-            concept_id = str(rel_path.with_suffix("")).replace("\\", "/")
-        else:
-            # File lives outside bundle_root (common when a GUI writes each .md
-            # next to its source). Fall back to the bare stem so the import
-            # doesn't crash with a relative_to ValueError.
-            concept_id = file_path.stem
-
-        if not fm.get("type"):
-            fm["type"] = "note"
-        if not fm.get("title"):
-            stem = file_path.stem.replace("_", " ").replace("-", " ").strip()
-            fm["title"] = stem or concept_id
-
-        concept = ConceptModel.model_validate({**fm, "id": concept_id, "body": body})
-        return concept, body, concept_id
+        return parse_source_file(file_path, root)
 
 
     def import_bundle(
@@ -993,48 +998,53 @@ class ImportManager:
         ]
 
 
-    def repair_links(self) -> int:
+    def repair_links(self, skip_sources: Optional[Set[str]] = None) -> int:
         """Attempt to repair broken links by re-checking if targets now exist.
 
-        Scans all tracked broken links. For each one where the target concept
-        now exists in the graph, creates the LINKS_TO relationship and removes
-        the BrokenLink record.
+        Scans all tracked broken links. A record repairs when its target is
+        now an existing concept id — or when it is a ``[[wikiname]]`` that
+        now resolves to exactly one concept via the name index (uid → alias
+        → title → stem). Ambiguous names are left alone, never guessed.
 
         Returns:
             Number of links successfully repaired.
         """
+        skip_sources = skip_sources or set()
         broken = self.list_broken_links()
+        if not broken:
+            return 0
+        maps, known_ids = self._load_link_index()
         repaired = 0
         for link in broken:
             source_id = link["source"]
-            target_id = link["target"]
-            link_id = f"{source_id}→{target_id}"
+            raw_target = link["target"]
+            if source_id in skip_sources:
+                # reviewed:true concepts are never modified (doctor --fix).
+                continue
+            link_id = f"{source_id}→{raw_target}"
 
-            # Check if both source and target now exist
-            source_result = self.conn.execute(
-                "MATCH (c:Concept {id: $id}) RETURN count(c) AS cnt",
-                {"id": source_id},
-            )
-            target_result = self.conn.execute(
-                "MATCH (c:Concept {id: $id}) RETURN count(c) AS cnt",
-                {"id": target_id},
-            )
-            source_exists = source_result.rows_as_dict().get_all()[0]["cnt"] > 0
-            target_exists = target_result.rows_as_dict().get_all()[0]["cnt"] > 0
+            if source_id not in known_ids:
+                continue
+            if raw_target in known_ids:
+                target_id = raw_target
+            else:
+                # Path-style miss that is really a wikilink, or vice versa:
+                # try name resolution before giving up.
+                target_id = resolve_wiki(raw_target, maps, known_ids)
+                if target_id is None:
+                    continue
 
-            if source_exists and target_exists:
-                # Create the LINKS_TO relationship
-                self.conn.execute("""
-                    MATCH (source:Concept {id: $source})
-                    MATCH (target:Concept {id: $target})
-                    MERGE (source)-[:LINKS_TO]->(target)
-                """, {"source": source_id, "target": target_id})
-                # Remove the BrokenLink record
-                self.conn.execute(
-                    "MATCH (bl:BrokenLink {id: $id}) DELETE bl",
-                    {"id": link_id},
-                )
-                repaired += 1
+            self.conn.execute("""
+                MATCH (source:Concept {id: $source})
+                MATCH (target:Concept {id: $target})
+                MERGE (source)-[:LINKS_TO]->(target)
+            """, {"source": source_id, "target": target_id})
+            # Remove the BrokenLink record
+            self.conn.execute(
+                "MATCH (bl:BrokenLink {id: $id}) DELETE bl",
+                {"id": link_id},
+            )
+            repaired += 1
 
         return repaired
 

@@ -44,6 +44,8 @@ import mordant
 from okfgraph.models import ChunkModel, ConceptModel
 from okfgraph.components import (
     DeltaDetector,
+    DiffManager,
+    DoctorManager,
     EmbeddingEngine,
     ExportManager,
     ImageAssetManager,
@@ -254,6 +256,8 @@ class OKFRouter:
             self.import_mgr, self.delta_mgr, converter,
         )
         self.export_mgr = ExportManager(self.conn, self.search_engine)
+        self.doctor_mgr = DoctorManager(self.conn, self.import_mgr)
+        self.diff_mgr = DiffManager(self.conn)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -361,6 +365,18 @@ class OKFRouter:
 
     def repair_links(self, *args, **kwargs):
         return self.import_mgr.repair_links(*args, **kwargs)
+
+    def diagnose(self, *args, **kwargs):
+        return self.doctor_mgr.diagnose(*args, **kwargs)
+
+    def doctor_fix(self, *args, **kwargs):
+        return self.doctor_mgr.fix(*args, **kwargs)
+
+    def diff_dirs(self, *args, **kwargs):
+        return self.diff_mgr.diff_dirs(*args, **kwargs)
+
+    def diff_db_dir(self, *args, **kwargs):
+        return self.diff_mgr.diff_db_dir(*args, **kwargs)
 
     # ------------------------------------------------------------------
     # Schema

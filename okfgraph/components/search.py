@@ -203,6 +203,115 @@ class SearchEngine:
         """, {"ids": concept_ids})
         return {r["id"]: r["cnt"] for r in result.rows_as_dict().get_all()}
 
+    # ------------------------------------------------------------------
+    # Model-free retrieval: lexical seeds + exact PPR (Phase 1 roundup)
+    # ------------------------------------------------------------------
+
+    def _links_adjacency(self) -> Tuple[List[str], List[Tuple[str, str]]]:
+        """Read the resolved LINKS_TO graph: sorted node ids + directed edges.
+
+        Plain (non-index) queries — no FTS/vector extensions involved, so the
+        ladybug short-lived-connection workaround is unnecessary here.
+        """
+        id_rows = self.conn.execute(
+            "MATCH (c:Concept) RETURN c.id AS id"
+        ).rows_as_dict().get_all()
+        edge_rows = self.conn.execute(
+            "MATCH (a:Concept)-[:LINKS_TO]->(b:Concept) "
+            "RETURN a.id AS src, b.id AS dst"
+        ).rows_as_dict().get_all()
+        return (
+            sorted(r["id"] for r in id_rows),
+            [(r["src"], r["dst"]) for r in edge_rows],
+        )
+
+    def _seed_corpus(self) -> List[Dict[str, Any]]:
+        """Concept metadata for lexical seeding (reserved index/log excluded)."""
+        rows = self.conn.execute(
+            "MATCH (c:Concept) RETURN c.id, c.title, c.description, c.tags, c.body"
+        ).rows_as_dict().get_all()
+        corpus = []
+        for r in rows:
+            cid = r["c.id"]
+            if cid.endswith("index") or cid.endswith("log"):
+                continue
+            corpus.append({
+                "id": cid,
+                "title": r.get("c.title"),
+                "description": r.get("c.description"),
+                "tags": r.get("c.tags"),
+                "body": r.get("c.body"),
+            })
+        return corpus
+
+    def search_with_ppr(
+        self,
+        query: str,
+        limit: int = 10,
+        concept_type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        parent_id: Optional[str] = None,
+        seed_k: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Model-free search: lexical seeds → multi-seed exact PPR.
+
+        Never touches the embedding model (no ONNX load, no FTS/vector
+        extensions): safe on a cold router, deterministic across runs, and a
+        good fit when the query names topics rather than phrases. Over a
+        sparse graph the order degrades to the lexical seed order.
+        Returns the same shape as ``search_hybrid`` (``relevance_score``
+        carries the PPR score).
+        """
+        from okfgraph.components.ranking import seed_ranked_ppr
+
+        corpus = self._seed_corpus()
+        node_ids, edges = self._links_adjacency()
+        ranked = seed_ranked_ppr(corpus, edges, query, seed_k=seed_k)
+        if not ranked:
+            return []
+        score_by_id = dict(ranked)
+
+        where_clauses: List[str] = ["c.id IN $ids"]
+        params: Dict[str, Any] = {"ids": [cid for cid, _ in ranked]}
+        if concept_type:
+            where_clauses.append("c.type = $type")
+            params["type"] = concept_type
+        if tags:
+            where_clauses.append("ANY(tag IN $tags WHERE tag IN c.tags)")
+            params["tags"] = tags
+        if parent_id:
+            where_clauses.append(
+                "EXISTS { MATCH (p:Directory {id: $parent})-[:CONTAINS*1..3]->(c) }"
+            )
+            params["parent"] = parent_id
+        cypher = f"""
+        MATCH (c:Concept)
+        WHERE {" AND ".join(where_clauses)}
+        RETURN c.id, c.title, c.type, c.description, c.tags
+        """
+        rows = self.conn.execute(cypher, params).rows_as_dict().get_all()
+        meta_by_id = {row["c.id"]: row for row in rows}
+
+        results: List[Dict[str, Any]] = []
+        for cid, _ in ranked:
+            row = meta_by_id.get(cid)
+            if row is None:
+                continue
+            desc = row["c.description"] or ""
+            if len(desc) > 200:
+                desc = desc[:200] + "..."
+            results.append({
+                "id": cid,
+                "title": row["c.title"],
+                "type": row["c.type"],
+                "description": desc,
+                "tags": row["c.tags"],
+                "relevance_score": score_by_id[cid],
+            })
+            if len(results) >= limit:
+                break
+        return results
+
 
     def _get_ancestry(self, concept_id: str, max_depth: int = 5) -> List[Dict[str, Any]]:
         """Return directory path from root to this concept."""
@@ -424,12 +533,25 @@ class SearchEngine:
         exclude_reserved: bool = True,
         limit: int = 10,
         include_chunks: bool = False,
+        rank: str = "none",
+        hub_weight: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Hybrid search: RRF fusion of vector + FTS with optional graph filters.
 
         If ``include_chunks=True``, each result also contains ``matched_chunks``
         — the top chunks from that document matching the query.
+
+        ``rank`` selects post-retrieval ranking: ``"none"`` (RRF order),
+        ``"hub"`` (blend RRF with incoming-link hub score), or ``"ppr"``
+        (model-free lexical-seed PPR — no ONNX load, deterministic).
         """
+        if rank not in ("none", "hub", "ppr"):
+            raise ValueError(f"rank must be 'none', 'hub' or 'ppr', got {rank!r}")
+        if rank == "ppr":
+            return self.search_with_ppr(
+                query, limit=limit, concept_type=concept_type,
+                tags=tags, parent_id=parent_id,
+            )
         if not getattr(self, "_search_available", False):
             raise RuntimeError(
                 "Search is unavailable: the 'vector'/'fts' extensions could not "
@@ -541,8 +663,150 @@ class SearchEngine:
             results.append(result)
             if len(results) >= limit:
                 break
+
+        if rank == "hub" and results:
+            # Query-independent authority blend (same formula as chunks):
+            # final = (1 - w) * rrf + w * normalized_hub.
+            hub_scores = self._compute_hub_scores([r["id"] for r in results])
+            max_hub = max(hub_scores.values()) if hub_scores else 0
+            for r in results:
+                hub = hub_scores.get(r["id"], 0)
+                norm = (hub / max_hub) if max_hub > 0 else 0.0
+                r["hub_score"] = norm
+                r["relevance_score"] = (
+                    (1 - hub_weight) * r["relevance_score"] + hub_weight * norm
+                )
+            results.sort(key=lambda x: x["relevance_score"], reverse=True)
         return results
 
+
+    # ------------------------------------------------------------------
+    # Token-budgeted reading (Phase 2 roundup)
+    # ------------------------------------------------------------------
+
+    def _count_tokens(self, text: str) -> int:
+        """Token count via the embedding engine, falling back to chars/4."""
+        counter = getattr(getattr(self, "embed_engine", None), "count_tokens", None)
+        if callable(counter):
+            try:
+                return int(counter(text))
+            except Exception:
+                pass
+        return max(1, len(text or "") // 4)
+
+    def _truncate_to_tokens(self, text: str, budget: int) -> str:
+        """Cut text to ~budget tokens (proportional char cut, never empty)."""
+        if budget <= 0:
+            return ""
+        total = self._count_tokens(text)
+        if total <= budget:
+            return text
+        chars = max(1, int(len(text) * budget / total))
+        return text[:chars].rstrip() + "\n[…truncated to budget]"
+
+    def _index_concept(self) -> Optional[Dict[str, Any]]:
+        """Bundle index concept (id 'index' preferred), if one exists."""
+        rows = self.conn.execute(
+            "MATCH (c:Concept) WHERE c.id ENDS WITH 'index' "
+            "RETURN c.id, c.title, c.body"
+        ).rows_as_dict().get_all()
+        if not rows:
+            return None
+        rows.sort(key=lambda r: (0 if r["c.id"] == "index" else 1, r["c.id"]))
+        best = rows[0]
+        return {"id": best["c.id"], "title": best.get("c.title"), "body": best.get("c.body") or ""}
+
+    def read_with_budget(
+        self,
+        concept_id: str,
+        include: str = "body",
+        max_tokens: int = 2000,
+    ) -> Dict[str, Any]:
+        """Assemble a token-budgeted reading of one concept.
+
+        Sections are ordered by importance — the concept itself first, then
+        (for ``context``) the bundle index and single-seed-PPR-ranked link
+        neighbours — and the last section is truncated to fit ``max_tokens``.
+        Only used when a budget is explicitly requested; uncapped reads keep
+        their existing shapes byte-for-byte.
+        """
+        from okfgraph.components.ranking import ppr
+
+        if include not in ("body", "chunks", "document", "context"):
+            raise ValueError(f"include must be body|chunks|document|context, got {include!r}")
+        concept = self.get_by_id(concept_id)
+        if concept is None:
+            raise KeyError(f"Concept not found: {concept_id}")
+
+        sections: List[Dict[str, Any]] = []
+        if include == "chunks":
+            for ch in self.get_chunks(concept_id):
+                sections.append({
+                    "id": ch.id, "title": f"#{ch.chunk_index} [{ch.block_type}]",
+                    "kind": "chunk", "text": ch.chunk_text,
+                })
+        elif include == "document":
+            sections.append({
+                "id": concept_id, "title": concept.title, "kind": "document",
+                "text": self.embed_engine.reconstruct_document(concept_id) or "",
+            })
+        else:
+            if include == "context":
+                index = self._index_concept()
+                if index is not None and index["id"] != concept_id:
+                    sections.append({
+                        "id": index["id"], "title": index["title"],
+                        "kind": "index", "text": index["body"],
+                    })
+            sections.append({
+                "id": concept_id, "title": concept.title, "kind": "body",
+                "text": concept.body or "",
+            })
+            if include == "context":
+                node_ids, edges = self._links_adjacency()
+                ranked = ppr(node_ids, edges, [concept_id])
+                neighbour_ids = [cid for cid, _ in ranked if cid != concept_id]
+                if neighbour_ids:
+                    rows = self.conn.execute(
+                        "MATCH (c:Concept) WHERE c.id IN $ids "
+                        "RETURN c.id, c.title, c.description, c.body",
+                        {"ids": neighbour_ids},
+                    ).rows_as_dict().get_all()
+                    meta = {r["c.id"]: r for r in rows}
+                    for nid in neighbour_ids:
+                        r = meta.get(nid)
+                        if r is None:
+                            continue
+                        text = (r.get("c.title") or nid) + "\n" \
+                            + (r.get("c.description") or "") + "\n" \
+                            + (r.get("c.body") or "")
+                        sections.append({
+                            "id": nid, "title": r.get("c.title"),
+                            "kind": "neighbour", "text": text,
+                        })
+
+        kept: List[Dict[str, Any]] = []
+        used = 0
+        truncated = False
+        for sec in sections:
+            cost = self._count_tokens(sec["text"])
+            if used + cost <= max_tokens:
+                kept.append(sec)
+                used += cost
+            else:
+                sec = dict(sec, text=self._truncate_to_tokens(sec["text"], max_tokens - used))
+                kept.append(sec)
+                used = max_tokens
+                truncated = True
+                break
+        return {
+            "concept_id": concept_id,
+            "include": include,
+            "budget": max_tokens,
+            "used": used,
+            "truncated": truncated or len(kept) < len(sections),
+            "sections": kept,
+        }
 
     def find_path(
         self,

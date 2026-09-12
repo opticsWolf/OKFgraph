@@ -14,11 +14,13 @@ description: >
 
 Same graph as the MCP skill, through `okf` shell commands. Five verbs:
 
-- `okf search [--target concepts|chunks|images] [--expand] [--hub-rerank] QUERY`
-- `okf read [--include body|chunks|document|context] CONCEPT_ID`
+- `okf search [--target concepts|chunks|images] [--expand] [--hub-rerank] [--rank none|hub|ppr] QUERY`
+- `okf read [--include body|chunks|document|context] [--max-tokens N] CONCEPT_ID`
 - `okf traverse [START_ID] [--relationship ...] [--target ID]`
 - `okf ingest --kind md|pdf|thoughts ...`
-- `okf export --all|--concept-id ID --output DIR`
+- `okf export --all|--concept-id ID --output DIR [--flavor okf|obsidian]`
+- `okf diff [OLD_DIR] [NEW_DIR]` — structural drift (exit 1 when different)
+- `okf doctor [--strict] [--fix]` — health score + safe repairs
 
 ## Setup (once per project)
 
@@ -42,6 +44,7 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
 | How two concepts connect | `traverse ID1 --target ID2` |
 | Browse a directory | `traverse` (empty id = root) or `traverse ID` (CONTAINS) |
 | Full text / chunks / rebuilt doc of one concept | `read [--include ...] ID` |
+| Same, capped to a token budget (PPR-ranked neighbours) | `read --max-tokens N ID` |
 | Links + ancestry + siblings of one concept | `read --include context ID` |
 | Store a markdown file / PDF / reasoning | `ingest --kind ...` |
 
@@ -53,5 +56,7 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
 - Every CLI call cold-boots the router (model load ~30s). Batch reads:
   prefer one `search --expand` over N `read` calls.
 - `search` prints concept/chunk hits with ids; drill in with `read`.
+  `--rank ppr` is model-free (no ~30s load): prefer it for topic queries
+  and cold sessions; default ranking stays hybrid.
 - `traverse` needs a concept id — search first, then traverse from hits.
   Chunk hits carry `parent_doc_id`, so pivots rarely need re-search.

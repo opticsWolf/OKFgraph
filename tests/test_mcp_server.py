@@ -259,6 +259,7 @@ class _StubRouter:
         self.search_engine = _StubSearchEngine(calls)
         self.embed_engine = _StubEmbedEngine(calls)
         self.ingest_mgr = _StubIngestMgr(calls)
+        self.image_mgr = _StubImageMgr(calls)
 
     def search_hybrid(self, query, limit=10, **filt):
         self.calls.append(("search_hybrid", query, limit, filt))
@@ -327,7 +328,7 @@ class TestToolDispatch:
     def test_search_images(self):
         calls = []
         self._fn("search")("cat", target="images", ctx=self._ctx(_StubRouter(calls)))
-        assert calls[0][0] == "search_images"
+        assert calls[0][0] == "search_images_with_text"
 
     def test_read_body_and_missing(self):
         calls = []
@@ -370,3 +371,88 @@ class TestToolDispatch:
         assert out.startswith("error:") and calls == []
         out = self._fn("ingest")(kind="thoughts", thoughts="t", ctx=self._ctx(_StubRouter(calls)))
         assert out.startswith("error:") and calls == []
+
+
+class _StubImageMgr:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def search_images_with_text(self, text_query, use_text_model=True, limit=10):
+        self.calls.append(("search_images_with_text", text_query, limit))
+        return []
+
+
+class TestRoundupDispatch:
+    """rank / max_tokens / flavor params route correctly (Phases 1, 2, 5)."""
+
+    def test_search_schema_has_rank(self):
+        mcp = create_mcp_server(db_path=":memory:")
+        search = next(t for t in mcp._tool_manager.list_tools() if t.name == "search")
+        props = search.parameters["properties"]
+        assert props["rank"]["default"] == "none"
+        assert set(props["rank"]["enum"]) == {"none", "hub", "ppr"}
+
+    def test_search_rank_routes_to_hybrid(self):
+        calls = []
+        fn = TestToolDispatch._fn("search")
+        fn("honey", rank="ppr", ctx=TestToolDispatch._ctx(_StubRouter(calls)))
+        assert calls[0][0] == "search_hybrid"
+        assert calls[0][3]["rank"] == "ppr"
+
+    def test_search_rank_rejected_for_chunks(self):
+        calls = []
+        fn = TestToolDispatch._fn("search")
+        out = fn("honey", target="chunks", rank="ppr",
+                 ctx=TestToolDispatch._ctx(_StubRouter(calls)))
+        assert out.startswith("error:")
+        assert calls == []
+
+    def test_read_schema_has_max_tokens(self):
+        mcp = create_mcp_server(db_path=":memory:")
+        read = next(t for t in mcp._tool_manager.list_tools() if t.name == "read")
+        assert "max_tokens" in read.parameters["properties"]
+
+    def test_read_budget_dispatch(self):
+        import json
+        calls = []
+        stub = _StubRouter(calls)
+        stub.search_engine.read_with_budget = lambda *a, **k: (
+            calls.append(("read_with_budget", a, k)) or
+            {"concept_id": "c1", "sections": []}
+        )
+        fn = TestToolDispatch._fn("read")
+        out = fn("c1", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
+        assert json.loads(out)["concept_id"] == "c1"
+        assert calls[0][0] == "read_with_budget"
+
+    def test_read_budget_missing(self):
+        calls = []
+        stub = _StubRouter(calls)
+        def _missing(*a, **k):
+            raise KeyError("nope")
+        stub.search_engine.read_with_budget = _missing
+        fn = TestToolDispatch._fn("read")
+        out = fn("nope", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
+        assert "not found" in out
+
+    def test_export_schema_has_flavor(self):
+        mcp = create_mcp_server(db_path=":memory:")
+        export = next(t for t in mcp._tool_manager.list_tools() if t.name == "export_bundle")
+        props = export.parameters["properties"]
+        assert props["flavor"]["default"] == "okf"
+
+    def test_export_flavor_passes_through(self):
+        import json
+        calls = []
+
+        class _ExportMgr:
+            def export_bundle(self, **kwargs):
+                calls.append(kwargs)
+                return ["a"]
+
+        stub = _StubRouter(calls)
+        stub.export_mgr = _ExportMgr()
+        fn = TestToolDispatch._fn("export_bundle")
+        out = fn("/tmp/x", flavor="obsidian", ctx=TestToolDispatch._ctx(stub))
+        assert json.loads(out) == ["a"]
+        assert calls[0]["flavor"] == "obsidian"

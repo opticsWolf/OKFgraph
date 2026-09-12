@@ -57,6 +57,11 @@ dirs are cleaned automatically.
 
 - Bundle files are source of truth: edit markdown, re-import — never try
   to "edit the graph."
+- `[[Wikilinks]]` resolve by name (`id` → `aliases` → `title` → filename),
+  so vault notes survive file moves. Ambiguous names never resolve — keep
+  titles/`aliases` unique. `aliases: [...]` and `id:` frontmatter are
+  honoured (exported back losslessly; `export --flavor obsidian` writes
+  `[[Title]]` links with no index files).
 - `md_path` in pdf results is transient (temp dir); the content lives in
   the graph — verify with `search`, not by reading the path.
 - Verify every ingest: search for something only the new content contains.

@@ -16,10 +16,20 @@ from okfgraph.components.purge import PurgeManager
 from okfgraph.components.embedding import EmbeddingEngine
 from okfgraph.components.image_assets import ImageAssetManager
 from okfgraph.components.search import SearchEngine
-from okfgraph.components.import_ import ImportManager
+from okfgraph.components.import_ import ImportManager, parse_source_file
 from okfgraph.components.export import ExportManager
 from okfgraph.components.ingest import IngestManager
 from okfgraph.components.converters import BobineConverter, ConvertedDocument
+from okfgraph.components.ranking import ppr, seed_ranked_ppr, seeds
+from okfgraph.components.links import (
+    build_name_index,
+    extract_md_links,
+    extract_wikilinks,
+    normalize_path_link,
+    resolve_wiki,
+)
+from okfgraph.components.diff import DiffManager, DiffState, state_of_dir
+from okfgraph.components.doctor import DoctorManager
 
 __all__ = [
     "SchemaManager",
@@ -33,4 +43,17 @@ __all__ = [
     "IngestManager",
     "BobineConverter",
     "ConvertedDocument",
+    "parse_source_file",
+    "seeds",
+    "ppr",
+    "seed_ranked_ppr",
+    "build_name_index",
+    "extract_md_links",
+    "extract_wikilinks",
+    "normalize_path_link",
+    "resolve_wiki",
+    "DiffManager",
+    "DiffState",
+    "state_of_dir",
+    "DoctorManager",
 ]

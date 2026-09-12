@@ -4,6 +4,16 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [Unreleased]
+
+### Added
+- Rust unit tests for `okf-embed` (`cargo test`): device parsing, task-
+  prefix idempotence, the L2 → truncate → re-normalise Matryoshka math,
+  contract constants, and `open()` validation firing before any network
+  access. Pooling math extracted into `task_prefixed` / `l2_truncate`
+  helpers (behavior pinned by the Python parity suite — wheel rebuilt and
+  re-verified). CI runs `cargo test --locked` on Ubuntu.
+
 ## [0.2.4] — 2026-09-12
 
 ### Added

@@ -11,11 +11,12 @@
 //! semantics mirror bobine and the Python router: CUDA is opportunistic,
 //! never fatal.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
 use anyhow::{anyhow, Result};
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
 use ort::ep::{ExecutionProvider, CUDA};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -35,7 +36,34 @@ fn oe<T, E: std::fmt::Display>(r: Result<T, E>) -> Result<T> {
     r.map_err(|e| anyhow!("{e}"))
 }
 
-#[derive(Clone, Copy, PartialEq)]
+/// Task prefix (``Query:`` / ``Document:``) — idempotent: already-prefixed
+/// text passes through untouched (exact port of the ``_encode`` guard).
+fn task_prefixed<'a>(text: &'a str, task: &str) -> Cow<'a, str> {
+    if text.starts_with("Query:") || text.starts_with("Document:") {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(format!("{task}: {text}"))
+    }
+}
+
+/// L2-normalise at full width, truncate to ``dim``, re-normalise the
+/// truncated head (exact port of the ``_encode`` post-processing / Matryoshka
+/// protocol: normalise → truncate → re-normalise).
+fn l2_truncate(pooled: &Array1<f32>, dim: usize) -> Vec<f32> {
+    let norm = pooled.mapv(|x| x * x).sum().sqrt();
+    let normed = if norm > 0.0 { pooled.mapv(|x| x / norm) } else { pooled.clone() };
+    let mut v: Vec<f32> = normed.iter().take(dim).copied().collect();
+    v.resize(dim, 0.0);
+    let n2 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if n2 > 0.0 {
+        for x in &mut v {
+            *x /= n2;
+        }
+    }
+    v
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum DeviceReq {
     Auto,
     Cpu,
@@ -212,13 +240,8 @@ impl JinaV5 {
     /// Exact port of `EmbeddingEngine._encode` (prefix → last-token → L2 →
     /// truncate → re-normalise).
     pub fn encode_one(&self, text: &str, task: &str) -> Result<Vec<f32>> {
-        let prefixed;
-        let text = if text.starts_with("Query:") || text.starts_with("Document:") {
-            text
-        } else {
-            prefixed = format!("{task}: {text}");
-            &prefixed
-        };
+        let text = task_prefixed(text, task);
+        let text: &str = &text;
 
         let enc = self
             .tokenizer
@@ -265,20 +288,7 @@ impl JinaV5 {
         // Last-token pooling: index of final real token, clamped ≥ 0.
         let last_idx = (mask_sum as usize).saturating_sub(1);
         let pooled = hidden.slice(ndarray::s![0, last_idx, ..]).to_owned();
-
-        // L2 normalise full width, truncate, re-normalise (matches Python).
-        let norm = pooled.mapv(|x| x * x).sum().sqrt();
-        let normed =
-            if norm > 0.0 { pooled.mapv(|x| x / norm) } else { pooled };
-        let mut v: Vec<f32> = normed.iter().take(self.dim).copied().collect();
-        v.resize(self.dim, 0.0);
-        let n2 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if n2 > 0.0 {
-            for x in &mut v {
-                *x /= n2;
-            }
-        }
-        Ok(v)
+        Ok(l2_truncate(&pooled, self.dim))
     }
 
     /// Sequential by design: padded batching wastes attention compute on
@@ -387,4 +397,139 @@ fn okf_embed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NATIVE_DIM", NATIVE_DIM)?;
     m.add("MAX_LENGTH", MAX_LENGTH)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — pure logic only: no network (HF hub), no ORT dylib, no
+// tokenizer files. The real encode path is pinned by the Python parity
+// harness (tests/test_rust_backend.py + test_rust_e2e.py).
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    fn norm2(v: &[f32]) -> f32 {
+        v.iter().map(|x| x * x).sum::<f32>().sqrt()
+    }
+
+    // ---- device parsing ----------------------------------------------------
+
+    #[test]
+    fn device_parse_accepts_aliases_case_insensitively() {
+        assert_eq!(DeviceReq::parse("auto").unwrap(), DeviceReq::Auto);
+        assert_eq!(DeviceReq::parse("CPU").unwrap(), DeviceReq::Cpu);
+        assert_eq!(DeviceReq::parse("cuda").unwrap(), DeviceReq::Cuda);
+        assert_eq!(DeviceReq::parse("GPU").unwrap(), DeviceReq::Cuda);
+    }
+
+    #[test]
+    fn device_parse_rejects_unknown_with_message() {
+        let err = DeviceReq::parse("tpu").unwrap_err().to_string();
+        assert!(err.contains("device must be"), "{err}");
+        assert!(err.contains("'tpu'"), "{err}");
+    }
+
+    // ---- task prefixing ------------------------------------------------------
+
+    #[test]
+    fn task_prefix_added_once() {
+        assert_eq!(task_prefixed("hello", "Document"), "Document: hello");
+        assert_eq!(task_prefixed("hello", "Query"), "Query: hello");
+    }
+
+    #[test]
+    fn task_prefix_is_idempotent() {
+        assert_eq!(task_prefixed("Query: hello", "Document"), "Query: hello");
+        assert_eq!(task_prefixed("Document: x", "Query"), "Document: x");
+    }
+
+    #[test]
+    fn task_prefix_borrows_when_untouched() {
+        assert!(matches!(task_prefixed("Query: hi", "Document"), Cow::Borrowed(_)));
+        assert!(matches!(task_prefixed("hi", "Document"), Cow::Owned(_)));
+    }
+
+    // ---- L2 → truncate → re-normalise ---------------------------------------
+
+    #[test]
+    fn l2_truncate_unit_input_stays_unit() {
+        let v = Array1::from_vec(vec![0.6, 0.8]); // already unit length
+        let out = l2_truncate(&v, 2);
+        assert!((out[0] - 0.6).abs() < 1e-6);
+        assert!((out[1] - 0.8).abs() < 1e-6);
+        assert!((norm2(&out) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn l2_truncate_normalizes_then_truncates_then_renormalizes() {
+        // [3,0,4,0] → unit [0.6,0,0.8,0] → head [0.6,0] → re-norm [1,0].
+        // This ordering is the Jina v5 Matryoshka protocol — truncate-then-
+        // normalize would give a different (wrong) vector space.
+        let v = Array1::from_vec(vec![3.0, 0.0, 4.0, 0.0]);
+        let out = l2_truncate(&v, 2);
+        assert!((out[0] - 1.0).abs() < 1e-6, "{out:?}");
+        assert!(out[1].abs() < 1e-6);
+        assert!((norm2(&out) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn l2_truncate_zero_vector_stays_zero() {
+        let v = Array1::zeros(4);
+        let out = l2_truncate(&v, 2);
+        assert!(out.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn l2_truncate_pads_when_dim_exceeds_width() {
+        let v = Array1::from_vec(vec![1.0]);
+        let out = l2_truncate(&v, 2);
+        assert!((out[0] - 1.0).abs() < 1e-6);
+        assert_eq!(out[1], 0.0);
+    }
+
+    #[test]
+    fn l2_truncate_preserves_sign() {
+        let v = array![0.3, -0.4]; // norm 0.5 → unit [0.6, -0.8]
+        let out = l2_truncate(&v, 2);
+        assert!((out[0] - 0.6).abs() < 1e-6, "{out:?}");
+        assert!((out[1] + 0.8).abs() < 1e-6, "{out:?}");
+    }
+
+    // ---- contract constants --------------------------------------------------
+
+    #[test]
+    fn matryoshka_levels_sorted_and_bounded() {
+        assert!(ALLOWED_DIMS.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(*ALLOWED_DIMS.last().unwrap(), NATIVE_DIM);
+        assert!(ALLOWED_DIMS.contains(&512)); // default dim
+        assert_eq!(MAX_LENGTH, 8192);
+    }
+
+    // ---- open() validation fires before any network access -------------------
+
+    #[test]
+    fn open_rejects_out_of_range_dims_before_io() {
+        for bad in [0usize, 2048] {
+            let e = JinaV5::open(
+                "jinaai/jina-embeddings-v5-text-small-retrieval",
+                None, None, bad, DeviceReq::Cpu,
+            ).err().expect("open should fail").to_string();
+            assert!(e.contains("1..=1024"), "dim {bad}: {e}");
+        }
+        let e = JinaV5::open(
+            "jinaai/jina-embeddings-v5-text-small-retrieval",
+            None, None, 16, DeviceReq::Cpu,
+        ).err().expect("open should fail").to_string();
+        assert!(e.contains(">= 32"), "{e}");
+    }
+
+    #[test]
+    fn open_rejects_unqualified_model_id_before_io() {
+        let e = JinaV5::open("no-slash", None, None, 512, DeviceReq::Cpu)
+            .err().expect("open should fail")
+            .to_string();
+        assert!(e.contains("model_id must be 'owner/name'"), "{e}");
+    }
 }

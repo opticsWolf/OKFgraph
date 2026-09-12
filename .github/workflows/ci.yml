@@ -43,6 +43,28 @@ jobs:
           tests/test_roundup_cli.py::TestRoundupHelp
           -q
 
+  rust:
+    name: cargo test (okf-embed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/okf-embed
+
+      # pyo3 links libpython into the test binary (extension-module is only
+      # enabled for wheel builds via maturin).
+      - name: libpython
+        run: sudo apt-get update && sudo apt-get install -y libpython3-dev
+
+      - name: Rust unit tests (no network, no ORT dylib)
+        working-directory: rust/okf-embed
+        run: cargo test --locked
+
   build:
     name: build sdist + wheel
     runs-on: ubuntu-latest

@@ -1,39 +1,46 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "okfgraph"
 version = "0.1.0"
 description = "Ladybug-backed OKF knowledge graph with ONNX + Jina v5 embeddings"
-requires-python = ">=3.10"
-license = "Apache-2.1; MIT"
+requires-python = ">=3.11"
+license = "Apache-2.0 OR MIT"
 dependencies = [
-    "ladybug>=0.17",
+    # Pinned: ladybug index builds segfault on newer 0.20.x (verified 0.20.3).
+    "ladybug==0.20.3",
+    "okf-embed>=0.1",
     "pydantic>=2.0",
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",
-    "optimum[onnxruntime]>=1.20",
-    "transformers>=4.57",
-    "torch>=2.5",
-    "sentence-transformers>=3.0",
-    "Pillow>=10.0",
-    "mcp>=1.0",
+    "numpy>=1.26",
+    # Single pinned ORT binary shared by bobine + okf-embed (both load
+    # dynamically; resolve_ort_dylib() points ORT_DYLIB_PATH here).
+    # Verified against ort 2.0.0-rc.13 + bobine 0.5.9 — do not float.
+    "onnxruntime==1.29.0",
+    "mordant>=0.9",
+    "mcp>=2.0",
     "fasteners>=0.19",
-
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
 ]
-pdf-ingest = [
-    "pdf_oxide>=0.2.1",
-    "rapidocr==1.5.2",
-    "rapid_latex_ocr==1.0.13",
-    "rapid_layout==0.2.0",
-    "rapid_table==1.0.3",
+# PDF conversion (default BobineConverter; custom converters need none of this)
+pdf = [
+    "bobine>=0.5",
 ]
+# Multimodal image path (omni embeddings; text-only installs skip this)
+omni = [
+    "sentence-transformers>=3.0",
+    "Pillow>=10.0",
+]
+
+[tool.uv.sources]
+okf-embed = { path = "rust/okf-embed", editable = true }
 
 [project.scripts]
 okf = "okfgraph.cli:main"

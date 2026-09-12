@@ -517,7 +517,7 @@ def create_mcp_server(
         ] = True,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
-        """Convert a PDF to markdown and import into the knowledge graph. Uses the HybridConverter pipeline (pdf_oxide fast path + ONNX/Rapid heavy passes). The resulting markdown is linted with mordant before import — fixable formatting issues are auto-corrected. Returns the concept ID(s) so the content can be searched or traversed. For importing existing markdown files, use ingest_md instead."""
+        """Convert a PDF to markdown and import into the knowledge graph. Uses the configured DocumentConverter (bobine by default; never = fast path without ONNX). The resulting markdown is linted with mordant before import — fixable formatting issues are auto-corrected. Returns the concept ID(s) so the content can be searched or traversed. For importing existing markdown files, use ingest_md instead."""
         from okfgraph.components.converters import BobineConverter
         router = _get_router(ctx)
         result = router.ingest_mgr.ingest_pdf(

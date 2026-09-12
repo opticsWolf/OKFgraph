@@ -2,12 +2,25 @@
 
 Exact port of `EmbeddingEngine._encode`: task prefix → tokenize (8192) →
 ONNX forward → last-token pooling → L2 → Matryoshka truncate → re-normalise.
-Pinned against the optimum/numpy path by `tests/test_parity.py` (≤1e-5).
+Pinned against a numpy/transformers replication of that pipeline by
+`tests/test_parity.py` (max abs diff ≤ 1e-5, cosine ≥ 0.999999).
 
-## Build & install
+**The only embedding backend.** There is no Python fallback stack, no
+`embedding_backend` selector, and no optimum/transformers in the runtime
+path — a mid-run stack switch would silently mix vector spaces in one
+index, so the design is fail-fast instead.
 
-Needs a Rust toolchain (1.85+) and maturin. (`maturin develop` needs pip,
-which uv venvs lack — build the wheel and install it instead.)
+## Install
+
+Published to PyPI — `okfgraph` pulls it in automatically (platform wheels
+for Linux / Windows / macOS-arm64, Python 3.11–3.13):
+
+```bash
+uv sync          # editable path source, builds via maturin
+```
+
+From source (needs a Rust toolchain 1.85+ and maturin; `maturin develop`
+needs pip, which uv venvs lack — build the wheel and install it instead):
 
 ```bash
 cd rust/okf-embed
@@ -23,20 +36,14 @@ OS loader path. OKFgraph's `resolve_ort_dylib()` points the var at the
 pip-installed `onnxruntime` build when unset, so both bobine and okf-embed
 share **one** ORT binary — no version/CUDA drift between ingest and import.
 
-## Backend selection (`embedding_backend`)
-
-`auto` (default) → Rust when the wheel is importable, else optimum.
-`rust` → require the wheel (`RuntimeError` otherwise).
-`optimum` → require optimum + transformers (+ torch).
-
-## Fallback policy
+## Failure policy
 
 | Level | Behaviour |
 |---|---|
-| Install | `auto` resolves once at router construction; missing stacks raise a clear `RuntimeError`, never an `ImportError` from deep inside. |
+| Install | The wheel is a core dependency of OKFgraph; if it is missing or fails to import, the router raises a clear `RuntimeError` with the install hint — never an `ImportError` from deep inside, never a silent fallback. |
 | Device | CUDA is opportunistic: `auto`/`cuda` use it when the loaded ORT registers the EP, else warn (stderr) + CPU. `used_cuda` reports the outcome. Never fatal. |
-| Encode | **Fail fast.** No rust→optimum fallback at encode time — a mid-run stack switch would silently mix vector spaces in one index. |
-| Tokenizer | No transformers in rust mode, anywhere: internal tokenize + `count_tokens()` (== `tokenizer.encode(t, add_special_tokens=False)`, pinned by `test_rust_backend.py`) feed the context-window guard; `SearchEngine` only ever stored the tokenizer, never called it. |
+| Encode | **Fail fast.** No fallback at encode time — vectors must stay bit-comparable within one index. |
+| Tokenizer | No transformers in the runtime path, anywhere: internal tokenize + `count_tokens()` (== `tokenizer.encode(t, add_special_tokens=False)`) feed the context-window guard. |
 
 ## Contract notes
 
@@ -47,3 +54,22 @@ share **one** ORT binary — no version/CUDA drift between ingest and import.
   Matryoshka ladder). `MAX_LENGTH` (8192) is exposed for the window guard.
 - Batch encoding is sequential by design (padded batches waste attention
   compute on variable-length docs). GIL is released during encode.
+- `input_ids`/`attention_mask` feed as int64; pooling takes the last
+  attended token (`mask_sum - 1`, clamped ≥ 0).
+
+## Testing
+
+- **Rust unit tests** (13, pure — no network, no dylib, no tokenizer file):
+  device parsing, task-prefix idempotence, the L2 → truncate → re-normalise
+  math, contract constants, and `open()` validation firing before I/O.
+
+  ```bash
+  cd rust/okf-embed && cargo test --locked
+  ```
+
+  Runs in CI (Ubuntu, `--locked`) alongside OKFgraph's pytest jobs.
+- **Python parity** (`tests/test_parity.py`, marked `slow`): Rust output vs
+  a numpy/transformers replication across dims × tasks × texts, ≤ 1e-5.
+  Needs the `omni` extra (transformers rides in via sentence-transformers).
+- **Python e2e** (`tests/test_rust_backend.py`, `tests/test_rust_e2e.py`):
+  wheel import, count_tokens contract, encode against the real model.

@@ -49,7 +49,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 Requires Python ≥ 3.11.
 
 ```bash
-pip install "okfgraph[pdf,omni]"   # PyPI release (okf-embed ships platform wheels)
+pip install "okfgraph[pdf,omni]"   # PyPI (okf-embed ships platform wheels; published)
 ```
 
 Or from source with `uv` (also builds the `okf-embed` Rust wheel from
@@ -273,6 +273,7 @@ Key design decisions:
 ```bash
 uv run --project . pytest tests/ -q        # full suite (model loads; takes a while)
 uv run --project . pytest tests/test_ranking.py tests/test_mcp_server.py -q   # fast subset
+cd rust/okf-embed && cargo test --locked   # Rust unit tests (pure, no model)
 ```
 
 Golden fixtures under `tests/fixtures/` (`ppr_graph`, `diff_a`/`diff_b`,
@@ -297,7 +298,7 @@ okfgraph/
 │   ├── images.py          # IngestMode (text|optional|omni), planning helpers
 │   ├── security.py        # SSRF/domain guards for remote images
 │   ├── tools.py           # legacy tool definitions (superseded by mcp_server)
-│   └── components/        # ranking, links, search, import_, export, diff, doctor,
+│   └── components/        # ranking, links, search, lint, import_, export, diff, doctor,
 │                          # embedding, converters, image_assets, delta, purge, schema, ingest
 ├── rust/okf-embed/        # Jina v5 Rust loader (ort, CUDA-opportunistic) + Python wheel
 ├── skills/                # okfgraph-mcp, okfgraph-cli, okfgraph-ingest (harness-neutral source)

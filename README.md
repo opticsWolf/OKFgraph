@@ -1,4 +1,4 @@
-# OKFgraph 0.2.2
+# OKFgraph 0.2.3
 
 [![PyPI](https://img.shields.io/pypi/v/okfgraph)](https://pypi.org/project/okfgraph/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
@@ -129,7 +129,9 @@ router.close()
 
 Frontmatter that matters: `title`, `type`, `tags`, `aliases: [...]` (wikilink
 names), `id:` (stable identity, preserved as `uid`, written back on export),
-`reviewed: true` (immune to `doctor --fix`). Rule of thumb: thoughts > md >
+`reviewed: true` (immune to `doctor --fix`). Credentials in `resource:`
+URIs are stripped to `***@` at parse time (graphs imported before 0.2.3
+keep old values until re-import). Rule of thumb: thoughts > md >
 pdf — reasoning you already hold beats re-extracting it from files.
 
 ---

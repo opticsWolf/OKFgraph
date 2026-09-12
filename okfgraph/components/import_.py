@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -55,6 +56,28 @@ def is_concept_file(fp: Path) -> bool:
         and fp.name.lower() not in RESERVED_FILENAMES
     )
 
+
+_USERINFO_RE = re.compile(
+    r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<userinfo>[^/@]*@)(?P<rest>.*)$",
+)
+
+
+def sanitize_resource(uri: Any) -> Any:
+    """Strip credentials from a ``resource:`` URI (``u:p@host`` → ``***@host``).
+
+    Connection strings landing verbatim in frontmatter would persist secrets
+    into the graph, exports, and vaults. Only the authority section
+    (between ``://`` and the next ``/``) is rewritten, so bare paths,
+    ``mailto:``, anchor-only targets, and ``okf-asset://`` (UUID, no
+    userinfo) pass through untouched. Non-strings pass through as-is.
+    """
+    if not isinstance(uri, str):
+        return uri
+    m = _USERINFO_RE.match(uri.strip())
+    if not m:
+        return uri
+    return f"{m.group('scheme')}***@{m.group('rest')}"
+
 def parse_source_file(
     file_path: Path, root: Path
 ) -> Tuple["ConceptModel", str, str]:
@@ -93,6 +116,11 @@ def parse_source_file(
     fm_id = fm.pop("id", None)
     if fm_id is not None and str(fm_id) != concept_id:
         fm["uid"] = str(fm_id)
+
+    # Hygiene: never persist credentials hiding in ``resource:`` URIs
+    # (connection strings would otherwise land in graph → export → vault).
+    if fm.get("resource") is not None:
+        fm["resource"] = sanitize_resource(fm["resource"])
 
     concept = ConceptModel.model_validate({**fm, "id": concept_id, "body": body})
     return concept, body, concept_id

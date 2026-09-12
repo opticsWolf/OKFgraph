@@ -1,0 +1,117 @@
+name: release
+
+# Publish okfgraph 0.2.0+ (and its okf-embed Rust wheel) to PyPI.
+#
+# Flow: create a GitHub Release whose tag is `v<pyproject version>`
+# (e.g. v0.2.0). This workflow then:
+#   1. builds okf-embed wheels (maturin, linux/macOS/Windows x py3.11-3.13),
+#   2. publishes them to PyPI,
+#   3. builds the okfgraph sdist+wheel and publishes it.
+#
+# One-time setup (PyPI, owner action — no tokens in GitHub):
+#   - Register both projects (okf-embed, okfgraph) on PyPI, then for EACH
+#     add a trusted publisher: this repo, workflow file `release.yml`
+#     (PyPI project settings → Publishing → Add a new publisher).
+#   - No PYPI_API_TOKEN secret is used; auth is OIDC (id-token: write).
+#
+# Order matters: the okfgraph wheel Requires-Dist okf-embed>=0.1, so the
+# Rust wheels must be live before anyone pip-installs okfgraph.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: tag matches pyproject version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare release tag with okfgraph version
+        run: >
+          python -c "
+          import os, tomllib
+          tag = os.environ['TAG']
+          want = 'v' + tomllib.load(open('pyproject.toml','rb'))['project']['version']
+          assert tag == want, f'release tag {tag} != pyproject {want}'
+          print('version ok:', tag)
+          "
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+
+  wheels-okf-embed:
+    name: okf-embed wheels (${{ matrix.os }}, py${{ matrix.python }})
+    needs: guard
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14, macos-13]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels (maturin)
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: rust/okf-embed
+          command: build
+          args: --release --out dist --interpreter python${{ matrix.python }}
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: okf-embed-${{ matrix.os }}-py${{ matrix.python }}
+          path: rust/okf-embed/dist/*.whl
+          if-no-files-found: error
+
+  publish-okf-embed:
+    name: publish okf-embed to PyPI
+    needs: wheels-okf-embed
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: sdist (maturin, no compiler needed for the archive itself)
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: rust/okf-embed
+          command: sdist
+          args: --out dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: okf-embed-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  publish-okfgraph:
+    name: publish okfgraph to PyPI
+    needs: publish-okf-embed
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

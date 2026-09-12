@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [dev_rework, main]
+  pull_request:
+    branches: [dev_rework, main]
+
+env:
+  UV_FROZEN: "1"
+
+jobs:
+  fast:
+    name: fast tests (no model download)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain (builds the okf-embed path dependency)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/okf-embed
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync (frozen lockfile, dev extra)
+        run: uv sync --frozen --extra dev
+
+      - name: Pure + harness tests (no ONNX load, no downloads)
+        run: >
+          uv run --frozen pytest
+          tests/test_ranking.py
+          tests/test_mcp_server.py
+          tests/test_diff.py::TestDiffPure
+          tests/test_doctor.py::TestDoctorPure
+          tests/test_obsidian.py::TestWikiLinksPure
+          tests/test_roundup_cli.py::TestRoundupHelp
+          -q
+
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build
+        run: uv build
+
+      - name: Check metadata
+        run: uvx twine check dist/*
+
+      - name: Requires-Dist sanity (okf-embed must be a plain PyPI pin)
+        run: >
+          uv run --frozen --no-sync python -c "
+          import zipfile, glob
+          whl = sorted(glob.glob('dist/*.whl'))[-1]
+          meta = zipfile.ZipFile(whl).read(
+              next(n for n in zipfile.ZipFile(whl).namelist()
+                   if n.endswith('METADATA'))).decode()
+          assert 'okf-embed>=0.1' in meta, meta
+          assert 'path' not in meta and 'file:' not in meta, meta
+          print('wheel metadata PyPI-clean')
+          "

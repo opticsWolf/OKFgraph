@@ -46,8 +46,14 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
 ## Installation
 
-Requires Python ≥ 3.11. `uv` is the supported installer (it also builds the
-`okf-embed` Rust wheel from `rust/okf-embed` via `[tool.uv.sources]`).
+Requires Python ≥ 3.11.
+
+```bash
+pip install "okfgraph[pdf,omni]"   # PyPI release (okf-embed ships platform wheels)
+```
+
+Or from source with `uv` (also builds the `okf-embed` Rust wheel from
+`rust/okf-embed` via `[tool.uv.sources]`):
 
 ```bash
 git clone <repo> && cd OKFgraph

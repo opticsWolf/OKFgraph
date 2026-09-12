@@ -81,28 +81,79 @@ def _teardown_logging() -> None:
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def _add_global(parser):
-    """Add --db / --bundle / --dim / --cache-dir / --device to any subparser."""
-    parser.add_argument("--db", default=None, help="Database path (default: okfgraph.db, or from okfgraph.toml)")
-    parser.add_argument("--bundle", default=None, help="Bundle root directory (default: ., or from okfgraph.toml)")
-    parser.add_argument("--dim", type=int, default=None, help="Embedding dimension (Matryoshka; default: 512, or from okfgraph.toml)")
-    parser.add_argument("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface, or from okfgraph.toml)")
-    parser.add_argument("--device", default=None, choices=["cpu", "cuda"], help="Inference device: cpu or cuda (default: cpu, or from okfgraph.toml)")
-    parser.add_argument("--omni-model-id", default=None, help="Multimodal model ID for image embeddings (default from okfgraph.toml)")
-    parser.add_argument("--chunk-size", type=int, default=None, help="Chunk size in words for overlap (default: 512, or from okfgraph.toml)")
-    parser.add_argument("--chunk-overlap", type=int, default=None, help="Overlap in words between chunks (default: 40, or from okfgraph.toml)")
-    parser.add_argument("--no-chunking", action="store_true", help="Disable chunking during ingestion")
-    parser.add_argument("--wal-mode", action="store_true", help="Enable SQLite WAL mode for concurrent reads (Gap #7a)")
-    parser.add_argument("--allow-remote-images", action="store_true", help="Allow fetching remote images (SSRF risk — use with caution)")
-    parser.add_argument("--allowed-image-domains", default=None, help="Comma-separated list of allowed domains for remote images (Gap #9a)")
+class _SlimHelpFormatter(argparse.HelpFormatter):
+    """Subcommand help without the repeated global flags.
+
+    Global options (connection, models, logging) are identical on every
+    command, so printing them 15 times costs agents ~4k tokens to learn
+    nothing. They are documented once in top-level ``okf --help`` and
+    remain fully functional on every subcommand.
+    """
+
+    def add_arguments(self, actions):
+        super().add_arguments(
+            [a for a in actions if not getattr(a, "_okf_global", False)]
+        )
+
+    def add_usage(self, usage, actions, groups=(), prefix=None):
+        super().add_usage(
+            usage,
+            [a for a in actions if not getattr(a, "_okf_global", False)],
+            groups,
+            prefix,
+        )
 
 
-def _add_logging_flags(parser):
+class _SubParser(argparse.ArgumentParser):
+    """Subcommand parser with slim help + pointer to global options."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("formatter_class", _SlimHelpFormatter)
+        kwargs.setdefault(
+            "epilog",
+            "Global options hidden; see 'okf --help' (or okfgraph.toml).",
+        )
+        super().__init__(*args, **kwargs)
+
+
+def _add_global(parser, mark=True):
+    """Add --db / --bundle / --dim / --cache-dir / --device to any subparser.
+
+    With mark=True (subcommands) the flags are tagged so _SlimHelpFormatter
+    hides them from per-command help; they stay functional and are shown
+    once in top-level help (mark=False there).
+    """
+    def _add(*a, **k):
+        act = parser.add_argument(*a, **k)
+        if mark:
+            act._okf_global = True  # noqa: SLF001 — our own marker
+        return act
+
+    _add("--db", default=None, help="Database path (default: okfgraph.db, or from okfgraph.toml)")
+    _add("--bundle", default=None, help="Bundle root directory (default: ., or from okfgraph.toml)")
+    _add("--dim", type=int, default=None, help="Embedding dimension (Matryoshka; default: 512, or from okfgraph.toml)")
+    _add("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface, or from okfgraph.toml)")
+    _add("--device", default=None, choices=["cpu", "cuda"], help="Inference device: cpu or cuda (default: cpu, or from okfgraph.toml)")
+    _add("--omni-model-id", default=None, help="Multimodal model ID for image embeddings (default from okfgraph.toml)")
+    _add("--chunk-size", type=int, default=None, help="Chunk size in words for overlap (default: 512, or from okfgraph.toml)")
+    _add("--chunk-overlap", type=int, default=None, help="Overlap in words between chunks (default: 40, or from okfgraph.toml)")
+    _add("--no-chunking", action="store_true", help="Disable chunking during ingestion")
+    _add("--wal-mode", action="store_true", help="Enable SQLite WAL mode for concurrent reads (Gap #7a)")
+    _add("--allow-remote-images", action="store_true", help="Allow fetching remote images (SSRF risk — use with caution)")
+    _add("--allowed-image-domains", default=None, help="Comma-separated list of allowed domains for remote images (Gap #9a)")
+
+
+def _add_logging_flags(parser, mark=True):
     """Add --verbose / --quiet / --log-file / --profile to a subparser."""
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
-    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress all logging except errors")
-    parser.add_argument("--log-file", default="", help="Write logs to file (with 5MB rotation)")
-    parser.add_argument("--profile", action="store_true", help="Enable cProfile for the current invocation (outputs to stdout)")
+    for args, kwargs in [
+        (("--verbose", "-v"), {"action": "store_true", "help": "Enable debug logging"}),
+        (("--quiet", "-q"), {"action": "store_true", "help": "Suppress all logging except errors"}),
+        (("--log-file",), {"default": "", "help": "Write logs to file (with 5MB rotation)"}),
+        (("--profile",), {"action": "store_true", "help": "Enable cProfile for the current invocation (outputs to stdout)"}),
+    ]:
+        act = parser.add_argument(*args, **kwargs)
+        if mark:
+            act._okf_global = True  # noqa: SLF001 — our own marker
 
 
 # Routers opened during a CLI invocation, closed (checkpointed) on exit so a
@@ -874,12 +925,31 @@ Commands:
 
 # ── argument parser ────────────────────────────────────────────────────────
 
+def _global_options_epilog() -> str:
+    """Render the global flags once for top-level ``okf --help``.
+
+    Single source of truth: builds a throwaway parser with the same helpers
+    (unmarked, so nothing is hidden) and reuses its options section.
+    """
+    probe = argparse.ArgumentParser(prog="okf")
+    _add_global(probe, mark=False)
+    _add_logging_flags(probe, mark=False)
+    text = probe.format_help()
+    try:
+        body = text.split("options:", 1)[1]
+    except IndexError:  # pragma: no cover - Python <3.11 wording
+        body = text.split("optional arguments:", 1)[1]
+    return "Global options (every command; may also come from okfgraph.toml):" + body
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="okf",
         description="OKF Knowledge Graph CLI — LadybugDB + Jina v5 embeddings",
+        epilog=_global_options_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub = parser.add_subparsers(dest="command", help="Command to run")
+    sub = parser.add_subparsers(dest="command", help="Command to run", parser_class=_SubParser)
 
     # init
     p = sub.add_parser("init", help="Initialize database and schema")

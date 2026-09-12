@@ -18,6 +18,8 @@ class TestCLIHelp:
         )
         assert result.returncode == 0
         assert "OKF Knowledge Graph CLI" in result.stdout
+        # Global flags documented once, top-level (hidden in subcommand helps)
+        assert "--db" in result.stdout
 
     def test_init_help(self):
         result = subprocess.run(
@@ -25,7 +27,9 @@ class TestCLIHelp:
             capture_output=True, text=True,
         )
         assert result.returncode == 0
-        assert "--db" in result.stdout
+        # Globals hidden per-command; pointer present instead
+        assert "--db" not in result.stdout
+        assert "okf --help" in result.stdout
 
     def test_import_help(self):
         result = subprocess.run(
@@ -84,7 +88,7 @@ class TestCLIHelp:
             capture_output=True, text=True,
         )
         assert result.returncode == 0
-        assert "--db" in result.stdout
+        assert "okf --help" in result.stdout
 
     def test_model_info_help(self):
         result = subprocess.run(
@@ -92,7 +96,6 @@ class TestCLIHelp:
             capture_output=True, text=True,
         )
         assert result.returncode == 0
-        assert "--cache-dir" in result.stdout
         assert "--model-id" in result.stdout
 
 
@@ -175,9 +178,9 @@ class TestCLIFullWorkflow:
     def test_broken_links_help(self):
         result = self._run(["broken-links", "--help"])
         assert result.returncode == 0
-        assert "--db" in result.stdout
+        assert "okf --help" in result.stdout
 
     def test_repair_links_help(self):
         result = self._run(["repair-links", "--help"])
         assert result.returncode == 0
-        assert "--db" in result.stdout
+        assert "okf --help" in result.stdout

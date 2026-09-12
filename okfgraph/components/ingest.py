@@ -20,7 +20,7 @@ import mordant
 import numpy as np
 import yaml
 import frontmatter
-from okfgraph.models import ChunkModel, ConceptModel
+from okfgraph.models import ChunkModel, ConceptModel, normalize_tags
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class IngestManager:
         cid = concept_id or md_path.stem.replace(" ", "_").lower()
         t = title or fm.get("title") or md_path.stem
         desc = description or fm.get("description") or fm.get("summary") or ""
-        file_tags = fm.get("tags", [])
+        file_tags = normalize_tags(fm.get("tags", []))
         all_tags = list(set((tags or []) + file_tags))
 
         # Build ConceptModel

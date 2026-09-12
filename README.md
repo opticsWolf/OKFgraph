@@ -1,4 +1,4 @@
-# OKFgraph 0.2.0
+# OKFgraph 0.2.1
 
 [![PyPI](https://img.shields.io/pypi/v/okfgraph)](https://pypi.org/project/okfgraph/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)

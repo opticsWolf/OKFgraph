@@ -275,7 +275,7 @@ class _StubRouter:
 
     def get_by_id(self, concept_id):
         self.calls.append(("get_by_id", concept_id))
-        return None if concept_id == "missing" else {"id": concept_id}
+        return None if concept_id == "missing" else {"id": concept_id, "type": "note"}
 
     def list_directory(self, directory_id):
         self.calls.append(("list_directory", directory_id))

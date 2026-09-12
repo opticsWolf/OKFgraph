@@ -513,9 +513,8 @@ def _read(args):
     if not concept:
         print(f"Concept '{cid}' not found.")
         return
-    data = concept.model_dump()
+    data = concept.public_dict()
     body = data.pop("body", "")
-    data.pop("embedding", None)
     print(json.dumps(data, indent=2, default=str))
     if body:
         print(f"\n--- BODY ---\n{body}")
@@ -911,9 +910,8 @@ Commands:
             else:
                 concept = router.get_by_id(cid)
                 if concept:
-                    data = concept.model_dump()
+                    data = concept.public_dict()
                     body = data.pop("body", "")
-                    data.pop("embedding", None)
                     print(json.dumps(data, indent=2, default=str))
                     if body:
                         print(f"\n--- BODY ---\n{body}")

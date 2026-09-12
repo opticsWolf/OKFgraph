@@ -29,6 +29,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from okfgraph.models import ConceptModel
 from okfgraph.router import OKFRouter
 
 logger = logging.getLogger(__name__)
@@ -255,10 +256,10 @@ def create_mcp_server(
         concept = router.get_by_id(concept_id)
         if concept is None:
             return f"Concept not found: {concept_id}"
-        return json.dumps(
-            concept.model_dump() if hasattr(concept, "model_dump") else dict(concept),
-            default=str, indent=2,
-        )
+        # Coercion boundary: validate whatever arrives (model or plain
+        # mapping) so the serialize surface below is always a ConceptModel.
+        concept = ConceptModel.model_validate(concept)
+        return json.dumps(concept.public_dict(), default=str, indent=2)
 
     @mcp.tool(annotations=_RO)
     def traverse(

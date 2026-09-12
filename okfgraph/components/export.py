@@ -11,7 +11,6 @@ import re
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Set
 from urllib.parse import urlparse
@@ -259,15 +258,7 @@ class ExportManager:
         Either way the stored ``uid`` (frontmatter ``id:`` on import) is
         written back as ``id:`` so re-import is lossless.
         """
-        data = concept.model_dump()
-        body = data.pop("body", "")
-        data.pop("id", None)
-        data.pop("embedding", None)
-        if "uid" in data:
-            data["id"] = data.pop("uid")
-
-        if isinstance(data.get("timestamp"), datetime):
-            data["timestamp"] = data["timestamp"].isoformat()
+        data, body = concept.export_frontmatter()
 
         yaml_str = yaml.dump(
             data, default_flow_style=False, allow_unicode=True, sort_keys=False

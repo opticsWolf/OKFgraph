@@ -59,6 +59,10 @@ with absolute paths. No auth, no headers, no sidecars.
   routing table as shell commands, plus cold-boot batching conventions.
   Install for shell-only environments. The two descriptions cross-reference
   so only the applicable one triggers.
+- `skills/okfgraph-ingest/SKILL.md` (`okfgraph-ingest`) — the feeding skill:
+  what to store, kind selection, converter modes, topic discipline.
+  Install alongside either of the above when the agent should persist
+  knowledge, not just read it.
 
 ## CLI fallback
 

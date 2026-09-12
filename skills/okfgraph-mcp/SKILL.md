@@ -52,3 +52,4 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
   in the shared vector space.
 - If a tool errors with "Search is unavailable", the vector/FTS
   extensions failed to load — ingestion and graph reads still work.
+- To persist knowledge (not just find it), follow the okfgraph-ingest skill.

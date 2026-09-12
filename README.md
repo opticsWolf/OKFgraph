@@ -1,5 +1,11 @@
 # OKFgraph 0.2.0
 
+[![PyPI](https://img.shields.io/pypi/v/okfgraph)](https://pypi.org/project/okfgraph/)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-green)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-%E2%89%A52.0-purple)](https://modelcontextprotocol.io/)
+[![Ladybug](https://img.shields.io/badge/ladybug-0.20.3-orange)](https://pypi.org/project/ladybug/)
+
 **Ladybug-backed knowledge graph with Rust-driven Jina v5 embeddings, model-free
 graph retrieval, and agent-first MCP + CLI surfaces.**
 

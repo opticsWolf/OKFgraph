@@ -268,6 +268,43 @@ class TestNestedDeletion:
         assert "root" in _concepts(router.conn)
 
 
+class TestReimportChunks:
+    """0.2.20 — reimport must replace chunks, not orphan them.
+
+    Concept replacement drops PART_OF edges first, so the old edge-joined
+    chunk delete found nothing and the re-CREATE died on duplicate primary
+    keys (22 stale-chunk docs on the family-kb refresh, silently — chunk
+    errors are non-fatal). Deletion now matches parent_doc_id."""
+
+    def _chunks(self, router, cid):
+        return sorted(
+            r["t"] for r in router.conn.execute(
+                "MATCH (ch:Chunk {parent_doc_id: $id}) RETURN ch.chunk_text AS t",
+                {"id": cid},
+            ).rows_as_dict().get_all()
+        )
+
+    def test_reimport_replaces_chunks(self, env):
+        tmp, router = env["tmp"], env["router"]
+        _write_okf(tmp, "doc.md", "Doc", "original body content words about testing chunk replacement here.")
+        assert router.import_mgr.import_bundle() == ["doc"]
+        before = self._chunks(router, "doc")
+        assert len(before) > 0
+        assert any("original" in t for t in before)
+
+        _write_okf(tmp, "doc.md", "Doc", "REWRITTEN body content words about testing chunk replacement here.")
+        assert router.import_mgr.import_bundle() == ["doc"]
+        after = self._chunks(router, "doc")
+        assert len(after) > 0
+        assert not any("original" in t for t in after)
+        assert any("REWRITTEN" in t for t in after)
+        # No orphans from the first import lingering under another id.
+        total = router.conn.execute(
+            "MATCH (ch:Chunk) RETURN count(ch) AS n"
+        ).rows_as_dict().get_all()[0]["n"]
+        assert total == len(after)
+
+
 class TestWedgeRepair:
     """doctor reports orphan hashes and --fix clears them."""
 

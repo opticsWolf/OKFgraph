@@ -689,9 +689,13 @@ class ImportManager:
         body = parsed_item["body"]
         cid = parsed_item["cid"]
 
-        # Delete old chunks for this document (re-import)
+        # Delete old chunks for this document (re-import). Match by
+        # parent_doc_id, NOT by PART_OF edge: concept replacement (Phase 3
+        # DETACH DELETE) orphans chunks by dropping edges first, so an
+        # edge-joined delete finds nothing and the re-CREATE dies on
+        # duplicate primary keys (0.2.20: 22 stale-chunk docs on reimport).
         self.conn.execute(
-            "MATCH (c:Concept {id: $id})-[:PART_OF]->(ch:Chunk) DETACH DELETE ch",
+            "MATCH (ch:Chunk {parent_doc_id: $id}) DETACH DELETE ch",
             {"id": cid},
         )
 
@@ -802,9 +806,11 @@ class ImportManager:
         # Phase 3.5: Chunk
         chunk_count = 0
         if self.enable_chunking:
-            # Delete old chunks for this document (re-import)
+            # Delete old chunks for this document (re-import) — by
+            # parent_doc_id, not PART_OF edge (see _import_chunks_for_concept:
+            # concept replacement orphans chunks first).
             self.conn.execute(
-                "MATCH (c:Concept {id: $id})-[:PART_OF]->(ch:Chunk) DETACH DELETE ch",
+                "MATCH (ch:Chunk {parent_doc_id: $id}) DETACH DELETE ch",
                 {"id": concept.id},
             )
 
@@ -1308,9 +1314,11 @@ class ImportManager:
 
         # 2.5. Chunk the body (NEW)
         if self.enable_chunking:
-            # Delete old chunks for this document (re-import)
+            # Delete old chunks for this document (re-import) — by
+            # parent_doc_id, not PART_OF edge (see _import_chunks_for_concept:
+            # concept replacement orphans chunks first).
             self.conn.execute(
-                "MATCH (c:Concept {id: $id})-[:PART_OF]->(ch:Chunk) DETACH DELETE ch",
+                "MATCH (ch:Chunk {parent_doc_id: $id}) DETACH DELETE ch",
                 {"id": concept_id},
             )
 

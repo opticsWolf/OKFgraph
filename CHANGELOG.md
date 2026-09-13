@@ -4,6 +4,15 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.2.20] — 2026-09-13
+
+### Fixed
+- Stale chunks on reimport: concept replacement drops PART_OF edges
+  first, so the edge-joined chunk delete found nothing and the re-CREATE
+  died on duplicate primary keys (22 docs kept stale chunk vectors on
+  the family-kb refresh — silently, chunk errors are non-fatal).
+  Chunk deletion now matches `parent_doc_id` at all three sites.
+
 ## [0.2.19] — 2026-09-13
 
 ### Fixed

@@ -4,46 +4,12 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [Unreleased]
+## [0.2.11] — 2026-09-13
 
-### Fixed
-- CUDA availability probing stays on the EP availability check: a
-  session-builder registration probe reported CUDA on CPU-only runtimes
-  (ort 2.0.0-rc.13 returns `Ok` from `with_execution_providers` even when
-  the loaded library has no CUDA EP). The clone-and-fallback provider
-  helper is retained for genuine registration failures.
-
-### Added
-- Explicit local model files: `JinaV5.open_files(onnx_path, tokenizer_path)`
-  and `JinaTokenizer.open_files(tokenizer_path)` load with zero network
-  access (air-gapped / reproducible installs). `OKFRouter(model_path=...,
-  tokenizer_path=...)` threads them through the lazy factories; the pair
-  must be given together, missing files fail fast at construction, and an
-  external-data sidecar must sit next to the ONNX file. Vectors are
-  identical to HF acquisition (pinned by test).
-
-### Changed
-- Lazy text-encoder initialization: `OKFRouter` construction no longer
-  downloads the model or builds the ONNX session. The `okf-embed` wheel
-  import is still validated eagerly, and an invalid `device` still fails at
-  construction — but `JinaV5.open` waits for the first real encode, so
-  model-free commands (PPR search, budgeted reads, diff, doctor) stay cold.
-  The CUDA fallback warning now fires on first encode instead of at
-  construction. Open failures are cached and re-raised (fail fast once).
-- New `JinaTokenizer` handle in `okf-embed`: exact token counts without the
-  ONNX session, so budgeted reads and the context-window guard never warm
-  the session. Counts are identical to the session tokenizer path.
-
-### Changed
-- `okf-embed`: accelerator fallback now uses session-builder registration
-  probing (bobine pattern) instead of a static CUDA availability flag;
-  unknown provider names warn and are skipped, and EP registration features
-  (CUDA/ROCm/DirectML/OpenVINO/CoreML/TensorRT/half) are enabled with CPU
-  fallback. The public device surface is unchanged (`auto`/`cpu`/`cuda`)
-  and embedding numerics are untouched.
-- `okf-embed`: explicit optional `extension-module` Cargo feature — pure
-  Rust crate by default, Python extension only for wheel builds (maturin
-  enables the feature; `cargo test` stays link-clean).
+ONNX-runtime alignment with bobine (`docs/plan-onnx-alignment.md`): robust
+cross-platform runtime discovery, graceful accelerator fallback, lazy
+session init, and air-gapped model loading. Ships with `okf-embed 0.2.0`
+wheels (Rust changes in every phase below).
 
 ### Added
 - Cross-platform ONNX Runtime discovery: explicit `ORT_DYLIB_PATH` still
@@ -54,6 +20,44 @@ commit history, newest first.
   warming and Windows DLL-directory setup are best-effort and never fatal.
   The resolved runtime is exposed as `OKFRouter.ort_dylib` /
   `EmbeddingEngine.ort_dylib` before the native module is imported.
+- Explicit local model files: `JinaV5.open_files(onnx_path, tokenizer_path)`
+  and `JinaTokenizer.open_files(tokenizer_path)` load with zero network
+  access (air-gapped / reproducible installs). `OKFRouter(model_path=...,
+  tokenizer_path=...)` threads them through the lazy factories; the pair
+  must be given together, missing files fail fast at construction, and an
+  external-data sidecar must sit next to the ONNX file. Vectors are
+  identical to HF acquisition (pinned by test).
+- New `JinaTokenizer` handle in `okf-embed`: exact token counts without the
+  ONNX session, so budgeted reads and the context-window guard never warm
+  the session. Counts are identical to the session tokenizer path.
+
+### Changed
+- Lazy text-encoder initialization: `OKFRouter` construction no longer
+  downloads the model or builds the ONNX session. The `okf-embed` wheel
+  import is still validated eagerly, and an invalid `device` still fails at
+  construction — but `JinaV5.open` waits for the first real encode, so
+  model-free commands (PPR search, budgeted reads, diff, doctor) stay cold.
+  The CUDA fallback warning now fires on first encode instead of at
+  construction. Open failures are cached and re-raised (fail fast once).
+- `okf-embed`: clone-and-fallback provider application (bobine pattern) —
+  unknown provider names warn and are skipped, registration failure
+  degrades to CPU; EP registration features
+  (CUDA/ROCm/DirectML/OpenVINO/CoreML/TensorRT/half) enabled. The public
+  device surface is unchanged (`auto`/`cpu`/`cuda`) and embedding numerics
+  are untouched.
+- `okf-embed`: explicit optional `extension-module` Cargo feature — pure
+  Rust crate by default, Python extension only for wheel builds (maturin
+  enables the feature; `cargo test` stays link-clean).
+- Session/threading policy measured and kept (Level3, intra=phys/2,
+  inter=1): fastest of the tested configs; results in
+  `rust/okf-embed/README.md`.
+
+### Fixed
+- CUDA availability probing stays on the EP availability check: a
+  session-builder registration probe reported CUDA on CPU-only runtimes
+  (ort 2.0.0-rc.13 returns `Ok` from `with_execution_providers` even when
+  the loaded library has no CUDA EP). The clone-and-fallback provider
+  helper is retained for genuine registration failures.
 
 ## [0.2.7] — 2026-09-13
 

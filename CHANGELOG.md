@@ -4,6 +4,17 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.2.19] — 2026-09-13
+
+### Fixed
+- Delta false-deletion on nested bundles: DirHash `files` are recursive
+  (rglob) but the per-file deletion check compared them against direct
+  children, tombstoning every nested file whenever an ancestor dir
+  changed (24 false tombstones on the family-kb refresh — one
+  `--purge-deleted` away from purging 24 live concepts). The check now
+  re-walks recursively so both sides are dir-relative recursive
+  listings. No format change, no re-baseline needed.
+
 ## [0.2.18] — 2026-09-13
 
 ### Fixed

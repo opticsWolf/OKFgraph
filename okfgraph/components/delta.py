@@ -185,7 +185,12 @@ class DeltaDetector:
 
         # Per-file deletions inside surviving but changed directories:
         # a file deleted while siblings remain never empties the dir, so
-        # the directory-granular check above cannot see it.
+        # the directory-granular check above cannot see it. NOTE: stored
+        # `files` are RECURSIVE (rglob) while dir_files holds direct
+        # children only — comparing against direct children flags every
+        # nested file as deleted (0.2.19: 24 false tombstones on a nested
+        # bundle, one --purge away from data loss). Re-walk recursively so
+        # both sides are dir-relative recursive listings.
         for dir_rel in sorted(changed_dirs):
             dir_path = self.bundle_root / dir_rel
             if not dir_path.exists():
@@ -194,7 +199,11 @@ class DeltaDetector:
             stored_files = set(stored_data.get("files", []) if stored_data else [])
             if not stored_files:
                 continue
-            current_names = {str(fp.relative_to(dir_path)) for fp in dir_files[dir_rel]}
+            current_names = {
+                str(fp.relative_to(dir_path))
+                for fp in sorted(dir_path.rglob("*"))
+                if is_concept_file(fp)
+            }
             for rel_file in sorted(stored_files - current_names):
                 deleted_paths.append(str(Path(dir_rel) / rel_file))
 

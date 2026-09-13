@@ -233,6 +233,41 @@ class TestWorkDirIsolation:
         assert router.import_mgr.import_bundle() == []
 
 
+class TestNestedDeletion:
+    """0.2.19 — DirHash.files are recursive (rglob): the per-file deletion
+    check must compare recursive-to-recursive. Comparing against direct
+    children flagged every nested file as deleted whenever an ancestor
+    dir changed (24 false tombstones on family-kb, one --purge away from
+    data loss)."""
+
+    def test_nested_change_no_false_tombstones(self, env):
+        tmp, router = env["tmp"], env["router"]
+        _write_okf(tmp, "root.md", "Root", "root content words about the top level and its long overview.")
+        _write_okf(tmp, "sub/a.md", "A", "alpha content words about the first letter and its ancient history.")
+        _write_okf(tmp, "sub/b.md", "B", "beta content words about the second letter and its classical usage.")
+        assert sorted(router.import_mgr.import_bundle()) == ["root", "sub/a", "sub/b"]
+
+        # Touch one nested file: ancestor hashes change too (recursive),
+        # but nothing is deleted — tombstones must stay empty.
+        _write_okf(tmp, "sub/a.md", "A", "alpha content REWRITTEN words about the first letter, changed.")
+        assert sorted(router.import_mgr.import_bundle()) == ["root", "sub/a", "sub/b"]
+        assert _tombstones(router.conn) == set()
+        assert _concepts(router.conn) == {"root", "sub/a", "sub/b"}
+
+    def test_nested_delete_exact_tombstone(self, env):
+        tmp, router = env["tmp"], env["router"]
+        _write_okf(tmp, "root.md", "Root", "root content words about the top level and its long overview.")
+        _write_okf(tmp, "sub/a.md", "A", "alpha content words about the first letter and its ancient history.")
+        _write_okf(tmp, "sub/b.md", "B", "beta content words about the second letter and its classical usage.")
+        assert sorted(router.import_mgr.import_bundle()) == ["root", "sub/a", "sub/b"]
+
+        (Path(tmp) / "sub" / "b.md").unlink()
+        gone = _native("sub", "b.md")
+        assert sorted(router.import_mgr.import_bundle(purge_deleted=False)) == ["root", "sub/a"]
+        assert _tombstones(router.conn) == {gone}
+        assert "root" in _concepts(router.conn)
+
+
 class TestWedgeRepair:
     """doctor reports orphan hashes and --fix clears them."""
 

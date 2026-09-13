@@ -62,6 +62,44 @@ resolves it relative to the model path, same as the HF cache layout.
 missing files raise `FileNotFoundError` at construction). Same bytes in →
 same vectors out (test-pinned against HF acquisition).
 
+## Session/threading policy (measured, Phase 6)
+
+Tuning is `Level3`, intra = physical-cores/2, inter = 1 — kept because it
+measured fastest, not because it was inherited. Reference box: Windows,
+32 logical cores, CPU-only ORT 1.29, warm model cache, best-of-5 reps on
+4 fixed docs (short → ~400 tokens):
+
+| Config | Session cold open | `encode_batch` (4 docs) | Notes |
+|---|---|---|---|
+| Level3, intra=16, inter=1 (**current**) | 4.7 s | **375 ms** | kept |
+| Level1, intra=16, inter=1 | 5.5 s | 433 ms (+15%) | slower *and* bit-different vectors |
+| Level3, intra=32, inter=1 | 4.5 s | 411 ms (+10%) | full-logical loses to phys/2 (SMT contention) |
+| 4× `encode_one` vs 1× `encode_batch` | — | 389 vs 375 ms | one boundary crossing saves ~3%; sequential stays |
+| Tokenizer-only cold open | 0.5 s | — | 9× cheaper than session open; budgeted reads stay cold |
+
+Two consequences:
+
+- **Do not mix tuning in one index.** Level1 vs Level3 fuse the graph
+differently, so bits differ (hashes diverged at 1e-8 formatting). Same
+model + same build + same tuning, or re-embed.
+- **Sequential batching stays.** Padded batching would waste attention on
+variable-length docs to save ~14 ms of boundary overhead — not worth the
+numerics risk.
+
+Methodology: scratch script + temporary env-knob patch (both reverted;
+only this table committed). Re-measure on new hardware/ORT before
+changing the policy.
+
+## Pitfall: stale `onnxruntime.dll` on Windows
+
+This dev machine carries `C:\Windows\System32\onnxruntime.dll` (**v1.17.1**).
+With `ORT_DYLIB_PATH` unset, `ort` loads it and dies with
+`BadVersion { version_str: "1.17.1" }`, followed by an abort at shutdown
+(`STATUS_STACK_BUFFER_OVERRUN` from ort's exit handler — fallout, not the
+root cause). `resolve_ort_dylib()` exists precisely so normal entry points
+never hit this; bare `JinaV5.open` without it does. Same pitfall as bobine
+(see its `docs/benchmarks.md`).
+
 ## Failure policy
 
 | Level | Behaviour |

@@ -18,7 +18,7 @@ use std::sync::RwLock;
 use anyhow::{anyhow, Result};
 use ndarray::{Array1, Array2};
 use ort::ep::{
-    ExecutionProviderDispatch, CoreML, DirectML, OpenVINO, ROCm, CUDA,
+    ExecutionProvider, ExecutionProviderDispatch, CoreML, DirectML, OpenVINO, ROCm, CUDA,
 };
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -247,24 +247,15 @@ impl TokenizerHandle {
 }
 
 /// Probe the loaded ORT library for a usable CUDA execution provider.
-///
-/// Tokenizer-only acquisition lives in [`fetch_tokenizer_file`] so the
-/// session open below stays the single expensive step.
-/// Registration is the step that fails on a CPU-only dylib (bobine's
-/// probe), so this tests exactly that instead of a static availability
-/// flag. Probed once per process.
+/// Uses the EP availability check — deliberately NOT a session-builder
+/// registration probe: in ort 2.0.0-rc.13 `with_execution_providers` returns
+/// `Ok` even against a CPU-only dylib, which would report CUDA on every CPU
+/// box. `apply_providers` still degrades gracefully if registration fails
+/// despite this probe. Probed once per process.
 fn cuda_available() -> bool {
     use std::sync::OnceLock;
     static PROBE: OnceLock<bool> = OnceLock::new();
-    *PROBE.get_or_init(|| {
-        let builder = match oe(Session::builder()) {
-            Ok(b) => b,
-            Err(_) => return false,
-        };
-        builder
-            .with_execution_providers(std::slice::from_ref(&CUDA::default().build()))
-            .is_ok()
-    })
+    *PROBE.get_or_init(|| CUDA::default().is_available().unwrap_or(false))
 }
 
 /// Validate the shared Matryoshka dim range before any I/O.

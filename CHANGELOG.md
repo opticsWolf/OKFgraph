@@ -6,6 +6,13 @@ commit history, newest first.
 
 ## [Unreleased]
 
+### Fixed
+- CUDA availability probing stays on the EP availability check: a
+  session-builder registration probe reported CUDA on CPU-only runtimes
+  (ort 2.0.0-rc.13 returns `Ok` from `with_execution_providers` even when
+  the loaded library has no CUDA EP). The clone-and-fallback provider
+  helper is retained for genuine registration failures.
+
 ### Added
 - Explicit local model files: `JinaV5.open_files(onnx_path, tokenizer_path)`
   and `JinaTokenizer.open_files(tokenizer_path)` load with zero network

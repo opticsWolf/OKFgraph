@@ -5,7 +5,12 @@
 In progress. Phases 1 (cross-platform ORT discovery), 2 (provider
 fallback + extension-module feature), 3 (lazy encoder + tokenizer-only
 counts), 4 (explicit local model files), and 5 (extension-module feature,
-landed with Phase 2) are implemented; Phases 6–7 remain open.
+landed with Phase 2) are implemented. Phase 6 (benchmark) is complete:
+current tuning (Level3, intra=phys/2, inter=1) measured fastest — no
+production change, results recorded in `rust/okf-embed/README.md`. The
+benchmark also confirmed this machine's stale System32 `onnxruntime.dll`
+v1.17.1 abort without `ORT_DYLIB_PATH` (now documented). Remaining: Phase 7
+(hardening/docs/release).
 
 This plan ports the strongest parts of bobine’s ONNX integration into
 OKFgraph/`okf-embed` without importing bobine as a required dependency and
@@ -333,15 +338,13 @@ versions, or CPU behavior, leave it disabled and record the reason.
 
 ### CUDA probe improvement
 
-Replace or supplement `CUDA::default().is_available()` with a bobine-style
-registration probe:
-
-- Create a session builder.
-- Attempt CUDA provider registration.
-- Cache the boolean result.
-- Treat builder-creation failure as unavailable.
-- Do not commit a session during probing.
-- Do not download a model during probing.
+Keep `CUDA::default().is_available()` for the availability decision, wrapped
+in a `OnceLock` cache. A session-builder registration probe was tried and
+reverted: in ort 2.0.0-rc.13 `with_execution_providers` returns `Ok` even
+against a CPU-only dylib, so it reported CUDA on CPU boxes
+(`test_cuda_fallback_when_cuda_unavailable` caught it). The
+clone-and-fallback `apply_providers` helper stays as the graceful-
+degradation layer if registration ever fails despite the probe.
 
 ### Test strategy
 

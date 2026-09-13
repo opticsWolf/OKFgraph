@@ -232,6 +232,10 @@ Key design decisions:
 
 - **Rust-only embeddings, fail-fast** — no Python fallback; a mid-run stack
   switch would silently mix vector spaces in one index.
+- **Lazy session init** — router construction never downloads the model or
+  builds the ONNX session; first encode opens once (thread-safe), token
+  counting uses a tokenizer-only handle, so PPR search, budgeted reads,
+  diff, and doctor stay cold.
 - **Last-token pooling** (not mean) — required by Jina v5; mean pooling
   breaks alignment with omni image embeddings.
 - **Single pinned ORT** (`onnxruntime==1.29.0`, `ORT_DYLIB_PATH`-overridable)

@@ -1,5 +1,11 @@
 # okf-embed — Jina v5 text embeddings (Rust core, PyO3)
 
+> **Moved.** Development continues in the standalone **`embroider`** repo
+> (github.com/opticsWolf/embroider, `D:\User\Documents\Python\embroider`).
+> This in-tree copy is the build source for OKFgraph 0.2.x only and stays
+> frozen at 0.2.0 until the dependency switch (spin-off plan Phase 3,
+> `docs/plan-embed-spinoff.md`).
+
 Exact port of `EmbeddingEngine._encode`: task prefix → tokenize (8192) →
 ONNX forward → last-token pooling → L2 → Matryoshka truncate → re-normalise.
 Pinned against a numpy/transformers replication of that pipeline by

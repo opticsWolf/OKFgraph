@@ -1,3 +1,10 @@
+> **Historical design record — do not follow.** Describes the pre-0.2.x
+> optimum/transformers embedding stack and/or the in-tree RapidAI ingest
+> engine, neither of which exists anymore. The authoritative surface is
+> `architecture.md` v6.0 (as-built for okfgraph 0.2.12: external
+> `embroider` crate, bobine converter seam, 5 MCP tools). Kept for
+> archaeology, not guidance.
+
 # Migrating the Hybrid Engine to ONNX / Rapid — Implementation Guide
 
 **Goal.** Replace the PaddleOCR / PaddlePaddle heavy pass with an all-ONNX stack (RapidAI

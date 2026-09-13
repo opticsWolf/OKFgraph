@@ -1,4 +1,4 @@
-# OKFgraph 0.2.7
+# OKFgraph 0.2.12
 
 [![PyPI](https://img.shields.io/pypi/v/okfgraph)](https://pypi.org/project/okfgraph/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
@@ -310,7 +310,7 @@ okfgraph/
 ├── tests/fixtures/        # conformance corpus: ppr, diff, doctor, obsidian, bundles
 ├── docs/                  # converters, harness-integration, plan-retrieval-roundup, diagnostics…
 ├── .mcp.json              # ready MCP wiring (uv run --project . okf-mcp)
-├── architecture.md        # long-form architecture spec
+├── architecture.md        # long-form architecture spec (v6.0, as-built for 0.2.12)
 └── pyproject.toml         # slim core deps + pdf/omni/dev extras
 ```
 

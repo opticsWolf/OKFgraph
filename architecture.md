@@ -1,18 +1,27 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 5.9 (Core Gaps: Concurrency, Security, Config, PDF Tests)  
-**Based on**: Architecture v5.8 (Phase 4: Config, WAL, Security, Soft-Delete)  
-**Verified against**: LadybugDB v0.17.1, Python 3.13.14
+**Version**: 6.0 (as-built for okfgraph 0.2.12 — supersedes the v5.x design lineage as the authoritative surface)  
+**Based on**: Architecture v5.9 (Core Gaps closure, 2026-07-09)  
+**Verified against**: LadybugDB v0.20.3, Python 3.11–3.13, `embroider 0.1.3`, `bobine 0.5.11`, `onnxruntime==1.29.0`
 
-**Gap Analysis Baseline**: [docs/gap-analysis.md](docs/gap-analysis.md) — 16 gaps reviewed, all CLOSED (v5.9).
+> **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
+> `docs/OKF Graph V6.0.md`, `docs/Okfgraph 6.0 amendment.md`,
+> `docs/ONNX_RAPID_IMPLEMENTATION.md`) are **historical design records** —
+> they describe an optimum/transformers embedding stack and an in-tree
+> RapidAI ingest engine that no longer exist. This document describes the
+> shipped system: external `embroider` embedding crate, bobine converter
+> seam, MCP ≥ 2.0 with 5 tools, consolidated CLI, model-free PPR
+> retrieval. Sections kept verbatim from v5.9 are those whose claims
+> still hold against the 0.2.12 tree; every changed claim below was
+> re-verified against code.
 
-**Storage**: LadybugDB (v0.17+) — graph + vector + full-text search.  
+**Storage**: LadybugDB (v0.20.3) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
-**Embedding Engine**: ONNX-optimized Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via `optimum[onnxruntime]`. **Numpy-only post-processing** (no torch).  
-**Multimodal Engine**: SentenceTransformer with `jinaai/jina-embeddings-v5-omni-small-retrieval` (vision tower, lazy-loaded).  
+**Embedding Engine**: Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core).  
+**Multimodal Engine**: SentenceTransformer with `jinaai/jina-embeddings-v5-omni-small-retrieval` (vision tower, lazy-loaded, `omni` extra only).  
 **Unified Vector Space**: Both encoders write into one `ImageAsset.embedding` column indexed by `image_omni_idx`.  
 **Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
-**Search Modes**: Hybrid (RRF fusion), Traversal (pure graph), Direct (exact ID lookup), Image search (text→image via unified index), **Chunk-level search with graph enrichment**.
+**Search Modes**: Hybrid (RRF fusion, vector + FTS), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
 
 ---
 
@@ -130,27 +139,50 @@ Created `tests/test_pdf_e2e.py` with 6 tests:
 ### Core (required)
 
 ```bash
-pip install optimum[onnxruntime] transformers numpy mordant python-frontmatter pyyaml pydantic ladybug sentence-transformers Pillow
+pip install okfgraph   # ladybug, embroider, onnxruntime, mordant, mcp, …
 ```
 
-> **No torch dependency**. ONNX Runtime returns numpy arrays; all post-processing (last-token pooling, L2 normalization, Matryoshka truncation) uses `numpy` exclusively.
+```toml
+# pyproject.toml (0.2.12) — deliberately few, all pinned or floor-pinned:
+ladybug == 0.20.3            # graph + vector + FTS store (newer 0.20.x segfaults index builds — pinned)
+embroider >= 0.1, < 0.2      # Jina v5 text embeddings (external Rust/ORT crate, PyPI wheels)
+onnxruntime == 1.29.0        # ONE pinned ORT binary, shared by bobine + embroider (load-dynamic)
+mordant >= 0.9               # Rust GFM chunking
+mcp >= 2.0                   # MCP server surface
+pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
+```
 
-**Installed versions** (verified working):
-- `optimum==2.1.0`, `onnxruntime==1.27.0`, `numpy>=1.24`, `transformers==4.57.6`
-- `ladybug==0.17.1`, `pydantic==2.13.4`, `mordant>=0.12`
+> **No torch, no transformers, no optimum in core.** All text-embedding
+> numerics (tokenize → last-token pooling → L2 → Matryoshka truncate →
+> re-normalise) live in the `embroider` Rust crate; nothing is computed in
+> Python. The Python side owns orchestration: dylib resolution
+> (`resolve_ort_dylib()` → `ORT_DYLIB_PATH`), lazy session lifecycle
+> (`LazyRustEncoder`), and explicit air-gapped model paths.
 
-### PDF Ingestion (optional — ONNX/Rapid stack)
+**Verified versions** (0.2.12 tree):
+- `ladybug==0.20.3`, `onnxruntime==1.29.0`, `embroider==0.1.3`, `mordant` (Rust GFM parser)
+- Single pinned ORT binary shared by bobine + embroider — do not float.
+
+### PDF conversion (optional — bobine)
 
 ```bash
-pip install pdf_oxide pillow                          # fast path + rendering
-pip install rapidocr                                  # text detection + recognition
-pip install rapid_latex_ocr                           # formula image → LaTeX
-pip install rapid_layout                              # layout region detection
-pip install rapid_table                               # table structure → HTML
-pip install onnxruntime-gpu                           # or onnxruntime-directml / onnxruntime
+pip install "okfgraph[pdf]"   # bobine>=0.5: PDF/Office/text → Markdown engine
 ```
 
-All RapidAI packages are **Apache-2.0** (commercial-friendly); LaTeX-OCR is **MIT**. Every RapidAI import is guarded — the ingestion sub-module loads cleanly without them installed. Models download lazily on first use; offline installs can vendor `.onnx` files into a `models/` directory.
+PDF conversion runs through the `bobine` Rust engine behind the
+`DocumentConverter` plugin seam (`okfgraph/components/converters.py`, default
+`BobineConverter`). No converter code lives in okfgraph — see §10 and
+`docs/converters.md`.
+
+### Multimodal images (optional — omni)
+
+```bash
+pip install "okfgraph[omni]"   # sentence-transformers + Pillow (image embeddings only)
+```
+
+Text-only installs never touch torch. The omni model
+(`jinaai/jina-embeddings-v5-omni-small-retrieval`, vision tower) loads
+lazily on first image encode.
 
 ---
 
@@ -270,7 +302,7 @@ The default dimension was bumped from 384 → 512 because 384 is not an official
 
 ## 2a. Ladybug Query Syntax — Verified Patterns
 
-LadybugDB uses specific syntax that differs from standard Cypher. All patterns below are **verified against Ladybug v0.17.1**.
+LadybugDB uses specific syntax that differs from standard Cypher. All patterns below are **verified against Ladybug v0.20.3**.
 
 ### Index Management
 
@@ -409,13 +441,23 @@ class OKFRouter:
         bundle_root: str,
         model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
         omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval",
-        embedding_dim: int = 512,          # bumped from 384
+        embedding_dim: int = 512,
         cache_dir: Optional[str] = None,
-        device: str = "cuda",
+        model_path: Optional[str] = None,      # explicit local ONNX …
+        tokenizer_path: Optional[str] = None,  # … must be given together
+        device: str = "cpu",                 # cpu | cuda (+ "auto"/"mps" aliases)
         allow_remote_images: bool = False,
+        chunk_size: int = 512, chunk_overlap: int = 40,
+        enable_chunking: bool = True,
     ):
-        # ... validates dim, loads text model, lazy-loads omni model
+        # ... validates dim, resolves the ORT dylib, imports embroider —
+        # the text session itself opens LAZILY on first encode (see §4.3)
 ```
+
+Router construction stays cheap: importing the `embroider` wheel does not
+open any ONNX session, and `resolve_ort_dylib()` fixes the shared runtime
+choice (single pinned `onnxruntime==1.29.0`, `ORT_DYLIB_PATH`-overridable)
+*before* the native module is first used.
 
 ### Auto-Detect Embedding Dimension
 
@@ -440,37 +482,52 @@ def _ensure_schema(self) -> None:
 
 ## 4.3. Embedding Engine
 
-### Text Model (ONNX — always loaded)
+Text embeddings come from the external **`embroider`** crate
+(github.com/opticsWolf/embroider — moved out of this tree in 0.2.12 after
+living here as `rust/okf-embed/`). okfgraph holds no embedding numerics:
+the Python side (`okfgraph/components/embedding.py`) owns dylib
+resolution, the lazy session lifecycle, and path wiring; the crate owns the
+Jina v5 contract. Class names and semantics are identical on both sides of
+the move — the golden parity tests pin explicit-path ≡ hub-path vectors
+byte-for-byte.
 
-```python
-def _encode(self, text: str, task: str = "Document") -> List[float]:
-    """Encode text with ONNX Jina v5 model.
+### Text Model (embroider — lazily opened)
 
-    Uses **last-token pooling** (NOT mean pooling).
-    Jina v5 was trained with last-token pooling; mean pooling
-    produces vectors in a different space that will NOT align
-    with the omni model's image embeddings.
-    """
-    # Apply prefix (Query:/Document:)
-    # Tokenize → ONNX forward → last-token pooling → L2 normalize → truncate → L2 re-normalize
-    return self._truncate_normalize(vec)
+The Jina v5 contract, enforced in Rust:
+
+```
+prefix (Query:/Document:) → tokenize @8192 → last-token pooling →
+L2 normalise → Matryoshka truncate (32–1024, default 512) → re-normalise
 ```
 
-**Pooling fix (v4.0)**: The previous implementation used mean pooling, which puts text vectors in a different space than the omni image vectors — silently breaking the unified index. Fixed to use **last-token pooling** followed by L2 re-normalisation.
+**Last-token pooling (NOT mean)** — required by Jina v5; mean pooling
+puts text vectors in a different space than the omni image vectors,
+silently breaking the unified index. This was the v4.0 pooling fix and
+remains a frozen vector-space invariant: no consumer may change pooling,
+prefixes, or truncation order without re-indexing every database.
+
+**Lazy sessions.** `LazyRustEncoder` opens the ONNX session on first
+encode, not at router construction — importing a bundle, running doctor,
+or opening a DB never pays for a session it doesn't use. `JinaTokenizer`
+is a separate session-free handle for exact token counts (used for
+token-budgeted reads).
+
+**Explicit local files (air-gapped).** `OKFRouter(model_path=,
+tokenizer_path=)` pins both files; they must be given together, must
+exist, and the crate performs zero network access from those paths
+(the sidecar layout lives next to the ONNX file). Default acquisition
+(HF hub into the model cache) and explicit paths produce identical
+vectors — pinned by test.
 
 ### Matryoshka Truncation
 
-```python
-def _truncate_normalize(self, vec: List[float]) -> List[float]:
-    """Truncate to configured dim and L2-renormalise."""
-    v = list(vec[:self.embedding_dim])
-    if len(v) < self.embedding_dim:
-        v = v + [0.0] * (self.embedding_dim - len(v))
-    norm = math.sqrt(sum(x * x for x in v))
-    if norm > 0:
-        v = [x / norm for x in v]
-    return v
-```
+Native dim is 1024; `ALLOWED_DIMS = (32, 64, 128, 256, 512, 768, 1024)`
+with 512 the default. Truncation keeps the first N of the L2-normalised
+1024-vector and re-normalises — cheap, deterministic, CPU-only-safe.
+Opening an existing DB adopts its on-disk dimension (§4.1); mixing
+tuning levels inside one index is forbidden (ORT optimisation levels
+fuse differently at the 1e-8 level — documented in the embroider README
+benchmark table).
 
 ### Omni Model (SentenceTransformer — lazy-loaded)
 
@@ -677,6 +734,20 @@ def search_hybrid(
 ) -> List[Dict[str, Any]]:
     """Hybrid search: RRF fusion of vector + FTS with optional graph filters."""
 ```
+
+### Rank modes (`--rank` / `rank=`)
+
+| Mode | Behaviour |
+|---|---|
+| `none` (default) | RRF-fused vector + FTS scores, graph filters applied |
+| `hub` | Chunk/concept hits reranked by parent hub score (authoritative docs surface) |
+| `ppr` | **Model-free Personalized PageRank** over the graph from the seed hits |
+
+PPR needs no embedding model at all — the seed set comes from the cheap
+FTS/vector pass (or an explicit seed), and ranking is pure graph
+propagation. It is the retrieval mode that keeps working when no ONNX
+session exists (air-gapped boxes without a model cache, doctor-style
+triage). Measured details live in `docs/plan-retrieval-roundup.md`;
 
 ---
 
@@ -960,7 +1031,7 @@ def search_hybrid(
 
 | Decision | Rationale |
 |---|---|
-| **Numpy-only post-processing** | ONNX model returns numpy arrays; torch adds no value for pooling/normalization |
+| **Rust-side embedding contract** | Jina numerics (last-token pooling, truncation, normalisation) live in the `embroider` crate — Python holds no embedding math, so no vector-space drift is possible from this side |
 | **Mordant `get_all_chunks()`** | Includes headings as separate chunks for ~98% reconstruction fidelity |
 | **Storage vs embedding text decoupling** | `chunk_text` remains pristine; heading context injected in-memory for encoder |
 | **Structural block boundaries** | Prevents chimera vectors (code/table tokens bleeding into prose) |
@@ -983,32 +1054,30 @@ okf = "okfgraph.cli:main"
 
 ### 5.2. Commands
 
+The CLI is a strict superset of the MCP surface (§6a): the five MCP tools
+map 1:1 onto `search`, `read`, `traverse`, `ingest`, `export`, everything
+else is library/maintenance surface.
+
 | Command | Description |
 |---|---|
 | `okf init` | Initialize database and schema |
 | `okf model-info` | Show model cache status (location, size, cached/missing) |
 | `okf import <files>` | Import one or more OKF files |
-| `okf import --all` | Import entire bundle recursively |
-| `okf import --all --purge` | Import bundle and purge deleted concepts |
-| `okf search <query>` | Hybrid search (type/tags/parent/limit filters) |
-| `okf search <query> --chunks` | Hybrid search with matched chunks attached |
-| `okf search-images <query>` | Find images via the unified vector index |
-| `okf search-chunks <query>` | Chunk-level RRF-fused search |
-| `okf context <query>` | Search with graph neighborhood expansion |
-| `okf hub-search <query>` | Chunk search reranked by hub score |
-| `okf path <id1> <id2>` | Find shortest path between concepts |
-| `okf siblings <id>` | List sibling concepts in same directory |
-| `okf ancestry <id>` | Show directory hierarchy for a concept |
-| `okf chunks <id>` | List chunks for a concept |
-| `okf reconstruct <id>` | Reconstruct document from chunks |
-| `okf traverse <id>` | Graph traversal (relationship/direction/depth) |
-| `okf list [dir]` | List directory contents |
-| `okf get <id>` | Fetch full concept (JSON + body) |
-| `okf export --all --output <dir>` | Export entire bundle |
-| `okf export --concept-id <id> --output <dir>` | Export single concept |
-| `okf broken-links` | List broken (orphan) links to not-yet-imported concepts |
-| `okf repair-links` | Repair broken links by re-checking if targets now exist |
-| `okf shell` | Interactive REPL |
+| `okf import --all [--purge]` | Import entire bundle recursively, optionally purging deleted concepts |
+| `okf search <query>` | Hybrid search over concepts (type/tags/parent/limit filters) |
+| `okf search <query> --target chunks\|images` | Chunk-level RRF search, or image search via the unified index |
+| `okf search <query> --rank hub\|ppr` | Rerank by hub score, or model-free PPR (§4.7) |
+| `okf read <id> [--include body\|chunks\|document\|context]` | Fetch a concept, its chunks, the reconstructed document, or graph context |
+| `okf traverse <id>` | Graph traversal (relationship/direction/depth); no id = root listing; two ids = shortest path |
+| `okf ingest --kind md\|pdf\|thoughts <path>` | Add one piece of content (PDF goes through bobine, §10) |
+| `okf export --all --output <dir>` | Export entire bundle (OKF or Obsidian flavor) |
+| `okf diff` | Structural diff: concepts/edges/broken-link deltas |
+| `okf doctor` | Health scan: score, findings, safe `--fix` |
+| `okf lint` | Validate bundle frontmatter + links before import |
+| `okf broken-links` / `okf repair-links` | List / repair links to not-yet-imported concepts |
+| `okf reindex` | Rebuild vector + FTS search indexes |
+| `okf deleted-list` / `deleted-recover` / `deleted-purge` | Soft-delete lifecycle |
+| `okf shell` | Interactive REPL (own inline grammar, §5.5) |
 
 ### 5.3. Global Options
 
@@ -1018,7 +1087,7 @@ okf = "okfgraph.cli:main"
 | `--bundle <path>` | `.` | Bundle root directory |
 | `--dim <int>` | `512` | Embedding dimension (32-1024, official Matryoshka) |
 | `--cache-dir <path>` | `~/.cache/huggingface` | HuggingFace model cache directory |
-| `--device cpu\|cuda` | `cuda` | Inference device (auto-fallback to CPU if CUDA unavailable) |
+| `--device cpu\|cuda` | `cpu` | Inference device (or from okfgraph.toml) |
 | `--omni-model-id <id>` | `jinaai/jina-embeddings-v5-omni-small-retrieval` | Multimodal model ID |
 
 ### 5.4. Import Options
@@ -1032,15 +1101,17 @@ okf = "okfgraph.cli:main"
 
 ### 5.5. Interactive Shell
 
-The `okf shell` command opens a REPL with inline commands:
+The `okf shell` command opens a REPL with its **own inline grammar** (not
+the `okf <verb>` syntax) — `help` inside the shell lists it:
 
 ```
-> import ./concepts/basics.md
-> search advanced type:section
-> search-images a cat
-> images concepts/intro
-> traverse concepts CONTAINS OUTGOING 2
-> export-bundle ./output
+> search chunks:transformer efficiency
+> search <query> expand      # chunk hits + graph neighborhood
+> search <query> hub         # chunk hits reranked by hub score
+> read <id> [chunks|document|context]
+> traverse <id1> <id2>       # shortest path
+> ingest notes.md --auto-import
+> model-info
 ```
 
 ### 5.6. Design Decisions
@@ -1051,212 +1122,14 @@ The `okf shell` command opens a REPL with inline commands:
 
 ---
 
-## 6. LLM Tool Definitions
+## 6. LLM Tool Definitions (superseded)
 
-```python
-TOOLS = [
-    {
-        "name": "search_hybrid",
-        "description": "Semantic + keyword search over concepts. Use for open-ended questions.",
-        ...
-    },
-    {
-        "name": "traverse",
-        "description": "Navigate relationships (CONTAINS or LINKS_TO) from a concept.",
-        ...
-    },
-    {
-        "name": "get_by_id",
-        "description": "Fetch the full markdown body of a specific concept.",
-        ...
-    },
-    {
-        "name": "list_directory",
-        "description": "List contents of a directory for progressive disclosure.",
-        ...
-    },
-    {
-        "name": "search_images",
-        "description": "Find image assets by a text description via the unified vector index. Works whether images were embedded from alt-text or by the multimodal model, since both share one vector space.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Text describing the image(s) to find."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum number of images to return (default 10)."},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "search_chunks",
-        "description": "Search document chunks with RRF-fused vector + FTS. Returns chunk-level results with parent concept metadata.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search query."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                "max_chunks_per_doc": {"type": "integer", "minimum": 1, "maximum": 10},
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "expand_with_graph_context",
-        "description": "Discover related concepts via graph edges from chunk parents.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "chunk_ids": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["chunk_ids"],
-        },
-    },
-    {
-        "name": "rerank_with_hub_score",
-        "description": "Adjust chunk scores by parent hub score (incoming link count).",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "chunk_results": {"type": "array", "items": {"type": "object"}},
-            },
-            "required": ["chunk_results"],
-        },
-    },
-    {
-        "name": "get_chunks",
-        "description": "List all chunks for a concept.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "concept_id": {"type": "string"},
-            },
-            "required": ["concept_id"],
-        },
-    },
-    {
-        "name": "reconstruct_document",
-        "description": "Reconstruct original Markdown from chunks (~98% fidelity).",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "document_id": {"type": "string"},
-            },
-            "required": ["document_id"],
-        },
-    },
-    {
-        "name": "find_path",
-        "description": "Find shortest path between two concepts in the knowledge graph.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "start_id": {"type": "string"},
-                "end_id": {"type": "string"},
-                "max_length": {"type": "integer", "minimum": 1, "maximum": 20},
-            },
-            "required": ["start_id", "end_id"],
-        },
-    },
-    {
-        "name": "export_bundle",
-        "description": (
-            "Export concepts from the graph to an OKF-compliant bundle directory. "
-            "Each concept is written as a markdown file with YAML frontmatter. "
-            "The body is enriched with graph-derived LINKS_TO links (See Also + Cited By). "
-            "index.md files are generated for every directory."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "output_dir": {
-                    "type": "string",
-                    "description": "Output directory for the bundle.",
-                },
-                "directory_id": {
-                    "type": "string",
-                    "description": "Optional: only export concepts under this directory.",
-                },
-                "concept_type": {
-                    "type": "string",
-                    "description": "Optional: only export concepts of this type.",
-                },
-                "tags": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional: only export concepts with ALL these tags.",
-                },
-            },
-            "required": ["output_dir"],
-        },
-    },
-    {
-        "name": "ingest_md",
-        "description": "Import a single markdown file into the knowledge graph. The file is linted with mordant before import — fixable formatting issues (MD009, MD012, MD047) are auto-corrected. Returns the concept ID so the content can be searched or traversed.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "md_path": {
-                    "type": "string",
-                    "description": "Path to the markdown file to import.",
-                },
-                "concept_id": {
-                    "type": "string",
-                    "description": "Optional explicit concept ID. If not provided, generated from filename.",
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Optional title override.",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Optional description override.",
-                },
-                "tags": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional tags to apply.",
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["text", "optional", "omni"],
-                    "default": "text",
-                    "description": "Image ingestion mode.",
-                },
-            },
-            "required": ["md_path"],
-        },
-    },
-    {
-        "name": "ingest_thoughts",
-        "description": "Store LLM reasoning or thinking as a searchable concept. Wraps the text in OKF-compliant markdown with metadata (type=thought, thought_type=reasoning) so it can be filtered and searched.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "thoughts": {
-                    "type": "string",
-                    "description": "The raw reasoning text from the LLM.",
-                },
-                "topic": {
-                    "type": "string",
-                    "description": "High-level topic or domain for the reasoning.",
-                },
-                "concept_id": {
-                    "type": "string",
-                    "description": "Optional explicit concept ID. If not provided, generated from topic + timestamp.",
-                },
-                "tags": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional additional tags.",
-                },
-            },
-            "required": ["thoughts", "topic"],
-        },
-    },
-]
-```
-
----
+The 16-tool surface this section used to specify (`tools.py`) is
+superseded since the MCP migration: the agent surface is the 5-tool
+registry in §6a (`search`, `read`, `traverse`, `ingest`,
+`export_bundle`), and the CLI in §5 is its strict superset. The old
+definitions were removed rather than kept as a second contract to
+maintain — history lives in git.
 
 ## 6a. MCP Server (`okfgraph.mcp_server`)
 
@@ -1286,32 +1159,28 @@ The MCP server exposes all OKFgraph tools via the [Model Context Protocol](https
 │  └──────────────────────────────────────────────────┘   │
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │              Tool Registry (16 tools)             │   │
+│  │              Tool Registry (5 tools)              │   │
 │  │                                                   │   │
-│  │  Read (12):  search_hybrid, traverse, get_by_id, │   │
-│  │              list_directory, search_images,       │   │
-│  │              search_chunks, search_with_context,  │   │
-│  │              search_chunks_with_hub_score,        │   │
-│  │              expand_with_graph_context,           │   │
-│  │              get_chunks, reconstruct_document,    │   │
-│  │              find_path                            │   │
+│  │  Read (3):  search, read, traverse               │   │
 │  │                                                   │   │
-│  │  Write (4):   export_bundle, ingest_md,           │   │
-│  │                ingest_thoughts, ingest_pdf        │   │
+│  │  Write (2): ingest (md|pdf|thoughts),            │   │
+│  │              export_bundle                        │   │
 │  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ### Tool Annotations
 
-All tools carry MCP-compliant annotations:
+All tools carry MCP-compliant annotations (`_RO` read-only / `_WR` write,
+all non-destructive, idempotent):
 
-| Tool Category | `read_only_hint` | `destructive_hint` | `idempotent_hint` | `open_world_hint` |
-|---|---|---|---|---|
-| Read (12 tools) | `True` | `False` | `True` | `False` |
-| Write (4 tools) | `False` | `False` | `True`* | `False` |
-
-*`ingest_thoughts` and `ingest_pdf` are `idempotent_hint=False` since they generate unique IDs per call.
+| Tool | Kind | Surface |
+|---|---|---|
+| `search` | read | Concepts / chunks / images (`target`), filters, `rank` none\|hub\|ppr |
+| `read` | read | Concept body / chunks / reconstructed document / graph context (`include`) |
+| `traverse` | read | Relationships (CONTAINS/LINKS_TO/PART_OF/INCLUDES_ASSET), direction, depth; two ids = path; empty id = root listing |
+| `ingest` | write | One piece of content, `kind` md\|pdf\|thoughts (PDF via bobine) |
+| `export_bundle` | write | Whole bundle or filtered export (OKF/Obsidian flavor) |
 
 ### Context Injection
 
@@ -1319,7 +1188,7 @@ Each tool function receives the `OKFRouter` instance via the MCP `Context` param
 
 ```python
 @mcp.tool()
-def search_hybrid(query: str, ctx: Context) -> str:
+def search(query: str, ctx: Context) -> str:
     router = _get_router(ctx)  # extracts OKFRouter from lifespan context
     results = router.search_hybrid(query)
     return json.dumps(results, default=str, indent=2)
@@ -1342,6 +1211,11 @@ okf-mcp --db-path ./my_graph.db --embedding-dim 512
 # Disable chunking
 okf-mcp --db-path ./my_graph.db --no-chunking
 ```
+
+> `okf-mcp` defaults to `--embedding-dim 1024` (unlike the router/CLI
+> default 512) — a server opened on an existing 512-dim DB adopts the
+> on-disk dimension per §4.1, so pass `--embedding-dim` explicitly when
+> they must agree.
 
 ### Programmatic Usage
 
@@ -1392,15 +1266,16 @@ mcp.run(transport="stdio")
 | Feature | Detail |
 |---|---|
 | **Model** | `jinaai/jina-embeddings-v5-text-small-retrieval` |
-| **Framework** | ONNX Runtime via `optimum[onnxruntime]` |
-| **Dimensions** | **1024** (Matryoshka truncation: configurable 32-1024, default **512**) |
-| **Context Window** | 32,768 tokens (practically truncated to 8,192) |
-| **Prefix Logic** | `Query:` for search queries, `Document:` for indexed content |
+| **Framework** | External `embroider` crate (Rust/ORT — no Python ML stack in core) |
+| **Dimensions** | **1024** native (Matryoshka truncation: `ALLOWED_DIMS`, default **512**) |
+| **Context Window** | 8192 tokens natively (tokenizer-only counts via `JinaTokenizer`, no session) |
+| **Prefix Logic** | `Query:` for search queries, `Document:` for indexed content (frozen contract) |
 | **Pooling** | **Last-token pooling** (NOT mean pooling — required by Jina v5) |
 | **Normalization** | L2 normalization (cosine similarity), re-normalised after truncation |
-| **Cache Dir** | Optional `cache_dir` param on `OKFRouter.__init__()` |
-| **Cache Inspection** | `OKFRouter.model_info()` — location, status, disk usage |
-| **GPU Support** | `--device cuda` with auto-fallback to CPU (requires `onnxruntime-gpu`) |
+| **Session Lifecycle** | Lazy — opens on first encode; router construction stays cheap |
+| **Air-gapped** | `model_path` + `tokenizer_path` pin both files (zero network, fail-fast on missing) |
+| **Acquisition** | HF hub into the model cache, or explicit paths — identical vectors, pinned by test |
+| **GPU Support** | `--device cuda` (auto/cpu/cuda aliases) against the single pinned ORT; CUDA is opportunistic, CPU always works |
 
 ### Omni (Multimodal) Model
 
@@ -1466,91 +1341,47 @@ The embedded UUID is deterministic and stable across round-trips.
 
 ---
 
-## 10. ONNX/Rapid PDF Ingestion Engine (`okfgraph.ingest`)
+## 10. PDF Conversion — the bobine seam (`okfgraph/components/converters.py`)
 
-The `okfgraph.ingest` sub-module provides a **Paddle-free** PDF → Markdown conversion pipeline using the RapidAI family of ONNX models. It replaces the PaddleOCR/PaddlePaddle stack entirely.
+okfgraph holds **no converter code**. PDF/Office/text → Markdown conversion
+is delegated to the external **`bobine`** engine (github.com/opticsWolf/bobine)
+behind the `DocumentConverter` plugin seam; the default `BobineConverter`
+ships in the `pdf` extra. The old in-tree ONNX/Rapid stack (`okfgraph.ingest`,
+pdf_oxide + RapidAI models) was deleted — its pipeline (fast text-layer
+path, TexTeller formula OCR, DocLayout-YOLO regions, RapidOCR text,
+SLANet tables, per-slot CUDA/CPU providers) now lives in bobine and is
+specified in *its* `docs/architecture.md`, not here.
 
-### Architecture
+### The seam
 
-```
-                          ┌─────────────────────────────┐
-   PDF ──▶ pdf_oxide ────▶│ page has a usable text layer?│
-                          └──────────────┬──────────────┘
-                            yes │            │ no  (few chars + images = scanned)
-                ┌───────────────▼──┐      ┌──▼────────────────────────────────────┐
-                │ FAST PATH        │      │ FALLBACK (heavy, ONNX)                 │
-                │ pdf_oxide.markdown│     │ render page → RapidLayout regions      │
-                │  + surgical passes│     │  ├ text/title/list → RapidOCR          │
-                │  ├ math boxes →   │     │  ├ table          → RapidTable → GFM    │
-                │  │  RapidLaTeXOCR │     │  ├ formula        → RapidLaTeXOCR       │
-                │  ├ mono runs →    │     │  └ figure         → asset crop          │
-                │  │  code fences   │     │ assemble in reading order              │
-                │  └ tables kept as │     └────────────────────────────────────────┘
-                │    pdf_oxide GFM  │
-                │    (RapidTable    │
-                │     rescue opt.)  │
-                └───────────────────┘
-                            │            │
-                            └─────┬──────┘
-                                  ▼
-                        per-page markdown blocks
-                                  ▼
-             stage images → okf-asset://  •  join pages  •  write ONE .md
+```python
+class DocumentConverter(Protocol):
+    def convert(self, path, work_dir) -> str: ...   # markdown out
 ```
 
-### Sub-Module Structure
+Provider owns its options (`routing_mode`, model cache, provider lists);
+okfgraph owns orchestration (kind dispatch, staging, lint, import).
 
-| File | Role |
+### Ingest kinds (explicit, no auto-detect)
+
+| Kind | Path |
 |---|---|
-| `config.py` | `ConverterConfig` dataclass + `RoutingMode` enum (NEVER/AUTO/SURGICAL/ALWAYS) |
-| `engine.py` | `OnnxRapidEngine` — lazy loaders for RapidLaTeXOCR, RapidOCR, RapidLayout, RapidTable |
-| `converter.py` | `HybridConverter` — core pipeline (pdf_oxide fast path + ONNX heavy passes) |
-| `tables.py` | `_SimpleTableParser` + `html_tables_to_gfm()` — HTML → GFM pipe-table converter |
-| `assets.py` | `stage_images_as_okf_assets()` — okf-asset:// staging for extracted images |
+| `md` | Read in Python, mordant lint, chunk, embed, upsert |
+| `pdf` | `convert()` via the configured converter (default bobine), then the `md` pipeline |
+| `thoughts` | Persist LLM reasoning as a searchable concept |
 
-### Routing Modes
+Kinds are explicit on both surfaces (CLI `--kind`, MCP `ingest(kind=)`) —
+there is no format sniffing at the okfgraph layer. (bobine itself
+content-sniffs its text fallback since v0.5.11: binary files under
+text-ish extensions fail fast instead of returning decode garbage.)
 
-| Mode | Behaviour |
-|---|---|
-| **NEVER** | Fast path only. No ONNX models loaded. |
-| **AUTO** | Heuristics per page → full ONNX pipeline only on flagged pages. |
-| **SURGICAL** | Formula crops via RapidLaTeXOCR; full pipeline only for scans. |
-| **ALWAYS** | Every page through the full ONNX layout + OCR pipeline. |
+### Routing modes
 
-### Key Design Decisions
-
-- **Zero hard dependencies** — all RapidAI imports are guarded; the module loads cleanly without them
-- **Lazy loading** — born-digital PDFs never pay for OCR/layout/table models
-- **Graceful degradation** — if a model fails to load, the pipeline falls back to the fast path
-- **`# VERIFY` flags** — every version-sensitive RapidAI call is marked for confirmation
-- **Device → ort_providers coercion** — `device="cuda"` auto-resolves to `["CUDAExecutionProvider", "CPUExecutionProvider"]` (accepts `"gpu"` as alias)
-- **Inline vs display LaTeX** — `_latex_wrap()` decides based on box dimensions vs threshold
-- **Output contract unchanged** — single `.md` with inline/display LaTeX, fenced code, GFM tables, and `okf-asset://` links
-
-### Execution Providers
-
-ONNX Runtime decouples from CUDA toolkit versions:
-
-| Hardware | Package | Providers |
-|---|---|---|
-| NVIDIA (incl. RTX 50-series) | `onnxruntime-gpu` | `CUDAExecutionProvider`, `CPUExecutionProvider` |
-| Windows DirectX 12 GPU | `onnxruntime-directml` | `DirectMLExecutionProvider`, `CPUExecutionProvider` |
-| Apple Silicon | `onnxruntime` | `CoreMLExecutionProvider` (or CPU) |
-| CPU-only | `onnxruntime` | `CPUExecutionProvider` |
-
-### Testing Checklist
-
-- [ ] Born-digital paper with display + inline equations → correct `$$`/`$`, spliced in place
-- [ ] Scanned/old PDF (no text layer) → fallback fires; text, tables, formulas recovered
-- [ ] Table-heavy digital PDF → pdf_oxide GFM tables preserved (no RapidTable invoked)
-- [ ] Scanned table → RapidTable → GFM (or HTML for rowspan/colspan)
-- [ ] Code-heavy PDF (monospace) → fenced ``` blocks
-- [ ] Image-heavy PDF → every image staged as `okf-asset://`, none dropped
-- [ ] Hyperlinks preserved as `[text](url)`
-- [ ] GPU path: `ort.get_available_providers()` shows your EP; CPU fallback works
-- [ ] Offline: with network disabled, explicit model paths load and run
-
----
+`NEVER / AUTO / SURGICAL / ALWAYS` are **bobine** `ConverterConfig`
+concepts (born-digital fast path → full ONNX pipeline per page):
+`SURGICAL` is the default — formula crops via TexTeller, full pipeline
+only for scans. A missing converter (no `pdf` extra) fails fast with a
+clear error; there is no legacy fallback.
 
 ## 11. Summary of Changes (v2.2 → v4.0)
 
@@ -1776,6 +1607,10 @@ ONNX Runtime decouples from CUDA toolkit versions:
 ## 12. Performance Baseline
 
 **Benchmark**: `benchmarks/benchmark_500.py` — 100 synthetic concepts, in-memory DB.
+*(Timings below are from the optimum-era stack; the DB-level insight
+still holds — batch speedup comes from single-transaction / bulk
+link-building, not from ONNX batching, and sequential per-text encoding
+remains the policy in the embroider crate.)*
 
 | Parameter | Value |
 |---|---|
@@ -1799,174 +1634,27 @@ ONNX Runtime decouples from CUDA toolkit versions:
 
 ---
 
-This specification is **verified against production LadybugDB v0.17.1**. All code patterns have been tested end-to-end with real data, real model inference, and real database operations.
+This specification is **verified against production LadybugDB v0.20.3**
+(okfgraph 0.2.12 tree: `embroider 0.1.3`, `bobine 0.5.11`,
+`onnxruntime==1.29.0`). All code patterns have been tested end-to-end
+with real data, real model inference, and real database operations.
 
 ---
 
-## 15. Open Gaps (Production-Readiness)
+## 15. Closed Gaps & Current Constraints
 
-The [gap analysis](docs/gap-analysis.md) (v3.0, 2026-07-05) reviewed 15 gaps between the architecture spec and implementation. **13 are closed** (v5.1–v5.4). **2 remain open** and are documented below.
+The v5.x gap program (concurrency/filelock, path-traversal sandboxing,
+model-cache verification, TOML schema validation, end-to-end PDF tests —
+`docs/gap-analysis.md`) is **closed**; §15's old per-gap text is retired
+with it. What remains are standing constraints, not gaps:
 
-### Gap #7 — Concurrent Access / Locking (Medium)
-
-**Problem**: Two CLI invocations hitting the same DB simultaneously could corrupt indexes or create duplicate concepts. No locking strategy documented or implemented.
-
-**Recommendation**: **Option A + C** — enable WAL mode if Ladybug supports it, and document the single-writer constraint.
-
-| Aspect | Detail |
+| Constraint | Status |
 |---|---|
-| **WAL mode** | SQLite's recommended concurrent mode. Reads can proceed during writes. Writes are serialized by SQLite's internal locking. |
-| **Risks** | WAL mode adds `-wal` and `-shm` sidecar files. Ladybug may not expose WAL configuration. |
-| **Fallback** | Document single-writer constraint. Multiple readers are safe. |
-
-**Implementation**: Enable `PRAGMA journal_mode = WAL` on the Ladybug connection (if supported). Add a startup check that warns if the DB appears locked.
-
-### Gap #9 — Security (Medium)
-
-**Problem**: No security architecture. Gaps in:
-- `--allow-remote-images` SSRF risks
-- Untrusted markdown execution
-- Database file permissions
-- Model cache integrity
-
-**Recommendation**: **Option A + C** — add URL allowlist for remote images and security documentation.
-
-| Aspect | Detail |
-|---|---|
-| **URL allowlist** | Restrict `--allow-remote-images` to configurable domains. Block `file://`, `http://0.0.0.0`, and internal IP ranges. |
-| **Security docs** | Document threat model, recommend file permissions, add warnings for `--allow-remote-images`. |
-| **Deferred** | Sandboxed markdown parsing (Gap #9B) — significant effort, low current threat. |
-| **Optional** | HuggingFace cache verification (Gap #9D) — pin model revisions, verify hashes on first load. |
-
-**Implementation**: Add domain allowlist check in `load_image_bytes()`. Document threat model in README.
-
-### Gap #10 — Observability (Medium) ✅ **CLOSED** (v5.4)
-
-**Status**: Closed — structured logging + profiling hooks implemented.
-
-**Implemented**:
-- `okfgraph/cli.py`: `_setup_logging()` with `--verbose / --quiet / --log-file` flags
-- `--profile` flag: on-demand cProfile with `pstats` output
-- `okfgraph/router.py`: Timing instrumentation in `import_bundle()` — logs phase durations
-- stdlib `logging` used (not loguru) — avoids third-party dependency for CLI tool
-
-**CLI flags**:
-| Flag | Description |
-|---|---|
-| `--verbose / -v` | Enable DEBUG logging |
-| `--quiet / -q` | Suppress all logging except errors |
-| `--log-file <path>` | Write logs to file with 5MB rotation |
-| `--profile` | Enable cProfile for current invocation |
-
-**Timing logs** (import_bundle phases):
-| Phase | Log message |
-|---|---|
-| Phase 0: Delta | `delta: %d changed, %d deleted (%.1fs)` |
-| Phase 1: Parse | `parsed %d concept(s)` |
-| Phase 2: Encode | `encode: %d texts in %.1fs` |
-| Phase 3: Upsert | `upsert: %d concepts in %.1fs` |
-| Phase 3.5: Chunk | `chunk: %d concepts in %.1fs` |
-| Phase 4: Directories | `directories: %d in %.1fs` |
-| Phase 5: Links | `links: %d concepts in %.1fs` |
-| Phase 6: Images | `images: %d concepts in %.1fs` |
-| Phase 7: Reindex | `reindex: %.1fs` |
-| Summary | `import_bundle: %d concept(s) in %.1fs` |
-
-**Test coverage**: 10 tests in `tests/test_logging.py`.
-
-**Remaining follow-ups**: Prometheus metrics (#10b), query latency tracking (#10c), embedding cache hit rates (#10d).
-
-### Gap #11 — Configuration Management (Low)
-
-**Problem**: All config is CLI args or Python defaults. No config file for persistent settings. Users must repeat `--db`, `--dim`, `--device`, etc. on every invocation.
-
-**Recommendation**: **Option A + B** — TOML config file with env var overrides.
-
-| Aspect | Detail |
-|---|---|
-| **Precedence** | CLI > env var > file > defaults |
-| **File location** | `okfgraph.toml` in bundle root or `~/.config/okfgraph/` |
-| **Env vars** | `OKFGRAPH_DB`, `OKFGRAPH_DIM`, `OKFGRAPH_DEVICE`, etc. |
-
-```toml
-[database]
-path = "okfgraph.db"
-dim = 512
-
-[embedding]
-device = "cuda"
-cache_dir = "/mnt/models"
-
-[import]
-mode = "optional"
-batch_size = 64
-```
-
-**Current state**: No config file, no env var support. All settings via CLI args or defaults.
-
-### Gap #15 — RapidAI Version Pinning (Medium) ✅ **CLOSED** (v5.4)
-
-**Status**: Closed — version pinning + runtime warning implemented.
-
-**Implemented**:
-- `pyproject.toml` optional-dependencies `pdf-ingest` group with pinned versions
-- `okfgraph/ingest/versions.py` — runtime version checking on import
-- `OKFGRAPH_INGEST_ALLOW_UNPINNED=1` env var to silence warnings
-- 8 tests in `tests/test_ingest.py::TestVersionChecking`
-
-**Pinned versions**:
-| Package | Version |
-|---|---|
-| `rapidocr` | `==1.5.2` |
-| `rapid_latex_ocr` | `==1.0.13` |
-| `rapid_layout` | `==0.2.0` |
-| `rapid_table` | `==1.0.3` |
-| `pdf_oxide` | `>=0.2.1` |
-
-**Remaining follow-ups**: Tighten tolerance to exact version (#15b), automated version bump CI (#15c), runtime error for major version mismatches (#15d).
+| **Ladybug three-clause MERGE** | Vector upserts must avoid `MERGE … SET` on indexed columns (runtime abort — see the quarantine at §2). Reported upstream; watch `macrame-db` 0.18 |
+| **Single pinned ORT** | `onnxruntime==1.29.0` shared by bobine + embroider; a stale system DLL fails session creation with `BadVersion`. `ORT_DYLIB_PATH` overrides; entry points resolve before first use |
+| **Frozen vector space** | Jina contract (prefixes, last-token pooling, truncation order) is identical across okfgraph 0.2.x and embroider 0.1.x — enforced by golden parity tests, never by convention alone |
+| **Floor-pinned embroider** | `embroider>=0.1,<0.2`: a new embroider minor without an okfgraph release is a *supported* state, and CI proves the floor still passes |
 
 ---
 
-### Gap #5b — Router method `ingest_pdf()` (Medium) ✅ **CLOSED** (v5.4)
-
-**Status**: Closed — `OKFRouter.ingest_pdf()` implemented (v5.4).
-
-**Implemented**:
-- `OKFRouter.ingest_pdf()` — programmatic API for scripts/notebooks
-- Parameters: `pdf_path`, `auto_import`, `output_dir`, `routing_mode`, `mode`, `batch_size`, `purge_deleted`, `extract_images`, `on_page`
-- Returns: Dict with `md_path`, `concept_ids`, `image_dir`, `page_count`
-- Auto-import mode: converts to temp dir, imports via `import_bundle()`, cleans up
-- Output-only mode: converts to disk, stages images as `okf-asset://` URIs
-- Test coverage: 4 tests in `tests/test_ingest.py::TestIngestPdfMethod`
-
-**Remaining follow-ups**: progress callbacks (#5d).
-
----
-
-### Priority Matrix (from Gap Analysis)
-
-| Priority | Gaps | Rationale |
-|---|---|---|
-| **P1 — Important** | #6 follow-ups, #14 follow-ups, ✅ #15 RapidAI pinning | Reliability, correctness, reproducibility |
-| **P2 — Nice-to-have** | #7 Concurrency, #9 Security, ✅ #10 Observability, ✅ #5b ingest_pdf, #11 Config management | Operations, documentation, developer experience |
-
-### Recommended Implementation Order
-
-```
-Phase 1 (Documentation + Low-risk)  ✅ COMPLETE
-Phase 2 (Core Reliability)  ✅ #6d, #12a, #8a, #5a, #15 COMPLETE
-Phase 3 (Feature Completeness)  ✅ #10a, #5b COMPLETE
-├── #10a Structured logging (stdlib) + profiling hooks   ✅
-├── #5b  Router method ingest_pdf() for programmatic use ✅
-├── #12b GPU integration tests ✅
-└── #5c  LLM tool definition (follow-up)
-Phase 4 (Operations)
-├── #11a TOML config file + env var support
-├── #9a  URL allowlist for remote images
-├── #7a  WAL mode + documentation
-└── #12c End-to-end PDF tests
-```
-
----
-
-*This specification is a living artifact. Update the version and sections as gaps are closed.*
+*This specification is a living artifact. Update the version and sections as the tree changes — and mark superseded design docs historical instead of deleting them.*

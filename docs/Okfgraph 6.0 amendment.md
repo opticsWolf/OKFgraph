@@ -1,3 +1,10 @@
+> **Historical design record — do not follow.** Describes the pre-0.2.x
+> optimum/transformers embedding stack and/or the in-tree RapidAI ingest
+> engine, neither of which exists anymore. The authoritative surface is
+> `architecture.md` v6.0 (as-built for okfgraph 0.2.12: external
+> `embroider` crate, bobine converter seam, 5 MCP tools). Kept for
+> archaeology, not guidance.
+
 # Response to V6.0 Architecture Review
 
 This is an exceptionally sharp review. Every point lands, and several caught issues that would have surfaced as runtime failures or silent data corruption in Phase 1. Below is a point-by-point response with concrete remediation.

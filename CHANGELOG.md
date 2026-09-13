@@ -4,6 +4,18 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.2.17] — 2026-09-13
+
+### Fixed
+- Length-bucketed batch encoding for bundle imports: concept
+  search_texts span three orders of magnitude, and naive batches of 32
+  padded every sequence to the batch max — one giant doc inflated 31
+  small ones into a 32x8192-token forward (tens of GB, tens of minutes
+  on CPU; found live on the 44-doc family-kb import). Texts now encode
+  shortest-first in buckets of 8 with per-bucket progress logs.
+  Stored vectors are unchanged (padding is masked out; only compute
+  order changed).
+
 ## [0.2.16] — 2026-09-13
 
 Phase 1 (plan-multi-root-detach): `okf detach` ends the mirror

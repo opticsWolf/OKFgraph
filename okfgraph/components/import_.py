@@ -126,6 +126,36 @@ def parse_source_file(
     return concept, body, concept_id
 
 
+def _length_bucketed_encode(
+    texts: List[str],
+    encode_batch_size: int,
+    encode_fn,
+    progress=None,
+) -> List[Any]:
+    """Encode texts shortest-first in small buckets, restoring input order.
+
+    Concept search_texts span three orders of magnitude (a one-line stub
+    vs an 8K-truncated architecture doc). The encoder pads every sequence
+    to the batch max, so naive batching inflates 31 small docs sharing a
+    batch with one giant into a 32x8192-token forward (tens of GB, tens
+    of minutes on CPU). Sorting by length bounds each bucket's padding to
+    its own max; vectors are identical (padding is masked out), only the
+    compute order changes. ``progress(done, total, longest)`` is called
+    after each bucket for visibility on large imports.
+    """
+    order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+    out: List[Any] = [None] * len(texts)
+    total = (len(order) + encode_batch_size - 1) // encode_batch_size
+    for b, start in enumerate(range(0, len(order), encode_batch_size)):
+        idx = order[start:start + encode_batch_size]
+        embs = encode_fn([texts[i] for i in idx])
+        for i, emb in zip(idx, embs):
+            out[i] = emb
+        if progress is not None:
+            progress(b + 1, total, max(len(texts[i]) for i in idx))
+    return out
+
+
 class ImportManager:
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
     def __init__(self, conn, bundle_root, _write_lock_ctx, enable_chunking,
@@ -523,14 +553,23 @@ class ImportManager:
 
         logger.info("parsed %d concept(s)", len(parsed))
 
-        # Phase 2: Batch encode (chunked by batch_size)
+        # Phase 2: Batch encode (length-bucketed; see _length_bucketed_encode).
+        # batch_size drives DB writes; encoding uses small buckets so one
+        # giant doc cannot pad 31 small ones into a 32x8192-token forward.
         _t1 = time.monotonic()
         all_search_texts = [p["search_text"] for p in parsed]
-        all_embeddings: List[List[float]] = []
-        for i in range(0, len(all_search_texts), batch_size):
-            chunk = all_search_texts[i : i + batch_size]
-            batch_embs = self.embed_engine._encode_batch(chunk, task="Document")
-            all_embeddings.extend(batch_embs)
+        encode_batch_size = min(batch_size, 8)
+        def _encode_progress(done, total, longest):
+            logger.info(
+                "encode: bucket %d/%d (longest %d chars, %.1fs)",
+                done, total, longest, time.monotonic() - _t1,
+            )
+        all_embeddings: List[List[float]] = _length_bucketed_encode(
+            all_search_texts,
+            encode_batch_size,
+            lambda bucket: self.embed_engine._encode_batch(bucket, task="Document"),
+            progress=_encode_progress,
+        )
         logger.info("encode: %d texts in %.1fs", len(all_search_texts), time.monotonic() - _t1)
 
         # Phase 3: Batch upsert all concepts in a single transaction

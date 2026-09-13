@@ -31,7 +31,7 @@ Baseline: schema v6, suite 522/10/18, dim default 512 (Matryoshka ladder
 | 14 | Work-dir imports **override `bundle_root` in place** (router + delta/import managers) to a `TemporaryDirectory`, then restore — delta rows are written into the SAME tables keyed relative to the temp root, including the shared top-level key `"."` | `ingest.py:437-455` |
 | 15 | Ingest mints **bare-stem IDs**: PDF auto-import parses with `root=work_dir` → id = filename stem; `ingest_md` → `cid = concept_id or md_path.stem.replace(" ", "_").lower()` — location never enters the ID, so same-stem sources silently overwrite each other | `ingest.py:64`, `import_.py:100-104` |
 | 16 | DirHash/FileHash rows are **never deleted** (MERGE-only): vanished dirs' rows linger (dir-deletion info is durable by accident, and re-reported every run), but a surviving dir's MERGE rewrites `files` — per-file deletion info would be one-shot | `delta.py:86-102,152` |
-| 17 | Concept inserts run as **per-concept transactions** (BEGIN/COMMIT in `_insert_concept`, embedding in the same transaction) — post-commit hash writes are natural; migrations auto-run on open (`_get_meta("schema_version")` → ordered `_MIGRATIONS`) | `import_.py:855-884`, `schema.py:342-347` |
+| 17 | Bundle upserts run as a **single batch transaction** (`_batch_upsert_concepts` under one BEGIN/COMMIT; only single-concept `_insert_concept` is per-concept) — hash writes go right after the batch COMMIT; migrations auto-run on open (`_get_meta("schema_version")` → ordered `_MIGRATIONS`) | `import_.py:855-884`, `schema.py:342-347` |
 
 ## Invariants
 
@@ -56,9 +56,9 @@ for dirs, one-shot for files):
 **0.1 Post-commit hash writes.** Detection becomes side-effect-free: both hash
 writers (fact 3) are replaced by returning pending DirHash/FileHash updates to the
 caller, which persists them **only after** the concept transactions commit. Concept
-inserts already run as per-concept transactions with the embedding inside
-(fact 17), so the natural write point is per file, immediately after its own
-commit (tightest window; batch-after-loop is acceptable). Crash window shrinks to
+bundle upserts are all-or-nothing in one batch transaction (fact 17), so the
+write point is a batch persist immediately after the batch COMMIT: either
+everything committed (hashes written) or nothing did (clean redo). Crash window shrinks to
 "concepts committed, hashes not" → next run redos those files (idempotent upserts,
 wasted work only). Never the reverse. Applies to both `_changed_directories` and
 `import_bundle_inner`.

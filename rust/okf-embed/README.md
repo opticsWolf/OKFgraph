@@ -45,7 +45,7 @@ share **one** ORT binary — no version/CUDA drift between ingest and import.
 | Level | Behaviour |
 |---|---|
 | Install | The wheel is a core dependency of OKFgraph; if it is missing or fails to import, the router raises a clear `RuntimeError` with the install hint — never an `ImportError` from deep inside, never a silent fallback. |
-| Device | CUDA is opportunistic: `auto`/`cuda` use it when the loaded ORT registers the EP, else warn (stderr) + CPU. `used_cuda` reports the outcome. Never fatal. |
+| Device | Accelerators are opportunistic: `auto`/`cuda` use CUDA when the loaded ORT registers the EP, else warn (stderr) + CPU. `used_cuda` reports the outcome. Never fatal. Unknown provider names warn and are skipped; registration failure degrades to CPU. |
 | Encode | **Fail fast.** No fallback at encode time — vectors must stay bit-comparable within one index. |
 | Tokenizer | No transformers in the runtime path, anywhere: internal tokenize + `count_tokens()` (== `tokenizer.encode(t, add_special_tokens=False)`) feed the context-window guard. |
 

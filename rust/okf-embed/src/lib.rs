@@ -17,9 +17,12 @@ use std::sync::RwLock;
 
 use anyhow::{anyhow, Result};
 use ndarray::{Array1, Array2};
-use ort::ep::{ExecutionProvider, CUDA};
+use ort::ep::{
+    ExecutionProvider, ExecutionProviderDispatch, CoreML, DirectML, OpenVINO, ROCm, CUDA,
+};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
+#[cfg(feature = "extension-module")]
 use pyo3::prelude::*;
 
 /// Hard truncation limit, mirroring `tokenizer(..., max_length=8192)`.
@@ -81,10 +84,90 @@ impl DeviceReq {
     }
 }
 
-/// Probe the loaded ORT library for a usable CUDA execution provider,
-/// mirroring bobine's auto-enable and the router's CPU fallback.
+/// Provider mapping outcome: accelerators become a dispatch, CPU stays
+/// implicit (the ORT default), unknown names warn and are skipped.
+enum ProviderMapping {
+    Cpu,
+    Accelerator(ExecutionProviderDispatch),
+    Unknown(String),
+}
+
+/// Map a friendly provider name to its ORT dispatch (bobine's provider
+/// matrix: cuda/rocm/directml/openvino/coreml + implicit cpu). Pure so the
+/// matrix is unit-testable without a model or ORT dylib.
+fn map_provider(name: &str) -> ProviderMapping {
+    match name.to_ascii_lowercase().as_str() {
+        "cudaexecutionprovider" | "cuda" => {
+            ProviderMapping::Accelerator(CUDA::default().build())
+        }
+        "rocmexecutionprovider" | "rocm" => {
+            ProviderMapping::Accelerator(ROCm::default().build())
+        }
+        "directmlexecutionprovider" | "directml" => {
+            ProviderMapping::Accelerator(DirectML::default().build())
+        }
+        "openvinoexecutionprovider" | "openvino" => {
+            ProviderMapping::Accelerator(OpenVINO::default().build())
+        }
+        "coremlexecutionprovider" | "coreml" => {
+            ProviderMapping::Accelerator(CoreML::default().build())
+        }
+        "cpuexecutionprovider" | "cpu" | "" => ProviderMapping::Cpu,
+        other => {
+            eprintln!("okf-embed: unknown ORT provider '{other}', skipping");
+            ProviderMapping::Unknown(other.to_string())
+        }
+    }
+}
+
+/// Apply provider names to a session builder (bobine's clone-and-fallback).
+/// CPU/unknown names contribute nothing; when no accelerator survives, the
+/// builder is returned untouched. Registration failure against the loaded
+/// library degrades to CPU instead of failing model initialization.
+fn apply_providers(
+    builder: ort::session::builder::SessionBuilder,
+    providers: &[String],
+) -> Result<ort::session::builder::SessionBuilder> {
+    let mut eps: Vec<ExecutionProviderDispatch> = Vec::new();
+    for p in providers {
+        if let ProviderMapping::Accelerator(d) = map_provider(p) {
+            eps.push(d);
+        }
+    }
+    if eps.is_empty() {
+        return Ok(builder);
+    }
+    // The clone keeps the pristine builder for fallback: only the attempt
+    // carries accelerator options.
+    let attempt = builder.clone();
+    match oe(attempt.with_execution_providers(&eps)) {
+        Ok(configured) => Ok(configured),
+        Err(e) => {
+            eprintln!(
+                "okf-embed: accelerator providers unavailable in this ONNX Runtime \
+                 library ({e:#}); using CPU"
+            );
+            Ok(builder)
+        }
+    }
+}
+
+/// Probe the loaded ORT library for a usable CUDA execution provider.
+/// Registration is the step that fails on a CPU-only dylib (bobine's
+/// probe), so this tests exactly that instead of a static availability
+/// flag. Probed once per process.
 fn cuda_available() -> bool {
-    CUDA::default().is_available().unwrap_or(false)
+    use std::sync::OnceLock;
+    static PROBE: OnceLock<bool> = OnceLock::new();
+    *PROBE.get_or_init(|| {
+        let builder = match oe(Session::builder()) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        builder
+            .with_execution_providers(std::slice::from_ref(&CUDA::default().build()))
+            .is_ok()
+    })
 }
 
 pub struct JinaV5 {
@@ -170,18 +253,25 @@ impl JinaV5 {
             }))
             .map_err(|e| anyhow!("truncation setup failed: {e}"))?;
 
-        // ---- device resolution: CUDA opportunistic, never fatal ----
+        // ---- device resolution: accelerators opportunistic, never fatal --
         let cuda = cuda_available();
-        let (want_cuda, used_cuda) = match device {
-            DeviceReq::Cpu => (false, false),
-            DeviceReq::Auto => (cuda, cuda),
-            DeviceReq::Cuda if cuda => (true, true),
+        let used_cuda = cuda && !matches!(device, DeviceReq::Cpu);
+        let provider_names: Vec<String> = match device {
+            DeviceReq::Cpu => vec![],
+            DeviceReq::Auto => {
+                if cuda {
+                    vec!["cuda".to_string()]
+                } else {
+                    vec![]
+                }
+            }
+            DeviceReq::Cuda if cuda => vec!["cuda".to_string()],
             DeviceReq::Cuda => {
                 eprintln!(
                     "okf-embed: CUDA requested but no CUDA execution provider in the loaded \
                      ONNX Runtime — falling back to CPU. Install onnxruntime-gpu for acceleration."
                 );
-                (false, false)
+                vec![]
             }
         };
 
@@ -196,9 +286,7 @@ impl JinaV5 {
         ;
         builder = oe(builder.with_intra_threads(intra))?;
         builder = oe(builder.with_inter_threads(1))?;
-        if want_cuda {
-            builder = oe(builder.with_execution_providers([CUDA::default().build()]))?;
-        }
+        builder = apply_providers(builder, &provider_names)?;
         let session = oe(builder.commit_from_file(&onnx_path))
             .map_err(|e| anyhow!("loading {}: {e:#}", onnx_path.display()))?;
 
@@ -313,11 +401,13 @@ impl JinaV5 {
 // PyO3 surface
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "extension-module")]
 #[pyclass(name = "JinaV5")]
 struct PyJinaV5 {
     inner: JinaV5,
 }
 
+#[cfg(feature = "extension-module")]
 #[pymethods]
 impl PyJinaV5 {
     #[staticmethod]
@@ -391,6 +481,7 @@ impl PyJinaV5 {
     }
 }
 
+#[cfg(feature = "extension-module")]
 #[pymodule]
 fn okf_embed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyJinaV5>()?;
@@ -495,6 +586,46 @@ mod tests {
         let out = l2_truncate(&v, 2);
         assert!((out[0] - 0.6).abs() < 1e-6, "{out:?}");
         assert!((out[1] + 0.8).abs() < 1e-6, "{out:?}");
+    }
+
+    // ---- provider matrix -----------------------------------------------------
+
+    #[test]
+    fn provider_mapping_known_accelerators() {
+        for name in [
+            "cuda",
+            "CUDAExecutionProvider",
+            "rocm",
+            "ROCmExecutionProvider",
+            "directml",
+            "DirectMLExecutionProvider",
+            "openvino",
+            "OpenVINOExecutionProvider",
+            "coreml",
+            "CoreMLExecutionProvider",
+        ] {
+            assert!(
+                matches!(map_provider(name), ProviderMapping::Accelerator(_)),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_mapping_cpu_stays_implicit() {
+        for name in ["cpu", "CPU", "CPUExecutionProvider", ""] {
+            assert!(matches!(map_provider(name), ProviderMapping::Cpu), "{name}");
+        }
+    }
+
+    #[test]
+    fn provider_mapping_unknown_is_skipped() {
+        match map_provider("tpu") {
+            ProviderMapping::Unknown(s) => assert_eq!(s, "tpu"),
+            ProviderMapping::Cpu | ProviderMapping::Accelerator(_) => {
+                panic!("tpu must map to Unknown")
+            }
+        }
     }
 
     // ---- contract constants --------------------------------------------------

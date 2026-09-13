@@ -2,8 +2,9 @@
 
 ## Status
 
-In progress. Phase 1 (cross-platform ORT discovery) is implemented; later
-phases remain open.
+In progress. Phases 1 (cross-platform ORT discovery) and 2 (provider
+fallback + extension-module feature) are implemented; later phases remain
+open.
 
 This plan ports the strongest parts of bobine’s ONNX integration into
 OKFgraph/`okf-embed` without importing bobine as a required dependency and

@@ -6,6 +6,17 @@ commit history, newest first.
 
 ## [Unreleased]
 
+### Changed
+- `okf-embed`: accelerator fallback now uses session-builder registration
+  probing (bobine pattern) instead of a static CUDA availability flag;
+  unknown provider names warn and are skipped, and EP registration features
+  (CUDA/ROCm/DirectML/OpenVINO/CoreML/TensorRT/half) are enabled with CPU
+  fallback. The public device surface is unchanged (`auto`/`cpu`/`cuda`)
+  and embedding numerics are untouched.
+- `okf-embed`: explicit optional `extension-module` Cargo feature — pure
+  Rust crate by default, Python extension only for wheel builds (maturin
+  enables the feature; `cargo test` stays link-clean).
+
 ### Added
 - Cross-platform ONNX Runtime discovery: explicit `ORT_DYLIB_PATH` still
   wins, otherwise pip-installed `onnxruntime`/`onnxruntime-gpu` is resolved

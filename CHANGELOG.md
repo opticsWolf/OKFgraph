@@ -4,6 +4,38 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.2.13] — 2026-09-13
+
+Batch G hardening: the new error-path tests caught a completely broken
+soft-delete path (never executed since extraction), plus the first
+wire-level MCP coverage and a scheduled full-suite workflow.
+
+### Fixed
+- Soft-delete lifecycle was dead code: missing `time`/`json` imports
+  (`NameError` on first call), SQLite `INSERT INTO` against the Cypher
+  store, and fresh DBs never getting the `DeletedConcept` table at all.
+  All fixed; `deleted-list`/`-recover`/`-purge` work end to end.
+- Recovered concepts kept only title/body/type/tags — the vector and
+  metadata were silently dropped. `DeletedConcept` now carries a
+  full-fidelity `snapshot` (schema v6; v5 DBs migrate on open via ALTER
+  or CREATE branch), so recover restores embeddings byte-identically.
+- `purge_deleted_concepts` counts tombstone removals (the concept body
+  is usually already gone — soft-delete purges it).
+
+### Added
+- `tests/test_mcp_stdio.py`: wire-level MCP test — the real `okf-mcp`
+  entry point as a child process, raw JSON-RPC over stdio (handshake,
+  5-tool list, root-listing `traverse`, unknown-tool error). Model-free,
+  in the CI fast list.
+- `tests/test_error_paths.py` (14 tests): links ambiguity/precedence/
+  normalization, schema re-init/dim-adoption/v5→v6 both branches, purge
+  lifecycle/idempotency, dylib pass-through, corrupt-ONNX fail-fast.
+  Model-free, in the CI fast list.
+- `.github/workflows/full.yml`: weekly (Sun 02:00 UTC, default branch)
+  + dispatchable full non-slow suite with warmed model cache. Deliberately
+  weekly, not nightly — the frozen lockfile gives daily re-runs no drift
+  signal.
+
 ## [0.2.12] — 2026-09-13
 
 Spin-off Phase 3 (docs/plan-embed-spinoff.md): the embedding engine is no

@@ -4,7 +4,9 @@ Extracted from OKFRouter (purge + soft-delete-with-recovery sections).
 """
 
 from __future__ import annotations
+import json
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -156,11 +158,16 @@ class PurgeManager:
             logger.debug("soft_delete: concept %s not found, skipping", concept_id)
             return False
 
-        # Fetch concept data for preservation
+        # Fetch the full concept row — recover must restore embeddings
+        # and metadata, not a lobotomized row (the v5 table kept only
+        # title/body/type/tags, silently dropping the vector).
         concept_rows = self.conn.execute(
             """
             MATCH (c:Concept {id: $id})
-            RETURN c.title AS title, c.body AS body, c.type AS ctype, c.tags AS tags
+            RETURN c.id AS id, c.type AS type, c.title AS title,
+                   c.description AS description, c.resource AS resource,
+                   c.tags AS tags, c.timestamp AS timestamp,
+                   c.body AS body, c.embedding AS embedding, c.extra AS extra
             """,
             {"id": concept_id},
         ).rows_as_dict().get_all()
@@ -169,12 +176,30 @@ class PurgeManager:
 
         concept_data = concept_rows[0]
         deleted_at = datetime.now().isoformat()
+        snapshot = json.dumps(
+            {
+                "id": concept_data.get("id", concept_id),
+                "type": concept_data.get("type", ""),
+                "title": concept_data.get("title", ""),
+                "description": concept_data.get("description"),
+                "resource": concept_data.get("resource"),
+                "tags": concept_data.get("tags", []),
+                "timestamp": concept_data.get("timestamp"),
+                "body": concept_data.get("body", ""),
+                "embedding": concept_data.get("embedding", []),
+                "extra": concept_data.get("extra", {}),
+            },
+            default=str,
+        )
 
-        # Store in DeletedConcept table
+        # Store in DeletedConcept table (display columns + snapshot)
         self.conn.execute(
             """
-            INSERT INTO DeletedConcept (id, original_id, title, body, deleted_at, type, tags)
-            VALUES ($id, $oid, $title, $body, $deleted_at, $type, $tags)
+            CREATE (d:DeletedConcept {
+                id: $id, original_id: $oid, title: $title, body: $body,
+                deleted_at: $deleted_at, type: $type, tags: $tags,
+                snapshot: $snapshot
+            })
             """,
             {
                 "id": f"deleted_{concept_id}_{int(time.time())}",
@@ -182,8 +207,9 @@ class PurgeManager:
                 "title": concept_data.get("title", ""),
                 "body": concept_data.get("body", ""),
                 "deleted_at": deleted_at,
-                "type": concept_data.get("ctype", ""),
+                "type": concept_data.get("type", ""),
                 "tags": json.dumps(concept_data.get("tags", [])),
+                "snapshot": snapshot,
             },
         )
 
@@ -193,7 +219,7 @@ class PurgeManager:
         logger.info(
             "soft_delete: concept %s moved to DeletedConcept (recovery until %s)",
             concept_id,
-            (datetime.now() + __import__("datetime").timedelta(seconds=self.SOFT_DELETE_WINDOW)).isoformat(),
+            (datetime.now() + timedelta(seconds=self.SOFT_DELETE_WINDOW)).isoformat(),
         )
         return True
 
@@ -218,12 +244,12 @@ class PurgeManager:
         rows = self.conn.execute(
             """
             MATCH (d:DeletedConcept {original_id: $id})
-            RETURN d.title AS title, d.body AS body, d.type AS ctype, d.tags AS tags, d.deleted_at AS deleted_at
+            RETURN d.snapshot AS snapshot, d.deleted_at AS deleted_at
             """,
             {"id": concept_id},
         ).rows_as_dict().get_all()
 
-        if not rows:
+        if not rows or not rows[0].get("snapshot"):
             logger.debug("recover: concept %s not found in DeletedConcept", concept_id)
             return False
 
@@ -238,23 +264,44 @@ class PurgeManager:
             )
             return False
 
-        # Restore the concept
-        concept_data = rows[0]
-        tags = json.loads(concept_data["tags"]) if isinstance(concept_data["tags"], str) else concept_data["tags"]
-
-        self.conn.execute(
-            """
-            INSERT INTO Concept (id, title, body, type, tags)
-            VALUES ($id, $title, $body, $type, $tags)
-            """,
-            {
-                "id": concept_id,
-                "title": concept_data["title"],
-                "body": concept_data["body"],
-                "type": concept_data["ctype"],
-                "tags": tags,
-            },
-        )
+        # Restore the full concept from the snapshot (same CREATE shape as
+        # the import path, including embedding and extra map).
+        snap = json.loads(rows[0]["snapshot"])
+        extra = snap.get("extra") or {}
+        extra_keys = list(extra.keys())
+        extra_values = list(extra.values())
+        params: Dict[str, Any] = {
+            "id": snap.get("id", concept_id),
+            "type": snap.get("type", ""),
+            "title": snap.get("title", ""),
+            "description": snap.get("description"),
+            "resource": snap.get("resource"),
+            "tags": snap.get("tags", []),
+            "timestamp": snap.get("timestamp"),
+            "body": snap.get("body", ""),
+            "embedding": snap.get("embedding", []),
+        }
+        if extra_keys:
+            params["extra_keys"] = extra_keys
+            params["extra_values"] = extra_values
+            self.conn.execute("""
+                CREATE (c:Concept {
+                    id: $id, type: $type, title: $title,
+                    description: $description, resource: $resource,
+                    tags: $tags, timestamp: $timestamp,
+                    body: $body, embedding: $embedding,
+                    extra: MAP($extra_keys, $extra_values)
+                })
+            """, params)
+        else:
+            self.conn.execute("""
+                CREATE (c:Concept {
+                    id: $id, type: $type, title: $title,
+                    description: $description, resource: $resource,
+                    tags: $tags, timestamp: $timestamp,
+                    body: $body, embedding: $embedding
+                })
+            """, params)
 
         # Remove from DeletedConcept
         self.conn.execute(
@@ -314,7 +361,7 @@ class PurgeManager:
     def _purge_deleted_concepts_inner(self, older_than: Optional[int]) -> int:
         """Inner implementation (called under write lock)."""
         threshold = older_than if older_than is not None else self.SOFT_DELETE_WINDOW
-        cutoff = datetime.now() - __import__("datetime").timedelta(seconds=threshold)
+        cutoff = datetime.now() - timedelta(seconds=threshold)
 
         # Find expired entries
         rows = self.conn.execute(
@@ -328,14 +375,16 @@ class PurgeManager:
 
         count = 0
         for row in rows:
-            # Permanently delete (hard purge)
-            if self._purge_concept(row["id"]):
-                count += 1
+            # The concept body is usually already gone (soft-delete purges
+            # it); what this call guarantees is tombstone collection, so
+            # count removals, not _purge_concept hits.
+            self._purge_concept(row["id"])
             # Remove from DeletedConcept
             self.conn.execute(
                 "MATCH (d:DeletedConcept {original_id: $id}) DELETE d",
                 {"id": row["id"]},
             )
+            count += 1
 
         logger.info("purge_deleted: permanently deleted %d expired concept(s)", count)
         return count

@@ -38,6 +38,8 @@ jobs:
           tests/test_doctor.py::TestDoctorPure
           tests/test_obsidian.py::TestWikiLinksPure
           tests/test_roundup_cli.py::TestRoundupHelp
+          tests/test_mcp_stdio.py
+          tests/test_error_paths.py
           -q
 
   build:

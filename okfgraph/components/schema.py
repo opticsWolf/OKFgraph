@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class SchemaManager:
     """Owns schema migrations, meta KV store, and search-index rebuild."""
 
-    SCHEMA_VERSION = 5  # bumped when the on-disk schema changes
+    SCHEMA_VERSION = 6  # bumped when the on-disk schema changes
 
     def __init__(self, conn, embedding_dim, write_lock_ctx):
         self.conn = conn
@@ -101,12 +101,48 @@ class SchemaManager:
         """)
         logger.info("Schema migrated: v4 → v5 (DeletedConcept)")
 
+    def _migrate_v5_to_v6(self) -> None:
+        """v5 → v6: DeletedConcept gains the full-fidelity snapshot column.
+
+        Three on-disk states exist: v5 tables from v1–v4 upgrades (ALTER
+        them), 0.2.x fresh DBs that never got the table (CREATE it whole),
+        and DBs whose fresh-create already made the v6 shape (nothing to
+        do — the ensure step runs before migrations). Probe the actual
+        columns via TABLE_INFO; never assume.
+        """
+        try:
+            info = self.conn.execute(
+                "CALL TABLE_INFO('DeletedConcept') RETURN *"
+            ).rows_as_dict().get_all()
+        except Exception:
+            info = None
+        if not info:
+            self.conn.execute("""
+                CREATE NODE TABLE DeletedConcept (
+                    id STRING PRIMARY KEY,
+                    original_id STRING,
+                    title STRING,
+                    body STRING,
+                    deleted_at STRING,
+                    type STRING,
+                    tags STRING,
+                    snapshot STRING
+                )
+            """)
+        elif not any(r.get("name") == "snapshot" for r in info):
+            self.conn.execute("ALTER TABLE DeletedConcept ADD snapshot STRING")
+        else:
+            logger.debug("DeletedConcept already has snapshot — nothing to do")
+            return
+        logger.info("Schema migrated: v5 → v6 (DeletedConcept.snapshot)")
+
 
     _MIGRATIONS = {}
     _MIGRATIONS[1] = _migrate_v1_to_v2
     _MIGRATIONS[2] = _migrate_v2_to_v3
     _MIGRATIONS[3] = _migrate_v3_to_v4
     _MIGRATIONS[4] = _migrate_v4_to_v5
+    _MIGRATIONS[5] = _migrate_v5_to_v6
 
     def _ensure_schema(self) -> None:
         """Create schema, extensions, and indexes if they don't exist."""
@@ -202,6 +238,22 @@ class SchemaManager:
                 source_id STRING,
                 target_id STRING,
                 timestamp TIMESTAMP
+            )
+        """)
+
+        # DeletedConcept — soft-delete staging with a full-fidelity
+        # snapshot (v6: every Concept column as JSON, so recover restores
+        # embeddings/metadata instead of a lobotomized row).
+        self.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS DeletedConcept (
+                id STRING PRIMARY KEY,
+                original_id STRING,
+                title STRING,
+                body STRING,
+                deleted_at STRING,
+                type STRING,
+                tags STRING,
+                snapshot STRING
             )
         """)
 

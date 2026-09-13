@@ -1,4 +1,4 @@
-# Plan: spin out the embedder into a unified module
+# Plan: spin out the embedder as `embroider`
 
 Design doc — no code changed. Goal: extract OKFgraph's `rust/okf-embed`
 into a standalone project that serves **both** OKFgraph and bobine,
@@ -28,30 +28,33 @@ package, one PyPI wheel — §9.2).
 
 ## 2. Target architecture
 
-New standalone repo `okf-embed` (name the user already owns on PyPI).
-**One crate, one version, two distributions:**
+New standalone repo `embroider` (verified free on crates.io and PyPI;
+joins the bobine/mordant textile family — bobine's spool feeds the
+loom). **One crate, one version, two distributions:**
 
 ```
-okf-embed-repo/
+embroider/          # the standalone repo
   src/
     lib.rs        # re-exports; extension-module-gated pyo3 bindings
     providers.rs  # name → dispatch mapping + clone-and-fallback
     probe.rs      # corrected CUDA availability check (OnceLock)
     policy.rs     # SessionPolicy: text_embed() | ort_defaults()
     acquire.rs    # hf-hub blocking fetch (parse_owner_name, tokenizer)
-    error.rs      # EmbedError (thiserror, no pyo3)
+    error.rs      # error type (anyhow-based, no pyo3)
     jina.rs       # TokenizerHandle + JinaV5 (frozen contract)
     diag.rs       # OrtReport (ORT_DYLIB_PATH env, cuda_usable — ort does not expose the resolved path)
   python/            # thin .pyi + README for the wheel
   .github/workflows/ # ci.yml (cargo test + clippy) + release.yml
 ```
 
-- crates.io (`okf-embed`): the whole crate as an rlib. Pure-Rust
+- crates.io (`embroider`): the whole crate as an rlib. Pure-Rust
   consumers (bobine) depend on it with **default features** — no pyo3
   in their tree (the `extension-module` feature stays opt-in, exactly
   the pattern both projects already use).
-- PyPI (`okf-embed`): maturin wheels built with `features =
-  ["extension-module"]` — what OKFgraph installs.
+- PyPI (`embroider`): maturin wheels built with `features =
+  ["extension-module"]` — what OKFgraph installs. Python module is
+  `embroider` (single word, no underscore): `import embroider` →
+  `embroider.JinaV5` / `embroider.JinaTokenizer`.
 
 One registry entry per ecosystem. No `-core`/`-sys`/`-bindings`
 sprawl.
@@ -82,11 +85,12 @@ No shared Python exception — tracebacks stay project-local.
 
 `jina.rs` holds `TokenizerHandle` + `JinaV5` (contract frozen — §6);
 `lib.rs` holds the PyO3 classes behind the existing
-`extension-module` feature. Python surface stays byte-for-byte stable
-(module `okf_embed`, same signatures); OKFgraph's `LazyRustEncoder`
-needs zero changes.
+`extension-module` feature. Class surface and signatures stay stable;
+the module *name* moves (`okf_embed` → `embroider`) — a mechanical
+import swap in OKFgraph (`LazyRustEncoder`, router factory wiring, the
+~4 test files that stub or import it), listed in Phase 3.
 
-### 2.3 Why a single crate, not `embed-core` + `okf-embed`
+### 2.3 Why a single crate, not an `-core` split
 
 The split was considered and rejected: the only thing it buys is
 keeping `pyo3` out of bobine's tree, which the opt-in
@@ -101,11 +105,13 @@ layering mechanism.
 ## 3. Dependency & versioning rules
 
 1. **One pinned ORT.** `ort 2.0.0-rc.13` + `load-dynamic` in the crate; both
-   consumers inherit the pin via the okf-embed dependency. A version skew between
+   consumers inherit the pin via the embroider dependency. A version skew between
    consumers fails at *resolve* time (good — loud, not silent).
 2. **Independent semver, conservative pins.** One version in the spin-out
-   repo (single crate). Consumers pin `okf-embed = "0.3"` (bobine,
-   crates.io, default features) and `okf-embed>=0.3,<0.4` (okfgraph,
+   repo (single crate), starting at **0.1.0** — a new project; the old
+   `okf-embed` stays frozen at 0.2.0 on PyPI and OKFgraph 0.2.x pins
+   keep working. Consumers pin `embroider = "0.1"` (bobine,
+   crates.io, default features) and `embroider>=0.1,<0.2` (okfgraph,
    PyPI) — same discipline as today's `ladybug==` / `onnxruntime==`
    pins.
 3. **Jina contract is versioned by tests, not hope.** The golden parity
@@ -113,13 +119,13 @@ layering mechanism.
    data; any contract change fails CI before it can ship.
 4. **No path deps across repos.** `cargo publish` rejects path
    dependencies — and bobine runs `cargo publish --locked`. From the
-   moment bobine adopts the crate, `okf-embed` **must be on crates.io**.
+   moment bobine adopts the crate, `embroider` **must be on crates.io**.
    (OKFgraph has no such constraint but gets the same released version
    anyway — both consumers on the same artifact is the point.)
-5. **One wheel per Python module, ever.** The `okf_embed` wheel ships
+5. **One wheel per Python module, ever.** The `embroider` wheel ships
    only from the spin-out repo. Bobine must never vendor or repack its
    `.pyd`. If bobine ever exposes text embedding to Python, it declares
-   `okf-embed` as an optional PyPI dependency (`bobine[embed]`), not a
+   `embroider` as an optional PyPI dependency (`bobine[embed]`), not a
    bundle.
 
 ## 4. Release pipeline (new repo)
@@ -151,18 +157,19 @@ Mirror what already works in both projects (tag guard, OIDC):
 - DoD: inventory checked in; both projects' suites green as baseline.
 
 ### Phase 1 — Stand up the repo + extract plumbing (2–3 days)
-- New repo, single `okf-embed` crate (moved code, clean move per §9.3).
+- New repo `embroider`, single crate (moved code, clean move per §9.3).
   First refactor: extract `providers`/`probe`/`policy`/`acquire`/`error`/
   `diag` modules out of the Jina code; `jina.rs` + bindings delegate to
   them. Unit tests move with the code.
-- Publish `okf-embed 0.3.0` to crates.io (manual first version is
-  fine; pipeline takes over after).
+- Publish `embroider 0.1.0` to crates.io + PyPI (manual first version
+  is fine; pipeline takes over after). The old `okf-embed` project
+  stays frozen at 0.2.0 — no yanking; OKFgraph 0.2.x pins keep working.
 - DoD: `cargo test --locked` green; docs show the text/vision policy
   split with the existing benchmark table.
 
 ### Phase 2 — Bobine adopts the plumbing (1–2 days)
 - `engine.rs`: delete local `apply_providers` + `cuda_available`,
-  depend on `okf-embed 0.3` with default features (no pyo3 enters
+  depend on `embroider 0.1` with default features (no pyo3 enters
   bobine's tree; `tokenizers`/`hf-hub`/`ndarray` are already there, so
   the adoption adds **zero new dependencies**). Policy choice:
   `SessionPolicy::ort_defaults()` — **zero behavior change** (bobine's
@@ -181,12 +188,15 @@ Mirror what already works in both projects (tag guard, OIDC):
 
 ### Phase 3 — OKFgraph switches to released wheels (1 day)
 - `pyproject.toml`: drop `[tool.uv.sources]` path dep →
-  `okf-embed>=0.3` (or whatever the first spun-out release is);
-  `rust/okf-embed/` deleted from OKFgraph; `uv.lock` re-resolved.
+  `embroider>=0.1`; delete `rust/okf-embed/` from OKFgraph; re-resolve
+  `uv.lock`.
+- Import swap: module `okf_embed` → `embroider` in `LazyRustEncoder`,
+  router factory wiring, and the ~4 test files that stub or import it
+  (mechanical; class names/signatures unchanged).
 - Rust-side tests (`test_rust_backend/e2e`) now run against the
   released wheel — unchanged, they already treat it as a binary.
 - CI: remove the maturin rebuild job from OKFgraph's release workflow
-  (it no longer builds embed wheels); keep the `okf-embed>=` floor
+  (it no longer builds embed wheels); keep the `embroider>=` floor
   check in the fast suite.
 - Docs pass: README (path-dep install note, repo tree, `cargo test`
   line, extras list) and `docs/harness-integration.md` repoint from
@@ -202,7 +212,7 @@ Mirror what already works in both projects (tag guard, OIDC):
 - Golden parity vectors live in the spin-out repo; OKFgraph's parity
   test reads them (submodule or vendored fixture — prefer vendored,
   deterministic, no network).
-- A `COMPAT.md` matrix: okfgraph version × okf-embed version ×
+- A `COMPAT.md` matrix: okfgraph version × embroider version ×
   onnxruntime version, updated per release. The single-pinned-ORT rule
   (§3.1) keeps this a 1×1×1 table in practice.
 - DoD: spinning a new embed release without updating OKFgraph is a
@@ -227,7 +237,7 @@ chunker contract or document the resulting index as a separate vector
 space. The Jina contract itself (prefixes, pooling, Matryoshka range)
 comes free via the shared crate — chunking does not.
 
-**Option (a) — Rust-side** (use the `okf-embed` rlib bobine already
+**Option (a) — Rust-side** (use the `embroider` rlib bobine already
 depends on — no new dependency at all):
 - Work: new `embed` feature + `src/embed.rs` (lazy session via OnceLock,
   provider config from `ConverterConfig`, error mapping into
@@ -240,14 +250,14 @@ depends on — no new dependency at all):
   session cost on first embed; golden-fixture output grows.
 - Effort: ~2–4 days incl. tests/docs.
 
-**Option (b) — Python-side** (`bobine[embed]` extra → `okf-embed` wheel):
+**Option (b) — Python-side** (`bobine[embed]` extra → `embroider` wheel):
 - Work: `pyproject` optional-dependencies entry + floor pin; lazy
-  `embed_texts()` in `python/bobine/__init__.py` importing `okf_embed`
+  `embed_texts()` in `python/bobine/__init__.py` importing `embroider`
   on first use (mirrors OKFgraph's lazy pattern); clear error when the
   extra is missing; one model-gated test; docs.
 - Impact: zero Rust change, zero crates.io impact, no new required
   deps, `import bobine` stays cold, wheel size unchanged. Only new
-  coupling: the floor pin on `okf-embed`, managed like anydep.
+  coupling: the floor pin on `embroider`, managed like anydep.
 - Effort: ~0.5–1 day.
 
 Pre-approved order when revisited: **(b) first** (cheap, reversible),
@@ -273,11 +283,11 @@ Either way: no repackaging of the wheel, no new top-level module (§3.5).
 
 | Risk | Mitigation |
 |---|---|
-| `cargo publish` blocked by path deps | okf-embed 0.3.0 hits crates.io in Phase 1, before any consumer adopts it |
+| `cargo publish` blocked by path deps | embroider 0.1.0 hits crates.io in Phase 1, before any consumer adopts it |
 | OIDC can't create the PyPI project | Manual first upload + pending publisher pre-tag (documented lesson) |
 | Two release trains drift (embed 0.x vs consumers) | Conservative pins + floor-version CI + COMPAT matrix; drift is loud, never silent |
 | Vision sessions regress under shared policy | Bobine adopts `ort_defaults()` — policy is explicit data, not a forced default; text policy never leaks into vision without its own benchmark |
-| Wheel/module conflict (`okf_embed` shipped twice) | §3.5: single publisher, optional-dep-only consumption |
+| Wheel/module conflict (`embroider` shipped twice) | §3.5: single publisher, optional-dep-only consumption |
 | Blame does not carry over | Accepted: clean move (§9.3); a pointer commit in OKFgraph records the origin |
 
 ## 8. Effort & order
@@ -289,10 +299,10 @@ every step, and no phase changes vectors.
 
 ## 9. Decisions (recorded)
 
-1. **Repo home**: new standalone `okf-embed` repo. Both consumers equal;
+1. **Repo home**: new standalone `embroider` repo. Both consumers equal;
    independent release trains.
 2. **Package surface**: one crates.io package + one PyPI wheel, both
-   named `okf-embed` (single crate, internal module layering). The
+   named `embroider` (single crate, internal module layering). The
    `-core` split was rejected: it saves bobine zero dependencies (its
    tree already contains the shared deps) while doubling registry, CI,
    and release-train surface. Revisit only if a consumer appears that
@@ -304,6 +314,12 @@ enough, and the new repo starts with readable history.)
 4. **Bobine text embedding**: deferred; scope + impact recorded in
    Phase 5. Pre-approved order when revisited: Python-side extra first,
    Rust-native only on concrete need.
+5. **Name**: `embroider` — crates.io + PyPI verified free; textile
+   family with bobine/mordant, carries the embed idea. Runner-up
+   `metier-embed` rejected to keep `metier` unclaimed as a future
+   plumbing-crate umbrella; bare `metier` and `tisserand` were the
+   other viable candidates. Version restarts at 0.1.0; `okf-embed`
+   0.2.0 stays frozen on PyPI (no yanking).
 
 ## 10. Architecture-review traceability
 

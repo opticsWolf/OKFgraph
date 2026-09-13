@@ -186,7 +186,7 @@ class OKFRouter:
         # Text embeddings: Rust okf_embed wheel (Jina v5 via ORT). No Python
         # fallback — a mid-run stack switch would silently mix vector spaces
         # in one index.
-        from okfgraph.components.embedding import resolve_ort_dylib
+        from okfgraph.components.embedding import LazyRustEncoder, resolve_ort_dylib
         # Resolve first: the native module loads ORT dynamically, so the
         # shared runtime choice must be fixed before importing it.
         self.ort_dylib = resolve_ort_dylib()
@@ -198,22 +198,46 @@ class OKFRouter:
                 "build rust/okf-embed (maturin build --release) and install it"
             ) from None
         # The Rust crate knows auto/cpu/cuda; map torch-style aliases.
+        # Validate eagerly so a bad device still fails at construction —
+        # the session itself opens lazily on first encode (see below).
         rust_device = {"mps": "auto"}.get(device, device)
-        self.encoder = okf_embed.JinaV5.open(
-            model_id,
+        if rust_device not in ("auto", "cpu", "cuda"):
+            raise ValueError(
+                f"device must be 'auto', 'cpu' or 'cuda', got '{device}'"
+            )
+
+        def _report_encoder_open(encoder) -> None:
+            logger.info(
+                "text embeddings: %s dim=%d cuda=%s",
+                model_id, embedding_dim, encoder.used_cuda,
+            )
+            if device == "cuda" and not encoder.used_cuda:
+                logger.warning(
+                    "CUDA requested but the loaded ONNX Runtime has no CUDA execution "
+                    "provider — running on CPU. Install onnxruntime-gpu for acceleration."
+                )
+
+        # Text embeddings: Rust okf_embed wheel (Jina v5 via ORT). No Python
+        # fallback — a mid-run stack switch would silently mix vector spaces
+        # in one index. The wheel import above stays fail-fast; the session
+        # open is lazy so model-free commands (PPR search, budgeted reads,
+        # diff, doctor) never pay model-download/session-build costs.
+        self.encoder = LazyRustEncoder(
+            model_id=model_id,
             truncate_dim=embedding_dim,
             device=rust_device,
-            cache_dir=cache_dir,
+            session_factory=lambda: okf_embed.JinaV5.open(
+                model_id,
+                truncate_dim=embedding_dim,
+                device=rust_device,
+                cache_dir=cache_dir,
+            ),
+            tokenizer_factory=lambda: okf_embed.JinaTokenizer.open(
+                model_id,
+                cache_dir=cache_dir,
+            ),
+            on_open=_report_encoder_open,
         )
-        logger.info(
-            "text embeddings: %s dim=%d cuda=%s",
-            model_id, embedding_dim, self.encoder.used_cuda,
-        )
-        if device == "cuda" and not self.encoder.used_cuda:
-            logger.warning(
-                "CUDA requested but the loaded ONNX Runtime has no CUDA execution "
-                "provider — running on CPU. Install onnxruntime-gpu for acceleration."
-            )
 
         # ── Component wiring (Phase 1-3 refactor) ───────────────────
         # The facade owns the resources (conn, encoder, lock) and injects

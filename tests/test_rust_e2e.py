@@ -55,8 +55,11 @@ def router():
 
 
 def test_backend_selection(router):
+    from okfgraph.components.embedding import LazyRustEncoder
     r, _ = router
-    assert isinstance(r.encoder, okf_embed.JinaV5)
+    # Construction stays cold; the proxy owns the session-open lifecycle.
+    assert isinstance(r.encoder, LazyRustEncoder)
+    assert r.encoder.is_loaded is False
 
 
 def test_no_heavy_imports():

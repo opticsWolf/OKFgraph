@@ -165,13 +165,17 @@ class TestGPUInitialization:
 
     @pytest.mark.skipif(_has_onnxruntime_gpu(), reason="onnxruntime-gpu is installed")
     def test_no_gpu_runtime_warns_on_cuda_request(self, tmp_dir, capsys):
-        """When the loaded ORT has no CUDA EP and device='cuda', warn on stderr."""
+        """When the loaded ORT has no CUDA EP and device='cuda', the first
+        encode warns on stderr and falls back to CPU (the session now opens
+        lazily, so construction alone stays silent)."""
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_no_gpu.db"),
             bundle_root=tmp_dir,
             embedding_dim=512,
             device="cuda",
         )
+        assert r.encoder.is_loaded is False
+        _ = r.embed_engine._encode("warmup", task="Document")
         assert r.encoder.used_cuda is False
         assert "CUDA" in capsys.readouterr().err
         r.close()

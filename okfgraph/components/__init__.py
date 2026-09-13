@@ -13,7 +13,7 @@ stubs (``...``) until their respective phase moves the implementation over.
 from okfgraph.components.schema import SchemaManager
 from okfgraph.components.delta import DeltaDetector
 from okfgraph.components.purge import PurgeManager
-from okfgraph.components.embedding import EmbeddingEngine
+from okfgraph.components.embedding import EmbeddingEngine, LazyRustEncoder
 from okfgraph.components.image_assets import ImageAssetManager
 from okfgraph.components.search import SearchEngine
 from okfgraph.components.import_ import ImportManager, parse_source_file
@@ -37,6 +37,7 @@ __all__ = [
     "DeltaDetector",
     "PurgeManager",
     "EmbeddingEngine",
+    "LazyRustEncoder",
     "ImageAssetManager",
     "SearchEngine",
     "ImportManager",

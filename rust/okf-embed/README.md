@@ -40,6 +40,18 @@ never fatal. OKFgraph's `resolve_ort_dylib()` runs before the native module is
 imported and exposes the choice as `OKFRouter.ort_dylib`, so both bobine and okf-embed
 share **one** ORT binary — no version/CUDA drift between ingest and import.
 
+## Lifecycle: lazy session, cheap tokenizer
+
+`JinaV5.open` (model download + ONNX session build) is the single expensive
+step. `OKFRouter` therefore holds a lazy proxy: construction validates the
+wheel import and device string eagerly, but the session opens on the first
+real encode — PPR search, budgeted reads, diff, and doctor stay cold.
+
+`JinaTokenizer.open` fetches only `tokenizer.json` for exact token counts
+without the session. The truncation policy is shared, so counts are identical
+to the session path (verified). A failed session open is cached and re-raised
+— configuration errors fail fast once, not once per encode.
+
 ## Failure policy
 
 | Level | Behaviour |
@@ -63,8 +75,8 @@ share **one** ORT binary — no version/CUDA drift between ingest and import.
 
 ## Testing
 
-- **Rust unit tests** (13, pure — no network, no dylib, no tokenizer file):
-  device parsing, task-prefix idempotence, the L2 → truncate → re-normalise
+- **Rust unit tests** (18, pure — no network, no dylib, no tokenizer file):
+  device parsing, model-id parsing, provider-matrix mapping, task-prefix idempotence, the L2 → truncate → re-normalise
   math, contract constants, and `open()` validation firing before I/O.
 
   ```bash

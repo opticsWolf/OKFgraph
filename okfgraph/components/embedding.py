@@ -6,6 +6,7 @@ here. Public callers reach these via router.<method> (component bridge).
 """
 import logging
 import math
+import threading
 from pathlib import Path
 
 import mordant
@@ -146,6 +147,107 @@ def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None)
         logger.debug("resolved ORT runtime: %s", found)
         return str(found)
     return None
+
+
+class LazyRustEncoder:
+    """Defers the ONNX session open until the first real encode.
+
+    Router construction stays cheap: the ``okf-embed`` wheel import is still
+    validated eagerly (fail fast on a missing install), but ``JinaV5.open``
+    — model download + session build — waits for the first ``encode`` /
+    ``encode_batch`` / ``used_cuda`` access. Token counting uses the
+    separate lightweight ``JinaTokenizer`` handle, so budgeted reads and the
+    context-window guard stay cold too.
+
+    A failed session open is cached and re-raised: configuration errors stay
+    fail-fast (once, at first encode) instead of retrying network/model
+    acquisition on every call. Thread-safe: concurrent first encodes open
+    exactly one session.
+    """
+
+    def __init__(self, *, model_id, truncate_dim, device,
+                 session_factory, tokenizer_factory, on_open=None):
+        self._model_id = model_id
+        self._truncate_dim = truncate_dim
+        self._device = device
+        self._session_factory = session_factory
+        self._tokenizer_factory = tokenizer_factory
+        self._on_open = on_open
+        self._lock = threading.Lock()
+        self._encoder = None
+        self._encoder_error = None
+        self._open_reported = False
+        self._tokenizer = None
+
+    @property
+    def is_loaded(self) -> bool:
+        """True once the ONNX session has been opened."""
+        return self._encoder is not None
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @property
+    def dim(self) -> int:
+        return self._truncate_dim
+
+    @property
+    def used_cuda(self) -> bool:
+        """Effective device — opens the session on first access."""
+        return bool(self._get_encoder().used_cuda)
+
+    def encode(self, text: str, task: str = "Document"):
+        return self._get_encoder().encode(text, task=task)
+
+    def encode_batch(self, texts, task: str = "Document"):
+        return self._get_encoder().encode_batch(texts, task=task)
+
+    def count_tokens(self, text: str) -> int:
+        """Exact count via the tokenizer-only handle (never opens the session)."""
+        return int(self._get_tokenizer().count_tokens(text))
+
+    def _get_encoder(self):
+        encoder = self._encoder
+        if encoder is not None:
+            return encoder
+        with self._lock:
+            if self._encoder is not None:
+                return self._encoder
+            if self._encoder_error is not None:
+                raise self._encoder_error
+            try:
+                encoder = self._session_factory()
+            except Exception as exc:
+                self._encoder_error = exc
+                raise
+            self._encoder = encoder
+            if self._on_open is not None and not self._open_reported:
+                self._open_reported = True
+                self._on_open(encoder)
+            return encoder
+
+    def _get_tokenizer(self):
+        tokenizer = self._tokenizer
+        if tokenizer is not None:
+            return tokenizer
+        with self._lock:
+            if self._tokenizer is not None:
+                return self._tokenizer
+            try:
+                tokenizer = self._tokenizer_factory()
+            except Exception as exc:
+                logger.debug("tokenizer-only open failed: %s", exc)
+                raise
+            self._tokenizer = tokenizer
+            return tokenizer
+
+    def __repr__(self) -> str:
+        state = "loaded" if self._encoder is not None else "cold"
+        return (
+            f"LazyRustEncoder({self._model_id}, "
+            f"dim={self._truncate_dim}, {state})"
+        )
 
 
 class EmbeddingEngine:

@@ -18,7 +18,7 @@ use std::sync::RwLock;
 use anyhow::{anyhow, Result};
 use ndarray::{Array1, Array2};
 use ort::ep::{
-    ExecutionProvider, ExecutionProviderDispatch, CoreML, DirectML, OpenVINO, ROCm, CUDA,
+    ExecutionProviderDispatch, CoreML, DirectML, OpenVINO, ROCm, CUDA,
 };
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -152,7 +152,94 @@ fn apply_providers(
     }
 }
 
+/// Split an `owner/name` model id — validated before any network access.
+fn parse_owner_name(model_id: &str) -> Result<(String, String)> {
+    model_id
+        .split_once('/')
+        .map(|(owner, name)| (owner.to_string(), name.to_string()))
+        .ok_or_else(|| anyhow!("model_id must be 'owner/name', got '{model_id}'"))
+}
+
+/// Build an HF client with an optional cache-directory override.
+fn hf_client(cache_dir: Option<PathBuf>) -> Result<hf_hub::HFClientSync> {
+    if let Some(dir) = cache_dir {
+        Ok(hf_hub::HFClientBuilder::new()
+            .cache_dir(dir)
+            .build()
+            .map(hf_hub::HFClientSync::from_inner)
+            .map_err(|e| anyhow!("{e}"))?
+            .map_err(|e| anyhow!("{e}"))?)
+    } else {
+        Ok(hf_hub::HFClientSync::new().map_err(|e| anyhow!("{e}"))?)
+    }
+}
+
+/// Fetch only `tokenizer.json` — the cheap acquisition path that lets token
+/// counting work without opening the ONNX session (lazy encoder lifecycle).
+fn fetch_tokenizer_file(
+    model_id: &str,
+    revision: Option<&str>,
+    cache_dir: Option<PathBuf>,
+) -> Result<PathBuf> {
+    let (owner, name) = parse_owner_name(model_id)?;
+    let client = hf_client(cache_dir)?;
+    let repo = client.model(owner, name);
+    repo.download_file()
+        .filename("tokenizer.json".to_string())
+        .maybe_revision(revision.map(str::to_string))
+        .send()
+        .map_err(|e| anyhow!("tokenizer.json missing for '{model_id}': {e}"))
+}
+
+/// Load a tokenizer with the Jina 8192-token truncation policy.
+fn load_tokenizer(tok_path: &std::path::Path) -> Result<tokenizers::Tokenizer> {
+    let mut tokenizer = tokenizers::Tokenizer::from_file(tok_path)
+        .map_err(|e| anyhow!("tokenizer.json failed to load: {e}"))?;
+    tokenizer
+        .with_truncation(Some(tokenizers::TruncationParams {
+            max_length: MAX_LENGTH,
+            ..Default::default()
+        }))
+        .map_err(|e| anyhow!("truncation setup failed: {e}"))?;
+    Ok(tokenizer)
+}
+
+/// Token count without special tokens — replaces
+/// `len(tokenizer.encode(t, add_special_tokens=False))` for the
+/// context-window guard, so the transformers dependency can go.
+fn count_tokens_in(tokenizer: &tokenizers::Tokenizer, text: &str) -> Result<usize> {
+    Ok(tokenizer
+        .encode(text, false)
+        .map_err(|e| anyhow!("tokenization failed: {e}"))?
+        .len())
+}
+
+/// Tokenizer-only handle: exact token counts without the ONNX session.
+/// Lets budgeted reads and the context-window guard stay cold while the
+/// multi-hundred-MB session open waits for the first real encode.
+pub struct TokenizerHandle {
+    tokenizer: tokenizers::Tokenizer,
+}
+
+impl TokenizerHandle {
+    pub fn open(
+        model_id: &str,
+        revision: Option<&str>,
+        cache_dir: Option<PathBuf>,
+    ) -> Result<Self> {
+        let tok_path = fetch_tokenizer_file(model_id, revision, cache_dir)?;
+        Ok(Self { tokenizer: load_tokenizer(&tok_path)? })
+    }
+
+    pub fn count_tokens(&self, text: &str) -> Result<usize> {
+        count_tokens_in(&self.tokenizer, text)
+    }
+}
+
 /// Probe the loaded ORT library for a usable CUDA execution provider.
+///
+/// Tokenizer-only acquisition lives in [`fetch_tokenizer_file`] so the
+/// session open below stays the single expensive step.
 /// Registration is the step that fails on a CPU-only dylib (bobine's
 /// probe), so this tests exactly that instead of a static availability
 /// flag. Probed once per process.
@@ -204,20 +291,9 @@ impl JinaV5 {
         }
 
         // ---- model acquisition (optimum `subfolder="onnx"` layout) ----
-        let (owner, name) = model_id
-            .split_once('/')
-            .ok_or_else(|| anyhow!("model_id must be 'owner/name', got '{model_id}'"))?;
-        let client = if let Some(dir) = cache_dir {
-            hf_hub::HFClientBuilder::new()
-                .cache_dir(dir)
-                .build()
-                .map(hf_hub::HFClientSync::from_inner)
-                .map_err(|e| anyhow!("{e}"))?
-                .map_err(|e| anyhow!("{e}"))?
-        } else {
-            hf_hub::HFClientSync::new().map_err(|e| anyhow!("{e}"))?
-        };
-        let repo = client.model(owner.to_string(), name.to_string());
+        let (owner, name) = parse_owner_name(model_id)?;
+        let client = hf_client(cache_dir.clone())?;
+        let repo = client.model(owner, name);
         let rev = revision.map(str::to_string);
         let onnx_path = repo
             .download_file()
@@ -236,22 +312,10 @@ impl JinaV5 {
         {
             eprintln!("okf-embed: no onnx/model.onnx_data sidecar; assuming inline weights");
         }
-        let tok_path = repo
-            .download_file()
-            .filename("tokenizer.json".to_string())
-            .maybe_revision(revision.map(str::to_string))
-            .send()
-            .map_err(|e| anyhow!("tokenizer.json missing for '{model_id}': {e}"))?;
-
         // ---- tokenizer (no padding here; single-doc encodes need none) ----
-        let mut tokenizer = tokenizers::Tokenizer::from_file(&tok_path)
-            .map_err(|e| anyhow!("tokenizer.json failed to load: {e}"))?;
-        tokenizer
-            .with_truncation(Some(tokenizers::TruncationParams {
-                max_length: MAX_LENGTH,
-                ..Default::default()
-            }))
-            .map_err(|e| anyhow!("truncation setup failed: {e}"))?;
+        // Shared with TokenizerHandle so both paths load identical truncation.
+        let tok_path = fetch_tokenizer_file(model_id, revision, cache_dir)?;
+        let tokenizer = load_tokenizer(&tok_path)?;
 
         // ---- device resolution: accelerators opportunistic, never fatal --
         let cuda = cuda_available();
@@ -389,11 +453,7 @@ impl JinaV5 {
     /// `len(tokenizer.encode(t, add_special_tokens=False))` for the
     /// context-window guard, so the transformers dependency can go.
     pub fn count_tokens(&self, text: &str) -> Result<usize> {
-        Ok(self
-            .tokenizer
-            .encode(text, false)
-            .map_err(|e| anyhow!("tokenization failed: {e}"))?
-            .len())
+        count_tokens_in(&self.tokenizer, text)
     }
 }
 
@@ -482,9 +542,42 @@ impl PyJinaV5 {
 }
 
 #[cfg(feature = "extension-module")]
+#[pyclass(name = "JinaTokenizer")]
+struct PyJinaTokenizer {
+    inner: TokenizerHandle,
+}
+
+#[cfg(feature = "extension-module")]
+#[pymethods]
+impl PyJinaTokenizer {
+    #[staticmethod]
+    #[pyo3(signature = (model_id, revision=None, cache_dir=None))]
+    fn open(
+        model_id: &str,
+        revision: Option<String>,
+        cache_dir: Option<String>,
+    ) -> PyResult<Self> {
+        let inner = TokenizerHandle::open(
+            model_id,
+            revision.as_deref(),
+            cache_dir.map(PathBuf::from),
+        )
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:#}")))?;
+        Ok(Self { inner })
+    }
+
+    fn count_tokens(&self, text: &str) -> PyResult<usize> {
+        self.inner
+            .count_tokens(text)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:#}")))
+    }
+}
+
+#[cfg(feature = "extension-module")]
 #[pymodule]
 fn okf_embed(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyJinaV5>()?;
+    m.add_class::<PyJinaTokenizer>()?;
     m.add("NATIVE_DIM", NATIVE_DIM)?;
     m.add("MAX_LENGTH", MAX_LENGTH)?;
     Ok(())
@@ -586,6 +679,21 @@ mod tests {
         let out = l2_truncate(&v, 2);
         assert!((out[0] - 0.6).abs() < 1e-6, "{out:?}");
         assert!((out[1] + 0.8).abs() < 1e-6, "{out:?}");
+    }
+
+    // ---- model-id parsing (fires before any network access) ------------------
+
+    #[test]
+    fn parse_owner_name_splits_once() {
+        let (owner, name) = parse_owner_name("jinaai/some-model").unwrap();
+        assert_eq!(owner, "jinaai");
+        assert_eq!(name, "some-model");
+    }
+
+    #[test]
+    fn parse_owner_name_rejects_bare_id() {
+        let err = parse_owner_name("no-slash").unwrap_err().to_string();
+        assert!(err.contains("model_id must be 'owner/name'"), "{err}");
     }
 
     // ---- provider matrix -----------------------------------------------------

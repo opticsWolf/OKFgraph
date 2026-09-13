@@ -7,6 +7,18 @@ commit history, newest first.
 ## [Unreleased]
 
 ### Changed
+- Lazy text-encoder initialization: `OKFRouter` construction no longer
+  downloads the model or builds the ONNX session. The `okf-embed` wheel
+  import is still validated eagerly, and an invalid `device` still fails at
+  construction — but `JinaV5.open` waits for the first real encode, so
+  model-free commands (PPR search, budgeted reads, diff, doctor) stay cold.
+  The CUDA fallback warning now fires on first encode instead of at
+  construction. Open failures are cached and re-raised (fail fast once).
+- New `JinaTokenizer` handle in `okf-embed`: exact token counts without the
+  ONNX session, so budgeted reads and the context-window guard never warm
+  the session. Counts are identical to the session tokenizer path.
+
+### Changed
 - `okf-embed`: accelerator fallback now uses session-builder registration
   probing (bobine pattern) instead of a static CUDA availability flag;
   unknown provider names warn and are skipped, and EP registration features

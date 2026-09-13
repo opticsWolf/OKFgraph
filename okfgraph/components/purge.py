@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -108,7 +109,15 @@ class PurgeManager:
                 {"id": concept_id},
             )
 
-            # 6. Remove FileHash entry for this concept.
+            # 6. Remove FileHash entry for this concept (capture paths
+            #    first — step 7's mirror bookkeeping keys off them).
+            mirror_paths = [
+                r["p"]
+                for r in self.conn.execute(
+                    "MATCH (f:FileHash {concept_id: $id}) RETURN f.path AS p",
+                    {"id": concept_id},
+                ).rows_as_dict().get_all()
+            ]
             self.conn.execute(
                 """
                 MATCH (f:FileHash {concept_id: $id})
@@ -116,6 +125,59 @@ class PurgeManager:
                 """,
                 {"id": concept_id},
             )
+
+            # 7. Clear mirror-deletion bookkeeping (0.2.15): drop tombstones
+            #    for these files, and drop DirHash rows left with no
+            #    remaining FileHash/DeletedPath children — otherwise purged
+            #    deletions re-report on every future import.
+            for mp in mirror_paths:
+                self.conn.execute(
+                    "MATCH (d:DeletedPath {path: $p}) DELETE d",
+                    {"p": mp},
+                )
+            # 7b. Scrub these files from their parent DirHash.files lists
+            #    so the deletion stops re-detecting (the hash is unchanged —
+            #    the purge resolved the difference). DirHash.files entries
+            #    are dir-relative, so the basename is the right key.
+            for mp in mirror_paths:
+                parent = str(Path(mp).parent)
+                name = Path(mp).name
+                rows = self.conn.execute(
+                    "MATCH (dh:DirHash {path: $d}) RETURN dh.files AS f",
+                    {"d": parent},
+                ).rows_as_dict().get_all()
+                if not rows:
+                    continue
+                try:
+                    files = json.loads(rows[0]["f"] or "[]")
+                except (ValueError, TypeError):
+                    continue
+                if name in files:
+                    self.conn.execute(
+                        "MATCH (dh:DirHash {path: $d}) SET dh.files = $f",
+                        {"d": parent,
+                         "f": json.dumps([x for x in files if x != name])},
+                    )
+            if mirror_paths:
+                remaining = {
+                    r["p"]
+                    for r in self.conn.execute(
+                        "MATCH (f:FileHash) RETURN f.path AS p"
+                    ).rows_as_dict().get_all()
+                } | {
+                    r["p"]
+                    for r in self.conn.execute(
+                        "MATCH (d:DeletedPath) RETURN d.path AS p"
+                    ).rows_as_dict().get_all()
+                }
+                live_dirs = {str(Path(mp).parent) for mp in remaining}
+                for mp in mirror_paths:
+                    parent = str(Path(mp).parent)
+                    if parent not in live_dirs:
+                        self.conn.execute(
+                            "MATCH (dh:DirHash {path: $d}) DELETE dh",
+                            {"d": parent},
+                        )
 
             self.conn.execute("COMMIT")
             logger.info("purge: deleted concept %s", concept_id)

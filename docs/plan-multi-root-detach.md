@@ -103,8 +103,10 @@ concept count == file count, vectors queryable); parse-failure retry; single-fil
 delete → `--purge-deleted` tombstones it (and tombstone survives a no-purge run in
 between); purge log reports the true count; work-dir isolation (PDF auto-import,
 then regular import re-encodes only actually-changed files; no temp keys remain);
-`doctor` consistency check for hash-rows-without-concepts (report + repair hint).
-Model-free (stub encoder), fast.
+`doctor` consistency check for hash-rows-without-concepts (report + `--fix` repair, which also drops the
+parent dir rows so the next import re-walks them).
+Real-encoder tests (same as the existing suite; baseline 21 tests/16 s) —
+no stub encoder, to avoid interface drift with `EmbeddingEngine`.
 
 **Size:** small-medium (detection refactor, not a two-line move). No schema change.
 

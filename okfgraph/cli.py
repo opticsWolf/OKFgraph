@@ -658,7 +658,8 @@ def _doctor(args):
     if getattr(args, "fix", False):
         fixed = router.doctor_fix()
         print(f"[OK] repaired {fixed['repaired_links']} link(s), "
-              f"normalized {fixed['normalized_timestamps']} timestamp(s)")
+              f"normalized {fixed['normalized_timestamps']} timestamp(s), "
+              f"cleared {fixed.get('cleared_orphan_hashes', 0)} orphan hash row(s)")
         if fixed["skipped_reviewed"]:
             print(f"  skipped reviewed: {', '.join(fixed['skipped_reviewed'])}")
     report = router.diagnose(

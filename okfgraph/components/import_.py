@@ -442,36 +442,53 @@ class ImportManager:
         _t0 = time.monotonic()
 
         # Phase 0: Delta detection — directory-level hash aggregation.
-        # Skips entire subtrees when directory hash is unchanged.
+        # Skips entire subtrees when directory hash is unchanged. Detection
+        # is side-effect-free (0.2.15): dir_updates are persisted only after
+        # concepts commit (Phase 3b), so a crash can never leave hashes
+        # describing state newer than the graph.
         _t1 = time.monotonic()
-        changed, deleted = self.delta_mgr._changed_directories(source_files)
+        changed, deleted, dir_updates = self.delta_mgr._changed_directories(source_files)
         logger.info("directory-delta: %d changed, %d deleted (%.1fs)", len(changed), len(deleted), time.monotonic() - _t1)
 
-        # Purge deleted concepts if requested.
-        if purge_deleted and deleted:
-            cid_map = self.delta_mgr._load_file_hash_concept_ids()
-            for path in deleted:
-                cid = cid_map.get(path)
-                if cid:
-                    self.purge_mgr._purge_concept(cid)
-            logger.info("purged %d deleted concept(s)", len(deleted))
+        # Record deletions durably: tombstones survive no-purge runs so a
+        # later --purge-deleted still sees them.
+        if deleted:
+            self.delta_mgr._record_deletions(deleted)
 
-        if not changed and not deleted:
+        # Purge deleted concepts if requested — consumes this run's
+        # detections plus tombstones left by earlier no-purge runs.
+        # Skipped for suspended (work-dir) imports: a temp import must
+        # never tombstone real concepts.
+        if purge_deleted and not self.delta_mgr._suspended:
+            pending = self.delta_mgr._load_pending_deletions()
+            if pending:
+                purged = 0
+                cid_map = self.delta_mgr._load_file_hash_concept_ids()
+                for path in pending:
+                    cid = cid_map.get(path)
+                    if cid and self.purge_mgr._purge_concept(cid):
+                        purged += 1
+                    else:
+                        # Stale tombstone (already purged, or wedged with no
+                        # concept): resolve it so it stops re-reporting.
+                        self.delta_mgr._clear_deletion(path)
+                logger.info("purged %d deleted concept(s)", purged)
+                if len(pending) > purged:
+                    logger.warning(
+                        "purge: %d tombstone(s) had no matching concept and were cleared",
+                        len(pending) - purged,
+                    )
+
+        if not changed:
             return []
         source_files = changed
 
-        # Update FileHash table after purge (so deleted entries are removed).
-        # This ensures the cid_map used by purge has the correct entries.
-        file_hashes: Dict[str, str] = {}
-        for fp in source_files:
-            rel = str(fp.relative_to(self.bundle_root))
-            h = self.delta_mgr._file_hash(fp)
-            file_hashes[rel] = h
-        self.delta_mgr._store_file_hashes(file_hashes)
-
-        # Phase 1: Parse all files
+        # Phase 1: Parse all files. Failures are per-file warnings; failed
+        # files get no hash state so they retry next run (their directories
+        # are dropped from dir_updates in Phase 3b).
         _t1 = time.monotonic()
         parsed: List[Dict[str, Any]] = []
+        failed_files: List[Path] = []
         for fp in source_files:
             try:
                 concept, body, cid = self._parse_source_file(fp, root)
@@ -482,9 +499,16 @@ class ImportManager:
                     "body": body,
                     "cid": cid,
                     "dir": fp.parent,
+                    "fp": fp,
                 })
             except Exception as e:
+                failed_files.append(fp)
                 logger.warning("parse failed %s: %s", fp.name, e)
+        if failed_files:
+            logger.warning(
+                "parse: %d file(s) failed — excluded from this import, will retry next run",
+                len(failed_files),
+            )
 
         # No-op guard: if nothing parsed successfully, do no work (no encode, no
         # transaction, no index rebuild).
@@ -516,6 +540,21 @@ class ImportManager:
                 pass
             raise
         logger.info("upsert: %d concepts in %.1fs", len(parsed), time.monotonic() - _t1)
+
+        # Phase 3b: Crash-consistency (0.2.15) — persist hashes only for
+        # files whose concepts committed, and only now. Directories holding
+        # failed files are dropped from dir_updates so the next run
+        # re-walks them (plus their successfully parsed siblings — wasted
+        # work only, never a silent skip).
+        file_hashes: Dict[str, str] = {}
+        for p in parsed:
+            fp = p["fp"]
+            rel = str(fp.relative_to(self.bundle_root))
+            file_hashes[rel] = self.delta_mgr._file_hash(fp)
+        self.delta_mgr._store_file_hashes(file_hashes)
+        for fp in failed_files:
+            dir_updates.pop(str(fp.parent.relative_to(self.bundle_root)), None)
+        self.delta_mgr._store_directory_hashes(dir_updates)
 
         # Phase 3.5: Chunk all documents (NEW) — per-concept error isolation
         _import_chunk_errors: List[Tuple[str, Exception]] = []

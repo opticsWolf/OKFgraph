@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Deduction per finding: (points, cap). Score = max(0, 100 - deductions).
 DEDUCTIONS = {
     "broken_link": (5, 40),
+    "orphan_hash": (5, 30),
     "orphan": (2, 20),
     "duplicate_title": (3, 15),
     "stale": (1, 10),
@@ -120,6 +121,28 @@ class DoctorManager:
             _add(bl["source"], "error", "broken_link",
                  f"links to missing concept '{bl['target']}'")
 
+        # Orphan hashes (0.2.15): FileHash rows whose concept_id matches no
+        # Concept and no DeletedConcept — signature of a crashed import that
+        # committed hashes but not concepts. Repaired by --fix.
+        live_ids = {c["id"] for c in concepts}
+        try:
+            tombstoned_ids = {
+                r["oid"]
+                for r in self.conn.execute(
+                    "MATCH (d:DeletedConcept) RETURN d.original_id AS oid"
+                ).rows_as_dict().get_all()
+            }
+        except Exception:
+            tombstoned_ids = set()
+        for fh in self.conn.execute(
+            "MATCH (f:FileHash) "
+            "RETURN f.path AS path, f.concept_id AS cid"
+        ).rows_as_dict().get_all():
+            if fh["cid"] not in live_ids and fh["cid"] not in tombstoned_ids:
+                _add(fh["path"], "error", "orphan_hash",
+                     f"hash tracked for missing concept '{fh['cid']}' "
+                     f"(crashed import?) — cleared by --fix")
+
         titles: Dict[str, List[str]] = {}
         for c in concepts:
             if c["title"]:
@@ -209,8 +232,15 @@ class DoctorManager:
 
         repaired = self.import_mgr.repair_links(skip_sources=reviewed)
 
+        # Orphan-hash repair (0.2.15): drop wedge rows so the next import
+        # re-walks those directories. No concepts are touched, so the
+        # reviewed-concepts rule doesn't apply.
+        cleared = self.import_mgr.delta_mgr._clear_orphan_hashes()
+
         return {
             "repaired_links": repaired,
             "normalized_timestamps": normalized,
             "skipped_reviewed": skipped,
+            "cleared_orphan_hashes": cleared["cleared_orphan_hashes"],
+            "cleared_dir_hashes": cleared["cleared_dir_hashes"],
         }

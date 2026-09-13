@@ -7,8 +7,10 @@ here. Public callers reach these via router.<method> (component bridge).
 import hashlib
 import json
 import logging
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterator, List, Set
 
 from okfgraph.components.import_ import is_concept_file
 
@@ -22,6 +24,23 @@ class DeltaDetector:
     def __init__(self, conn, bundle_root):
         self.conn = conn
         self.bundle_root = bundle_root
+        self._suspended = False
+
+    @contextmanager
+    def suspended(self) -> Iterator[None]:
+        """Bypass the delta baseline (Phase 0, 0.2.15).
+
+        Work-dir imports (PDF auto-import from a TemporaryDirectory) must
+        not read or write the shared DirHash/FileHash state: their
+        root-relative keys would collide with the real bundle's (notably
+        the top-level ``"."`` key). While suspended, detection reports
+        every file as changed and all persists are no-ops.
+        """
+        prev, self._suspended = self._suspended, True
+        try:
+            yield
+        finally:
+            self._suspended = prev
 
     def _file_hash(self, file_path: Path) -> str:
         """SHA-256 hex digest of a file's raw bytes."""
@@ -86,6 +105,8 @@ class DeltaDetector:
 
     def _store_directory_hashes(self, hashes: Dict[str, Dict]) -> None:
         """Persist a path→{hash, files} mapping in the DirHash table."""
+        if self._suspended:
+            return
         try:
             for path, data in hashes.items():
                 files_str = json.dumps(data.get("files", []))
@@ -100,14 +121,24 @@ class DeltaDetector:
             logger.debug("could not store directory hashes: %s", exc)
 
 
-    def _changed_directories(self, source_files: List[Path]) -> tuple[List[Path], List[str]]:
-        """Return (changed_files, deleted_paths) using directory-level hash aggregation.
+    def _changed_directories(
+        self, source_files: List[Path]
+    ) -> tuple[List[Path], List[str], Dict[str, Dict]]:
+        """Return (changed_files, deleted_paths, dir_updates) — no side effects.
 
         Groups files by parent directory, computes combined directory hashes,
         and skips entire subtrees when the directory hash hasn't changed.
         Only files in changed directories are returned as changed.
-        Deleted paths are relative file paths from the stored map of deleted directories.
+        Deleted paths are relative file paths: from the stored map of
+        deleted/emptied directories, plus files deleted inside surviving
+        directories (stored ``files`` vs current files, Phase 0).
+
+        ``dir_updates`` is the would-be DirHash state. The caller persists it
+        only after concepts commit (crash-consistency: hashes must never
+        describe state newer than the graph). Nothing is written here.
         """
+        if self._suspended:
+            return list(source_files), [], {}
         stored_dir_hashes = self._load_directory_hashes()
 
         # Group files by parent directory
@@ -119,6 +150,7 @@ class DeltaDetector:
         # Compute current directory hashes with file paths
         current_dir_hashes: Dict[str, Dict] = {}
         changed: List[Path] = []
+        changed_dirs: Set[str] = set()
         for dir_rel, files in dir_files.items():
             dir_path = self.bundle_root / dir_rel
             if dir_path.exists():
@@ -133,8 +165,11 @@ class DeltaDetector:
             if dir_hash != stored_hash:
                 # Directory changed — add all files in it
                 changed.extend(files)
+                changed_dirs.add(dir_rel)
 
         # Detect deleted directories: dirs in stored map but not on disk
+        # (a dir left with zero files also vanishes from the walk, which is
+        # exactly the "all files deleted" case).
         stored_dirs = set(stored_dir_hashes.keys())
         current_dirs = set(current_dir_hashes.keys())
         deleted_dirs = sorted(stored_dirs - current_dirs)
@@ -148,13 +183,25 @@ class DeltaDetector:
                 # Use native path separator to match FileHash entries
                 deleted_paths.append(str(Path(del_dir) / rel_file))
 
-        # Persist the new directory hashes for the next run
-        self._store_directory_hashes(current_dir_hashes)
+        # Per-file deletions inside surviving but changed directories:
+        # a file deleted while siblings remain never empties the dir, so
+        # the directory-granular check above cannot see it.
+        for dir_rel in sorted(changed_dirs):
+            dir_path = self.bundle_root / dir_rel
+            if not dir_path.exists():
+                continue
+            stored_data = stored_dir_hashes.get(dir_rel, {})
+            stored_files = set(stored_data.get("files", []) if stored_data else [])
+            if not stored_files:
+                continue
+            current_names = {str(fp.relative_to(dir_path)) for fp in dir_files[dir_rel]}
+            for rel_file in sorted(stored_files - current_names):
+                deleted_paths.append(str(Path(dir_rel) / rel_file))
 
         if changed:
             logger.info(
                 "directory-delta: %d changed dir(s), %d changed files out of %d total",
-                len([d for d in dir_files if current_dir_hashes.get(d, {}).get("hash") != stored_dir_hashes.get(d, {}).get("hash")]),
+                len(changed_dirs),
                 len(changed),
                 len(source_files),
             )
@@ -163,13 +210,12 @@ class DeltaDetector:
 
         if deleted_paths:
             logger.info(
-                "directory-delta: %d deleted file(s) in %d deleted directory(s): %s",
+                "directory-delta: %d deleted file(s): %s",
                 len(deleted_paths),
-                len(deleted_dirs),
                 deleted_paths[:5],  # Limit output
             )
 
-        return changed, deleted_paths
+        return changed, deleted_paths, current_dir_hashes
 
 
     def _store_file_hashes(self, hashes: Dict[str, str]) -> None:
@@ -177,7 +223,11 @@ class DeltaDetector:
 
         Upserts each row so the table always reflects the current state.
         Also stores the concept_id for each file to enable safe purge.
+        Callers commit only hashes of successfully parsed files, after the
+        concept transaction commits (Phase 0 crash-consistency).
         """
+        if self._suspended:
+            return
         try:
             for path, h in hashes.items():
                 # Derive concept_id from path: strip extension, normalise separators.
@@ -193,17 +243,119 @@ class DeltaDetector:
             logger.debug("could not store file hashes: %s", exc)
 
 
-    def _load_file_hashes(self) -> Dict[str, str]:
-        """Load the persisted path→hash mapping, or return empty dict."""
+    # -- mirror-deletion tombstones (Phase 0, 0.2.15) --------------------
+
+    def _record_deletions(self, paths: List[str]) -> int:
+        """Persist deletion tombstones (DeletedPath rows), idempotently.
+
+        A tombstone records that `path` was missing from the bundle at
+        detection time. It survives no-purge runs so a later
+        ``import --purge-deleted`` still sees the deletion (DirHash.files
+        diffs alone are one-shot for surviving directories).
+        """
+        if self._suspended or not paths:
+            return 0
+        now = int(time.time())
+        recorded = 0
+        try:
+            for p in paths:
+                self.conn.execute(
+                    "MERGE (d:DeletedPath {path: $p}) SET d.detected_at = $t",
+                    {"p": p, "t": now},
+                )
+                recorded += 1
+        except Exception as exc:
+            logger.debug("could not record deletions: %s", exc)
+        return recorded
+
+    def _load_pending_deletions(self) -> List[str]:
+        """All recorded-but-unresolved deletion paths, in stable order."""
         try:
             rows = self.conn.execute(
-                "MATCH (f:FileHash) RETURN f.path AS p, f.hash AS h"
+                "MATCH (d:DeletedPath) RETURN d.path AS p ORDER BY d.path"
             ).rows_as_dict().get_all()
-            if rows:
-                return {r["p"]: r["h"] for r in rows}
+            return [r["p"] for r in rows] if rows else []
         except Exception as exc:
-            logger.debug("could not load file hashes: %s", exc)
-        return {}
+            logger.debug("could not load pending deletions: %s", exc)
+        return []
+
+    def _clear_deletion(self, path: str) -> None:
+        """Drop one tombstone (purged, or stale with no matching concept)."""
+        try:
+            self.conn.execute(
+                "MATCH (d:DeletedPath {path: $p}) DELETE d", {"p": path}
+            )
+        except Exception as exc:
+            logger.debug("could not clear deletion %s: %s", path, exc)
+
+    # -- wedge repair (Phase 0, 0.2.15) ----------------------------------
+
+    @staticmethod
+    def _parent_dir_key(native_rel_path: str) -> str:
+        """DirHash key for the directory containing a FileHash-style path.
+
+        ``str(Path("w.md").parent)`` is already ``"."``, matching the
+        top-level key `_changed_directories` writes — no special case needed.
+        """
+        return str(Path(native_rel_path).parent)
+
+    def _clear_orphan_hashes(self) -> Dict[str, int]:
+        """Delete FileHash rows with no Concept and no DeletedConcept.
+
+        Signature of a crashed import (hashes committed, concepts not).
+        Parent DirHash rows are dropped too so the next import re-walks
+        those directories instead of trusting the wedge. Used by
+        ``okf doctor --fix``; returns what was cleared.
+        """
+        cleared_files = 0
+        cleared_dirs = 0
+        try:
+            rows = self.conn.execute(
+                "MATCH (f:FileHash) RETURN f.path AS p, f.concept_id AS c"
+            ).rows_as_dict().get_all() or []
+            live = {
+                r["cid"]
+                for r in (
+                    self.conn.execute("MATCH (c:Concept) RETURN c.id AS cid")
+                    .rows_as_dict().get_all()
+                    or []
+                )
+            }
+            try:
+                tombstoned = {
+                    r["oid"]
+                    for r in (
+                        self.conn.execute(
+                            "MATCH (d:DeletedConcept) RETURN d.original_id AS oid"
+                        )
+                        .rows_as_dict().get_all()
+                        or []
+                    )
+                }
+            except Exception:
+                tombstoned = set()
+            orphans = [
+                r for r in rows
+                if r["c"] not in live and r["c"] not in tombstoned
+            ]
+            dir_keys = set()
+            for r in orphans:
+                self.conn.execute(
+                    "MATCH (f:FileHash {path: $p}) DELETE f", {"p": r["p"]}
+                )
+                cleared_files += 1
+                dir_keys.add(self._parent_dir_key(r["p"]))
+            for d in dir_keys:
+                self.conn.execute(
+                    "MATCH (dh:DirHash {path: $d}) DELETE dh", {"d": d}
+                )
+                cleared_dirs += 1
+        except Exception as exc:
+            logger.debug("could not clear orphan hashes: %s", exc)
+        return {
+            "cleared_orphan_hashes": cleared_files,
+            "cleared_dir_hashes": cleared_dirs,
+        }
 
 
     def _load_file_hash_concept_ids(self) -> Dict[str, str]:
@@ -219,53 +371,8 @@ class DeltaDetector:
         return {}
 
 
-    def _changed_files(
-        self, source_files: List[Path]
-    ) -> tuple[List[Path], List[str]]:
-        """Return (changed_files, deleted_paths) since last import.
-
-        Compares SHA-256 of each file against the hashes persisted from the
-        previous ``import_bundle()`` call.  New files (not in the stored map)
-        are treated as changed.  Files in the stored map but absent from disk
-        are returned as deleted_paths.
-
-        The stored map is updated after the check.
-        """
-        stored = self._load_file_hashes()
-
-        current: Dict[str, str] = {}
-        changed: List[Path] = []
-        for fp in source_files:
-            rel = str(fp.relative_to(self.bundle_root))
-            h = self._file_hash(fp)
-            current[rel] = h
-            if h != stored.get(rel):
-                changed.append(fp)
-
-        # Detect deleted files: paths in stored map but not on disk.
-        stored_paths = set(stored.keys())
-        current_paths = set(current.keys())
-        deleted = sorted(stored_paths - current_paths)
-
-        # Persist the new mapping for the next run.
-        self._store_file_hashes(current)
-
-        if changed:
-            logger.info(
-                "delta: %d changed / %d total files",
-                len(changed),
-                len(source_files),
-            )
-        else:
-            logger.info("delta: no changes detected")
-
-        if deleted:
-            logger.info(
-                "delta: %d deleted files detected: %s",
-                len(deleted),
-                deleted,
-            )
-
-        return changed, deleted
+    # NOTE: the old per-file `_changed_files` detector was removed in 0.2.15
+    # (Phase 0). `_changed_directories` is the single delta implementation;
+    # it now also covers per-file deletions inside surviving directories.
 
 

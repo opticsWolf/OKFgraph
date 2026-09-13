@@ -445,12 +445,17 @@ class IngestManager:
         self.delta_mgr.bundle_root = work_dir
         self.import_mgr.bundle_root = work_dir
         try:
-            ids = self.import_mgr.import_bundle(
-                work_dir,
-                batch_size=batch_size,
-                mode=mode,
-                purge_deleted=purge_deleted,
-            )
+            # Suspended (0.2.15): a TemporaryDirectory must never read or
+            # write the shared delta baseline — its root-relative keys
+            # would collide with the real bundle's (notably top-level ".").
+            # Work-dir imports are always full imports.
+            with self.delta_mgr.suspended():
+                ids = self.import_mgr.import_bundle(
+                    work_dir,
+                    batch_size=batch_size,
+                    mode=mode,
+                    purge_deleted=purge_deleted,
+                )
         finally:
             self.bundle_root = old_bundle_root
             self.delta_mgr.bundle_root = old_bundle_root

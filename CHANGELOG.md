@@ -4,6 +4,35 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.2.15] — 2026-09-13
+
+Phase 0 (plan-multi-root-detach): import crash-consistency and true
+deletion detection. An interrupted `import --all` previously committed
+file/dir hashes *before* parsing — the next run trusted them and skipped
+everything, leaving a graph with hash rows and zero concepts (observed
+live with 44 hashes / 0 concepts). Hashes are now persisted only after
+concepts commit, so a crash degrades to wasted re-import work, never a
+silent wedge.
+
+### Fixed
+- Hash-before-commit wedge: `DirHash`/`FileHash` are written post-commit
+  (failed parses keep no hash state and retry; their directories are
+  re-walked next run).
+- Per-file deletions were invisible unless a whole directory emptied:
+  surviving-but-changed directories now diff stored vs current file
+  lists. Deletions persist as `DeletedPath` tombstones, so they survive
+  no-purge runs until a later `--purge-deleted` consumes them.
+- Purge log reported `len(deleted)` instead of the actual purged count.
+- PDF auto-import (the MCP default) imported from a `TemporaryDirectory`
+  with `bundle_root` pointed at it, clobbering the real bundle's
+  top-level delta row (mass silent re-encode on the next import) and
+  leaking temp keys. Work-dir imports now bypass the delta baseline.
+- `okf doctor` gains an `orphan_hash` error rule (hash rows with no
+  concept — the wedge signature) and `okf doctor --fix` clears them plus
+  their parent dir rows, so a wedged pre-0.2.15 DB heals on next import.
+- Removed dead `_changed_files` detector (tests-only); one delta
+  implementation remains.
+
 ## [0.2.14] — 2026-09-13
 
 Unified embedding dimension: **512 is the default everywhere**. `okf-mcp`

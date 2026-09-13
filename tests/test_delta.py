@@ -98,7 +98,7 @@ class TestDeltaDetection:
         b_path = Path(tmp_dir) / "dir_b" / "b.md"
         b_path.unlink()
 
-        changed, deleted = router.delta_mgr._changed_files(
+        changed, deleted, _dir_updates = router.delta_mgr._changed_directories(
             [fp for fp in Path(tmp_dir).rglob("*")
              if fp.is_file() and fp.suffix.lower() in (".md", ".txt", ".markdown")]
         )
@@ -358,8 +358,8 @@ class TestPurgeDeleted:
         assert concepts[0]["n"] == 2, "x and z should remain"
 
 
-class TestChangedFilesEmptyBundle:
-    """Edge case: _changed_files with no source files."""
+class TestChangedDirectoriesEmptyBundle:
+    """Edge case: _changed_directories with no source files."""
 
     @pytest.fixture(scope="class")
     @classmethod
@@ -382,9 +382,10 @@ class TestChangedFilesEmptyBundle:
         cls._router.close()
 
     def test_no_files_returns_empty_tuple(self, router):
-        changed, deleted = router.delta_mgr._changed_files([])
+        changed, deleted, dir_updates = router.delta_mgr._changed_directories([])
         assert changed == []
         assert deleted == []
+        assert dir_updates == {}
 
     def test_purge_nonexistent_returns_false(self, router):
         """Purging a non-existent concept returns False."""

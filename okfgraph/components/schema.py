@@ -289,6 +289,18 @@ class SchemaManager:
             )
         """)
 
+        # DeletedPath — durable mirror-deletion tombstones (Phase 0, 0.2.15).
+        # Written at detection time, consumed by import --purge-deleted. A
+        # tombstone survives no-purge runs (unlike DirHash.files diffs, which
+        # are one-shot for surviving dirs). IF NOT EXISTS: pre-0.2.15 DBs
+        # gain it on open — no migration, no version bump.
+        self.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS DeletedPath (
+                path STRING PRIMARY KEY,
+                detected_at INT64
+            )
+        """)
+
         # Run schema migrations if the on-disk version is behind.
         self._run_schema_migrations()
 

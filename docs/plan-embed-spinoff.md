@@ -9,7 +9,7 @@ without breaking either release pipeline or changing any vector space.
 | Concern | `okf-embed` (in OKFgraph) | bobine 0.5.9 |
 |---|---|---|
 | Text embedding | Jina v5 (`JinaV5`, `JinaTokenizer`, last-token pool, Matryoshka 32–1024) | **none** — pipeline.rs explicitly touches no embedding model |
-| ONNX sessions | 1 text session, `Level3` + intra=phys/2 + inter=1 (measured) | 4 vision sessions (layout/OCR det+rec/table/TexTeller), **ORT defaults** (no thread/opt tuning anywhere) |
+| ONNX sessions | 1 text session (+ tokenizer-only handle), `Level3` + intra=phys/2 + inter=1 (measured) | 4 lazy slots ≈ 6 sessions (TexTeller encoder + decoder_merged, OCR det + rec, layout, table), **ORT defaults** (no thread/opt tuning anywhere) |
 | Provider fallback | `apply_providers` clone-and-fallback | near-identical `apply_providers` (duplicated) |
 | CUDA probe | EP availability check (builder probe tried, reverted — too lax in ort 2.0.0-rc.13) | **still the builder probe** (`engine.rs:70`) — i.e. bobine currently reports CUDA on CPU-only boxes |
 | HF acquisition | `hf-hub` blocking, `parse_owner_name`, tokenizer fetch | own `hf_fetch` per model (same pattern, duplicated) |
@@ -41,7 +41,7 @@ okf-embed-repo/
     acquire.rs    # hf-hub blocking fetch (parse_owner_name, tokenizer)
     error.rs      # EmbedError (thiserror, no pyo3)
     jina.rs       # TokenizerHandle + JinaV5 (frozen contract)
-    diag.rs       # OrtReport (dylib path, cuda_usable)
+    diag.rs       # OrtReport (ORT_DYLIB_PATH env, cuda_usable — ort does not expose the resolved path)
   python/            # thin .pyi + README for the wheel
   .github/workflows/ # ci.yml (cargo test + clippy) + release.yml
 ```
@@ -62,14 +62,21 @@ sprawl.
 duplicated helpers, extracted once. `providers::apply_providers` and
 `probe::cuda_available` replace bobine's `engine.rs` copies (including
 the free win: bobine's stale builder probe becomes the corrected
-availability check). `policy::SessionPolicy` keeps the per-workload
+availability check) — **at builder level only**: bobine's `OnnxEngine`
+keeps owning lazy slots and session lifetimes (one slot may hold
+several sessions, e.g. TexTeller encoder + decoder_merged); the crate
+never becomes a slot manager. `policy::SessionPolicy` keeps the per-workload
 split explicit — `text_embed()` (the measured Level3/phys-2/1 tuning)
 vs. `ort_defaults()` (what bobine uses today; adopted with zero
-behavior change). No model weights, no Python in these modules.
+behavior change). Provider *names* are not policy: bobine's per-slot
+overrides in `ConverterConfig` stay the source of truth; the crate
+applies whatever list it is handed. No model weights, no Python in
+these modules.
 
-`error::EmbedError` (`thiserror`) is mapped to each project's own error
-at the boundary (`PyRuntimeError` / `BobineError`). No shared Python
-exception — tracebacks stay project-local.
+`error` keeps today's `anyhow` (shipped by both projects already — zero
+new deps; `thiserror` was considered and dropped). Errors map to each
+project's own type at the boundary (`PyRuntimeError` / `BobineError`).
+No shared Python exception — tracebacks stay project-local.
 
 ### 2.2 Text-model + bindings (OKFgraph's part, untouched)
 
@@ -93,8 +100,8 @@ layering mechanism.
 
 ## 3. Dependency & versioning rules
 
-1. **One pinned ORT.** `ort 2.0.0-rc.13` + `load-dynamic` in core; both
-   consumers inherit the pin via the core dep. A version skew between
+1. **One pinned ORT.** `ort 2.0.0-rc.13` + `load-dynamic` in the crate; both
+   consumers inherit the pin via the okf-embed dependency. A version skew between
    consumers fails at *resolve* time (good — loud, not silent).
 2. **Independent semver, conservative pins.** One version in the spin-out
    repo (single crate). Consumers pin `okf-embed = "0.3"` (bobine,
@@ -120,7 +127,9 @@ layering mechanism.
 Mirror what already works in both projects (tag guard, OIDC):
 
 - `ci.yml`: `cargo test --locked` (+ `libpython3-dev` equivalent),
-  clippy, Python fast tests (packaging/pinning), maturin build check.
+  clippy, Python fast tests (packaging/pinning), maturin build check,
+  and bobine §14's enforcement adopted: default build stays Python-free
+  (`cargo check` without `extension-module`) alongside the wheel build.
 - `release.yml` on `v*`: tag==version guard → single `cargo publish`
   → maturin matrix (linux/win/macOS-arm64 × py3.11–3.13) → PyPI trusted
   publishing.
@@ -131,10 +140,11 @@ Mirror what already works in both projects (tag guard, OIDC):
 
 ## 5. Migration phases
 ### Phase 0 — Audit & freeze (0.5 day)
-- Inventory every cross-boundary item: the 9 `pub fn`s in
+- Inventory every cross-boundary item: the 8 `pub fn`s in
   `okf-embed/src/lib.rs`, `resolve_ort_dylib` + `LazyRustEncoder` call
   sites in OKFgraph, `apply_providers`/`cuda_available`/`hf_fetch` call
-  sites in bobine.
+  sites in bobine. Cite code, not `architecture.md` (OKFgraph's is
+  v5.9-stale — see §10).
 - Freeze the Jina contract doc (prefixes, 8192, pooling, Matryoshka
   range, default dim) as `CONTRACT.md` in the new repo — quoted from
   current code, not rewritten.
@@ -159,9 +169,15 @@ Mirror what already works in both projects (tag guard, OIDC):
   sessions keep ORT defaults; the measured text policy is documented
   but not applied to vision models without its own benchmark).
 - Side effect (the free win): bobine's CUDA probe becomes the corrected
-  one; its `used_cuda`-style reporting stops lying on CPU boxes.
+  one — its auto-GPU slots stop prepending a CUDA EP that a CPU-only
+  dylib silently drops at commit time (bobine's architecture doc §13
+  claims "CPU silently"; OKFgraph measured rc-13 *accepting* the
+  registration, with only ORT's fallback warning revealing the truth).
+  Conversion output unchanged; commit-time fallback warnings disappear.
 - DoD: bobine suite green, `cargo publish --dry-run` passes (no path
-  deps), conversion outputs byte-identical on golden fixtures.
+  deps), conversion outputs byte-identical on golden fixtures, and
+  `bobine/docs/architecture.md` §4 (probe paragraph) + §13 updated to
+  the corrected probe semantics.
 
 ### Phase 3 — OKFgraph switches to released wheels (1 day)
 - `pyproject.toml`: drop `[tool.uv.sources]` path dep →
@@ -172,6 +188,13 @@ Mirror what already works in both projects (tag guard, OIDC):
 - CI: remove the maturin rebuild job from OKFgraph's release workflow
   (it no longer builds embed wheels); keep the `okf-embed>=` floor
   check in the fast suite.
+- Docs pass: README (path-dep install note, repo tree, `cargo test`
+  line, extras list) and `docs/harness-integration.md` repoint from
+  `rust/okf-embed/` to the external repo.
+- Sequencing with Batch E: `architecture.md` is still v5.9 (describes
+  optimum/transformers, eager text loading). Rewrite it AFTER Phase 3
+  so it describes the pinned-external-dep reality once; if Batch E
+  lands first, its embedding section is amended here.
 - DoD: full non-slow suite green on a released wheel; `cargo test` job
   removed from OKFgraph CI (nothing Rust left to test there).
 
@@ -190,9 +213,10 @@ Mirror what already works in both projects (tag guard, OIDC):
 
 Decision: do not build. Scope below exists so the work can be picked up
 without re-analysis when a concrete consumer appears. Revisit triggers:
-a downstream pipeline wanting vectors at conversion time (e.g. an
-okf-ingest-style flow embedding bobine's markdown), or Python users
-asking for one-pip-install convert+embed.
+any Rust-native consumer (bobine, okf-ingest) wanting vectors at
+conversion time, or Python users asking for one-pip-install
+convert+embed. Note: bobine's architecture doc lists embedding as an
+explicit non-goal (§1) — either option requires amending it first.
 
 **Critical compatibility note for either option:** vectors are only
 interchangeable with OKFgraph's index if the *chunking policy* also
@@ -239,9 +263,9 @@ Either way: no repackaging of the wheel, no new top-level module (§3.5).
 - **No OKFgraph surface change.** 5 MCP tools, CLI verbs, skills, and
   `LazyRustEncoder` semantics untouched. The spin-out is invisible to
   agents (same doctrine as bobine behind `DocumentConverter`).
-- **No new required dependencies** for either consumer. Core's Rust
-  deps (`ort`, `tokenizers`, `hf-hub`, `ndarray`, `thiserror`) are a
-  subset of what both projects already ship.
+- **No new required dependencies** for either consumer. The crate's
+  deps (`ort`, `tokenizers`, `hf-hub`, `ndarray`, `anyhow`) are a subset
+  of what both projects already ship.
 - **No ORT upgrade.** Stays on `2.0.0-rc.13` / `onnxruntime==1.29.0`
   until a measured reason appears (the alignment plan's standing rule).
 
@@ -249,12 +273,12 @@ Either way: no repackaging of the wheel, no new top-level module (§3.5).
 
 | Risk | Mitigation |
 |---|---|
-| `cargo publish` blocked by path deps | Core hits crates.io in Phase 1, before any consumer adopts it |
+| `cargo publish` blocked by path deps | okf-embed 0.3.0 hits crates.io in Phase 1, before any consumer adopts it |
 | OIDC can't create the PyPI project | Manual first upload + pending publisher pre-tag (documented lesson) |
 | Two release trains drift (embed 0.x vs consumers) | Conservative pins + floor-version CI + COMPAT matrix; drift is loud, never silent |
 | Vision sessions regress under shared policy | Bobine adopts `ort_defaults()` — policy is explicit data, not a forced default; text policy never leaks into vision without its own benchmark |
 | Wheel/module conflict (`okf_embed` shipped twice) | §3.5: single publisher, optional-dep-only consumption |
-| History loss on move | `filter-repo`/`subtree split` preferred; fallback is a pointer commit — decided in Phase 0, not mid-migration |
+| Blame does not carry over | Accepted: clean move (§9.3); a pointer commit in OKFgraph records the origin |
 
 ## 8. Effort & order
 
@@ -280,3 +304,24 @@ enough, and the new repo starts with readable history.)
 4. **Bobine text embedding**: deferred; scope + impact recorded in
    Phase 5. Pre-approved order when revisited: Python-side extra first,
    Rust-native only on concrete need.
+
+## 10. Architecture-review traceability
+
+Checked against `bobine/docs/architecture.md` (current) and
+`OKFgraph/architecture.md` (v5.9 — stale, Batch E pending):
+
+- bobine §1 names embedding an explicit non-goal — Phase 5 stays
+  deferred and would amend §1 first if ever built (now noted there).
+- bobine §4's probe description ("dylib registers it", "CPU-only →
+  probe false") contradicts OKFgraph's measured rc-13 behavior;
+  Phase 2 fixes code and doc together.
+- bobine §4's per-slot provider overrides are the provider-name
+  domain; `SessionPolicy` is threads/opt only — no collision (§2.1).
+- bobine §14's "default build is Python-free, enforced in CI" is
+  adopted into the new repo's CI (§4).
+- OKFgraph's architecture.md v5.9 describes optimum/transformers and
+  eager text loading — already false before this spin-off; the
+  authoritative surfaces today are `router.py`,
+  `components/embedding.py`, and `rust/okf-embed/README.md` (which
+  moves with the crate). Phase 3 carries the OKFgraph docs pass;
+  Batch E rewrites `architecture.md` after Phase 3.

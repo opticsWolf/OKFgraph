@@ -4,7 +4,7 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [Unreleased]
+## [0.2.7] — 2026-09-13
 
 ### Fixed
 - Declare both package READMEs as published project descriptions: the root

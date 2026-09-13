@@ -4,6 +4,28 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.2.18] — 2026-09-13
+
+### Fixed
+- Image ingest hardening (found live on the 44-doc family-kb import:
+  three successive deaths right after the links phase, one with a torn
+  WAL):
+  - ladybug 0.20.3 segfaults (access violation) on
+    `WHERE NOT EXISTS { }` + `DETACH DELETE` against the HNSW-indexed
+    ImageAsset table when it runs after an earlier image-ingest
+    transaction in the same session (deterministic two-doc recipe;
+    isolated statements survive). Orphan cleanup now counts edges then
+    plain-deletes — proven safe against the same recipe. Revisit on a
+    ladybug upgrade.
+  - Phantom refs (`![alt](rel)`, `![x](<id>)` mentioned in prose) no
+    longer grow asset rows: unresolvable refs are skipped unless the
+    asset already exists with real bytes (DB-only preservation kept,
+    remote srcs exempt).
+  - Reused assets re-link their concept: concept replacement drops
+    INCLUDES_ASSET edges and reuse previously wrote nothing, silently
+    unlinking images on every doc edit. Asset lookup is now node-direct
+    by planned id (edge joins go blind after replacement).
+
 ## [0.2.17] — 2026-09-13
 
 ### Fixed

@@ -20,6 +20,7 @@ from pathlib import Path
 from okfgraph.images import (
     EmbedRoute,
     IngestMode,
+    _is_remote_src,
     build_extracted_images,
     plan_embedding,
 )
@@ -81,23 +82,54 @@ class ImageAssetManager:
             bundle_root=self.bundle_root,
         )
 
-        stats = {"total": len(images), "text": 0, "omni": 0, "reused": 0, "pruned": 0}
+        stats = {"total": len(images), "text": 0, "omni": 0, "reused": 0, "pruned": 0, "skipped": 0}
         if not images and not self._concept_has_assets(concept_id):
             return stats
 
-        existing = self._existing_asset_hashes(concept_id)  # {asset_id: content_hash}
+        # Node-direct lookup (0.2.18): concept replacement (DETACH DELETE
+        # on reimport) drops INCLUDES_ASSET edges, so an edge-joined lookup
+        # goes blind exactly when it is needed (DB-only reuse). Match nodes
+        # by id among this run's planned assets instead.
+        planned_aids = [img.asset_id for img in images]
+        existing = self._existing_assets(planned_aids)  # {aid: (hash, has_data)}
 
         # --- Encode outside any DB transaction (omni can be slow) ---
         pending: List[Dict[str, Any]] = []
         planned_ids = set()
         for img in images:
+            # Unresolvable refs (prose placeholders like `![alt](rel)` or
+            # `![x](<id>)`, deleted files) carry no bytes. Embed nothing for
+            # them on first sight — otherwise every doc that merely mentions
+            # image syntax grows phantom asset rows. An asset that already
+            # exists keeps the DB-only reuse path below (sources may be
+            # legitimately gone on a detached graph). Remote srcs are exempt:
+            # a failed fetch retries next import instead of giving up.
+            known = existing.get(img.asset_id)
+            if (
+                img.data is None
+                and not _is_remote_src(img.src)
+                and (known is None or not known[1])
+            ):
+                stats["skipped"] += 1
+                continue
             route, caption = plan_embedding(img, mode)
             payload = img.data if route is EmbedRoute.OMNI else (caption or "").encode("utf-8")
             content_hash = self._content_hash(route, payload)
             planned_ids.add(img.asset_id)
 
-            if existing.get(img.asset_id) == content_hash:
+            if known is not None and known[0] == content_hash:
                 stats["reused"] += 1
+                # Re-link: concept replacement (DETACH DELETE on reimport)
+                # drops INCLUDES_ASSET edges, and reuse otherwise writes
+                # nothing — without this MERGE every doc edit silently
+                # unlinks its images.
+                self.conn.execute(
+                    """
+                    MATCH (c:Concept {id: $cid}), (i:ImageAsset {id: $iid})
+                    MERGE (c)-[:INCLUDES_ASSET]->(i)
+                    """,
+                    {"cid": concept_id, "iid": img.asset_id},
+                )
                 continue
 
             if route is EmbedRoute.OMNI:
@@ -161,18 +193,28 @@ class ImageAssetManager:
         return bool(rows) and rows[0]["cnt"] > 0
 
 
-    def _existing_asset_hashes(self, concept_id: str) -> Dict[str, str]:
+    def _existing_assets(self, asset_ids: List[str]) -> Dict[str, Any]:
+        """Known assets among the planned ids: {aid: (content_hash, has_data)}.
+
+        Node-direct (no edge join): concept replacement drops edges, and
+        ``has_data`` tells never-resolved phantoms (stored ``b""``) apart
+        from DB-only assets whose source files are legitimately gone.
+        """
+        if not asset_ids:
+            return {}
         result = self.conn.execute(
             """
-            MATCH (c:Concept {id: $cid})-[:INCLUDES_ASSET]->(i:ImageAsset)
-            RETURN i.id AS id, i.content_hash AS content_hash
+            MATCH (i:ImageAsset)
+            WHERE i.id IN $aids
+            RETURN i.id AS id, i.content_hash AS content_hash, i.data AS data
             """,
-            {"cid": concept_id},
+            {"aids": asset_ids},
         )
-        return {
-            r["id"]: r["content_hash"]
-            for r in result.rows_as_dict().get_all()
-        }
+        out = {}
+        for r in result.rows_as_dict().get_all():
+            data = r["data"] or b""
+            out[r["id"]] = (r["content_hash"], len(data) > 0)
+        return out
 
 
     def _delete_image_asset(self, concept_id: str, asset_id: str) -> None:
@@ -191,14 +233,26 @@ class ImageAssetManager:
             """,
             {"cid": concept_id, "iid": asset_id},
         )
-        self.conn.execute(
+        # Orphan cleanup WITHOUT a WHERE NOT EXISTS subquery (0.2.18): that
+        # formulation segfaults ladybug 0.20.3's native runtime when it runs
+        # after an earlier image-ingest transaction in the same session
+        # (deterministic repro: ingest a doc with image refs, then ingest a
+        # second doc whose upsert deletes — access violation inside the
+        # delete's HNSW index maintenance; isolated statements survive, so
+        # only the full sequence triggers it). Count-then-delete is proven
+        # safe against the same recipe. Revisit on a ladybug upgrade.
+        rows = self.conn.execute(
             """
-            MATCH (i:ImageAsset {id: $iid})
-            WHERE NOT EXISTS { MATCH (i)<-[:INCLUDES_ASSET]-(:Concept) }
-            DETACH DELETE i
+            MATCH (i:ImageAsset {id: $iid})<-[:INCLUDES_ASSET]-(:Concept)
+            RETURN count(*) AS n
             """,
             {"iid": asset_id},
-        )
+        ).rows_as_dict().get_all()
+        if rows and rows[0]["n"] == 0:
+            self.conn.execute(
+                "MATCH (i:ImageAsset {id: $iid}) DETACH DELETE i",
+                {"iid": asset_id},
+            )
         self.schema_mgr._bump_write_epoch()  # image set changed -> image index dirty
 
 

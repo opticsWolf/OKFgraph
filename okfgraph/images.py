@@ -369,6 +369,11 @@ def _domain_allowed(domain: str, allowed_domains: List[str]) -> bool:
     return False
 
 
+def _is_remote_src(src: str) -> bool:
+    """True for http(s) URLs (fetched when allowed) — never placeholders."""
+    return src.lower().startswith(("http://", "https://"))
+
+
 def build_extracted_images(
     concept_id: str,
     body: str,

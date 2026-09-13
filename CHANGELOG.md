@@ -4,6 +4,13 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [Unreleased]
+
+### Fixed
+- Declare both package READMEs as published project descriptions: the root
+  `README.md` for `okfgraph` and `rust/okf-embed/README.md` for `okf-embed`
+  (released as `okf-embed 0.1.1` so PyPI picks up the corrected metadata).
+
 ## [0.2.6] — 2026-09-13
 
 ### Changed

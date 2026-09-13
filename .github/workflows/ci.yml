@@ -37,6 +37,7 @@ jobs:
           uv run --frozen pytest
           tests/test_ranking.py
           tests/test_mcp_server.py
+          tests/test_packaging.py
           tests/test_diff.py::TestDiffPure
           tests/test_doctor.py::TestDoctorPure
           tests/test_obsidian.py::TestWikiLinksPure
@@ -87,7 +88,12 @@ jobs:
           whl = sorted(glob.glob('dist/*.whl'))[-1]
           zf = zipfile.ZipFile(whl)
           meta = zf.read(next(n for n in zf.namelist() if n.endswith('METADATA'))).decode()
-          assert 'okf-embed>=0.1' in meta, meta
-          assert 'path' not in meta and 'file:' not in meta, meta
+          requires = [line.split('Requires-Dist:', 1)[1].strip() for line in meta.splitlines() if line.startswith('Requires-Dist:')]
+          assert any(r.startswith('okf-embed>=') for r in requires), requires
+          assert all('path' not in r and 'file:' not in r for r in requires), requires
+          assert 'Description-Content-Type: text/markdown' in meta, meta
+          lines = meta.splitlines()
+          body = '\n'.join(lines[lines.index('') + 1:])
+          assert len(body.strip()) > 100, len(body)
           print('wheel metadata PyPI-clean')
           "

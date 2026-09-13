@@ -1073,12 +1073,12 @@ wheels = [
 
 [[package]]
 name = "okf-embed"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "rust/okf-embed" }
 
 [[package]]
 name = "okfgraph"
-version = "0.2.4"
+version = "0.2.7"
 source = { editable = "." }
 dependencies = [
     { name = "fasteners" },

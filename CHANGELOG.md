@@ -4,7 +4,7 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [Unreleased]
+## [0.2.6] — 2026-09-13
 
 ### Changed
 - `okf ingest` now requires an explicit `--kind md|pdf|thoughts`. This removes

@@ -1215,10 +1215,11 @@ okf-mcp --db-path ./my_graph.db --embedding-dim 512
 okf-mcp --db-path ./my_graph.db --no-chunking
 ```
 
-> `okf-mcp` defaults to `--embedding-dim 1024` (unlike the router/CLI
-> default 512) — a server opened on an existing 512-dim DB adopts the
-> on-disk dimension per §4.1, so pass `--embedding-dim` explicitly when
-> they must agree.
+> Embedding dim is **512 by default on every surface** (router, CLI
+> `--dim`, `okf-mcp --embedding-dim`, `okfgraph.toml`). Any Matryoshka
+> ladder value (32/64/128/256/512/768/1024) is accepted at creation; a
+> server opened on an existing DB adopts the on-disk dimension per §4.1,
+> so pass the flag explicitly only when creating.
 
 ### Programmatic Usage
 

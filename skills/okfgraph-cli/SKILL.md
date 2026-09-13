@@ -31,6 +31,14 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
 4. Prefer `uv run --project <root> okf ...` so dependencies resolve from
    the project instead of the ambient environment.
 
+## Embedding dimension
+
+- Default is **512 on every surface** (router, MCP `--embedding-dim`,
+  `okfgraph.toml`) — unified, no per-surface surprise.
+- Set freely at creation: `--dim` accepts the Matryoshka ladder (32, 64,
+  128, 256, 512, 768, 1024).
+- Reopening adopts the stored dim — the flag only matters for new graphs.
+
 ## Which command when
 
 | Need | Command |

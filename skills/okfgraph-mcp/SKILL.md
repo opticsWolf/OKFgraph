@@ -25,6 +25,15 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 4. Verify: `search` anything (empty graph returns `[]`, which still proves
    the wiring works).
 
+## Embedding dimension
+
+- Default is **512 on every surface** (router, CLI `--dim`, MCP
+  `--embedding-dim`, `okfgraph.toml`) — unified, no per-surface surprise.
+- Set freely at creation: `--embedding-dim` accepts the Matryoshka ladder
+  (32, 64, 128, 256, 512, 768, 1024).
+- Opening an existing DB adopts its on-disk dim — pass the flag only when
+  creating a new graph.
+
 ## Which tool when
 
 | Need | Tool |

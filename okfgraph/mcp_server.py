@@ -91,7 +91,7 @@ def create_mcp_server(
     db_path: str,
     bundle_root: Optional[str] = None,
     device: str = "cpu",
-    embedding_dim: int = 1024,
+    embedding_dim: int = 512,
     enable_chunking: bool = True,
 ) -> MCPServer:
     """Create an MCP server instance connected to an OKFgraph database.
@@ -414,8 +414,8 @@ def main():
     parser.add_argument(
         "--embedding-dim",
         type=int,
-        default=1024,
-        help="Dimension of the embedding vectors (default: 1024).",
+        default=512,
+        help="Dimension of the embedding vectors (default: 512; Matryoshka ladder: 32, 64, 128, 256, 512, 768, 1024).",
     )
     parser.add_argument(
         "--no-chunking",

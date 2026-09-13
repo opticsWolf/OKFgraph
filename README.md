@@ -1,4 +1,4 @@
-# OKFgraph 0.2.13
+# OKFgraph 0.2.14
 
 [![PyPI](https://img.shields.io/pypi/v/okfgraph)](https://pypi.org/project/okfgraph/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
@@ -172,7 +172,7 @@ knowledge workflows. `.mcp.json` ships a ready config (`uv run --project .
 okf-mcp`).
 
 ```bash
-okf-mcp --db-path ./kb.db --bundle-root ./kb --embedding-dim 1024
+okf-mcp --db-path ./kb.db --bundle-root ./kb
 ```
 
 | Tool | Routing |

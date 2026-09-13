@@ -4,6 +4,24 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.2.14] — 2026-09-13
+
+Unified embedding dimension: **512 is the default everywhere**. `okf-mcp`
+previously defaulted to `--embedding-dim 1024` while the router/CLI
+defaulted to 512, so a graph created over MCP opened requesting 512 on
+CLI (and vice versa) — harmless via dim adoption, but confusing and one
+stale-closure bug away from a real mismatch (fixed in 0.2.13's session
+factory). The dim stays freely settable at creation on both surfaces
+(`--dim` / `--embedding-dim`, full Matryoshka ladder
+32/64/128/256/512/768/1024); existing DBs keep their on-disk dim.
+
+### Changed
+- `okf-mcp --embedding-dim` default 1024 → 512 (signature, flag, help).
+- `okfgraph.toml` dim validation accepts the full ladder (32/64 now
+  allowed, matching `OKFRouter.ALLOWED_DIMS`; off-ladder stays a router
+  warning, not an error).
+- `--dim` / `--embedding-dim` help texts list the ladder.
+
 ## [0.2.13] — 2026-09-13
 
 Batch G hardening: the new error-path tests caught a completely broken

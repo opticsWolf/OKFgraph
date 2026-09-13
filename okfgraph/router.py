@@ -232,7 +232,7 @@ class OKFRouter:
         def _report_encoder_open(encoder) -> None:
             logger.info(
                 "text embeddings: %s dim=%d cuda=%s",
-                model_id, embedding_dim, encoder.used_cuda,
+                model_id, self.embedding_dim, encoder.used_cuda,
             )
             if device == "cuda" and not encoder.used_cuda:
                 logger.warning(
@@ -249,7 +249,10 @@ class OKFRouter:
             session_factory = lambda: embroider.JinaV5.open_files(
                 str(model_path),
                 str(tokenizer_path),
-                truncate_dim=embedding_dim,
+                # Read off self: the stored dimension wins over the
+                # requested one (§4.1 adoption) and factories run lazily,
+                # after construction — so this is the adopted value.
+                truncate_dim=self.embedding_dim,
                 device=rust_device,
             )
             tokenizer_factory = lambda: embroider.JinaTokenizer.open_files(
@@ -258,7 +261,8 @@ class OKFRouter:
         else:
             session_factory = lambda: embroider.JinaV5.open(
                 model_id,
-                truncate_dim=embedding_dim,
+                # See above: adopted dimension, resolved at first encode.
+                truncate_dim=self.embedding_dim,
                 device=rust_device,
                 cache_dir=cache_dir,
             )
@@ -290,6 +294,10 @@ class OKFRouter:
         # (e.g. opening a 512-dim DB with dim=12). Sync it back so the
         # facade and the embedding engine agree.
         self.embedding_dim = self.schema_mgr.embedding_dim
+        # The encoder was built pre-adoption: its factory now reads the
+        # adopted dim lazily (above), but its stored dim/reporting must
+        # agree too — same pattern as search_engine._search_available below.
+        self.encoder._truncate_dim = self.embedding_dim
         self.embed_engine = EmbeddingEngine(
             self.encoder, self.embedding_dim,
             self.device, self.cache_dir, self.model_id, self.omni_model_id,

@@ -60,7 +60,10 @@ class DatabaseConfig:
             errors.append("database.path must be a non-empty string")
         if self.dim < 32 or self.dim > 1024:
             errors.append("database.dim must be between 32 and 1024")
-        if self.dim not in (128, 256, 512, 768, 1024):
+        # Full Matryoshka ladder, mirroring OKFRouter.ALLOWED_DIMS — the
+        # router warns (not errors) off-ladder, so the config accepts the
+        # same set and lets the router own the quality warning.
+        if self.dim not in (32, 64, 128, 256, 512, 768, 1024):
             errors.append(
                 f"database.dim={self.dim} is not a recommended Matryoshka dimension; "
                 f"consider 256 or 512"

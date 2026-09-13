@@ -21,115 +21,94 @@ without breaking either release pipeline or changing any vector space.
 Key insight: **there is no embedding duplication to merge** — bobine
 doesn't embed text. What *is* duplicated (and already diverging) is the
 **ONNX plumbing**: provider mapping, fallback, CUDA probing, HF fetch,
-session policy. The spin-out therefore has two layers:
-
-- **Layer A — shared plumbing crate.** The true "unified module serving
-  both". Kills the duplication and fixes bobine's stale probe for free.
-- **Layer B — standalone text-embedding project.** `okf-embed` gets its
-  own repo + releases; OKFgraph switches path-dep → version pin. Bobine
-  adopts Layer A now; text embedding in bobine (if ever) becomes an
-  *optional* consumer later, not a migration requirement.
+session policy. The spin-out therefore keeps two *layers* — shared
+plumbing vs. Jina text model — as **internal modules of a single crate**,
+not separate packages (package surface stays minimal: one crates.io
+package, one PyPI wheel — §9.2).
 
 ## 2. Target architecture
 
-New standalone repo (recommended: `okf-embed`, same name the user
-already owns on PyPI). Two crates in one repo, one version:
+New standalone repo `okf-embed` (name the user already owns on PyPI).
+**One crate, one version, two distributions:**
 
 ```
 okf-embed-repo/
-  crates/
-    embed-core/      # pure Rust, no pyo3. Publishes to crates.io.
-    okf-embed/       # PyO3 bindings only (extension-module feature).
-                     # Publishes to crates.io (lib) + PyPI (wheels).
+  src/
+    lib.rs        # re-exports; extension-module-gated pyo3 bindings
+    providers.rs  # name → dispatch mapping + clone-and-fallback
+    probe.rs      # corrected CUDA availability check (OnceLock)
+    policy.rs     # SessionPolicy: text_embed() | ort_defaults()
+    acquire.rs    # hf-hub blocking fetch (parse_owner_name, tokenizer)
+    error.rs      # EmbedError (thiserror, no pyo3)
+    jina.rs       # TokenizerHandle + JinaV5 (frozen contract)
+    diag.rs       # OrtReport (dylib path, cuda_usable)
   python/            # thin .pyi + README for the wheel
   .github/workflows/ # ci.yml (cargo test + clippy) + release.yml
 ```
 
-### 2.1 `embed-core` (new, Layer A)
+- crates.io (`okf-embed`): the whole crate as an rlib. Pure-Rust
+  consumers (bobine) depend on it with **default features** — no pyo3
+  in their tree (the `extension-module` feature stays opt-in, exactly
+  the pattern both projects already use).
+- PyPI (`okf-embed`): maturin wheels built with `features =
+  ["extension-module"]` — what OKFgraph installs.
 
-Pure-Rust helpers both projects build on. No model weights, no Python:
+One registry entry per ecosystem. No `-core`/`-sys`/`-bindings`
+sprawl.
 
-```rust
-// providers: name → dispatch mapping + clone-and-fallback application
-pub fn map_provider(name: &str) -> Option<ExecutionProviderDispatch>; // None = cpu-implicit/unknown
-pub fn apply_providers(builder: SessionBuilder, providers: &[impl AsRef<str>])
-    -> ort::Result<SessionBuilder>;
+### 2.1 Plumbing modules (the unified part)
 
-// probing: the corrected availability check, OnceLock-cached
-pub fn cuda_available() -> bool;
+`providers` + `probe` + `policy` + `acquire` + `error` + `diag` — today's
+duplicated helpers, extracted once. `providers::apply_providers` and
+`probe::cuda_available` replace bobine's `engine.rs` copies (including
+the free win: bobine's stale builder probe becomes the corrected
+availability check). `policy::SessionPolicy` keeps the per-workload
+split explicit — `text_embed()` (the measured Level3/phys-2/1 tuning)
+vs. `ort_defaults()` (what bobine uses today; adopted with zero
+behavior change). No model weights, no Python in these modules.
 
-// session policy: explicit, per-workload — NOT one hardcoded tuning.
-// Text (measured): Level3, intra=phys/2, inter=1.
-// Vision (bobine today): ORT defaults. Policy is data, chosen by caller.
-pub struct SessionPolicy { pub opt_level: GraphOptimizationLevel,
-                           pub intra_threads: Option<usize>, // None = ORT default
-                           pub inter_threads: Option<usize> }
-impl SessionPolicy {
-    pub fn text_embed() -> Self;   // the measured policy, with its benchmark table in docs
-    pub fn ort_defaults() -> Self; // what bobine uses today — adopt without behavior change
-}
-pub fn build_session(onnx_path: &Path, policy: &SessionPolicy,
-                     providers: &[impl AsRef<str>]) -> ort::Result<Session>;
+`error::EmbedError` (`thiserror`) is mapped to each project's own error
+at the boundary (`PyRuntimeError` / `BobineError`). No shared Python
+exception — tracebacks stay project-local.
 
-// acquisition: the hf-hub blocking pattern both sides reimplemented
-pub fn hf_fetch(cache_dir: &Path, repo: (&str, &str), filename: &str) -> Result<PathBuf>;
+### 2.2 Text-model + bindings (OKFgraph's part, untouched)
 
-// observation (shared vocabulary for both projects' logs/diagnostics)
-pub struct OrtReport { pub dylib_path: Option<PathBuf>, pub cuda_usable: bool }
-pub fn report() -> OrtReport;
-```
+`jina.rs` holds `TokenizerHandle` + `JinaV5` (contract frozen — §6);
+`lib.rs` holds the PyO3 classes behind the existing
+`extension-module` feature. Python surface stays byte-for-byte stable
+(module `okf_embed`, same signatures); OKFgraph's `LazyRustEncoder`
+needs zero changes.
 
-Deliberately **excluded** from core: image preprocessing (`image`,
-`ndarray` — bobine's vision concern), tokenizers (only needed by text
-models; keep `tokenizers` + `hf-hub` as core deps anyway — they're small
-and both text consumers need them — *or* gate behind a `text` feature;
-decision: plain deps, the crate is still tiny vs. any model).
+### 2.3 Why a single crate, not `embed-core` + `okf-embed`
 
-Error type: core defines `pub enum EmbedError` (`thiserror`, no pyo3);
-each project's bindings map it to their own error (`PyRuntimeError` /
-`BobineError`) at the boundary. No shared Python exception — keeps both
-tracebacks project-local.
-
-### 2.2 `okf-embed` crate (moved, Layer B)
-
-Today's `rust/okf-embed/src/lib.rs`, slimmed to: `TokenizerHandle`,
-`JinaV5` (contract: prefix → tokenize@8192 → forward → last-token →
-L2 → Matryoshka-truncate → renorm — **frozen**), `open`/`open_files`,
-`encode_one`/`encode_many`, PyO3 classes. Everything else (providers,
-probe, policy, fetch) delegates to `embed-core`. The 21 pure unit tests
-move with it; session/model tests stay network/dylib-gated as today.
-
-Python surface is **byte-for-byte stable**: module `okf_embed`, classes
-`JinaV5` / `JinaTokenizer`, same signatures. OKFgraph's
-`LazyRustEncoder` needs zero changes.
-
-### 2.3 Why two crates, not one
-
-Bobine publishes a pure-Rust crate to crates.io and must stay
-`pyo3`-free by default (it already does this via its own
-`extension-module` feature — same pattern). A single combined crate
-would force `pyo3` (optional or not) into bobine's dependency tree for
-plumbing it uses from Rust. `embed-core` (no pyo3, ever) is adoptable
-from bobine's `engine.rs` with zero Python involvement.
+The split was considered and rejected: the only thing it buys is
+keeping `pyo3` out of bobine's tree, which the opt-in
+`extension-module` feature already achieves, and the only deps the
+plumbing shares (`tokenizers`, `hf-hub`, `ndarray`) are **already in
+bobine's tree** for TexTeller/OCR — so a split saves bobine zero
+dependencies while doubling the registry/package/CI surface. If a
+consumer ever appears that needs plumbing without the text-model deps,
+revisit then; until that day, modules — not packages — are the
+layering mechanism.
 
 ## 3. Dependency & versioning rules
 
 1. **One pinned ORT.** `ort 2.0.0-rc.13` + `load-dynamic` in core; both
    consumers inherit the pin via the core dep. A version skew between
    consumers fails at *resolve* time (good — loud, not silent).
-2. **Independent semver, conservative pins.** Core and bindings share one
-   version in the spin-out repo (they release together). Consumers pin
-   `embed-core = "0.1"` (bobine, crates.io) and `okf-embed>=0.3,<0.4`
-   (okfgraph, PyPI) — same discipline as today's `ladybug==` /
-   `onnxruntime==` pins.
+2. **Independent semver, conservative pins.** One version in the spin-out
+   repo (single crate). Consumers pin `okf-embed = "0.3"` (bobine,
+   crates.io, default features) and `okf-embed>=0.3,<0.4` (okfgraph,
+   PyPI) — same discipline as today's `ladybug==` / `onnxruntime==`
+   pins.
 3. **Jina contract is versioned by tests, not hope.** The golden parity
    vectors (≤1e-5 vs. reference) move into the spin-out repo as fixture
    data; any contract change fails CI before it can ship.
 4. **No path deps across repos.** `cargo publish` rejects path
    dependencies — and bobine runs `cargo publish --locked`. From the
-   moment bobine adopts core, core **must be on crates.io**. (OKFgraph
-   has no such constraint but gets the same released version anyway —
-   both consumers on the same artifact is the point.)
+   moment bobine adopts the crate, `okf-embed` **must be on crates.io**.
+   (OKFgraph has no such constraint but gets the same released version
+   anyway — both consumers on the same artifact is the point.)
 5. **One wheel per Python module, ever.** The `okf_embed` wheel ships
    only from the spin-out repo. Bobine must never vendor or repack its
    `.pyd`. If bobine ever exposes text embedding to Python, it declares
@@ -142,9 +121,9 @@ Mirror what already works in both projects (tag guard, OIDC):
 
 - `ci.yml`: `cargo test --locked` (+ `libpython3-dev` equivalent),
   clippy, Python fast tests (packaging/pinning), maturin build check.
-- `release.yml` on `v*`: tag==version guard → `cargo publish`
-  (`embed-core` first, then `okf-embed` lib) → maturin matrix
-  (linux/win/macOS-arm64 × py3.11–3.13) → PyPI trusted publishing.
+- `release.yml` on `v*`: tag==version guard → single `cargo publish`
+  → maturin matrix (linux/win/macOS-arm64 × py3.11–3.13) → PyPI trusted
+  publishing.
 - First-time setup lessons carried over: create PyPI project + pending
   publisher *before* the first tag (OIDC can't create projects), declare
   `readme` in both manifests, keep Python/Cargo versions in lock-step
@@ -161,23 +140,24 @@ Mirror what already works in both projects (tag guard, OIDC):
   current code, not rewritten.
 - DoD: inventory checked in; both projects' suites green as baseline.
 
-### Phase 1 — Stand up the repo + `embed-core` (2–3 days)
-- New repo, crates `embed-core` + `okf-embed` (moved code, history
-  preserved via `git subtree split`/`filter-repo` if worth it, else a
-  clean move with a pointer commit — prefer history preservation).
-- Core starts as the extracted plumbing: providers, probe (corrected),
-  policy, fetch, report, error type. Unit tests move with the code.
-- Publish `embed-core 0.1.0` to crates.io (manual first version is
+### Phase 1 — Stand up the repo + extract plumbing (2–3 days)
+- New repo, single `okf-embed` crate (moved code, clean move per §9.3).
+  First refactor: extract `providers`/`probe`/`policy`/`acquire`/`error`/
+  `diag` modules out of the Jina code; `jina.rs` + bindings delegate to
+  them. Unit tests move with the code.
+- Publish `okf-embed 0.3.0` to crates.io (manual first version is
   fine; pipeline takes over after).
 - DoD: `cargo test --locked` green; docs show the text/vision policy
   split with the existing benchmark table.
 
-### Phase 2 — Bobine adopts core (1–2 days)
+### Phase 2 — Bobine adopts the plumbing (1–2 days)
 - `engine.rs`: delete local `apply_providers` + `cuda_available`,
-  depend on `embed-core 0.1`. Policy choice: `SessionPolicy::ort_defaults()`
-  — **zero behavior change** (bobine's sessions keep ORT defaults; the
-  measured text policy is documented but not applied to vision models
-  without its own benchmark).
+  depend on `okf-embed 0.3` with default features (no pyo3 enters
+  bobine's tree; `tokenizers`/`hf-hub`/`ndarray` are already there, so
+  the adoption adds **zero new dependencies**). Policy choice:
+  `SessionPolicy::ort_defaults()` — **zero behavior change** (bobine's
+  sessions keep ORT defaults; the measured text policy is documented
+  but not applied to vision models without its own benchmark).
 - Side effect (the free win): bobine's CUDA probe becomes the corrected
   one; its `used_cuda`-style reporting stops lying on CPU boxes.
 - DoD: bobine suite green, `cargo publish --dry-run` passes (no path
@@ -223,8 +203,8 @@ chunker contract or document the resulting index as a separate vector
 space. The Jina contract itself (prefixes, pooling, Matryoshka range)
 comes free via the shared crate — chunking does not.
 
-**Option (a) — Rust-side** (bobine depends on the `okf-embed` rlib
-behind a Cargo feature):
+**Option (a) — Rust-side** (use the `okf-embed` rlib bobine already
+depends on — no new dependency at all):
 - Work: new `embed` feature + `src/embed.rs` (lazy session via OnceLock,
   provider config from `ConverterConfig`, error mapping into
   `BobineError`); a Rust text chunker matching the mordant contract
@@ -287,14 +267,12 @@ every step, and no phase changes vectors.
 
 1. **Repo home**: new standalone `okf-embed` repo. Both consumers equal;
    independent release trains.
-2. **Crate split**: `embed-core` + `okf-embed`. Publishing split:
-   `embed-core` → crates.io only (pure Rust lib, bobine's Rust dep);
-   `okf-embed` → crates.io (rlib with the PyO3 bindings) **and** PyPI
-   (compiled maturin wheels — what OKFgraph installs). crates.io
-   ships source for Rust builds; PyPI ships binaries for Python
-   installs — they are two distributions of the same crate, not two
-   crates. `embed-core` never touches PyPI (nothing Python imports it
-   directly).
+2. **Package surface**: one crates.io package + one PyPI wheel, both
+   named `okf-embed` (single crate, internal module layering). The
+   `-core` split was rejected: it saves bobine zero dependencies (its
+   tree already contains the shared deps) while doubling registry, CI,
+   and release-train surface. Revisit only if a consumer appears that
+   needs plumbing without the text-model deps.
 3. **History**: clean move. (`filter-repo` would have replayed
    `rust/okf-embed/` commits into the new repo to preserve blame;
    rejected — a pointer commit in OKFgraph noting the move origin is

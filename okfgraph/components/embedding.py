@@ -109,7 +109,7 @@ def _warm_ort_gpu_dlls(module) -> bool:
 def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None) -> Optional[str]:
     """Point ``ORT_DYLIB_PATH`` at a pip-installed ORT build when unset.
 
-    Both bobine and okf-embed load ONNX Runtime dynamically; sharing one
+    Both bobine and embroider load ONNX Runtime dynamically; sharing one
     binary avoids version/CUDA drift between the two runtimes. Explicit
     user configuration always wins — this only fills the gap.
 
@@ -152,7 +152,7 @@ def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None)
 class LazyRustEncoder:
     """Defers the ONNX session open until the first real encode.
 
-    Router construction stays cheap: the ``okf-embed`` wheel import is still
+    Router construction stays cheap: the ``embroider`` wheel import is still
     validated eagerly (fail fast on a missing install), but ``JinaV5.open``
     — model download + session build — waits for the first ``encode`` /
     ``encode_batch`` / ``used_cuda`` access. Token counting uses the
@@ -253,7 +253,7 @@ class LazyRustEncoder:
 class EmbeddingEngine:
     """Owns the embedding model and chunking logic.
 
-    Text embeddings come from the Rust okf_embed wheel (Jina v5 via ORT):
+    Text embeddings come from the Rust embroider wheel (Jina v5 via ORT):
     prefixed, last-token pooled, truncated. There is no Python fallback —
     a mid-run stack switch would silently mix vector spaces in one index.
     """

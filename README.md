@@ -17,7 +17,7 @@ model loaded**, structural diffing, scored health checks, and Obsidian-vault
 compatible wikilinks — in a single LadybugDB file.
 
 Design stance: **slim dependencies, no legacy fallbacks.** Embeddings run
-through the `okf-embed` Rust wheel (ONNX Runtime, no torch / transformers /
+through the `embroider` Rust wheel (ONNX Runtime, no torch / transformers /
 optimum anywhere). PDF conversion runs through the `bobine` Rust engine behind
 a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
@@ -27,7 +27,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
 | Category | Features |
 |---|---|
-| **Embeddings** | Jina v5 (`jina-embeddings-v5-text-small-retrieval`) via the `okf-embed` Rust wheel; last-token pooling, Matryoshka truncation (32–1024, default 512); omni model (`…-omni-small-retrieval`) lazy-loaded for images only |
+| **Embeddings** | Jina v5 (`jina-embeddings-v5-text-small-retrieval`) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (32–1024, default 512); omni model (`…-omni-small-retrieval`) lazy-loaded for images only |
 | **Search** | Hybrid RRF fusion (vector + FTS) at concept and chunk granularity; `rank=none\|hub\|ppr` — including **PPR**: lexical seeds → exact Personalized PageRank, zero model load, deterministic |
 | **Read** | Body / chunks / rebuilt document / graph context, with optional **token budgets** (`max_tokens`): self first, then PPR-ranked neighbours, index-first for context |
 | **Storage** | LadybugDB `==0.20.3` (pinned — newer 0.20.x segfaults index builds): graph + vector + FTS in one file |
@@ -49,24 +49,25 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 Requires Python ≥ 3.11.
 
 ```bash
-pip install "okfgraph[pdf,omni]"   # PyPI (okf-embed ships platform wheels; published)
+pip install "okfgraph[pdf,omni]"   # PyPI (embeddings come from the published `embroider` wheels)
 ```
 
-Or from source with `uv` (also builds the `okf-embed` Rust wheel from
-`rust/okf-embed` via `[tool.uv.sources]`):
+Or from source with `uv` (no Rust toolchain needed — the embedding
+engine is the external `embroider` package):
 
 ```bash
 git clone <repo> && cd OKFgraph
-uv sync                 # core: ladybug, okf-embed, onnxruntime, mordant, mcp, …
+uv sync                 # core: ladybug, embroider, onnxruntime, mordant, mcp, …
 uv sync --extra pdf     # bobine PDF converter
 uv sync --extra omni    # sentence-transformers + Pillow (image embeddings)
 uv sync --extra dev     # pytest
 ```
 
-Core dependencies are deliberately few: `ladybug==0.20.3`, `okf-embed`,
-`onnxruntime==1.29.0` (one pinned ORT binary shared by bobine + okf-embed;
-`ORT_DYLIB_PATH`-overridable), `mordant`, `mcp>=2.0`, `pydantic`, `pyyaml`,
-`numpy`, `python-frontmatter`, `fasteners`. There is no torch, no
+Core dependencies are deliberately few: `ladybug==0.20.3`, `embroider>=0.1,<0.2`
+(the shared embedding engine — github.com/opticsWolf/embroider, also used by
+bobine), `onnxruntime==1.29.0` (one pinned ORT binary shared by bobine +
+embroider; `ORT_DYLIB_PATH`-overridable), `mordant`, `mcp>=2.0`, `pydantic`,
+`pyyaml`, `numpy`, `python-frontmatter`, `fasteners`. There is no torch, no
 transformers, no optimum, no PDF stack in the core install.
 
 ---
@@ -215,7 +216,7 @@ Delta ──► Schema ──► ImageAssets ──► Purge ──► Ingest �
    │                                                    (bobine seam)
    └──────────────── LadybugDB (graph + vector + FTS, one file) ──┘
                          ▲
-              Rust okf-embed (Jina v5, ORT) — tokenize, last-token
+              Rust embroider (Jina v5, ORT) — tokenize, last-token
               pool, L2-norm, Matryoshka truncate; numerics pinned
               by tests/test_parity.py
 ```
@@ -239,7 +240,7 @@ Key design decisions:
 - **Last-token pooling** (not mean) — required by Jina v5; mean pooling
   breaks alignment with omni image embeddings.
 - **Single pinned ORT** (`onnxruntime==1.29.0`, `ORT_DYLIB_PATH`-overridable)
-  shared by bobine + okf-embed.
+  shared by bobine + embroider.
 - **Bobine is a plugin, not a dependency** — `DocumentConverter.convert()`
   is the seam; provider owns its options (`routing_mode`,
   `extract_images`); missing bobine → clear `RuntimeError`, never a silent
@@ -277,7 +278,8 @@ Key design decisions:
 ```bash
 uv run --project . pytest tests/ -q        # full suite (model loads; takes a while)
 uv run --project . pytest tests/test_ranking.py tests/test_mcp_server.py -q   # fast subset
-cd rust/okf-embed && cargo test --locked   # Rust unit tests (pure, no model)
+# Rust unit tests live in the embroider repo:
+# https://github.com/opticsWolf/embroider (cargo test --locked)
 ```
 
 Golden fixtures under `tests/fixtures/` (`ppr_graph`, `diff_a`/`diff_b`,
@@ -304,7 +306,6 @@ okfgraph/
 │   ├── tools.py           # legacy tool definitions (superseded by mcp_server)
 │   └── components/        # ranking, links, search, lint, import_, export, diff, doctor,
 │                          # embedding, converters, image_assets, delta, purge, schema, ingest
-├── rust/okf-embed/        # Jina v5 Rust loader (ort, CUDA-opportunistic) + Python wheel
 ├── skills/                # okfgraph-mcp, okfgraph-cli, okfgraph-ingest (harness-neutral source)
 ├── tests/fixtures/        # conformance corpus: ppr, diff, doctor, obsidian, bundles
 ├── docs/                  # converters, harness-integration, plan-retrieval-roundup, diagnostics…
@@ -317,8 +318,9 @@ okfgraph/
 
 ## Requirements
 
-Core (`uv sync`): `ladybug==0.20.3`, `okf-embed` (built from `rust/okf-embed`),
-`onnxruntime==1.29.0`, `mordant>=0.9`, `mcp>=2.0`, `pydantic>=2`, `pyyaml>=6`,
+Core (`uv sync`): `ladybug==0.20.3`, `embroider>=0.1,<0.2` (PyPI wheels,
+github.com/opticsWolf/embroider), `onnxruntime==1.29.0`, `mordant>=0.9`,
+`mcp>=2.0`, `pydantic>=2`, `pyyaml>=6`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.
 
 - `--extra pdf`: `bobine>=0.5` (default PDF converter).

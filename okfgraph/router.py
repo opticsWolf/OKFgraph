@@ -2,7 +2,7 @@
 
 Design choices:
     - **Rust embedding core**: The jina-embeddings-v5 model runs through
-      the okf-embed wheel (ONNX Runtime, no torch / optimum / transformers
+      the embroider wheel (ONNX Runtime, no torch / optimum / transformers
       anywhere in the process). Task prefix, tokenization, last-token
       pooling, L2 normalisation and Matryoshka truncation all live in Rust;
       ``tests/test_parity.py`` pins the numerics.
@@ -189,7 +189,7 @@ class OKFRouter:
         # pays the cost of pulling in the ~1.5B-param vision tower.
         self._omni = None
 
-        # Text embeddings: Rust okf_embed wheel (Jina v5 via ORT). No Python
+        # Text embeddings: Rust embroider wheel (Jina v5 via ORT). No Python
         # fallback — a mid-run stack switch would silently mix vector spaces
         # in one index.
         from okfgraph.components.embedding import LazyRustEncoder, resolve_ort_dylib
@@ -197,11 +197,11 @@ class OKFRouter:
         # shared runtime choice must be fixed before importing it.
         self.ort_dylib = resolve_ort_dylib()
         try:
-            import okf_embed
+            import embroider
         except ImportError:
             raise RuntimeError(
-                "the okf-embed wheel is required for text embeddings: "
-                "build rust/okf-embed (maturin build --release) and install it"
+                "the embroider wheel is required for text embeddings: "
+                "pip install 'embroider>=0.1,<0.2'"
             ) from None
         # The Rust crate knows auto/cpu/cuda; map torch-style aliases.
         # Validate eagerly so a bad device still fails at construction —
@@ -240,29 +240,29 @@ class OKFRouter:
                     "provider — running on CPU. Install onnxruntime-gpu for acceleration."
                 )
 
-        # Text embeddings: Rust okf_embed wheel (Jina v5 via ORT). No Python
+        # Text embeddings: Rust embroider wheel (Jina v5 via ORT). No Python
         # fallback — a mid-run stack switch would silently mix vector spaces
         # in one index. The wheel import above stays fail-fast; the session
         # open is lazy so model-free commands (PPR search, budgeted reads,
         # diff, doctor) never pay model-download/session-build costs.
         if explicit_files:
-            session_factory = lambda: okf_embed.JinaV5.open_files(
+            session_factory = lambda: embroider.JinaV5.open_files(
                 str(model_path),
                 str(tokenizer_path),
                 truncate_dim=embedding_dim,
                 device=rust_device,
             )
-            tokenizer_factory = lambda: okf_embed.JinaTokenizer.open_files(
+            tokenizer_factory = lambda: embroider.JinaTokenizer.open_files(
                 str(tokenizer_path),
             )
         else:
-            session_factory = lambda: okf_embed.JinaV5.open(
+            session_factory = lambda: embroider.JinaV5.open(
                 model_id,
                 truncate_dim=embedding_dim,
                 device=rust_device,
                 cache_dir=cache_dir,
             )
-            tokenizer_factory = lambda: okf_embed.JinaTokenizer.open(
+            tokenizer_factory = lambda: embroider.JinaTokenizer.open(
                 model_id,
                 cache_dir=cache_dir,
             )
@@ -311,7 +311,7 @@ class OKFRouter:
             self.conn, self.bundle_root, self._write_lock_ctx,
             self.enable_chunking, self.schema_mgr, self.delta_mgr, self.embed_engine,
             self.image_mgr, self.purge_mgr,
-            self.encoder.count_tokens, okf_embed.MAX_LENGTH,
+            self.encoder.count_tokens, embroider.MAX_LENGTH,
         )
         self.ingest_mgr = IngestManager(
             self._write_lock_ctx, self.bundle_root, self.device,

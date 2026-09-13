@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "okfgraph"
-version = "0.2.11"
+version = "0.2.12"
 description = "Ladybug-backed OKF knowledge graph with ONNX + Jina v5 embeddings"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,14 +12,17 @@ license = "Apache-2.0 OR MIT"
 dependencies = [
     # Pinned: ladybug index builds segfault on newer 0.20.x (verified 0.20.3).
     "ladybug==0.20.3",
-    "okf-embed>=0.1",
+    # Embedding engine — external crate (github.com/opticsWolf/embroider).
+    # Floor-pinned <0.2: 0.2.x of okfgraph stays on embroider 0.1.x so the
+    # Jina contract and wheel matrix move together with releases.
+    "embroider>=0.1,<0.2",
     "pydantic>=2.0",
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",
     "numpy>=1.26",
-    # Single pinned ORT binary shared by bobine + okf-embed (both load
+    # Single pinned ORT binary shared by bobine + embroider (both load
     # dynamically; resolve_ort_dylib() points ORT_DYLIB_PATH here).
-    # Verified against ort 2.0.0-rc.13 + bobine 0.5.9 — do not float.
+    # Verified against ort 2.0.0-rc.13 + bobine 0.5.10 — do not float.
     "onnxruntime==1.29.0",
     "mordant>=0.9",
     "mcp>=2.0",
@@ -39,9 +42,6 @@ omni = [
     "sentence-transformers>=3.0",
     "Pillow>=10.0",
 ]
-
-[tool.uv.sources]
-okf-embed = { path = "rust/okf-embed", editable = true }
 
 [project.scripts]
 okf = "okfgraph.cli:main"

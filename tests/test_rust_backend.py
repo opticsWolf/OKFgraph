@@ -1,6 +1,6 @@
-"""Rust embedding backend wiring: EmbeddingEngine + okf_embed integration.
+"""Rust embedding backend wiring: EmbeddingEngine + embroider integration.
 
-Needs okf_embed wheel + mordant. The numeric parity itself lives in
+Needs embroider wheel + mordant. The numeric parity itself lives in
 test_parity.py; here we pin the *wiring* (backend branch, token counting,
 ORT dylib bootstrap).
 """
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-okf_embed = pytest.importorskip("okf_embed")
+embroider = pytest.importorskip("embroider")
 pytest.importorskip("mordant")
 
 from okfgraph.components.embedding import EmbeddingEngine, resolve_ort_dylib
@@ -21,7 +21,7 @@ MODEL = "jinaai/jina-embeddings-v5-text-small-retrieval"
 @pytest.fixture(scope="module")
 def encoder():
     resolve_ort_dylib()
-    return okf_embed.JinaV5.open(MODEL, truncate_dim=64, device="cpu")
+    return embroider.JinaV5.open(MODEL, truncate_dim=64, device="cpu")
 
 
 @pytest.fixture(scope="module")
@@ -83,8 +83,8 @@ def test_open_files_matches_hf_acquisition():
     tok_path = snap / "tokenizer.json"
     assert onnx_path.is_file() and tok_path.is_file()
 
-    via_hub = okf_embed.JinaV5.open(MODEL, truncate_dim=64, device="cpu")
-    via_files = okf_embed.JinaV5.open_files(
+    via_hub = embroider.JinaV5.open(MODEL, truncate_dim=64, device="cpu")
+    via_files = embroider.JinaV5.open_files(
         str(onnx_path), str(tok_path), truncate_dim=64, device="cpu"
     )
     assert via_files.used_cuda is False
@@ -92,7 +92,7 @@ def test_open_files_matches_hf_acquisition():
         a = via_hub.encode(text, task="Document")
         b = via_files.encode(text, task="Document")
         assert a == pytest.approx(b, abs=1e-6)
-    tok = okf_embed.JinaTokenizer.open_files(str(tok_path))
+    tok = embroider.JinaTokenizer.open_files(str(tok_path))
     assert tok.count_tokens("hello world") == 2
 
 

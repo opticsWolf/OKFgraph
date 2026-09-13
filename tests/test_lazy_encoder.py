@@ -186,7 +186,7 @@ def test_router_construction_stays_cold(tmp_path, monkeypatch):
         JinaTokenizer=types.SimpleNamespace(open=boom),
         MAX_LENGTH=8192,
     )
-    monkeypatch.setitem(sys.modules, "okf_embed", stub)
+    monkeypatch.setitem(sys.modules, "embroider", stub)
 
     router = OKFRouter(
         db_path=str(tmp_path / "cold.db"),

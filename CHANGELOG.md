@@ -4,6 +4,32 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.2.12] — 2026-09-13
+
+Spin-off Phase 3 (docs/plan-embed-spinoff.md): the embedding engine is no
+longer built in-tree. `rust/okf-embed/` is deleted and okfgraph now depends
+on the released external crate — `embroider` (github.com/opticsWolf/embroider,
+crates.io rlib + PyPI wheels, version floor `>=0.1,<0.2`). Same Python
+surface, same vectors, no Rust toolchain needed to build or use okfgraph.
+
+### Changed
+- Dependency swap: `okf-embed>=0.1` (path dep) → `embroider>=0.1,<0.2`
+  (plain PyPI pin); `[tool.uv.sources]` removed; `uv.lock` re-resolved.
+- Module import `okf_embed` → `embroider` in the router wiring, lazy
+  encoder, and all tests — class names, signatures, and behavior
+  unchanged (Jina contract frozen; golden parity tests pass against the
+  0.1.3 wheel byte-identically).
+- `rust/okf-embed/` deleted from the tree (in-tree copy frozen at 0.2.0
+  in git history; live development is in the embroider repo).
+- CI: `cargo test` job removed (nothing Rust left in-tree); Rust
+  toolchain steps dropped from the fast job; Requires-Dist sanity check
+  now pins `embroider>=`.
+- Release workflow: okf-embed wheel build/publish jobs removed —
+  okfgraph releases now publish only the okfgraph sdist+wheel; embroider
+  wheels live from their own repo/releases.
+- Docs: README + `docs/harness-integration.md` repointed (external
+  wheel, no path dep, embroider repo owns Rust tests).
+
 ## [0.2.11] — 2026-09-13
 
 ONNX-runtime alignment with bobine (`docs/plan-onnx-alignment.md`): robust

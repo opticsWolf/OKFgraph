@@ -19,13 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Rust toolchain (builds the okf-embed path dependency)
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust/okf-embed
-
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
@@ -47,28 +40,6 @@ jobs:
           tests/test_roundup_cli.py::TestRoundupHelp
           -q
 
-  rust:
-    name: cargo test (okf-embed)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust/okf-embed
-
-      # pyo3 links libpython into the test binary (extension-module is only
-      # enabled for wheel builds via maturin).
-      - name: libpython
-        run: sudo apt-get update && sudo apt-get install -y libpython3-dev
-
-      - name: Rust unit tests (no network, no ORT dylib)
-        working-directory: rust/okf-embed
-        run: cargo test --locked
-
   build:
     name: build sdist + wheel
     runs-on: ubuntu-latest
@@ -84,7 +55,7 @@ jobs:
       - name: Check metadata
         run: uvx twine check dist/*
 
-      - name: Requires-Dist sanity (okf-embed must be a plain PyPI pin)
+      - name: Requires-Dist sanity (embroider must be a plain PyPI pin)
         run: |
           uv run --frozen --no-sync python -c "
           import zipfile, glob
@@ -92,7 +63,7 @@ jobs:
           zf = zipfile.ZipFile(whl)
           meta = zf.read(next(n for n in zf.namelist() if n.endswith('METADATA'))).decode()
           requires = [line.split('Requires-Dist:', 1)[1].strip() for line in meta.splitlines() if line.startswith('Requires-Dist:')]
-          assert any(r.startswith('okf-embed>=') for r in requires), requires
+          assert any(r.startswith('embroider>=') for r in requires), requires
           assert all('path' not in r and 'file:' not in r for r in requires), requires
           assert 'Description-Content-Type: text/markdown' in meta, meta
           lines = meta.splitlines()

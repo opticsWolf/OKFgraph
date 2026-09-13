@@ -1,6 +1,6 @@
 """End-to-end: OKFRouter with the Rust embedding stack (no torch/optimum/transformers).
 
-Needs ladybug + okf_embed wheel + mordant + model download (cached after first
+Needs ladybug + embroider wheel + mordant + model download (cached after first
 run). Slow-marked like test_parity.py.
 """
 import shutil
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("ladybug")
-okf_embed = pytest.importorskip("okf_embed")
+embroider = pytest.importorskip("embroider")
 pytest.importorskip("mordant")
 
 from okfgraph import OKFRouter

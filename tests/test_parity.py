@@ -1,4 +1,4 @@
-"""Parity: okf_embed (Rust/ort) vs torch-free baseline (transformers + onnxruntime).
+"""Parity: embroider (Rust/ort) vs torch-free baseline (transformers + onnxruntime).
 
 Replicates EmbeddingEngine._encode exactly in numpy and pins the Rust port
 at max abs diff <= 1e-5, cosine >= 0.999999, across dims x tasks x texts.
@@ -15,7 +15,7 @@ import pytest
 onnxruntime = pytest.importorskip("onnxruntime")
 transformers = pytest.importorskip("transformers")
 np = pytest.importorskip("numpy")
-okf_embed = pytest.importorskip("okf_embed")
+embroider = pytest.importorskip("embroider")
 
 MODEL = "jinaai/jina-embeddings-v5-text-small-retrieval"
 DIMS = [32, 64, 128, 256, 512, 1024]
@@ -86,7 +86,7 @@ def baseline():
 def test_parity(baseline, dim, task):
     _ort_dylib()
     sess, tok = baseline
-    enc = okf_embed.JinaV5.open(MODEL, truncate_dim=dim, device="cpu")
+    enc = embroider.JinaV5.open(MODEL, truncate_dim=dim, device="cpu")
     assert enc.used_cuda is False
     assert enc.dim == dim
     for text in TEXTS:
@@ -101,7 +101,7 @@ def test_parity(baseline, dim, task):
 
 def test_batch_shape():
     _ort_dylib()
-    enc = okf_embed.JinaV5.open(MODEL, truncate_dim=64, device="cpu")
+    enc = embroider.JinaV5.open(MODEL, truncate_dim=64, device="cpu")
     vecs = enc.encode_batch(["doc %d" % i for i in range(5)])
     assert len(vecs) == 5 and all(len(v) == 64 for v in vecs)
 
@@ -110,9 +110,9 @@ def test_bad_dim_rejected():
     _ort_dylib()
 
     with pytest.raises(RuntimeError):
-        okf_embed.JinaV5.open(MODEL, truncate_dim=2048, device="cpu")
+        embroider.JinaV5.open(MODEL, truncate_dim=2048, device="cpu")
     with pytest.raises(RuntimeError):
-        okf_embed.JinaV5.open(MODEL, truncate_dim=16, device="cpu")
+        embroider.JinaV5.open(MODEL, truncate_dim=16, device="cpu")
 
 
 def test_cuda_parity_and_flag():
@@ -124,12 +124,12 @@ def test_cuda_parity_and_flag():
     """
     _ort_dylib()
     try:
-        gpu = okf_embed.JinaV5.open(MODEL, truncate_dim=512, device="cuda")
+        gpu = embroider.JinaV5.open(MODEL, truncate_dim=512, device="cuda")
     except RuntimeError:
         pytest.skip("no ONNX Runtime with CUDA EP")
     if not gpu.used_cuda:
         pytest.skip("CUDA requested but CPU fallback engaged")
-    cpu = okf_embed.JinaV5.open(MODEL, truncate_dim=512, device="cpu")
+    cpu = embroider.JinaV5.open(MODEL, truncate_dim=512, device="cpu")
     worst, worstcos = 0.0, 1.0
     for text in TEXTS:
         a = np.array(cpu.encode(text), dtype=np.float64)

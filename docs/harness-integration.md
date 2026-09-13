@@ -10,12 +10,13 @@ uv run --project . okf-mcp --db-path ./kb.db --bundle .
 ```
 
 - Transport: stdio (default). Entry point: `okf-mcp` (`okfgraph.mcp_server:main`).
-- Dependencies resolve from `pyproject.toml` (`uv sync`); the Rust
-  `okf-embed` wheel builds from `rust/okf-embed` via `[tool.uv.sources]`.
+- Dependencies resolve from `pyproject.toml` (`uv sync`); the embedding
+  engine is the external `embroider` package (PyPI wheels, also used by
+  bobine — no Rust toolchain needed to run okfgraph).
 - The `pdf` extra (`bobine`) is needed only for `ingest_pdf` with the
   default converter; the `omni` extra only for image embeddings.
 - Optional: `ORT_DYLIB_PATH` to pin the ONNX Runtime binary shared by
-  bobine + okf-embed (defaults to the pip-installed `onnxruntime==1.29.0`).
+  bobine + embroider (defaults to the pip-installed `onnxruntime==1.29.0`).
 
 ### Claude Code
 

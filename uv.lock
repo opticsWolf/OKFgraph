@@ -326,6 +326,23 @@ nvtx = [
 ]
 
 [[package]]
+name = "embroider"
+version = "0.1.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/dd/bc/7d9807d80396c299626610ad6fb77c37980b90824964b5a5a3c9804ec823/embroider-0.1.3.tar.gz", hash = "sha256:cf46ee6e339aad861710c63ffb7033e52a0ce393696cef575839026868d5c662", size = 52453, upload-time = "2026-09-13T12:34:18.798Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/53/9d1cb8eb66f04e4abd1ea87bdc851cf68a48eb6035221c5e6ca4e10afd24/embroider-0.1.3-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:d88f04deb4a4f28eacf742abff3f61c634c7bc7daa753e9b87fe2e51d8eadee6", size = 6268852, upload-time = "2026-09-13T12:34:03.274Z" },
+    { url = "https://files.pythonhosted.org/packages/15/5b/b9c3ec65415f26457b0a9b7d5f1d71220c2ff6081564fc7e7a8d639bcd71/embroider-0.1.3-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:17791f858ea1541db55f626bd5c05cee59576364d2271145118b4625e3009d59", size = 7233759, upload-time = "2026-09-13T12:34:05.199Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/97/1c3996b743890ba95034c325f1c7532dbeb2922c097facb4a3a4d8c02a9b/embroider-0.1.3-cp311-cp311-win_amd64.whl", hash = "sha256:7edd64e1d36b50e1eaa7bb0ca68ba0f0234001d53337c3a62303e4a46c14bc69", size = 5792681, upload-time = "2026-09-13T12:34:07.275Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/49/c82477ef295f3f59cb08025f9bfd0ec652c1a50e0caff3afbf6132676dac/embroider-0.1.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:7a1f8f00d883631c8697d9b2faebd3b9b19e71d84702d11dd528af5de7676bfc", size = 6260278, upload-time = "2026-09-13T12:34:08.972Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/dc/05b0bc9d8252b9437463147db081ec4d3365e7f15b5beaef69a472e76960/embroider-0.1.3-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:64a1004f3c99bfe4042a7018c62072a4002d3f739f5f342ddd93dde68e8ecf00", size = 7232378, upload-time = "2026-09-13T12:34:10.852Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/b6/cb7845671dab197ebbd64de6e85508774d500173d5ae2c5ba644958bc577/embroider-0.1.3-cp312-cp312-win_amd64.whl", hash = "sha256:8381c8b7d5e8eea16c1898ec94d245b0b9ba8dbe11cd99fa1aa62e672ccb952f", size = 5787591, upload-time = "2026-09-13T12:34:12.546Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/ac/c582dc5f8d9b886c0a5f74b1dc1ec7e8017b11291f3e27d332bdf1bebb63/embroider-0.1.3-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:1c9f66a3e3a4ab41cece0c00282c388040db2d1e160302ad57ede515b1ecc8e2", size = 6261657, upload-time = "2026-09-13T12:34:14.182Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/f9/18b349f086b412dca6a8e0eeccb284fb4366d8ec6e2ba5908a198a2e70a7/embroider-0.1.3-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:c2897c644e1d7ec9a5c1e7f1d00cae66071a8909408cdac6b115bdd5382aed65", size = 7232927, upload-time = "2026-09-13T12:34:15.917Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/4c/a2fa62985ce5a59a1622a874ecb267c339cc62e56ab93e7b82b814a348ee/embroider-0.1.3-cp313-cp313-win_amd64.whl", hash = "sha256:3e914ce2a3669abb5723c4a038557cb9ffbd26a59a75d7e84cfac3ad112fc8f7", size = 5790540, upload-time = "2026-09-13T12:34:17.393Z" },
+]
+
+[[package]]
 name = "fasteners"
 version = "0.20"
 source = { registry = "https://pypi.org/simple" }
@@ -1072,22 +1089,17 @@ wheels = [
 ]
 
 [[package]]
-name = "okf-embed"
-version = "0.2.0"
-source = { editable = "rust/okf-embed" }
-
-[[package]]
 name = "okfgraph"
-version = "0.2.11"
+version = "0.2.12"
 source = { editable = "." }
 dependencies = [
+    { name = "embroider" },
     { name = "fasteners" },
     { name = "ladybug" },
     { name = "mcp" },
     { name = "mordant" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "okf-embed" },
     { name = "onnxruntime" },
     { name = "pydantic" },
     { name = "python-frontmatter" },
@@ -1109,12 +1121,12 @@ pdf = [
 [package.metadata]
 requires-dist = [
     { name = "bobine", marker = "extra == 'pdf'", specifier = ">=0.5" },
+    { name = "embroider", specifier = ">=0.1,<0.2" },
     { name = "fasteners", specifier = ">=0.19" },
     { name = "ladybug", specifier = "==0.20.3" },
     { name = "mcp", specifier = ">=2.0" },
     { name = "mordant", specifier = ">=0.9" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "okf-embed", editable = "rust/okf-embed" },
     { name = "onnxruntime", specifier = "==1.29.0" },
     { name = "pillow", marker = "extra == 'omni'", specifier = ">=10.0" },
     { name = "pydantic", specifier = ">=2.0" },

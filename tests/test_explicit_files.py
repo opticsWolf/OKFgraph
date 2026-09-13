@@ -1,7 +1,7 @@
 """Explicit local model-file tests — no downloads, no ORT session.
 
 Validation (pairing, existence) fires at router construction. Routing to
-`open_files` vs `open` is proven with a stubbed `okf_embed` module; numeric
+`open_files` vs `open` is proven with a stubbed `embroider` module; numeric
 equivalence of the two acquisition paths is pinned in test_rust_backend.py.
 """
 
@@ -54,7 +54,7 @@ def _stub_embed(monkeypatch, calls):
         ),
         MAX_LENGTH=8192,
     )
-    monkeypatch.setitem(sys.modules, "okf_embed", stub)
+    monkeypatch.setitem(sys.modules, "embroider", stub)
     return stub
 
 
@@ -107,7 +107,7 @@ def test_encode_routes_to_open_files(tmp_path, monkeypatch):
 
 
 def test_default_path_still_uses_open(tmp_path, monkeypatch):
-    import okf_embed as real_embed
+    import embroider as real_embed
 
     opened = {}
 
@@ -137,7 +137,7 @@ def test_default_path_still_uses_open(tmp_path, monkeypatch):
         ),
         MAX_LENGTH=real_embed.MAX_LENGTH,
     )
-    monkeypatch.setitem(sys.modules, "okf_embed", stub)
+    monkeypatch.setitem(sys.modules, "embroider", stub)
 
     router = _router(tmp_path)
     try:

@@ -1653,7 +1653,7 @@ with it. What remains are standing constraints, not gaps:
 | **Ladybug three-clause MERGE** | Vector upserts must avoid `MERGE … SET` on indexed columns (runtime abort — see the quarantine at §2). Reported upstream; watch `macrame-db` 0.18 |
 | **Single pinned ORT** | `onnxruntime==1.29.0` shared by bobine + embroider; a stale system DLL fails session creation with `BadVersion`. `ORT_DYLIB_PATH` overrides; entry points resolve before first use |
 | **Frozen vector space** | Jina contract (prefixes, last-token pooling, truncation order) is identical across okfgraph 0.2.x and embroider 0.1.x — enforced by golden parity tests, never by convention alone |
-| **Floor-pinned embroider** | `embroider>=0.1,<0.2`: a new embroider minor without an okfgraph release is a *supported* state, and CI proves the floor still passes |
+| **Floor-pinned embroider** | `embroider>=0.1,<0.2`: a new embroider minor without an okfgraph release is a *supported* state, and the suite proves the floor still passes (contract fixtures in the embroider repo `fixtures/`, vendored at `tests/fixtures/golden_jina_v5_text_small.json` + `tests/test_golden_vectors.py`; matrix: embroider `COMPAT.md`) |
 
 ---
 

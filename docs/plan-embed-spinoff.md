@@ -218,6 +218,11 @@ Mirror what already works in both projects (tag guard, OIDC):
 - DoD: spinning a new embed release without updating OKFgraph is a
   *supported* state (pins allow it) and CI proves the floor version
   still passes.
+- Status 2026-09-13: done — `fixtures/golden_jina_v5_text_small.json`
+  in the embroider repo (+ `COMPAT.md` matrix, README "Conformance"),
+  vendored byte-identically at `tests/fixtures/` with
+  `tests/test_golden_vectors.py` asserting live vectors (`abs=1e-6`)
+  and exact token counts off the cached snapshot (no network).
 
 ### Phase 5 — Bobine text embedding: DEFERRED (scoped, not scheduled)
 

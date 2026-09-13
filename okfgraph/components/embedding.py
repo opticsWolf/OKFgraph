@@ -12,24 +12,139 @@ import mordant
 from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
-def resolve_ort_dylib() -> Optional[str]:
-    """Point ``ORT_DYLIB_PATH`` at the pip-installed ORT build when unset.
+_ORT_MODULE_NAMES = ("onnxruntime", "onnxruntime-gpu")
+
+
+def _candidate_ort_library_names(os_name=None, sys_platform=None):
+    """Return the ORT library filenames for an OS/platform pair.
+
+    Takes explicit arguments so unit tests can cover Windows/macOS/Linux
+    from any host. Linux uses a versioned ``libonnxruntime.so.*`` glob
+    (handled by :func:`_find_runtime_in_package`); this helper returns the
+    unversioned fallback name for that platform.
+    """
+    import os
+    import sys
+    if os_name is None:
+        os_name = os.name
+    if sys_platform is None:
+        sys_platform = sys.platform
+    if os_name == "nt":
+        return ("onnxruntime.dll",)
+    if sys_platform == "darwin":
+        return ("libonnxruntime.dylib",)
+    return ("libonnxruntime.so",)
+
+
+def _find_runtime_in_package(package_dir, os_name=None, sys_platform=None):
+    """Find an ORT shared library inside a pip-installed package directory.
+
+    Returns a :class:`Path` or ``None``. Prefers versioned Linux libraries
+    (``libonnxruntime.so.*``) over the unversioned ``libonnxruntime.so``.
+    """
+    import os
+    import sys
+    if os_name is None:
+        os_name = os.name
+    if sys_platform is None:
+        sys_platform = sys.platform
+    capi_dir = Path(package_dir) / "capi"
+    if not capi_dir.is_dir():
+        return None
+    if os_name == "nt" or sys_platform == "darwin":
+        candidate = capi_dir / _candidate_ort_library_names(os_name, sys_platform)[0]
+        return candidate if candidate.is_file() else None
+    versioned = sorted(capi_dir.glob("libonnxruntime.so.*"))
+    if versioned:
+        return versioned[-1]
+    candidate = capi_dir / "libonnxruntime.so"
+    return candidate if candidate.is_file() else None
+
+
+def _configure_windows_ort_dll_directory(runtime_path) -> bool:
+    """Add the ORT ``capi`` directory to Windows DLL resolution.
+
+    Best-effort only: returns ``False`` (never raises) when unavailable.
+    """
+    import os
+    if os.name != "nt":
+        return False
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if not callable(add_dll_directory):
+        return False
+    try:
+        add_dll_directory(str(Path(runtime_path).parent))
+        return True
+    except OSError as exc:
+        logger.debug("ORT DLL directory configuration failed: %s", exc)
+        return False
+
+
+def _warm_ort_gpu_dlls(module) -> bool:
+    """Preload NVIDIA DLLs when the installed ORT package exposes CUDA.
+
+    This mirrors bobine's GPU bootstrap: only attempt the preload when the
+    package reports a CUDA execution provider, and never let it fail
+    runtime discovery.
+    """
+    preload = getattr(module, "preload_dlls", None)
+    if not callable(preload):
+        return False
+    try:
+        providers = list(module.get_available_providers())
+    except Exception as exc:
+        logger.debug("ORT provider query failed: %s", exc)
+        return False
+    if "CUDAExecutionProvider" not in providers:
+        return False
+    try:
+        preload()
+        return True
+    except Exception as exc:
+        logger.debug("ORT GPU DLL preload failed: %s", exc)
+        return False
+
+
+def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None) -> Optional[str]:
+    """Point ``ORT_DYLIB_PATH`` at a pip-installed ORT build when unset.
 
     Both bobine and okf-embed load ONNX Runtime dynamically; sharing one
     binary avoids version/CUDA drift between the two runtimes. Explicit
     user configuration always wins — this only fills the gap.
+
+    Resolution order:
+
+    1. Existing ``ORT_DYLIB_PATH``.
+    2. Pip-installed ``onnxruntime`` or ``onnxruntime-gpu`` package.
+    3. OS loader path (represented by returning ``None``).
+
+    Missing runtimes never raise here; session creation or encoding is the
+    fail-fast boundary. ``os_name``/``sys_platform`` are explicit so unit
+    tests can cover every platform from any host (patching ``os.name``
+    would break ``pathlib`` dispatch on Windows).
     """
     import os
-    if os.environ.get("ORT_DYLIB_PATH"):
-        return os.environ["ORT_DYLIB_PATH"]
-    try:
-        import onnxruntime
-        dll = Path(str(onnxruntime.__file__)).parent / "capi" / "onnxruntime.dll"
-        if dll.exists():
-            os.environ["ORT_DYLIB_PATH"] = str(dll)
-            return str(dll)
-    except ImportError:
-        pass
+    explicit = os.environ.get("ORT_DYLIB_PATH")
+    if explicit:
+        return explicit
+    for module_name in _ORT_MODULE_NAMES:
+        try:
+            module = __import__(module_name)
+        except ImportError:
+            continue
+        try:
+            package_dir = Path(str(module.__file__)).parent
+        except Exception:
+            continue
+        found = _find_runtime_in_package(package_dir, os_name, sys_platform)
+        if found is None:
+            continue
+        os.environ["ORT_DYLIB_PATH"] = str(found)
+        _configure_windows_ort_dll_directory(found)
+        if warm_gpu:
+            _warm_ort_gpu_dlls(module)
+        logger.debug("resolved ORT runtime: %s", found)
+        return str(found)
     return None
 
 
@@ -43,7 +158,8 @@ class EmbeddingEngine:
 
     def __init__(self, rust_encoder, embedding_dim, device,
                  cache_dir, model_id, omni_model_id, omni,
-                 chunk_size, chunk_overlap, enable_chunking, conn):
+                 chunk_size, chunk_overlap, enable_chunking, conn,
+                 ort_dylib=None):
         self.encoder = rust_encoder
         self.embedding_dim = embedding_dim
         self.device = device
@@ -55,6 +171,7 @@ class EmbeddingEngine:
         self.chunk_overlap = chunk_overlap
         self.enable_chunking = enable_chunking
         self.conn = conn
+        self.ort_dylib = ort_dylib
 
     def _encode(self, text: str, task: str = "Document") -> List[float]:
         """Encode text with the Rust Jina v5 encoder.

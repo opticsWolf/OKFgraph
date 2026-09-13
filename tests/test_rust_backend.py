@@ -59,7 +59,7 @@ def test_count_tokens_matches_transformers(encoder):
 def test_resolve_ort_dylib(monkeypatch):
     monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
     got = resolve_ort_dylib()
-    assert got is None or got.endswith("onnxruntime.dll")
+    assert got is None or got.endswith(("onnxruntime.dll", "libonnxruntime.dylib", ".so")) or ".so." in got
     if got is not None:
         assert os.environ["ORT_DYLIB_PATH"] == got
         assert os.path.exists(got)

@@ -187,6 +187,9 @@ class OKFRouter:
         # fallback — a mid-run stack switch would silently mix vector spaces
         # in one index.
         from okfgraph.components.embedding import resolve_ort_dylib
+        # Resolve first: the native module loads ORT dynamically, so the
+        # shared runtime choice must be fixed before importing it.
+        self.ort_dylib = resolve_ort_dylib()
         try:
             import okf_embed
         except ImportError:
@@ -194,7 +197,6 @@ class OKFRouter:
                 "the okf-embed wheel is required for text embeddings: "
                 "build rust/okf-embed (maturin build --release) and install it"
             ) from None
-        resolve_ort_dylib()
         # The Rust crate knows auto/cpu/cuda; map torch-style aliases.
         rust_device = {"mps": "auto"}.get(device, device)
         self.encoder = okf_embed.JinaV5.open(
@@ -232,7 +234,7 @@ class OKFRouter:
             self.encoder, self.embedding_dim,
             self.device, self.cache_dir, self.model_id, self.omni_model_id,
             self._omni, self.chunk_size, self.chunk_overlap, self.enable_chunking,
-            self.conn,
+            self.conn, self.ort_dylib,
         )
         self.image_mgr = ImageAssetManager(
             self.conn, self.embed_engine, self.schema_mgr,

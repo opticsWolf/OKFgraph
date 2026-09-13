@@ -4,6 +4,18 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [Unreleased]
+
+### Added
+- Cross-platform ONNX Runtime discovery: explicit `ORT_DYLIB_PATH` still
+  wins, otherwise pip-installed `onnxruntime`/`onnxruntime-gpu` is resolved
+  on Windows (`capi/onnxruntime.dll`), macOS
+  (`capi/libonnxruntime.dylib`), and Linux (preferred versioned
+  `capi/libonnxruntime.so.*`, fallback `capi/libonnxruntime.so`). GPU DLL
+  warming and Windows DLL-directory setup are best-effort and never fatal.
+  The resolved runtime is exposed as `OKFRouter.ort_dylib` /
+  `EmbeddingEngine.ort_dylib` before the native module is imported.
+
 ## [0.2.7] — 2026-09-13
 
 ### Fixed

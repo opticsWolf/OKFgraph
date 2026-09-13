@@ -38,6 +38,7 @@ jobs:
           tests/test_ranking.py
           tests/test_mcp_server.py
           tests/test_packaging.py
+          tests/test_ort.py
           tests/test_diff.py::TestDiffPure
           tests/test_doctor.py::TestDoctorPure
           tests/test_obsidian.py::TestWikiLinksPure

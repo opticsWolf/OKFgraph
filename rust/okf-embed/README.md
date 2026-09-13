@@ -32,8 +32,12 @@ uv pip install --python <venv> target/wheels/okf_embed-*.whl --reinstall
 
 `ort` loads dynamically (`load-dynamic`, same pin as bobine: `2.0.0-rc.13`).
 Resolution order: `ORT_DYLIB_PATH` first (user override always wins), else the
-OS loader path. OKFgraph's `resolve_ort_dylib()` points the var at the
-pip-installed `onnxruntime` build when unset, so both bobine and okf-embed
+pip-installed `onnxruntime`/`onnxruntime-gpu` build when unset: Windows uses
+`capi/onnxruntime.dll`, macOS uses `capi/libonnxruntime.dylib`, and Linux
+prefers versioned `capi/libonnxruntime.so.*` with `capi/libonnxruntime.so` as
+fallback. GPU DLL warming and Windows DLL-directory setup are best-effort and
+never fatal. OKFgraph's `resolve_ort_dylib()` runs before the native module is
+imported and exposes the choice as `OKFRouter.ort_dylib`, so both bobine and okf-embed
 share **one** ORT binary — no version/CUDA drift between ingest and import.
 
 ## Failure policy

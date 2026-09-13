@@ -748,6 +748,9 @@ FTS/vector pass (or an explicit seed), and ranking is pure graph
 propagation. It is the retrieval mode that keeps working when no ONNX
 session exists (air-gapped boxes without a model cache, doctor-style
 triage). Measured details live in `docs/plan-retrieval-roundup.md`;
+pinned end-to-end expectations (10 docs, 10 queries over the hybrid +
+chunk + hub + PPR paths) live in `tests/test_retrieval_conformance.py`
+over `tests/fixtures/retrieval_bundle/`.
 
 ---
 

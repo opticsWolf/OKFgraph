@@ -8,7 +8,32 @@ import os
 import sys
 import types
 
+import pytest
+
 from okfgraph.components import embedding as emb
+
+_MISSING = object()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ort_dylib_path():
+    """Save/restore `ORT_DYLIB_PATH` around every test.
+
+    `resolve_ort_dylib()` assigns `os.environ` directly (that is its job -
+    ort reads the variable at load), which `monkeypatch.delenv` cannot
+    reliably undo when the variable starts absent. Without this fixture a
+    fake runtime path leaks into later tests in the same process and real
+    session opens die with an ORT `Dlopen` panic.
+    """
+    old = os.environ.get("ORT_DYLIB_PATH", _MISSING)
+    os.environ.pop("ORT_DYLIB_PATH", None)
+    try:
+        yield
+    finally:
+        if old is _MISSING:
+            os.environ.pop("ORT_DYLIB_PATH", None)
+        else:
+            os.environ["ORT_DYLIB_PATH"] = old
 
 
 def _make_package(tmp_path, dirname="ortpkg", files=()):

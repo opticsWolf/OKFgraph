@@ -4,6 +4,33 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.2.16] — 2026-09-13
+
+Phase 1 (plan-multi-root-detach): `okf detach` ends the mirror
+relationship — the database becomes the artifact. A sources-vs-graph
+fidelity check runs by default (mismatches abort; untracked/source-only
+files are WILL-NOT-SURVIVE and require --force); the
+FileHash/DirHash/DeletedPath baseline is dropped and provenance recorded
+(schema v7 `SourceRoot` + `Meta` flags, auto-migrated on open).
+
+### Added
+- `okf detach [--bundle DIR] [--no-verify] [--force]` (CLI-only).
+- `--force` on `import` / `ingest`: re-attaches when the bundle matches
+  the recorded source tree (baseline rebuilt, detached state cleared);
+  allows explicitly addressed single-file / thought writes without
+  re-attaching. PDF auto-import cannot re-attach (its temp dir never
+  matches provenance). The graph's own db files are excluded from the
+  source-only walk.
+- `doctor` reports detach state (informational; no score/`--strict`
+  impact).
+
+### Changed
+- Schema v6 → v7: `SourceRoot(alias, path, file_count, last_seen)`
+  provenance table; `Meta` gains `detached` / `detached_at` (both INT64).
+- Mirror writes on a detached graph refuse with a clear error unless
+  forced; reads/search/traverse/export/recover/reindex/`deleted-*` keep
+  working.
+
 ## [0.2.15] — 2026-09-13
 
 Phase 0 (plan-multi-root-detach): import crash-consistency and true

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class SchemaManager:
     """Owns schema migrations, meta KV store, and search-index rebuild."""
 
-    SCHEMA_VERSION = 6  # bumped when the on-disk schema changes
+    SCHEMA_VERSION = 7  # bumped when the on-disk schema changes
 
     def __init__(self, conn, embedding_dim, write_lock_ctx):
         self.conn = conn
@@ -137,12 +137,32 @@ class SchemaManager:
         logger.info("Schema migrated: v5 → v6 (DeletedConcept.snapshot)")
 
 
+    def _migrate_v6_to_v7(self) -> None:
+        """v6 to v7: SourceRoot provenance table for `okf detach`.
+
+        Detached graphs record which source tree they were cut from so a
+        later `--force` import can verify it is re-attaching the same tree.
+        Plain CREATE IF NOT EXISTS - idempotent whether or not the ensure
+        step already made the table.
+        """
+        self.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS SourceRoot (
+                alias STRING PRIMARY KEY,
+                path STRING,
+                file_count INT64,
+                last_seen INT64
+            )
+        """)
+        logger.info("Schema migrated: v6 to v7 (SourceRoot)")
+
+
     _MIGRATIONS = {}
     _MIGRATIONS[1] = _migrate_v1_to_v2
     _MIGRATIONS[2] = _migrate_v2_to_v3
     _MIGRATIONS[3] = _migrate_v3_to_v4
     _MIGRATIONS[4] = _migrate_v4_to_v5
     _MIGRATIONS[5] = _migrate_v5_to_v6
+    _MIGRATIONS[6] = _migrate_v6_to_v7
 
     def _ensure_schema(self) -> None:
         """Create schema, extensions, and indexes if they don't exist."""
@@ -298,6 +318,20 @@ class SchemaManager:
             CREATE NODE TABLE IF NOT EXISTS DeletedPath (
                 path STRING PRIMARY KEY,
                 detected_at INT64
+            )
+        """)
+
+        # SourceRoot — detach provenance (Phase 1, 0.2.16). One row per
+        # source tree the graph was cut from via `okf detach` (single row,
+        # alias "", until multi-root lands). A later --force import
+        # re-attaches only when its root matches this provenance.
+        # IF NOT EXISTS covers fresh DBs; v6 DBs gain it via _migrate_v6_to_v7.
+        self.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS SourceRoot (
+                alias STRING PRIMARY KEY,
+                path STRING,
+                file_count INT64,
+                last_seen INT64
             )
         """)
 

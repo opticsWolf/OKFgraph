@@ -182,6 +182,12 @@ class DoctorManager:
             for cid, n in indeg
         ]
 
+        detached = None
+        try:
+            detached = self.import_mgr.delta_mgr.get_detached_state()
+        except Exception:
+            detached = None
+
         findings.sort(key=lambda f: (f["rule"], f["path"]))
         totals: Dict[str, int] = {}
         for f in findings:
@@ -198,6 +204,9 @@ class DoctorManager:
             "findings": findings,
             "summary": totals,
             "info": info,
+            # Detach state is informational (0.2.16): never a finding, so it
+            # affects neither the score nor --strict.
+            "detached": detached,
         }
 
     # -- fix ------------------------------------------------------------

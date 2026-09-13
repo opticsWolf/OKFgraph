@@ -45,6 +45,7 @@ class IngestManager:
         description: str | None,
         tags: list[str] | None,
         mode: str,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """Inner implementation of ingest_md (called under write lock)."""
         md_path = Path(md_path)
@@ -78,7 +79,7 @@ class IngestManager:
         })
 
         # Import via shared single-concept pipeline
-        result = self.import_mgr._import_single_concept(concept, post.content, mode)
+        result = self.import_mgr._import_single_concept(concept, post.content, mode, force)
 
         return {
             "concept_id": result["concept_id"],
@@ -101,6 +102,7 @@ class IngestManager:
         topic: str,
         concept_id: str | None,
         tags: list[str] | None,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """Inner implementation of ingest_thoughts (called under write lock)."""
         import uuid
@@ -157,7 +159,7 @@ class IngestManager:
         })
 
         # Import via shared single-concept pipeline
-        result = self.import_mgr._import_single_concept(concept, markdown, "text")
+        result = self.import_mgr._import_single_concept(concept, markdown, "text", force)
 
         return {
             "concept_id": result["concept_id"],
@@ -297,6 +299,7 @@ class IngestManager:
         description: str | None = None,
         tags: list[str] | None = None,
         mode: str = "text",
+        force: bool = False,
     ) -> Dict[str, Any]:
         """Import a single markdown file into the knowledge graph.
 
@@ -327,7 +330,7 @@ class IngestManager:
         """
         # Acquire write lock (Gap #7b)
         with self._write_lock_ctx():
-            return self._ingest_md_inner(md_path, concept_id, title, description, tags, mode)
+            return self._ingest_md_inner(md_path, concept_id, title, description, tags, mode, force)
 
 
     def _resolve_converter(self, converter):
@@ -350,6 +353,7 @@ class IngestManager:
         purge_deleted: bool = False,
         on_page: Callable[[int, int], None] | None = None,
         converter=None,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """Convert a PDF to markdown and optionally import into the graph.
 
@@ -371,6 +375,10 @@ class IngestManager:
                 or "omni". Only used when auto_import=True.
             batch_size: Batch size for encoding during auto-import.
             purge_deleted: If True, purge deleted concepts during auto-import.
+            force: Bypass the detached-graph refusal (0.2.16). Note: the
+                auto-import root is a temp dir, which never matches detach
+                provenance - PDF auto-import on a detached graph refuses
+                even with force (convert-only stays allowed).
             on_page: Optional callback(page_index, page_total) for progress.
             converter: DocumentConverter to use for this call. Defaults to
                 the manager's converter (bobine unless overridden).
@@ -411,7 +419,7 @@ class IngestManager:
                         len(lint_result["errors"]),
                     )
                 ids = self._import_work_dir(
-                    work_dir, batch_size, mode, purge_deleted, pdf_path
+                    work_dir, batch_size, mode, purge_deleted, pdf_path, force
                 )
                 return {
                     "md_path": str(md_path),
@@ -435,7 +443,7 @@ class IngestManager:
             "page_count": doc.page_count,
         }
 
-    def _import_work_dir(self, work_dir, batch_size, mode, purge_deleted, pdf_path):
+    def _import_work_dir(self, work_dir, batch_size, mode, purge_deleted, pdf_path, force=False):
         """Import a converted-PDF work dir, keeping bundle_root overrides in sync."""
         old_bundle_root = self.bundle_root
         self.bundle_root = work_dir
@@ -455,6 +463,7 @@ class IngestManager:
                     batch_size=batch_size,
                     mode=mode,
                     purge_deleted=purge_deleted,
+                    force=force,
                 )
         finally:
             self.bundle_root = old_bundle_root
@@ -470,6 +479,7 @@ class IngestManager:
         topic: str,
         concept_id: str | None = None,
         tags: list[str] | None = None,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """Store LLM reasoning/thinking as a searchable concept.
 
@@ -496,5 +506,5 @@ class IngestManager:
         """
         # Acquire write lock (Gap #7b)
         with self._write_lock_ctx():
-            return self._ingest_thoughts_inner(thoughts, topic, concept_id, tags)
+            return self._ingest_thoughts_inner(thoughts, topic, concept_id, tags, force)
 

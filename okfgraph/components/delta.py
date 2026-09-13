@@ -10,7 +10,7 @@ import logging
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterator, List, Set
+from typing import Any, Dict, Iterator, List, Optional, Set
 
 from okfgraph.components.import_ import is_concept_file
 
@@ -356,6 +356,69 @@ class DeltaDetector:
             "cleared_orphan_hashes": cleared_files,
             "cleared_dir_hashes": cleared_dirs,
         }
+
+    # -- detach state (Phase 1, 0.2.16) ----------------------------------
+
+    def is_detached(self) -> bool:
+        """True once `okf detach` has ended the mirror relationship."""
+        try:
+            rows = self.conn.execute(
+                "MATCH (m:Meta {key: 'detached'}) RETURN m.value AS v"
+            ).rows_as_dict().get_all()
+            return bool(rows and rows[0]["v"])
+        except Exception:
+            return False
+
+    def get_detached_state(self) -> Optional[Dict[str, Any]]:
+        """Provenance recorded at detach, or None when attached."""
+        if not self.is_detached():
+            return None
+        try:
+            rows = self.conn.execute(
+                "MATCH (s:SourceRoot) RETURN s.alias AS alias, s.path AS path, "
+                "s.file_count AS file_count, s.last_seen AS last_seen"
+            ).rows_as_dict().get_all()
+        except Exception:
+            rows = []
+        try:
+            at = self.conn.execute(
+                "MATCH (m:Meta {key: 'detached_at'}) RETURN m.value AS v"
+            ).rows_as_dict().get_all()
+            detached_at = at[0]["v"] if at else 0
+        except Exception:
+            detached_at = 0
+        return {
+            "detached_at": detached_at,
+            "roots": [
+                {"alias": r["alias"], "path": r["path"],
+                 "file_count": r["file_count"], "last_seen": r["last_seen"]}
+                for r in (rows or [])
+            ],
+        }
+
+    def set_detached(self, path: str, file_count: int, alias: str = "") -> Dict[str, Any]:
+        """Record detachment of one source tree; returns the stored row."""
+        now = int(time.time())
+        self.conn.execute(
+            "MERGE (s:SourceRoot {alias: $a}) "
+            "SET s.path = $p, s.file_count = $n, s.last_seen = $t",
+            {"a": alias, "p": path, "n": int(file_count), "t": now},
+        )
+        self.conn.execute(
+            "MERGE (m:Meta {key: 'detached'}) SET m.value = 1"
+        )
+        self.conn.execute(
+            "MERGE (m:Meta {key: 'detached_at'}) SET m.value = $t", {"t": now}
+        )
+        return {"alias": alias, "path": path,
+                "file_count": int(file_count), "last_seen": now,
+                "detached_at": now}
+
+    def clear_detached(self) -> None:
+        """Clear detachment after a successful --force re-attach."""
+        self.conn.execute("MATCH (m:Meta {key: 'detached'}) DELETE m")
+        self.conn.execute("MATCH (m:Meta {key: 'detached_at'}) DELETE m")
+        self.conn.execute("MATCH (s:SourceRoot) DELETE s")
 
 
     def _load_file_hash_concept_ids(self) -> Dict[str, str]:

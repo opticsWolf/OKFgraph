@@ -320,6 +320,7 @@ class OKFRouter:
             self.enable_chunking, self.schema_mgr, self.delta_mgr, self.embed_engine,
             self.image_mgr, self.purge_mgr,
             self.encoder.count_tokens, embroider.MAX_LENGTH,
+            db_path=db_path,
         )
         self.ingest_mgr = IngestManager(
             self._write_lock_ctx, self.bundle_root, self.device,

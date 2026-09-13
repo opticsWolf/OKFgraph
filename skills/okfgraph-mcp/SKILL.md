@@ -22,6 +22,8 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 2. First server boot creates the schema automatically — no init call needed.
 3. `ingest` / `export_bundle` are write tools: they need harness approval
    unless pre-approved. For a knowledge workflow, pre-approve them.
+   On a detached graph (`okf detach` was run) all five tools serve
+   normally, but `ingest` refuses — re-attach from the CLI first.
 4. Verify: `search` anything (empty graph returns `[]`, which still proves
    the wiring works).
 

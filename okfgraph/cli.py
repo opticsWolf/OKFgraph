@@ -251,6 +251,15 @@ def _import(args):
     router = _router(args)
     mode = getattr(args, "mode", "text")
     purge = getattr(args, "purge", False)
+    try:
+        return _import_inner(args, router, mode, purge)
+    except RuntimeError as e:
+        print(f"[ERROR] {e}")
+        return 1
+
+
+def _import_inner(args, router, mode, purge):
+    logger = logging.getLogger("cli")
     if getattr(args, "import_all", False):
         bundle_path = Path(args.bundle) if args.bundle else None
         ids = router.import_mgr.import_bundle(
@@ -258,6 +267,7 @@ def _import(args):
             batch_size=getattr(args, "batch_size", 32) or 32,
             mode=mode,
             purge_deleted=purge,
+            force=getattr(args, "force", False),
         )
         logger.info("imported %d concept(s) (mode: %s)", len(ids), mode)
         for cid in ids:
@@ -270,7 +280,9 @@ def _import(args):
             if not path.exists():
                 logger.warning("skipping %s: file not found", fp)
                 continue
-            cid = router.import_from_okf(path, mode=mode)
+            cid = router.import_from_okf(
+                path, mode=mode, force=getattr(args, "force", False)
+            )
             imgs = router.image_mgr.list_images(cid)
             suffix = f" ({len(imgs)} image(s), mode: {mode})" if imgs else ""
             logger.info("imported: %s%s", cid, suffix)
@@ -649,6 +661,40 @@ def _print_diff(result) -> None:
         print(f"  - broken {s} -> {t}")
 
 
+def _detach(args):
+    """End the mirror relationship: the DB becomes the artifact."""
+    logger = logging.getLogger("cli")
+    router = _router(args)
+    bundle = getattr(args, "bundle", None)
+    try:
+        report = router.import_mgr.detach(
+            bundle_path=Path(bundle) if bundle else None,
+            verify=not getattr(args, "no_verify", False),
+            force=getattr(args, "force", False),
+        )
+    except RuntimeError as e:
+        print(f"[ERROR] {e}")
+        return 1
+    if report["verified"]:
+        logger.info("verified %d source file(s) against the graph", report["file_count"])
+    else:
+        logger.info("detached without verification")
+    if report["mismatched"]:
+        logger.warning("acknowledged %d mismatched file(s)", len(report["mismatched"]))
+    for u in report["untracked"][:10]:
+        logger.warning("  untracked (WILL-NOT-SURVIVE): %s", u["path"])
+    for n in report["non_source_files"][:10]:
+        logger.warning("  source-only (WILL-NOT-SURVIVE): %s", n)
+    if report["already_sourceless"]:
+        logger.info("%d tracked source(s) already live only in the graph",
+                      report["already_sourceless"])
+    prov = report["provenance"]
+    print(f"[OK] detached from {prov['path']} "
+          f"({prov['file_count']} file(s) at detach). "
+          "Reads/search/export/recover keep working; imports refuse without --force.")
+    return 0
+
+
 def _doctor(args):
     """Scored health scan, optionally with safe --fix repairs.
 
@@ -673,6 +719,11 @@ def _doctor(args):
             print(f"  [{f['severity']}] {f['rule']} {f['path']}: {f['message']}")
         for i in report["info"]:
             print(f"  (info) {i['rule']}: {i['message']}")
+    if report.get("detached"):
+        d = report["detached"]
+        roots = ", ".join(r["path"] for r in d.get("roots", [])) or "<none>"
+        print(f"  [detached] mirror ended (epoch {d.get('detached_at')}); "
+              f"sources: {roots}")
     if getattr(args, "strict", False) and report["findings"]:
         return 1
     return 0
@@ -706,26 +757,36 @@ def _ingest(args):
         if not md_file:
             print("[ERROR] --md-file is required for --kind md")
             return
-        result = router.ingest_mgr.ingest_md(
-            md_path=md_file,
-            concept_id=getattr(args, "concept_id", None),
-            title=getattr(args, "title", None),
-            description=getattr(args, "description", None),
-            tags=tags,
-            mode=getattr(args, "mode", "text") or "text",
-        )
+        try:
+            result = router.ingest_mgr.ingest_md(
+                md_path=md_file,
+                concept_id=getattr(args, "concept_id", None),
+                title=getattr(args, "title", None),
+                description=getattr(args, "description", None),
+                tags=tags,
+                mode=getattr(args, "mode", "text") or "text",
+                force=getattr(args, "force", False),
+            )
+        except RuntimeError as e:
+            print(f"[ERROR] {e}")
+            return 1
         print(f"[OK] Imported {result['concept_id']} ({result['chunk_count']} chunks)")
         return
     if kind == "thoughts":
         if not getattr(args, "thoughts", None) or not getattr(args, "topic", None):
             print("[ERROR] --thoughts and --topic are required for --kind thoughts")
             return
-        result = router.ingest_mgr.ingest_thoughts(
-            args.thoughts,
-            topic=args.topic,
-            concept_id=getattr(args, "concept_id", None),
-            tags=tags,
-        )
+        try:
+            result = router.ingest_mgr.ingest_thoughts(
+                args.thoughts,
+                topic=args.topic,
+                concept_id=getattr(args, "concept_id", None),
+                tags=tags,
+                force=getattr(args, "force", False),
+            )
+        except RuntimeError as e:
+            print(f"[ERROR] {e}")
+            return 1
         print(f"[OK] Stored thought {result['concept_id']}")
         return
     pdf_path = Path(getattr(args, "pdf_file", None) or "")
@@ -756,10 +817,11 @@ def _ingest(args):
             purge_deleted=getattr(args, "purge", False),
             on_page=on_page,
             converter=converter,
+            force=getattr(args, "force", False),
         )
     except RuntimeError as e:
         print(f"[ERROR] {e}")
-        return
+        return 1
     print()  # newline after progress
 
     logger.info("written %s", result["md_path"])
@@ -1124,6 +1186,12 @@ def build_parser():
         help="Also purge concepts whose source files were deleted from disk "
              "(removes concept, chunks, links, and orphaned image assets)",
     )
+    p.add_argument(
+        "--force", action="store_true", default=False,
+        help="Bypass the detached-graph refusal: re-attach when the bundle "
+             "matches the recorded source tree, or acknowledge an explicitly "
+             "addressed file import.",
+    )
 
     # search (unified: concepts, chunks, images)
     p = sub.add_parser("search", help="Search concepts, chunks, or images")
@@ -1211,6 +1279,12 @@ def build_parser():
         help="Purge deleted concepts during auto-import",
     )
     p.add_argument(
+        "--force", action="store_true", default=False,
+        help="Bypass the detached-graph refusal for single-file / thought "
+             "ingest (never re-attaches; PDF auto-import cannot re-attach "
+             "from a temp dir).",
+    )
+    p.add_argument(
         "--no-extract-images", action="store_true",
         help="Do not extract embedded images from the PDF",
     )
@@ -1296,6 +1370,15 @@ def build_parser():
     _add_logging_flags(p)
     p.add_argument("--older-than", type=int, default=None, help="Override recovery window (seconds)")
 
+    p = sub.add_parser("detach", help="End the mirror relationship: the DB becomes the artifact")
+    _add_global(p)
+    _add_logging_flags(p)
+    p.add_argument("--no-verify", action="store_true", default=False,
+                   help="Skip the sources-vs-graph fidelity check (for already-removed trees)")
+    p.add_argument("--force", action="store_true", default=False,
+                   help="Acknowledge mismatches / untracked files / source-only "
+                   "artifacts (WILL-NOT-SURVIVE) and detach anyway")
+
     return parser
 
 
@@ -1341,6 +1424,7 @@ def main():
         "deleted-list": _deleted_list,
         "deleted-recover": _deleted_recover,
         "deleted-purge": _deleted_purge,
+        "detach": _detach,
     }
 
     try:

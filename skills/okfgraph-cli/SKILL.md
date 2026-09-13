@@ -21,6 +21,8 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
 - `okf export --all|--concept-id ID --output DIR [--flavor okf|obsidian]`
 - `okf diff [OLD_DIR] [NEW_DIR]` — structural drift (exit 1 when different)
 - `okf doctor [--strict] [--fix]` — health score + safe repairs
+- `okf detach [--bundle DIR] [--no-verify] [--force]` — end the mirror: the DB
+  becomes the artifact (verify-first; imports refuse without `--force` re-attach)
 
 ## Setup (once per project)
 

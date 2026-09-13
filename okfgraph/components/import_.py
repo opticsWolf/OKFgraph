@@ -130,10 +130,16 @@ class ImportManager:
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
     def __init__(self, conn, bundle_root, _write_lock_ctx, enable_chunking,
                  schema_mgr, delta_mgr, embed_engine, image_mgr, purge_mgr,
-                 token_counter, context_window=8192):
+                 token_counter, context_window=8192, db_path=None):
         self.conn = conn
         self.bundle_root = bundle_root
         self._write_lock_ctx = _write_lock_ctx
+        # Database location for detach's WILL-NOT-SURVIVE walk (0.2.16): the
+        # graph's own files (.db + ladybug sidecars) are never source content.
+        try:
+            self._db_path = Path(db_path).resolve() if db_path else None
+        except OSError:
+            self._db_path = None
         # Token counting for the context-window guard comes from the Rust
         # encoder (count_tokens); no transformers tokenizer exists anymore.
         self.token_counter = token_counter
@@ -734,12 +740,16 @@ class ImportManager:
         concept: "ConceptModel",
         body: str,
         mode: "str | IngestMode" = IngestMode.TEXT,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """Import a single concept using the full pipeline (encode, upsert, chunk, etc.).
 
         This is the core shared logic between ingest_md() and ingest_thoughts().
         """
         mode = IngestMode.coerce(mode)
+        # Rootless addressed write: force bypasses the detached refusal,
+        # but never re-attaches (no mirror relationship to verify).
+        self._require_attached(force)
 
         # Phase 2: Encode (Document prefix)
         search_text = (
@@ -960,6 +970,7 @@ class ImportManager:
         batch_size: int = 32,
         mode: "str | IngestMode" = IngestMode.TEXT,
         purge_deleted: bool = False,
+        force: bool = False,
     ) -> List[str]:
         """Import an entire OKF bundle directory with batched encoding.
 
@@ -973,20 +984,269 @@ class ImportManager:
             purge_deleted: If True, concepts whose source files were deleted
                 from disk are removed from the graph (including chunks,
                 links, and orphaned image assets).
+            force: Bypass the detached-graph refusal (0.2.16). The root must
+                match the recorded source tree; on success the graph
+                re-attaches (detached state cleared, baseline rebuilt).
 
         Returns:
             List of imported concept IDs.
         """
         # Acquire write lock (Gap #7b)
         with self._write_lock_ctx():
-            return self._import_bundle_inner(bundle_path, batch_size, mode, purge_deleted)
+            reattach = self._require_attached(
+                force, bundle_path or self.bundle_root
+            )
+            ids = self._import_bundle_inner(
+                bundle_path, batch_size, mode, purge_deleted
+            )
+            if reattach:
+                self.delta_mgr.clear_detached()
+            return ids
 
+
+    def _require_attached(self, force: bool, root: Optional[Path] = None) -> bool:
+        """Refuse mirror writes on a detached graph (0.2.16).
+
+        Args:
+            force: Bypass the refusal (explicit re-attach / addressed write).
+            root: Bundle root of this call, for provenance matching. None
+                for rootless writes (single md / thoughts / file import),
+                which carry no mirror relationship to verify.
+
+        Returns True when the caller must clear detached state on success
+        (force re-attach with a matching root). Raises RuntimeError otherwise.
+        """
+        if not self.delta_mgr.is_detached():
+            return False
+        if not force:
+            raise RuntimeError(
+                "graph is detached from its bundle (see `okf detach`): mirror "
+                "writes are refused. Re-attach with --force (the bundle root "
+                "must match the recorded source tree)."
+            )
+        if root is None:
+            return False
+        want = str(Path(root).resolve())
+        roots = (self.delta_mgr.get_detached_state() or {}).get("roots", [])
+        if not any(r.get("path") == want for r in roots):
+            known = roots[0]["path"] if roots else "<unknown>"
+            raise RuntimeError(
+                f"graph was detached from a different source tree ({known}); "
+                f"refusing --force import from {want}. Create a new database "
+                "for a different tree."
+            )
+        return True
+
+    def detach(
+        self,
+        bundle_path: Optional[Path] = None,
+        verify: bool = True,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """End the mirror relationship between this graph and its bundle (0.2.16).
+
+        After detach the database is the artifact: reads, searches,
+        traverses, exports, recover, and index rebuilds keep working, but
+        mirror writes refuse until a `--force` re-attach against the same
+        source tree. The FileHash/DirHash/DeletedPath baseline is dropped -
+        there is no baseline without a mirror.
+
+        Args:
+            bundle_path: Source tree to verify against (defaults to the
+                constructor bundle_root). Pass explicitly when the working
+                directory is not the original tree.
+            verify: Compare sources against graph content first (default on).
+            force: Proceed despite mismatches / untracked files / source-only
+                artifacts (the user declares the database the artifact).
+
+        Returns a report dict with the verify lists and recorded provenance.
+        Raises RuntimeError when verification fails without --force, the
+        bundle is missing with verify on, or the graph is already detached.
+        """
+        root = Path(bundle_path) if bundle_path is not None else Path(self.bundle_root)
+        if self.delta_mgr.is_detached():
+            state = self.delta_mgr.get_detached_state() or {}
+            since = state.get("detached_at")
+            raise RuntimeError(
+                "graph is already detached"
+                + (f" (since epoch {since})" if since else "")
+                + "."
+            )
+        report: Dict[str, Any] = {
+            "bundle": str(root),
+            "verified": False,
+            "mismatched": [],
+            "untracked": [],
+            "non_source_files": [],
+            "already_sourceless": 0,
+            "file_count": 0,
+        }
+        # file_count fallback when there is no bundle to walk.
+        baseline_rows = self.conn.execute(
+            "MATCH (f:FileHash) RETURN count(f) AS n"
+        ).rows_as_dict().get_all()
+        baseline_count = baseline_rows[0]["n"] if baseline_rows else 0
+        if verify:
+            if not root.is_dir():
+                raise RuntimeError(
+                    f"bundle '{root}' not found - nothing to verify against. "
+                    "Pass --bundle pointing at the source tree, or --no-verify "
+                    "to detach an already-removed tree without verification."
+                )
+            self._verify_detach_fidelity(root, report)
+            summary = (
+                f"{len(report['mismatched'])} mismatched, "
+                f"{len(report['untracked'])} untracked, "
+                f"{len(report['non_source_files'])} source-only"
+            )
+            if report["mismatched"] and not force:
+                sample = ", ".join(
+                    f"{m['path']} [{', '.join(m['fields'])}]"
+                    for m in report["mismatched"][:5]
+                )
+                raise RuntimeError(
+                    f"detach refused: {summary}. Re-import first so the graph "
+                    "matches the files, or pass --force to declare the "
+                    f"database the artifact anyway. e.g. {sample}"
+                )
+            if (report["untracked"] or report["non_source_files"]) and not force:
+                raise RuntimeError(
+                    f"detach refused: {summary} - these files have no counterpart "
+                    "in the graph and would not survive source deletion "
+                    "(WILL-NOT-SURVIVE). Pass --force to acknowledge."
+                )
+            report["verified"] = True
+        else:
+            report["file_count"] = baseline_count
+        # Drop the mirror baseline (no baseline without a mirror).
+        self.conn.execute("MATCH (f:FileHash) DELETE f")
+        self.conn.execute("MATCH (d:DirHash) DELETE d")
+        self.conn.execute("MATCH (d:DeletedPath) DELETE d")
+        report["provenance"] = self.delta_mgr.set_detached(
+            str(root.resolve()), report["file_count"]
+        )
+        return report
+
+    def _is_db_file(self, fp: Path) -> bool:
+        """True for the graph's own database + ladybug sidecars (.lock/.wal/...).
+
+        Detach's source-only walk must not flag the database the user is
+        detaching (it commonly lives inside the bundle root). Matches the db
+        file itself plus same-directory `<dbname>.*` / `<dbname>-*` sidecars.
+        """
+        if self._db_path is None:
+            return False
+        try:
+            rp = fp.resolve()
+        except OSError:
+            return False
+        if rp == self._db_path:
+            return True
+        if rp.parent != self._db_path.parent:
+            return False
+        base = self._db_path.name
+        return rp.name.startswith(base + ".") or rp.name.startswith(base + "-")
+
+    def _verify_detach_fidelity(self, root: Path, report: Dict[str, Any]) -> None:
+        """Fill the detach report by comparing bundle files to graph content.
+
+        - concept file whose derived id has no stored concept -> `untracked`
+          (never imported, or unparseable: content is NOT in the graph)
+        - concept file whose content differs from the stored concept ->
+          `mismatched` (dirty tree: re-import before detaching)
+        - non-hidden file that is neither a concept file nor a reserved
+          generated name -> `non_source_files` (originals the graph cannot
+          reproduce: PDFs, images, ...)
+        - baseline rows pointing at gone paths -> `already_sourceless`
+          (info: that content already lives only in the graph)
+        """
+        candidates = sorted(
+            fp for fp in root.rglob("*")
+            if fp.is_file() and fp.suffix.lower() in SOURCE_EXTS
+        )
+        concept_files = [fp for fp in candidates if is_concept_file(fp)]
+        report["file_count"] = len(concept_files)
+        for fp in concept_files:
+            rel = str(fp.relative_to(root))
+            try:
+                concept, body, cid = self._parse_source_file(fp, root)
+            except Exception as e:
+                report["untracked"].append(
+                    {"path": rel, "reason": f"unparseable: {e}"}
+                )
+                continue
+            rows = self.conn.execute(
+                "MATCH (c:Concept {id: $id}) RETURN c.type AS type, "
+                "c.title AS title, c.description AS description, "
+                "c.resource AS resource, c.tags AS tags, c.body AS body",
+                {"id": cid},
+            ).rows_as_dict().get_all()
+            if not rows:
+                report["untracked"].append({"path": rel, "concept_id": cid})
+                continue
+            stored = rows[0]
+            fields = []
+            if (stored.get("type") or "") != (concept.type or ""):
+                fields.append("type")
+            if (stored.get("title") or "") != (concept.title or ""):
+                fields.append("title")
+            if (stored.get("description") or "") != (concept.description or ""):
+                fields.append("description")
+            if (stored.get("resource") or "") != (concept.resource or ""):
+                fields.append("resource")
+            if self._norm_tags(stored.get("tags")) != self._norm_tags(concept.tags):
+                fields.append("tags")
+            if (stored.get("body") or "") != (body or ""):
+                fields.append("body")
+            if fields:
+                report["mismatched"].append(
+                    {"path": rel, "concept_id": cid, "fields": fields}
+                )
+        for fp in sorted(root.rglob("*")):
+            if not fp.is_file():
+                continue
+            if self._is_db_file(fp):
+                continue
+            rel = fp.relative_to(root)
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            if fp.suffix.lower() in SOURCE_EXTS:
+                if is_concept_file(fp):
+                    continue
+                if fp.name.lower() in RESERVED_FILENAMES:
+                    continue  # generated files (index.md) - export reproduces them
+            report["non_source_files"].append(str(rel))
+        sourceless = 0
+        for r in (
+            self.conn.execute("MATCH (f:FileHash) RETURN f.path AS p")
+            .rows_as_dict().get_all()
+            or []
+        ):
+            if not (root / r["p"]).exists():
+                sourceless += 1
+        report["already_sourceless"] = sourceless
+
+    @staticmethod
+    def _norm_tags(value: Any) -> List[str]:
+        """Tags as a sorted string list regardless of storage shape."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                return [value]
+        try:
+            return sorted(str(x) for x in value)
+        except TypeError:
+            return [str(value)]
 
     def import_from_okf(
         self,
         file_path: Path,
         mode: "str | IngestMode" = IngestMode.TEXT,
         rebuild_indexes: bool = True,
+        force: bool = False,
     ) -> str:
         """Parse an OKF .md/.txt file and create/update the concept in the graph.
 
@@ -997,8 +1257,12 @@ class ImportManager:
                 alt-text), or ``omni`` (omni for every image).
 
         Returns the concept ID (relative path without its extension).
+
+        force: Bypass the detached-graph refusal (0.2.16). Rootless addressed
+            write: never re-attaches.
         """
         mode = IngestMode.coerce(mode)
+        self._require_attached(force)
 
         # 1-2. Parse frontmatter/body and build the Concept model.
         concept, body, concept_id = self._parse_source_file(file_path, self.bundle_root)

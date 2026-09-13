@@ -106,6 +106,8 @@ class OKFRouter:
         omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval",
         embedding_dim: int = 512,
         cache_dir: Optional[str] = None,
+        model_path: Optional[str] = None,
+        tokenizer_path: Optional[str] = None,
         device: str = "cpu",
         allow_remote_images: bool = False,
         allowed_image_domains: Optional[List[str]] = None,
@@ -124,6 +126,10 @@ class OKFRouter:
             omni_model_id: HuggingFace ID of the Jina v5 omni model (images).
             embedding_dim: Truncated Matryoshka dimension (<= 1024).
             cache_dir: Model cache directory (defaults per-platform).
+            model_path: Explicit local ONNX file (with `tokenizer_path`);
+                skips every download — air-gapped / reproducible installs.
+                An external-data sidecar must sit next to this file.
+            tokenizer_path: Explicit local `tokenizer.json` (with `model_path`).
             device: "cpu" (CUDA is opportunistic inside the Rust loader).
             allow_remote_images: Whether http(s) image URLs may be fetched.
             allowed_image_domains: Domain allowlist for remote images.
@@ -205,6 +211,23 @@ class OKFRouter:
             raise ValueError(
                 f"device must be 'auto', 'cpu' or 'cuda', got '{device}'"
             )
+        if (model_path is None) != (tokenizer_path is None):
+            raise ValueError(
+                "model_path and tokenizer_path must be given together "
+                "(explicit local files skip all downloads)"
+            )
+        explicit_files = model_path is not None
+        if explicit_files:
+            for label, path in (
+                ("model_path", model_path),
+                ("tokenizer_path", tokenizer_path),
+            ):
+                if not Path(path).is_file():
+                    raise FileNotFoundError(
+                        f"{label} not found: {path} "
+                        "(explicit paths skip all downloads)"
+                    )
+            logger.debug("using explicit model files: %s", model_path)
 
         def _report_encoder_open(encoder) -> None:
             logger.info(
@@ -222,20 +245,33 @@ class OKFRouter:
         # in one index. The wheel import above stays fail-fast; the session
         # open is lazy so model-free commands (PPR search, budgeted reads,
         # diff, doctor) never pay model-download/session-build costs.
-        self.encoder = LazyRustEncoder(
-            model_id=model_id,
-            truncate_dim=embedding_dim,
-            device=rust_device,
-            session_factory=lambda: okf_embed.JinaV5.open(
+        if explicit_files:
+            session_factory = lambda: okf_embed.JinaV5.open_files(
+                str(model_path),
+                str(tokenizer_path),
+                truncate_dim=embedding_dim,
+                device=rust_device,
+            )
+            tokenizer_factory = lambda: okf_embed.JinaTokenizer.open_files(
+                str(tokenizer_path),
+            )
+        else:
+            session_factory = lambda: okf_embed.JinaV5.open(
                 model_id,
                 truncate_dim=embedding_dim,
                 device=rust_device,
                 cache_dir=cache_dir,
-            ),
-            tokenizer_factory=lambda: okf_embed.JinaTokenizer.open(
+            )
+            tokenizer_factory = lambda: okf_embed.JinaTokenizer.open(
                 model_id,
                 cache_dir=cache_dir,
-            ),
+            )
+        self.encoder = LazyRustEncoder(
+            model_id=model_id,
+            truncate_dim=embedding_dim,
+            device=rust_device,
+            session_factory=session_factory,
+            tokenizer_factory=tokenizer_factory,
             on_open=_report_encoder_open,
         )
 

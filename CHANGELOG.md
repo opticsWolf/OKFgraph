@@ -6,6 +6,15 @@ commit history, newest first.
 
 ## [Unreleased]
 
+### Added
+- Explicit local model files: `JinaV5.open_files(onnx_path, tokenizer_path)`
+  and `JinaTokenizer.open_files(tokenizer_path)` load with zero network
+  access (air-gapped / reproducible installs). `OKFRouter(model_path=...,
+  tokenizer_path=...)` threads them through the lazy factories; the pair
+  must be given together, missing files fail fast at construction, and an
+  external-data sidecar must sit next to the ONNX file. Vectors are
+  identical to HF acquisition (pinned by test).
+
 ### Changed
 - Lazy text-encoder initialization: `OKFRouter` construction no longer
   downloads the model or builds the ONNX session. The `okf-embed` wheel

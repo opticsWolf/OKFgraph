@@ -3,8 +3,9 @@
 ## Status
 
 In progress. Phases 1 (cross-platform ORT discovery), 2 (provider
-fallback + extension-module feature), and 3 (lazy encoder + tokenizer-only
-counts) are implemented; later phases remain open.
+fallback + extension-module feature), 3 (lazy encoder + tokenizer-only
+counts), 4 (explicit local model files), and 5 (extension-module feature,
+landed with Phase 2) are implemented; Phases 6–7 remain open.
 
 This plan ports the strongest parts of bobine’s ONNX integration into
 OKFgraph/`okf-embed` without importing bobine as a required dependency and

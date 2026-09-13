@@ -12,7 +12,7 @@
 //! never fatal.
 
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use anyhow::{anyhow, Result};
@@ -231,6 +231,16 @@ impl TokenizerHandle {
         Ok(Self { tokenizer: load_tokenizer(&tok_path)? })
     }
 
+    pub fn open_files(tokenizer_path: &Path) -> Result<Self> {
+        if !tokenizer_path.is_file() {
+            return Err(anyhow!(
+                "tokenizer file not found: {}",
+                tokenizer_path.display()
+            ));
+        }
+        Ok(Self { tokenizer: load_tokenizer(tokenizer_path)? })
+    }
+
     pub fn count_tokens(&self, text: &str) -> Result<usize> {
         count_tokens_in(&self.tokenizer, text)
     }
@@ -257,6 +267,107 @@ fn cuda_available() -> bool {
     })
 }
 
+/// Validate the shared Matryoshka dim range before any I/O.
+fn check_truncate_dim(truncate_dim: usize) -> Result<()> {
+    if truncate_dim == 0 || truncate_dim > NATIVE_DIM {
+        return Err(anyhow!(
+            "truncate_dim must be within 1..={NATIVE_DIM}, got {truncate_dim}"
+        ));
+    }
+    if truncate_dim < 32 {
+        return Err(anyhow!("truncate_dim must be >= 32, got {truncate_dim}"));
+    }
+    if !ALLOWED_DIMS.contains(&truncate_dim) {
+        eprintln!(
+            "okf-embed: truncate_dim={truncate_dim} is not an official Matryoshka level \
+             {ALLOWED_DIMS:?}; retrieval quality may be suboptimal."
+        );
+    }
+    Ok(())
+}
+
+/// An opened session plus its discovered contract: the expensive,
+/// device-bound half of `JinaV5::open`, shared by the HF and explicit-path
+/// constructors so both validate the same export contract.
+struct LoadedSession {
+    session: Session,
+    used_cuda: bool,
+    feed_token_type_ids: bool,
+    output_name: String,
+}
+
+/// Resolve the internal provider list for a device request. Accelerators
+/// stay opportunistic: requested-but-missing warns once and degrades to CPU.
+fn resolve_provider_names(device: DeviceReq) -> (Vec<String>, bool) {
+    let cuda = cuda_available();
+    let used_cuda = cuda && !matches!(device, DeviceReq::Cpu);
+    let names = match device {
+        DeviceReq::Cpu => vec![],
+        DeviceReq::Auto => {
+            if cuda {
+                vec!["cuda".to_string()]
+            } else {
+                vec![]
+            }
+        }
+        DeviceReq::Cuda if cuda => vec!["cuda".to_string()],
+        DeviceReq::Cuda => {
+            eprintln!(
+                "okf-embed: CUDA requested but no CUDA execution provider in the loaded \
+                 ONNX Runtime — falling back to CPU. Install onnxruntime-gpu for acceleration."
+            );
+            vec![]
+        }
+    };
+    (names, used_cuda)
+}
+
+/// Build + contract-check a session from an ONNX file already on disk.
+/// No network access: the caller owns acquisition (HF fetch or explicit path).
+fn build_session(onnx_path: &Path, device: DeviceReq) -> Result<LoadedSession> {
+    let (provider_names, used_cuda) = resolve_provider_names(device);
+
+    // Threading stolen from EmbedAnything's ort_jina.rs.
+    let threads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1);
+    let intra = std::cmp::max(1, threads / 2); // physical cores over logical
+    let mut builder = oe(Session::builder())?;
+    builder = oe(builder
+        .with_optimization_level(GraphOptimizationLevel::Level3))?
+    ;
+    builder = oe(builder.with_intra_threads(intra))?;
+    builder = oe(builder.with_inter_threads(1))?;
+    builder = apply_providers(builder, &provider_names)?;
+    let session = oe(builder.commit_from_file(onnx_path))
+        .map_err(|e| anyhow!("loading {}: {e:#}", onnx_path.display()))?;
+
+    // Contract discovery (robust to export variants): Jina v5's optimum
+    // export declares only input_ids + attention_mask; token_type_ids is fed
+    // solely when the graph asks for it (v2-style).
+    let has_input = |want: &str| session.inputs().iter().any(|o| o.name() == want);
+    for need in ["input_ids", "attention_mask"] {
+        if !has_input(need) {
+            let have: Vec<&str> =
+                session.inputs().iter().map(|o| o.name()).collect();
+            return Err(anyhow!(
+                "ONNX export lacks required input '{need}' (has {have:?})"
+            ));
+        }
+    }
+    let feed_token_type_ids = has_input("token_type_ids");
+    let output_name = if session.outputs().iter().any(|o| o.name() == "last_hidden_state") {
+        "last_hidden_state".to_string()
+    } else {
+        session
+            .outputs()
+            .first()
+            .map(|o| o.name().to_string())
+            .ok_or_else(|| anyhow!("ONNX export declares no outputs"))?
+    };
+    Ok(LoadedSession { session, used_cuda, feed_token_type_ids, output_name })
+}
+
 pub struct JinaV5 {
     session: RwLock<Session>,
     tokenizer: tokenizers::Tokenizer,
@@ -275,20 +386,7 @@ impl JinaV5 {
         truncate_dim: usize,
         device: DeviceReq,
     ) -> Result<Self> {
-        if truncate_dim == 0 || truncate_dim > NATIVE_DIM {
-            return Err(anyhow!(
-                "truncate_dim must be within 1..={NATIVE_DIM}, got {truncate_dim}"
-            ));
-        }
-        if truncate_dim < 32 {
-            return Err(anyhow!("truncate_dim must be >= 32, got {truncate_dim}"));
-        }
-        if !ALLOWED_DIMS.contains(&truncate_dim) {
-            eprintln!(
-                "okf-embed: truncate_dim={truncate_dim} is not an official Matryoshka level \
-                 {ALLOWED_DIMS:?}; retrieval quality may be suboptimal."
-            );
-        }
+        check_truncate_dim(truncate_dim)?;
 
         // ---- model acquisition (optimum `subfolder="onnx"` layout) ----
         let (owner, name) = parse_owner_name(model_id)?;
@@ -317,75 +415,49 @@ impl JinaV5 {
         let tok_path = fetch_tokenizer_file(model_id, revision, cache_dir)?;
         let tokenizer = load_tokenizer(&tok_path)?;
 
-        // ---- device resolution: accelerators opportunistic, never fatal --
-        let cuda = cuda_available();
-        let used_cuda = cuda && !matches!(device, DeviceReq::Cpu);
-        let provider_names: Vec<String> = match device {
-            DeviceReq::Cpu => vec![],
-            DeviceReq::Auto => {
-                if cuda {
-                    vec!["cuda".to_string()]
-                } else {
-                    vec![]
-                }
-            }
-            DeviceReq::Cuda if cuda => vec!["cuda".to_string()],
-            DeviceReq::Cuda => {
-                eprintln!(
-                    "okf-embed: CUDA requested but no CUDA execution provider in the loaded \
-                     ONNX Runtime — falling back to CPU. Install onnxruntime-gpu for acceleration."
-                );
-                vec![]
-            }
-        };
-
-        // ---- session (threading stolen from EmbedAnything's ort_jina.rs) ----
-        let threads = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(1);
-        let intra = std::cmp::max(1, threads / 2); // physical cores over logical
-        let mut builder = oe(Session::builder())?;
-        builder = oe(builder
-            .with_optimization_level(GraphOptimizationLevel::Level3))?
-        ;
-        builder = oe(builder.with_intra_threads(intra))?;
-        builder = oe(builder.with_inter_threads(1))?;
-        builder = apply_providers(builder, &provider_names)?;
-        let session = oe(builder.commit_from_file(&onnx_path))
-            .map_err(|e| anyhow!("loading {}: {e:#}", onnx_path.display()))?;
-
-        // ---- contract discovery (robust to export variants) ----
-        // Jina v5's optimum export declares only input_ids + attention_mask;
-        // token_type_ids is fed solely when the graph asks for it (v2-style).
-        let has_input = |want: &str| session.inputs().iter().any(|o| o.name() == want);
-        for need in ["input_ids", "attention_mask"] {
-            if !has_input(need) {
-                let have: Vec<&str> =
-                    session.inputs().iter().map(|o| o.name()).collect();
-                return Err(anyhow!(
-                    "ONNX export lacks required input '{need}' (has {have:?})"
-                ));
-            }
-        }
-        let feed_token_type_ids = has_input("token_type_ids");
-        let output_name = if session.outputs().iter().any(|o| o.name() == "last_hidden_state") {
-            "last_hidden_state".to_string()
-        } else {
-            session
-                .outputs()
-                .first()
-                .map(|o| o.name().to_string())
-                .ok_or_else(|| anyhow!("ONNX export declares no outputs"))?
-        };
+        let loaded = build_session(&onnx_path, device)?;
 
         Ok(Self {
-            session: RwLock::new(session),
+            session: RwLock::new(loaded.session),
             tokenizer,
             dim: truncate_dim,
             model_id: model_id.to_string(),
-            used_cuda,
-            feed_token_type_ids,
-            output_name,
+            used_cuda: loaded.used_cuda,
+            feed_token_type_ids: loaded.feed_token_type_ids,
+            output_name: loaded.output_name,
+        })
+    }
+
+    /// Load from explicit local files — no network access. An external-data
+    /// sidecar must sit next to `onnx_path` (ORT resolves it relative to the
+    /// model file, same as the HF cache layout). Missing files fail before
+    /// any tokenizer or session work.
+    pub fn open_files(
+        onnx_path: &Path,
+        tokenizer_path: &Path,
+        truncate_dim: usize,
+        device: DeviceReq,
+    ) -> Result<Self> {
+        check_truncate_dim(truncate_dim)?;
+        if !onnx_path.is_file() {
+            return Err(anyhow!("onnx model not found: {}", onnx_path.display()));
+        }
+        if !tokenizer_path.is_file() {
+            return Err(anyhow!(
+                "tokenizer file not found: {}",
+                tokenizer_path.display()
+            ));
+        }
+        let tokenizer = load_tokenizer(tokenizer_path)?;
+        let loaded = build_session(onnx_path, device)?;
+        Ok(Self {
+            session: RwLock::new(loaded.session),
+            tokenizer,
+            dim: truncate_dim,
+            model_id: onnx_path.display().to_string(),
+            used_cuda: loaded.used_cuda,
+            feed_token_type_ids: loaded.feed_token_type_ids,
+            output_name: loaded.output_name,
         })
     }
 
@@ -491,6 +563,25 @@ impl PyJinaV5 {
         Ok(Self { inner })
     }
 
+    #[staticmethod]
+    #[pyo3(signature = (onnx_path, tokenizer_path, truncate_dim=512, device="auto"))]
+    fn open_files(
+        onnx_path: &str,
+        tokenizer_path: &str,
+        truncate_dim: usize,
+        device: &str,
+    ) -> PyResult<Self> {
+        let inner = JinaV5::open_files(
+            Path::new(onnx_path),
+            Path::new(tokenizer_path),
+            truncate_dim,
+            DeviceReq::parse(device)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+        )
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:#}")))?;
+        Ok(Self { inner })
+    }
+
     #[pyo3(signature = (text, task="Document"))]
     fn encode(&self, py: Python<'_>, text: &str, task: &str) -> PyResult<Vec<f32>> {
         py.detach(|| {
@@ -563,6 +654,14 @@ impl PyJinaTokenizer {
             cache_dir.map(PathBuf::from),
         )
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:#}")))?;
+        Ok(Self { inner })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (tokenizer_path))]
+    fn open_files(tokenizer_path: &str) -> PyResult<Self> {
+        let inner = TokenizerHandle::open_files(Path::new(tokenizer_path))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:#}")))?;
         Ok(Self { inner })
     }
 
@@ -744,6 +843,35 @@ mod tests {
         assert_eq!(*ALLOWED_DIMS.last().unwrap(), NATIVE_DIM);
         assert!(ALLOWED_DIMS.contains(&512)); // default dim
         assert_eq!(MAX_LENGTH, 8192);
+    }
+
+    #[test]
+    fn open_files_rejects_bad_dims_before_io() {
+        let e = JinaV5::open_files(
+            Path::new("/nonexistent/model.onnx"),
+            Path::new("/nonexistent/tokenizer.json"),
+            0,
+            DeviceReq::Cpu,
+        ).err().expect("open_files should fail").to_string();
+        assert!(e.contains("1..=1024"), "{e}");
+    }
+
+    #[test]
+    fn open_files_reports_missing_model_before_network() {
+        let e = JinaV5::open_files(
+            Path::new("/nonexistent/model.onnx"),
+            Path::new("/nonexistent/tokenizer.json"),
+            512,
+            DeviceReq::Cpu,
+        ).err().expect("open_files should fail").to_string();
+        assert!(e.contains("onnx model not found"), "{e}");
+    }
+
+    #[test]
+    fn tokenizer_open_files_reports_missing_file() {
+        let e = TokenizerHandle::open_files(Path::new("/nonexistent/tokenizer.json"))
+            .err().expect("open_files should fail").to_string();
+        assert!(e.contains("tokenizer file not found"), "{e}");
     }
 
     // ---- open() validation fires before any network access -------------------

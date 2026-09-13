@@ -52,6 +52,16 @@ without the session. The truncation policy is shared, so counts are identical
 to the session path (verified). A failed session open is cached and re-raised
 — configuration errors fail fast once, not once per encode.
 
+### Explicit local files (air-gapped)
+
+`JinaV5.open_files(onnx_path, tokenizer_path)` and
+`JinaTokenizer.open_files(tokenizer_path)` skip every download. The
+sidecar (`model.onnx_data`-style) must sit next to the ONNX file — ORT
+resolves it relative to the model path, same as the HF cache layout.
+`OKFRouter(model_path=..., tokenizer_path=...)` uses them (both or neither;
+missing files raise `FileNotFoundError` at construction). Same bytes in →
+same vectors out (test-pinned against HF acquisition).
+
 ## Failure policy
 
 | Level | Behaviour |

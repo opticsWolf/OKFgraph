@@ -1078,7 +1078,7 @@ source = { editable = "rust/okf-embed" }
 
 [[package]]
 name = "okfgraph"
-version = "0.2.10"
+version = "0.2.11"
 source = { editable = "." }
 dependencies = [
     { name = "fasteners" },

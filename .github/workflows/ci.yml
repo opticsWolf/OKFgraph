@@ -40,6 +40,7 @@ jobs:
           tests/test_packaging.py
           tests/test_ort.py
           tests/test_lazy_encoder.py
+          tests/test_explicit_files.py
           tests/test_diff.py::TestDiffPure
           tests/test_doctor.py::TestDoctorPure
           tests/test_obsidian.py::TestWikiLinksPure

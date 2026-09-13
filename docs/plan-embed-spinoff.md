@@ -151,7 +151,6 @@ Mirror what already works in both projects (tag guard, OIDC):
   (existing `test_packaging.py` pattern moves to the new repo).
 
 ## 5. Migration phases
-
 ### Phase 0 — Audit & freeze (0.5 day)
 - Inventory every cross-boundary item: the 9 `pub fn`s in
   `okf-embed/src/lib.rs`, `resolve_ort_dylib` + `LazyRustEncoder` call
@@ -207,17 +206,49 @@ Mirror what already works in both projects (tag guard, OIDC):
   *supported* state (pins allow it) and CI proves the floor version
   still passes.
 
-### Phase 5 — Bobine text embedding: explicit non-decision (0 days now)
-Bobine has no text-embedding consumer, so nothing is built. The plan
-records the two pre-approved options for when a need appears, so the
-decision doesn't get re-litigated:
-- **(a) Rust-side**: bobine depends on the full `okf-embed` crate
-  (rlib) behind a Cargo feature, embeds converted chunks natively.
-- **(b) Python-side**: `bobine[embed]` extra depending on the
-  `okf-embed` wheel; `python/bobine/__init__.py` re-exports a lazy
-  `embed_texts()` that imports `okf_embed` on first use (mirrors
-  OKFgraph's lazy pattern, keeps `import bobine` cold).
-- Either way: no repackaging of the wheel, no new top-level module.
+### Phase 5 — Bobine text embedding: DEFERRED (scoped, not scheduled)
+
+Decision: do not build. Scope below exists so the work can be picked up
+without re-analysis when a concrete consumer appears. Revisit triggers:
+a downstream pipeline wanting vectors at conversion time (e.g. an
+okf-ingest-style flow embedding bobine's markdown), or Python users
+asking for one-pip-install convert+embed.
+
+**Critical compatibility note for either option:** vectors are only
+interchangeable with OKFgraph's index if the *chunking policy* also
+matches (mordant GFM chunking, same overlap/prefix rules). Embedding
+with a different chunker produces valid vectors that silently misalign
+with okfgraph expectations. Any future option MUST either reuse the
+chunker contract or document the resulting index as a separate vector
+space. The Jina contract itself (prefixes, pooling, Matryoshka range)
+comes free via the shared crate — chunking does not.
+
+**Option (a) — Rust-side** (bobine depends on the `okf-embed` rlib
+behind a Cargo feature):
+- Work: new `embed` feature + `src/embed.rs` (lazy session via OnceLock,
+  provider config from `ConverterConfig`, error mapping into
+  `BobineError`); a Rust text chunker matching the mordant contract
+  (new code — bobine has none); pure unit tests + model-gated
+  integration tests; optional `py_bindings` exposure.
+- Impact: new public API (semver minor); `cargo publish` unaffected
+  (crates.io dep); dependency tree barely grows (`tokenizers`/`hf-hub`
+  already bobine deps); ~0.4 GB first-use model download; cold-start
+  session cost on first embed; golden-fixture output grows.
+- Effort: ~2–4 days incl. tests/docs.
+
+**Option (b) — Python-side** (`bobine[embed]` extra → `okf-embed` wheel):
+- Work: `pyproject` optional-dependencies entry + floor pin; lazy
+  `embed_texts()` in `python/bobine/__init__.py` importing `okf_embed`
+  on first use (mirrors OKFgraph's lazy pattern); clear error when the
+  extra is missing; one model-gated test; docs.
+- Impact: zero Rust change, zero crates.io impact, no new required
+  deps, `import bobine` stays cold, wheel size unchanged. Only new
+  coupling: the floor pin on `okf-embed`, managed like anydep.
+- Effort: ~0.5–1 day.
+
+Pre-approved order when revisited: **(b) first** (cheap, reversible),
+**(a) only if** a Rust-native consumer needs embeddings without Python.
+Either way: no repackaging of the wheel, no new top-level module (§3.5).
 
 ## 6. What does NOT change
 
@@ -252,13 +283,22 @@ decision doesn't get re-litigated:
 "revert the dep line": both consumers keep working pinned artifacts at
 every step, and no phase changes vectors.
 
-## 9. Open decisions (yours)
+## 9. Decisions (recorded)
 
-1. **Repo home**: new `okf-embed` repo (recommended — independent
-   trains, both consumers equal) vs. a workspace inside bobine or
-   OKFgraph (couples releases to one consumer).
-2. **Crate names**: `embed-core` + `okf-embed` (recommended) vs. one
-   crate with heavier features.
-3. **History**: preserve via `filter-repo` (recommended) vs. clean move.
-4. **Bobine text embedding**: leave as Phase-5 non-decision
-   (recommended) vs. scope option (a)/(b) now.
+1. **Repo home**: new standalone `okf-embed` repo. Both consumers equal;
+   independent release trains.
+2. **Crate split**: `embed-core` + `okf-embed`. Publishing split:
+   `embed-core` → crates.io only (pure Rust lib, bobine's Rust dep);
+   `okf-embed` → crates.io (rlib with the PyO3 bindings) **and** PyPI
+   (compiled maturin wheels — what OKFgraph installs). crates.io
+   ships source for Rust builds; PyPI ships binaries for Python
+   installs — they are two distributions of the same crate, not two
+   crates. `embed-core` never touches PyPI (nothing Python imports it
+   directly).
+3. **History**: clean move. (`filter-repo` would have replayed
+   `rust/okf-embed/` commits into the new repo to preserve blame;
+   rejected — a pointer commit in OKFgraph noting the move origin is
+enough, and the new repo starts with readable history.)
+4. **Bobine text embedding**: deferred; scope + impact recorded in
+   Phase 5. Pre-approved order when revisited: Python-side extra first,
+   Rust-native only on concrete need.

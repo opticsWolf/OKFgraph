@@ -25,6 +25,12 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
   becomes the artifact (verify-first; imports refuse without `--force` re-attach)
 - Global `--max-length N` (1..=32768, default 8192): token truncation ceiling.
   Raising it changes long-doc vectors — reimport fully after changing.
+- Inference defaults just work: `--device auto` (CUDA when present, else CPU)
+  with `--precision auto` following it (CUDA→FP16 mirror weights, CPU→FP32,
+  pinned per graph — never mixed). Pin `--precision fp32` for bit-stable
+  CPU vectors; `--cpu-arena` trades ~8x RSS for ~1.4x encode speed.
+  Chunks are capped at 512 tokens (`chunk_size`); overlap tails never exceed
+  the receiving chunk (`chunk_overlap`, default 40 words).
 - `--bundle-root ALIAS=PATH` (repeatable, combines with `--bundle`):
   additional named roots mint `@alias/rel` IDs (TOML `[[roots]]` equivalent).
   Absent roots are skipped with a warning (unmounted ≠ deleted); `--purge`

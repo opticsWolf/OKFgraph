@@ -1,6 +1,6 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.1 (as-built for okfgraph 0.4.0 — §16 multi-root; supersedes the v5.x design lineage as the authoritative surface)  
+**Version**: 6.2 (as-built for okfgraph 0.5.x — §16 multi-root + §16.1 import scope/`--primary`, §4a.2 token cap + bounded tail, §6 inference surface; supersedes the v5.x design lineage as the authoritative surface)  
 **Based on**: Architecture v5.9 (Core Gaps closure, 2026-07-09)  
 **Verified against**: LadybugDB v0.20.3, Python 3.11–3.13, `embroider 0.1.3`, `bobine 0.5.11`, `onnxruntime==1.29.0`
 
@@ -75,7 +75,7 @@ Added `validate()` methods to all config dataclasses:
 
 - `DatabaseConfig`: path non-empty, dim in [32, 1024], recommended Matryoshka dims
 - `EmbeddingConfig`: device in [cpu, cuda, mps, auto], precision in [auto, fp32, fp16], cache_dir absolute
-- `ImportConfig`: mode in [text, optional, omni], batch_size in [1, 256], chunk_size in [64, 8192]
+- `ImportConfig`: mode in [text, optional, omni], batch_size in [1, 256], chunk_size in [64, 8192] (tokens, 0.5.1+)
 - `OKFConfig`: aggregates all section validations
 
 Validation warnings logged on config load (non-blocking — CLI args can override).
@@ -914,9 +914,10 @@ Documents are chunked during import using **Mordant** (Rust-based Markdown parse
 1. **Parse** — `MarkdownChunker` splits the document into semantic blocks (headings, paragraphs, code blocks, lists, tables, blockquotes, diagrams).
 2. **Heading context injection** — Paragraph chunks track `current_heading` as an ephemeral key. This heading is prepended to the embedding payload without mutating the stored `chunk_text`.
 3. **Structural boundaries** — The `STRUCTURAL_BLOCKS` tuple (`Heading`, `CodeBlock`, `List`, `Blockquote`, `Table`, `Diagram`) enforces hard semantic breaks. Overlap tails are cleared when hitting any structural block to prevent "chimera" vectors (e.g., code tokens bleeding into prose).
-4. **Sliding window overlap** — Default `chunk_overlap=40` words. Tails are only generated from non-structural blocks.
-5. **Encoding** — Each chunk is encoded via `_encode()` with `Document:` prefix, last-token pooling, L2 normalization, and Matryoshka truncation.
-6. **Storage** — Chunks are stored as `Chunk` nodes with `PART_OF` relationships to the parent `Concept`.
+4. **Sliding window overlap** — Default `chunk_overlap=40` words, bounded by the receiving chunk's own word count ("never more context than content", 0.5.1 — fixed tails drowned small chunks: self-hit@1 0.843 → 0.887 in A/B). Tails are only generated from non-structural blocks.
+5. **Token cap (0.5.1)** — `chunk_size` (default 512) is measured in *tokens* with the production tokenizer counter (word-count fallback keeps cold paths tokenizer-free). Oversized blocks are subdivided by binary-searched word cuts into exact-tiling continuation pieces (`"Type+"` block types, zero-gap byte offsets); reconstruction rejoins continuations with `""` (byte-identical with/without the cap over 39 doc files) while every other pair keeps the delimiter path.
+6. **Encoding** — Each chunk is encoded via `_encode()` with `Document:` prefix, last-token pooling, L2 normalization, and Matryoshka truncation.
+7. **Storage** — Chunks are stored as `Chunk` nodes with `PART_OF` relationships to the parent `Concept`.
 
 ### 4a.3. Chunk Search (RRF Fusion)
 
@@ -1229,8 +1230,8 @@ from okfgraph.mcp_server import create_mcp_server
 mcp = create_mcp_server(
     db_path="./my_graph.db",
     bundle_root="./my-knowledge-base",
-    device="cpu",
-    embedding_dim=1024,
+    device="auto",  # CUDA when present, else CPU (precision follows)
+    embedding_dim=512,  # default on every surface
     enable_chunking=True,
 )
 mcp.run(transport="stdio")
@@ -1242,8 +1243,12 @@ mcp.run(transport="stdio")
 |---|---|---|
 | `--db-path` | **(required)** | Path to the Ladybug database file |
 | `--bundle-root` | db parent | Root directory for the OKF bundle |
-| `--device` | `cpu` | Device for ONNX inference (`cpu` or `cuda`) |
-| `--embedding-dim` | `1024` | Dimension of the embedding vectors |
+| `--device` | `auto` | Device for ONNX inference (`auto` = CUDA when present, else CPU; `cpu`/`cuda` pin it) |
+| `--precision` | `auto` | Weight precision: `auto` follows the resolved device (CUDA→FP16 mirror, CPU→FP32); `fp32`/`fp16` pin it; pinned per graph in Meta (fail-closed) |
+| `--cpu-arena` | off | Enable the CPU arena allocator (default off: ~8x lower peak RSS for ~1.4x encode time) |
+| `--embedding-dim` | `512` | Dimension of the embedding vectors (Matryoshka ladder 32–1024) |
+| `--max-length` | `8192` | Token truncation ceiling 1..=32768 (model truth 32768) |
+| `--root ALIAS=PATH` | — | Additional named bundle root (repeatable; `@alias/rel` IDs) |
 | `--no-chunking` | `False` | Disable document chunking |
 | `--log-level` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 
@@ -1695,8 +1700,12 @@ hierarchy builder (IDs split on `/`). Legacy trees with top-level `@*`
   cross-root collisions become repairable BrokenLinks. Relative `](path)`
   links stay source-unaware (deferred, as before).
 - **Surfaces**: CLI `--bundle-root ALIAS=PATH` (repeatable, combines with
-  `--bundle`); TOML `[[roots]]` (paths relative to the TOML file); MCP
-  `--root ALIAS=PATH` + `create_mcp_server(roots=...)`. Path-based `ingest md`
+  `--bundle`); TOML `[[roots]]` (paths relative to the TOML file) + TOML
+  `bundle` primary; MCP `--root ALIAS=PATH` + `create_mcp_server(roots=...)`.
+  Import scope (0.5.1): `--bundle` pins one tree, `--primary` sets the
+  bare-ID root without pinning (`import --all` then covers every root),
+  both together are refused; without either the primary defaults to the
+  CWD. Path-based `ingest md`
   resolves longest-prefix-match; PDF work-dir imports mint a stable
   `@pdf-<content-hash12>/...` namespace (same-stem pages from different PDFs
   can no longer overwrite each other); thoughts IDs were already unique.

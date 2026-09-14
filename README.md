@@ -1,4 +1,4 @@
-# OKFgraph 0.4.0
+# OKFgraph 0.5.1
 
 [![PyPI](https://img.shields.io/pypi/v/okfgraph)](https://pypi.org/project/okfgraph/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
@@ -154,7 +154,7 @@ accepted everywhere, and usually live in `okfgraph.toml`.
 | `okf diff [OLD] [NEW] [--json]` | Snapshot (two dirs, no model) or drift (graph vs dir); exit 0 identical / 1 different |
 | `okf lint [DIR] [--json]` | Pre-import gate (no DB, no model); exit 0 clean / 1 errors / 2 bad dir |
 | `okf doctor [--fix] [--strict] [--stale-days N] [--json]` | Score + findings; `--fix` repairs safely, `--strict` exits 1 on any finding |
-| `okf import [--all] [--purge] [--mode text\|optional\|omni] [--force]` | Bulk/single import, delta-aware (`--force` re-attaches a detached graph); repeatable `--bundle-root ALIAS=PATH` adds named roots (`@alias/` IDs, unmounted ≠ deleted, `--purge` refuses while any root is absent) |
+| `okf import [--all] [--purge] [--mode text\|optional\|omni] [--force]` | Bulk/single import, delta-aware (`--force` re-attaches a detached graph); repeatable `--bundle-root ALIAS=PATH` adds named roots (`@alias/` IDs, unmounted ≠ deleted, `--purge` refuses while any root is absent); `--bundle` pins one tree, `--primary` sets the bare-ID root for all-roots scope (both = refused) |
 | `okf detach [--bundle DIR] [--no-verify] [--force]` | End the mirror: the DB becomes the artifact (verify-first; imports refuse without `--force`) |
 | `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf deleted-*` | Setup, cache inspection, REPL, index rebuild, link + soft-delete maintenance |
 

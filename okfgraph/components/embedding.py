@@ -6,11 +6,66 @@ here. Public callers reach these via router.<method> (component bridge).
 """
 import logging
 import math
+import re
 import threading
 from pathlib import Path
 
 import mordant
 from typing import Any, Dict, List, Optional
+
+#: Suffix marking post-split continuation pieces (0.5.1 chunk cap).
+#: A mordant block larger than ``chunk_size`` words is subdivided into
+#: exact-tiling pieces; the first keeps the block type, continuations
+#: append "+" so reconstruction joins them with "" instead of the
+#: inter-block delimiter. Stored as-is (plain STRING column, no schema
+#: change); consumers compare against the base type via _base_block_type.
+CONTINUATION_SUFFIX = "+"
+
+
+def _base_block_type(block_type: str) -> str:
+    """Strip the continuation suffix, if present."""
+    if block_type.endswith(CONTINUATION_SUFFIX):
+        return block_type[: -len(CONTINUATION_SUFFIX)]
+    return block_type
+
+
+def _cap_chunk_words(chunk: Dict[str, Any], max_words: int) -> List[Dict[str, Any]]:
+    """Subdivide an oversized chunk into word-capped pieces (pure).
+
+    mordant splits purely by block structure with no size limit, so a
+    single giant block (code fence, table, wall of prose) becomes one
+    giant chunk. Pieces tile the parent text *exactly*: boundaries fall
+    on word starts, so ``"".join(piece texts) == parent text`` and the
+    byte offsets tile the parent span with zero gaps — which is what
+    lets :meth:`reconstruct_document` rejoin continuations losslessly.
+    The first piece keeps the block type (and start offset); each
+    continuation appends :data:`CONTINUATION_SUFFIX`. Chunks at or under
+    the cap (and wordless ones) pass through untouched.
+    """
+    text = chunk["chunk_text"]
+    spans = [m.span() for m in re.finditer(r"\S+", text)]
+    if len(spans) <= max(1, max_words):
+        return [chunk]
+    limit = max(1, max_words)
+    # Piece boundaries at word starts: piece k covers
+    # text[bounds[k]:bounds[k+1]]; leading/inter-word whitespace accrues
+    # to the preceding piece. Exact tiling by construction.
+    bounds = [0] + [spans[i][0] for i in range(limit, len(spans), limit)]
+    bounds.append(len(text))
+    base_start = chunk["start_offset"]
+    pieces = []
+    for i in range(len(bounds) - 1):
+        piece_text = text[bounds[i]:bounds[i + 1]]
+        pieces.append({
+            **chunk,
+            "chunk_text": piece_text,
+            "block_type": chunk["block_type"]
+            if i == 0 else chunk["block_type"] + CONTINUATION_SUFFIX,
+            "start_offset": base_start + len(text[:bounds[i]].encode("utf-8")),
+            "end_offset": base_start + len(text[:bounds[i + 1]].encode("utf-8")),
+        })
+    return pieces
+
 
 #: Meta key pinning the weight precision a graph was imported with.
 #: Stored as INT64 (16/32) — the Meta value column is integer-typed.
@@ -471,10 +526,13 @@ class EmbeddingEngine:
 
         for chunk in chunks:
             text_to_embed = chunk['chunk_text']
+            # Continuation pieces ("Type+") inherit the parent's
+            # structural behaviour: code stays tail-free, prose chains.
+            base_type = _base_block_type(chunk["block_type"])
 
             # 1. Enforce hard semantic boundary
             # Clear any trailing words from the previous section when hitting a structural block
-            if chunk["block_type"] in STRUCTURAL_BLOCKS:
+            if base_type in STRUCTURAL_BLOCKS:
                 prev_tail = ""
 
             # 2. Apply sliding word boundary window if a tail exists
@@ -492,7 +550,7 @@ class EmbeddingEngine:
 
             # Compute tail from the PURE chunk text (not the context-enriched string)
             # Structural blocks never generate tails
-            if self.chunk_overlap > 0 and chunk["block_type"] not in STRUCTURAL_BLOCKS:
+            if self.chunk_overlap > 0 and base_type not in STRUCTURAL_BLOCKS:
                 words = chunk["chunk_text"].split()
                 prev_tail = "  ".join(words[-self.chunk_overlap:])
             else:
@@ -520,9 +578,19 @@ class EmbeddingEngine:
 
         parts = [rows[0]["chunk_text"]]
         for i in range(1, len(rows)):
-            sep = mordant.MarkdownChunker.get_delimiter(
-                rows[i - 1]["block_type"], rows[i]["block_type"]
-            )
+            prev_bt = rows[i - 1]["block_type"]
+            cur_bt = rows[i]["block_type"]
+            # Continuation pieces tile the parent span exactly (zero-gap
+            # offsets); rejoin with "" instead of the inter-block
+            # delimiter. Base-normalised fallback keeps pre-cap graphs
+            # (no "+" types) on the identical path as before.
+            if (cur_bt.endswith(CONTINUATION_SUFFIX)
+                    and _base_block_type(cur_bt) == _base_block_type(prev_bt)):
+                sep = ""
+            else:
+                sep = mordant.MarkdownChunker.get_delimiter(
+                    _base_block_type(prev_bt), _base_block_type(cur_bt)
+                )
             parts.append(sep + rows[i]["chunk_text"])
 
         return "".join(parts)
@@ -584,10 +652,14 @@ class EmbeddingEngine:
         Uses chunker.get_all_chunks() to get ExtractedChunk objects with
         block_type and byte offsets. Includes headings as separate chunks
         so they are preserved during reconstruction. No overlap is stored.
+
+        Post-split cap (0.5.1): mordant has no size limit, so any block
+        over ``chunk_size`` words is subdivided by :func:`_cap_chunk_words`
+        into exact-tiling continuation pieces ("Type+"). ``chunk_index``
+        is renumbered over the final list so chunk ids stay dense.
         """
         chunker = mordant.MarkdownChunker(body)
         chunks: List[Dict[str, Any]] = []
-        index = 0
 
         current_heading = ""
         for chunk in chunker.get_all_chunks():
@@ -595,18 +667,20 @@ class EmbeddingEngine:
             if chunk.block_type == "Heading":
                 current_heading = chunk.text
 
-            chunks.append({
+            base = {
                 "parent_doc_id": document_id,
                 "chunk_text": chunk.text,
                 "block_type": chunk.block_type,
                 "start_offset": chunk.start_offset,
                 "end_offset": chunk.end_offset,
-                "chunk_index": index,
+                "chunk_index": -1,  # renumbered below, post-split
                 # Ephemeral context used strictly for constructing the embedding payload
                 "heading_context": current_heading if chunk.block_type != "Heading" else ""
-            })
-            index += 1
+            }
+            chunks.extend(_cap_chunk_words(base, self.chunk_size))
 
+        for index, chunk in enumerate(chunks):
+            chunk["chunk_index"] = index
         return chunks
 
 

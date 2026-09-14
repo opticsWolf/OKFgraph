@@ -4,6 +4,23 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.5.1] — 2026-09-14
+
+### Fixed (chunk cap now enforced)
+- `chunk_size` (default 512 words) was accepted everywhere but enforced
+  nowhere — mordant splits purely by block structure, so a giant block
+  became one giant chunk (wild max: 1178 words). `_split_into_chunks`
+  now post-splits oversized blocks into exact-tiling continuation
+  pieces (`"Type+"` block types, zero-gap byte offsets).
+- Reconstruct-neutral by construction: continuations rejoin with `""`,
+  every other pair takes the unchanged delimiter path (base types).
+  Proven over 39 doc files (2500 chunks): reconstructions with/without
+  the cap are byte-identical; max pure-chunk words now 512.
+- Structural tail rules preserved via base types (code pieces stay
+  tail-free, prose continuations chain tails). No schema change
+  (`block_type` stays STRING); existing graphs adopt the cap for
+  new/changed docs on reimport (delta is file-hash based).
+
 ## [0.5.0] — 2026-09-14
 
 ### Changed (precision follows device, embroider>=0.1.5)

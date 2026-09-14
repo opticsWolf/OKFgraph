@@ -26,6 +26,11 @@ commit history, newest first.
   tail-free, prose continuations chain tails). No schema change
   (`block_type` stays STRING); existing graphs adopt the cap for
   new/changed docs on reimport (delta is file-hash based).
+- Import scope made discoverable: `import --all --bundle TREE` pins one
+  tree (now a warning, was info) while omitting `--bundle` imports every
+  configured root — `--all` help text says so, the CLI skill documents
+  both recipes (`cd <primary>` first when the primary isn't the CWD).
+  No behavior change: single-tree pinning stays deliberate.
 - Receiver-bounded overlap tail: the fixed 40-word tail is truncated to
   the receiving chunk's own word count ("never more context than
   content"). A/B on 2543 doc chunks (FP16-CUDA, vector-only

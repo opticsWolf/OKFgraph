@@ -30,6 +30,14 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
   Absent roots are skipped with a warning (unmounted ≠ deleted); `--purge`
   refuses while any root is absent. `[[alias/Name]]` links resolve cross-root;
   `okf detach` covers all roots; `--force` re-attach needs the full set.
+- `okf import --all` scope: **with `--bundle`, only that tree imports**
+  (warning names the untouched roots) — deliberate, for reimporting one
+  root without touching the others. **Full multi-root rebuild: omit
+  `--bundle`** so every configured root imports; the primary (bare IDs)
+  then defaults to the CWD, so `cd <primary> && okf import --all --db
+  DB --bundle-root ALIAS=PATH ...` (or set the primary in
+  `okfgraph.toml` / use the router API). Passing `--bundle` *and*
+  `--bundle-root` registers the roots but imports just the one tree.
 
 ## Setup (once per project)
 

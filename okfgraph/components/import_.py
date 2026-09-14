@@ -1231,7 +1231,7 @@ class ImportManager:
                     alias=alias,
                 )
                 if self.roots:
-                    logger.info(
+                    logger.warning(
                         "import: single tree (%s): %d concept(s) — other "
                         "roots untouched (omit --bundle for all roots)",
                         bundle_path or self.bundle_root, len(_one),

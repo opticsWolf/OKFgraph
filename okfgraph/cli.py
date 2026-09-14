@@ -1205,7 +1205,9 @@ def build_parser():
     _add_global(p)
     _add_logging_flags(p)
     p.add_argument("files", nargs="*", help="Files to import")
-    p.add_argument("--all", action="store_true", dest="import_all", help="Import entire bundle")
+    p.add_argument("--all", action="store_true", dest="import_all",
+                     help="Import entire bundle (omit --bundle to import every "
+                     "configured root; with --bundle, only that tree)")
     p.add_argument("--batch-size", type=int, default=32, help="Batch size for encoding (default: 32)")
     p.add_argument(
         "--mode", default="text", choices=["text", "optional", "omni"],

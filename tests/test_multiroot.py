@@ -359,6 +359,32 @@ class TestSurfaces:
         args = build_parser().parse_args(["import", "--all"])
         assert args.bundle_root is None
 
+    def test_single_tree_pin_warns_all_roots_stays_quiet(
+            self, tmp_path, caplog):
+        # `import --all --bundle TREE` pins one tree (warns); omitting
+        # --bundle imports every configured root (quiet). The skill
+        # documents both; this pins the log contract.
+        from pathlib import Path
+
+        prim = _mkroot(tmp_path, "prim", {"a.md": _doc("A")})
+        extra = _mkroot(tmp_path, "extra", {"b.md": _doc("B")})
+        r = _mrouter(tmp_path, prim, {"xx": str(extra)})
+        try:
+            with caplog.at_level(logging.WARNING,
+                                  logger="okfgraph.components.import_"):
+                assert r.import_mgr.import_bundle(Path(prim)) == ["a"]
+            assert any("other roots untouched" in m
+                       for m in caplog.messages)
+            caplog.clear()
+            with caplog.at_level(logging.WARNING,
+                                  logger="okfgraph.components.import_"):
+                ids = r.import_mgr.import_bundle(None)
+            assert "@xx/b" in ids
+            assert not any("other roots untouched" in m
+                           for m in caplog.messages)
+        finally:
+            r.close()
+
     def test_cli_roots_reach_router(self, tmp_path):
         from okfgraph.cli import _router
         from okfgraph.cli import build_parser

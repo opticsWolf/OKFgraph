@@ -1217,13 +1217,22 @@ class ImportManager:
                 # Explicit tree, or legacy single-root graph: one import.
                 # `alias` is the PDF work-dir ingest namespace (§2.1); it
                 # never re-attaches (a temp dir never matches provenance).
+                # NOTE: an explicit --bundle pins ONE tree even with --all;
+                # omit --bundle to import every configured root.
                 reattach = self._require_attached(
                     force, bundle_path or self.bundle_root
                 )
-                ids = self._import_bundle_inner(
+                _one = self._import_bundle_inner(
                     bundle_path, batch_size, mode, purge_deleted,
                     alias=alias,
                 )
+                if self.roots:
+                    logger.info(
+                        "import: single tree (%s): %d concept(s) — other "
+                        "roots untouched (omit --bundle for all roots)",
+                        bundle_path or self.bundle_root, len(_one),
+                    )
+                ids = _one
                 if reattach:
                     self.delta_mgr.clear_detached()
                 return ids

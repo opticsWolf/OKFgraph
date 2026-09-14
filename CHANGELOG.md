@@ -26,6 +26,12 @@ commit history, newest first.
   tail-free, prose continuations chain tails). No schema change
   (`block_type` stays STRING); existing graphs adopt the cap for
   new/changed docs on reimport (delta is file-hash based).
+- First-class multi-root rebuilds: `--primary PATH` sets the bare-ID
+  root without pinning, so `import --all --db DB --primary P
+  --bundle-root ALIAS=PATH...` imports every configured root from any
+  directory (previously required `cd <primary>`). `--bundle` +
+  `--primary` is refused as a scope clash. TOML `bundle` was already
+  the file equivalent.
 - Import scope made discoverable: `import --all --bundle TREE` pins one
   tree (now a warning, was info) while omitting `--bundle` imports every
   configured root — `--all` help text says so, the CLI skill documents

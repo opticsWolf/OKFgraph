@@ -32,12 +32,13 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
   `okf detach` covers all roots; `--force` re-attach needs the full set.
 - `okf import --all` scope: **with `--bundle`, only that tree imports**
   (warning names the untouched roots) — deliberate, for reimporting one
-  root without touching the others. **Full multi-root rebuild: omit
-  `--bundle`** so every configured root imports; the primary (bare IDs)
-  then defaults to the CWD, so `cd <primary> && okf import --all --db
-  DB --bundle-root ALIAS=PATH ...` (or set the primary in
-  `okfgraph.toml` / use the router API). Passing `--bundle` *and*
-  `--bundle-root` registers the roots but imports just the one tree.
+  root without touching the others. **Full multi-root rebuild:**
+  `okf import --all --db DB --primary PRIMARY --bundle-root ALIAS=PATH
+  ...` — `--primary` sets the bare-ID root without pinning; `--bundle`
+  + `--primary` together is a scope clash (refused). Without either
+  flag the primary defaults to the CWD (`cd <primary>` first) or to
+  TOML `bundle`. Passing `--bundle` *with* `--bundle-root` registers
+  the roots but imports just the one tree.
 
 ## Setup (once per project)
 

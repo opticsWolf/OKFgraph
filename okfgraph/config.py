@@ -400,6 +400,12 @@ class OKFConfig:
             config.embedding.cache_dir = str(cli_args["cache_dir"])
         if "bundle" in cli_args and cli_args["bundle"]:
             config.bundle = str(cli_args["bundle"])
+        # --primary sets the same primary without pinning single-tree
+        # import (pinning is decided by the import command from
+        # args.bundle, not from config). Wins the value on overlap;
+        # `import --all` refuses the combination outright (scope clash).
+        if "primary" in cli_args and cli_args["primary"]:
+            config.bundle = str(cli_args["primary"])
         if "roots" in cli_args and cli_args["roots"]:
             given = cli_args["roots"]
             if isinstance(given, dict):

@@ -385,6 +385,41 @@ class TestSurfaces:
         finally:
             r.close()
 
+    def test_cli_primary_reaches_router_as_bundle(self, tmp_path):
+        from okfgraph.cli import _router
+        from okfgraph.cli import build_parser
+
+        prim = _mkroot(tmp_path, "prim", {})
+        a = _mkroot(tmp_path, "a", {})
+        args = build_parser().parse_args(
+            ["doctor", "--db", str(tmp_path / "m.db"),
+             "--primary", str(prim), "--bundle-root", f"aa={a}"])
+        router = _router(args)
+        try:
+            assert router.bundle_root == prim.resolve()
+            assert sorted(router.roots) == ["aa"]
+        finally:
+            router.close()
+
+    def test_cli_primary_overrides_bundle_value(self):
+        from okfgraph.config import OKFConfig
+
+        cfg = OKFConfig()
+        OKFConfig._apply_cli(
+            cfg, {"bundle": "/tmp/b", "primary": "/tmp/p"})
+        assert cfg.bundle == "/tmp/p"
+
+    def test_cli_bundle_plus_primary_refused(self, capsys):
+        from types import SimpleNamespace
+
+        from okfgraph.cli import _import_inner
+
+        args = SimpleNamespace(import_all=True, bundle="/tmp/b",
+                               primary="/tmp/p", batch_size=32,
+                               mode="text", purge=False, force=False)
+        assert _import_inner(args, None, "text", False) == 2
+        assert "not both" in capsys.readouterr().out
+
     def test_cli_roots_reach_router(self, tmp_path):
         from okfgraph.cli import _router
         from okfgraph.cli import build_parser

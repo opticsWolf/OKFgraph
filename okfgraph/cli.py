@@ -130,7 +130,8 @@ def _add_global(parser, mark=True):
         return act
 
     _add("--db", default=None, help="Database path (default: okfgraph.db, or from okfgraph.toml)")
-    _add("--bundle", default=None, help="Bundle root directory (default: ., or from okfgraph.toml)")
+    _add("--bundle", default=None, help="Bundle root directory (default: ., or from okfgraph.toml). Pins single-tree import; use --primary to set the primary without pinning.")
+    _add("--primary", default=None, help="Primary root for multi-root scope (bare IDs) without pinning: 'import --all' imports every configured root. Overlaps with --bundle (error under import --all); TOML 'bundle' equivalent.")
     _add("--bundle-root", action="append", default=None, metavar="ALIAS=PATH", help="Additional named bundle root (repeatable; combines with --bundle). Named roots mint @alias/rel IDs.")
     _add("--dim", type=int, default=None, help="Embedding dimension (Matryoshka ladder 32/64/128/256/512/768/1024; default: 512, or from okfgraph.toml)")
     _add("--max-length", type=int, default=None, help="Token truncation ceiling 1..=32768 (default: 8192, or from okfgraph.toml). Raising it changes long-doc vectors — reimport fully after changing.")
@@ -173,7 +174,7 @@ def _router(args):
     """
     # Build CLI args dict (only non-None values override config)
     cli_dict = {}
-    for attr in ("db", "bundle", "dim", "max_length", "cache_dir", "device",
+    for attr in ("db", "bundle", "primary", "dim", "max_length", "cache_dir", "device",
                  "precision", "cpu_arena",
                  "omni_model_id", "chunk_size", "chunk_overlap",
                  "no_chunking", "mode", "batch_size",
@@ -281,6 +282,11 @@ def _import(args):
 def _import_inner(args, router, mode, purge):
     logger = logging.getLogger("cli")
     if getattr(args, "import_all", False):
+        if getattr(args, "bundle", None) and getattr(args, "primary", None):
+            print("[ERROR] --bundle pins one tree but --primary asks for "
+                  "multi-root scope: pass one, not both. (--bundle alone "
+                  "= that tree; --primary (+ --bundle-root) = all roots.)")
+            return 2
         bundle_path = Path(args.bundle) if args.bundle else None
         ids = router.import_mgr.import_bundle(
             bundle_path,

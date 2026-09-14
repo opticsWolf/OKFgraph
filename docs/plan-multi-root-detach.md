@@ -294,6 +294,11 @@ purge + resume on remount.
    still return before it).
 5. **Phase number moved**: token-limit release took 0.3.0; this phase
    shipped as 0.4.0.
+6. **No per-root include/exclude** (acceptance finding): test-data trees
+   (`tests/fixtures/`) import as concepts and noise the graph. A `fixtures/`
+   skip was tried and reverted — it collides with this repo's own suite
+   fixtures. Include/exclude globs per root are future work; until then,
+   point roots at doc trees, not repo roots, when noise matters.
 
 ## Non-goals (parked)
 

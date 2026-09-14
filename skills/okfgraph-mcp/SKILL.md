@@ -22,6 +22,9 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
    join via repeatable `--root ALIAS=PATH` (their files mint `@alias/rel`
    ids; link them as `[[alias/Name]]`).
 2. First server boot creates the schema automatically — no init call needed.
+   The five tools include no bundle import: (re)building a graph from a
+   bundle (`import --all`, single-tree vs all-roots scope) is CLI/API
+   only — see the CLI skill. `ingest` adds single files, never a tree.
 3. `ingest` / `export_bundle` are write tools: they need harness approval
    unless pre-approved. For a knowledge workflow, pre-approve them.
    On a detached graph (`okf detach` was run) all five tools serve

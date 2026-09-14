@@ -54,10 +54,6 @@ SOURCE_EXTS = (".md", ".markdown", ".txt")
 #: all agree on the bundle's file set.
 SKIP_DIR_NAMES = frozenset({
     "target", "node_modules", "__pycache__", "venv", "dist", "build",
-    # Test-data trees are not knowledge (fixture stubs pollute the graph
-    # with fake links and duplicate titles — seen live on this repo's own
-    # tests/fixtures/retrieval_bundle during the 0.4.0 acceptance import).
-    "fixtures",
 })
 
 

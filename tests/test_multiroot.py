@@ -336,7 +336,6 @@ class TestSkippedDirs:
             "target/build/y.md": _doc("Build"),
             "node_modules/dep/z.md": _doc("Dep"),
             ".hidden/w.md": _doc("Hidden"),
-            "tests/fixtures/fake.md": _doc("Fake"),
             "sub/normal.md": _doc("Normal"),
         })
         assert in_skipped_dir(root / ".venv" / "pkg" / "LICENSE.md")

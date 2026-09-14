@@ -29,29 +29,61 @@ def _base_block_type(block_type: str) -> str:
     return block_type
 
 
-def _cap_chunk_words(chunk: Dict[str, Any], max_words: int) -> List[Dict[str, Any]]:
-    """Subdivide an oversized chunk into word-capped pieces (pure).
+def _cap_chunk_budget(
+    chunk: Dict[str, Any],
+    max_units: int,
+    counter,  # Callable[[str], int]: tokens in production, words as fallback
+) -> List[Dict[str, Any]]:
+    """Subdivide an oversized chunk into budget-capped pieces (pure).
 
     mordant splits purely by block structure with no size limit, so a
     single giant block (code fence, table, wall of prose) becomes one
-    giant chunk. Pieces tile the parent text *exactly*: boundaries fall
-    on word starts, so ``"".join(piece texts) == parent text`` and the
-    byte offsets tile the parent span with zero gaps — which is what
-    lets :meth:`reconstruct_document` rejoin continuations losslessly.
-    The first piece keeps the block type (and start offset); each
-    continuation appends :data:`CONTINUATION_SUFFIX`. Chunks at or under
-    the cap (and wordless ones) pass through untouched.
+    giant chunk. The budget is measured with the real tokenizer
+    (production) or word counts (``counter=None`` fallback, cold/tests).
+    Cut points fall on word starts — found by binary search over word
+    spans, so only oversized chunks pay, logarithmically — and pieces
+    tile the parent text *exactly*: ``"".join(piece texts) == parent
+    text`` and the byte offsets tile the parent span with zero gaps,
+    which is what lets :meth:`reconstruct_document` rejoin
+    continuations losslessly. The first piece keeps the block type (and
+    start offset); each continuation appends :data:`CONTINUATION_SUFFIX`.
+    Chunks at or under budget pass through untouched. A single word over
+    budget (e.g. a base64 blob) is unsplittable at word granularity and
+    is emitted alone — the context-window warning remains the backstop.
     """
     text = chunk["chunk_text"]
-    spans = [m.span() for m in re.finditer(r"\S+", text)]
-    if len(spans) <= max(1, max_words):
+    limit = max(1, max_units)
+    if counter(text) <= limit:
         return [chunk]
-    limit = max(1, max_words)
-    # Piece boundaries at word starts: piece k covers
-    # text[bounds[k]:bounds[k+1]]; leading/inter-word whitespace accrues
-    # to the preceding piece. Exact tiling by construction.
-    bounds = [0] + [spans[i][0] for i in range(limit, len(spans), limit)]
-    bounds.append(len(text))
+    spans = [m.span() for m in re.finditer(r"\S+", text)]
+    if not spans:
+        return [chunk]
+    # Word indices where each piece begins; piece j covers words
+    # [starts[j], starts[j+1]). Binary-search the widest fitting end.
+    starts = [0]
+    start = 0
+    n = len(spans)
+    while start < n:
+        if counter(text[spans[start][0]:spans[start][1]]) > limit:
+            end = start + 1  # unsplittable single word, emitted alone
+        else:
+            lo, hi = start + 1, n
+            base = 0 if start == 0 else spans[start][0]
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                # Validate the EXACT emitted span, trailing whitespace
+                # included (a "\n\n" tail can cost a token of its own).
+                cand_end = spans[mid][0] if mid < n else len(text)
+                if counter(text[base:cand_end]) <= limit:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            end = lo
+        starts.append(end)
+        start = end
+    # Char boundaries at word starts; leading/inter-word whitespace
+    # accrues to the preceding piece. Exact tiling by construction.
+    bounds = [0] + [spans[i][0] for i in starts[1:-1]] + [len(text)]
     base_start = chunk["start_offset"]
     pieces = []
     for i in range(len(bounds) - 1):
@@ -535,8 +567,14 @@ class EmbeddingEngine:
             if base_type in STRUCTURAL_BLOCKS:
                 prev_tail = ""
 
-            # 2. Apply sliding word boundary window if a tail exists
+            # 2. Apply sliding word boundary window if a tail exists.
+            # Bound (0.5.1): never prepend more context than the receiving
+            # chunk's own content. A fixed 40-word tail drowns small chunks
+            # (tail/pure up to 3950% wild); A/B measured small-chunk
+            # self-hit@1 0.843 -> 0.887 and neighbor-steals 30 -> 10.
             if prev_tail:
+                keep = max(1, len(chunk["chunk_text"].split()))
+                prev_tail = "  ".join(prev_tail.split()[-keep:])
                 text_to_embed = f"{prev_tail}\n\n{text_to_embed}"
 
             # 3. Prepend structural Heading Context if available
@@ -645,7 +683,7 @@ class EmbeddingEngine:
     # ------------------------------------------------------------------
 
     def _split_into_chunks(
-        self, body: str, document_id: str
+        self, body: str, document_id: str, count_tokens=None,
     ) -> List[Dict[str, Any]]:
         """Split document body into pure blocks using mordant chunker.
 
@@ -654,9 +692,12 @@ class EmbeddingEngine:
         so they are preserved during reconstruction. No overlap is stored.
 
         Post-split cap (0.5.1): mordant has no size limit, so any block
-        over ``chunk_size`` words is subdivided by :func:`_cap_chunk_words`
-        into exact-tiling continuation pieces ("Type+"). ``chunk_index``
-        is renumbered over the final list so chunk ids stay dense.
+        over ``chunk_size`` *tokens* (measured with ``count_tokens``,
+        the production tokenizer counter) is subdivided by
+        :func:`_cap_chunk_budget` into exact-tiling continuation pieces
+        ("Type+"). ``count_tokens=None`` falls back to word counts
+        (cold paths / tests — no tokenizer I/O). ``chunk_index`` is
+        renumbered over the final list so chunk ids stay dense.
         """
         chunker = mordant.MarkdownChunker(body)
         chunks: List[Dict[str, Any]] = []
@@ -677,7 +718,10 @@ class EmbeddingEngine:
                 # Ephemeral context used strictly for constructing the embedding payload
                 "heading_context": current_heading if chunk.block_type != "Heading" else ""
             }
-            chunks.extend(_cap_chunk_words(base, self.chunk_size))
+            # Token-measured cap in production; word-count fallback keeps
+            # cold paths (tests, tooling without a session) tokenizer-free.
+            counter = count_tokens or (lambda t: len(t.split()))
+            chunks.extend(_cap_chunk_budget(base, self.chunk_size, counter))
 
         for index, chunk in enumerate(chunks):
             chunk["chunk_index"] = index

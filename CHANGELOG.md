@@ -6,20 +6,34 @@ commit history, newest first.
 
 ## [0.5.1] — 2026-09-14
 
-### Fixed (chunk cap now enforced)
-- `chunk_size` (default 512 words) was accepted everywhere but enforced
-  nowhere — mordant splits purely by block structure, so a giant block
-  became one giant chunk (wild max: 1178 words). `_split_into_chunks`
-  now post-splits oversized blocks into exact-tiling continuation
-  pieces (`"Type+"` block types, zero-gap byte offsets).
+### Fixed (chunk cap now enforced, in tokens)
+- `chunk_size` (default 512 — documented as tokens, implemented as
+  nothing) is now a real token cap: mordant splits purely by block
+  structure, so a giant block became one giant chunk (wild max: 1178
+  words / ~1500 tokens). `_split_into_chunks` takes the tokenizer
+  counter (threaded from the import path that already owns it) and
+  post-splits oversized blocks via binary-searched word cuts into
+  exact-tiling continuation pieces (`"Type+"`, zero-gap byte
+  offsets). `count_tokens=None` keeps the word-count fallback so cold
+  paths stay tokenizer-free; the router docstring's "in tokens" is
+  finally true.
 - Reconstruct-neutral by construction: continuations rejoin with `""`,
   every other pair takes the unchanged delimiter path (base types).
-  Proven over 39 doc files (2500 chunks): reconstructions with/without
-  the cap are byte-identical; max pure-chunk words now 512.
+  Proven over 39 doc files (2543 chunks, 15 split): reconstructions
+  with/without the cap are byte-identical; corpus max pure chunk now
+  <= 512 tokens (was 2289), 0 violations, mean payload 84 tokens.
 - Structural tail rules preserved via base types (code pieces stay
   tail-free, prose continuations chain tails). No schema change
   (`block_type` stays STRING); existing graphs adopt the cap for
   new/changed docs on reimport (delta is file-hash based).
+- Receiver-bounded overlap tail: the fixed 40-word tail is truncated to
+  the receiving chunk's own word count ("never more context than
+  content"). A/B on 2543 doc chunks (FP16-CUDA, vector-only
+  self-retrieval): small-chunk hit@1 0.843 -> 0.887, MRR
+  0.895 -> 0.923, neighbor-steals 30 -> 10; large/structural slices
+  tied-or-better (structural control exactly tied). Full-size behavior
+  unchanged. Takes effect on reimport (payload formula is invisible
+  to file-hash delta) — see `tail_ab.py` scratch for the experiment.
 
 ## [0.5.0] — 2026-09-14
 

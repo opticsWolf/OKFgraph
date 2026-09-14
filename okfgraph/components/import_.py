@@ -873,7 +873,10 @@ class ImportManager:
             {"id": cid},
         )
 
-        chunks = self.embed_engine._split_into_chunks(body, cid)
+        # Token-measured cap: the same counter that sizes the payloads
+        # below also sizes the split, so the cap is in true tokens.
+        chunks = self.embed_engine._split_into_chunks(
+            body, cid, count_tokens=self.token_counter)
         if not chunks:
             return
 
@@ -988,7 +991,8 @@ class ImportManager:
                 {"id": concept.id},
             )
 
-            chunks = self.embed_engine._split_into_chunks(body, concept.id)
+            chunks = self.embed_engine._split_into_chunks(
+                body, concept.id, count_tokens=self.token_counter)
             if chunks:
                 # Compute overlap payloads for embedding
                 payloads = self.embed_engine._compute_overlap_payloads(chunks)
@@ -1654,7 +1658,8 @@ class ImportManager:
                 {"id": concept_id},
             )
 
-            chunks = self.embed_engine._split_into_chunks(body, concept_id)
+            chunks = self.embed_engine._split_into_chunks(
+                body, concept_id, count_tokens=self.token_counter)
             if chunks:
                 # Compute overlap payloads for embedding
                 payloads = self.embed_engine._compute_overlap_payloads(chunks)

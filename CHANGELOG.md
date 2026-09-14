@@ -4,6 +4,21 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.3.0] — 2026-09-14
+
+### Added
+- Configurable token limit (requires embroider>=0.1.4): `--max-length`
+  (CLI/MCP/`OKFRouter`/toml `embedding.max_length`/`OKFGRAPH_MAX_LENGTH`),
+  1..=32768 validated before any I/O, default 8192 (existing graphs keep
+  bit-identical vectors). Jina v5 small is a Qwen3 with 32768 position
+  embeddings — the old 8192 cap was a ported tokenizer default, not a
+  model limit. Raising the limit changes vectors for inputs longer than
+  the old truncation only (short inputs bit-identical at any limit) —
+  reimport fully after changing it, don't mix limits in one graph.
+- Token-budgeted encode buckets: each forward capped at ~16K tokens
+  (greedy bins over token-sorted texts), so raising the ceiling cannot
+  OOM the box; `count_tokens` no longer truncates (true length).
+
 ## [0.2.20] — 2026-09-13
 
 ### Fixed

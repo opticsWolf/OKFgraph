@@ -132,6 +132,7 @@ def _add_global(parser, mark=True):
     _add("--db", default=None, help="Database path (default: okfgraph.db, or from okfgraph.toml)")
     _add("--bundle", default=None, help="Bundle root directory (default: ., or from okfgraph.toml)")
     _add("--dim", type=int, default=None, help="Embedding dimension (Matryoshka ladder 32/64/128/256/512/768/1024; default: 512, or from okfgraph.toml)")
+    _add("--max-length", type=int, default=None, help="Token truncation ceiling 1..=32768 (default: 8192, or from okfgraph.toml). Raising it changes long-doc vectors — reimport fully after changing.")
     _add("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface, or from okfgraph.toml)")
     _add("--device", default=None, choices=["cpu", "cuda"], help="Inference device: cpu or cuda (default: cpu, or from okfgraph.toml)")
     _add("--omni-model-id", default=None, help="Multimodal model ID for image embeddings (default from okfgraph.toml)")
@@ -169,7 +170,7 @@ def _router(args):
     """
     # Build CLI args dict (only non-None values override config)
     cli_dict = {}
-    for attr in ("db", "bundle", "dim", "cache_dir", "device",
+    for attr in ("db", "bundle", "dim", "max_length", "cache_dir", "device",
                  "omni_model_id", "chunk_size", "chunk_overlap",
                  "no_chunking", "mode", "batch_size",
                  "allow_remote_images", "wal_mode", "allowed_image_domains"):
@@ -192,6 +193,7 @@ def _router(args):
         db_path=config.database.path,
         bundle_root=str(config.bundle),
         embedding_dim=config.database.dim,
+        max_length=config.embedding.max_length,
         omni_model_id=config.embedding.omni_model_id,
         cache_dir=config.embedding.cache_dir,
         device=config.embedding.device,

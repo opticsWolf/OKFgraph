@@ -23,6 +23,8 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
 - `okf doctor [--strict] [--fix]` — health score + safe repairs
 - `okf detach [--bundle DIR] [--no-verify] [--force]` — end the mirror: the DB
   becomes the artifact (verify-first; imports refuse without `--force` re-attach)
+- Global `--max-length N` (1..=32768, default 8192): token truncation ceiling.
+  Raising it changes long-doc vectors — reimport fully after changing.
 
 ## Setup (once per project)
 

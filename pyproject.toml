@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "okfgraph"
-version = "0.2.20"
+version = "0.3.0"
 description = "Ladybug-backed OKF knowledge graph with ONNX + Jina v5 embeddings"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,7 +15,7 @@ dependencies = [
     # Embedding engine — external crate (github.com/opticsWolf/embroider).
     # Floor-pinned <0.2: 0.2.x of okfgraph stays on embroider 0.1.x so the
     # Jina contract and wheel matrix move together with releases.
-    "embroider>=0.1,<0.2",
+    "embroider>=0.1.4,<0.2",
     "pydantic>=2.0",
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",

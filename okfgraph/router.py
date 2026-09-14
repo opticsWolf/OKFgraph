@@ -105,6 +105,7 @@ class OKFRouter:
         model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
         omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval",
         embedding_dim: int = 512,
+        max_length: Optional[int] = None,
         cache_dir: Optional[str] = None,
         model_path: Optional[str] = None,
         tokenizer_path: Optional[str] = None,
@@ -144,6 +145,18 @@ class OKFRouter:
                 returning a ``ConvertedDocument`` works. Per-call override
                 via ``ingest_mgr.ingest_pdf(..., converter=...)``.
         """
+        from okfgraph.components.embedding import resolve_ort_dylib
+        # Resolve first: the native module loads ORT dynamically, so the
+        # shared runtime choice must be fixed before importing it. Imported
+        # here (not lazily below) so validation above can read its constants.
+        self.ort_dylib = resolve_ort_dylib()
+        try:
+            import embroider
+        except ImportError:
+            raise RuntimeError(
+                "the embroider wheel is required for text embeddings: "
+                "pip install 'embroider>=0.1.4,<0.2'"
+            ) from None
         if embedding_dim > 1024:
             raise ValueError(f"embedding_dim must be <= 1024 (model output), got {embedding_dim}")
         if embedding_dim < 32:
@@ -154,6 +167,15 @@ class OKFRouter:
                 "retrieval quality may be suboptimal. Consider 256 or 512.",
                 embedding_dim, self.ALLOWED_DIMS,
             )
+        # Token truncation ceiling (0.3.0, embroider>=0.1.4): None selects
+        # the compat default 8192; 1..=32768 (Qwen3 position ceiling).
+        # Long-doc vectors change when the limit is raised — reimport fully
+        # after changing it, don't mix limits in one graph.
+        if max_length is not None and not 1 <= max_length <= embroider.MODEL_MAX_TOKENS:
+            raise ValueError(
+                f"max_length must be within 1..={embroider.MODEL_MAX_TOKENS}, got {max_length}"
+            )
+        self.max_length = max_length if max_length is not None else embroider.MAX_LENGTH
 
         self.db = lb.Database(db_path)
         self.conn = lb.Connection(self.db)
@@ -192,17 +214,7 @@ class OKFRouter:
         # Text embeddings: Rust embroider wheel (Jina v5 via ORT). No Python
         # fallback — a mid-run stack switch would silently mix vector spaces
         # in one index.
-        from okfgraph.components.embedding import LazyRustEncoder, resolve_ort_dylib
-        # Resolve first: the native module loads ORT dynamically, so the
-        # shared runtime choice must be fixed before importing it.
-        self.ort_dylib = resolve_ort_dylib()
-        try:
-            import embroider
-        except ImportError:
-            raise RuntimeError(
-                "the embroider wheel is required for text embeddings: "
-                "pip install 'embroider>=0.1,<0.2'"
-            ) from None
+        from okfgraph.components.embedding import LazyRustEncoder
         # The Rust crate knows auto/cpu/cuda; map torch-style aliases.
         # Validate eagerly so a bad device still fails at construction —
         # the session itself opens lazily on first encode (see below).
@@ -254,6 +266,7 @@ class OKFRouter:
                 # after construction — so this is the adopted value.
                 truncate_dim=self.embedding_dim,
                 device=rust_device,
+                max_length=self.max_length,
             )
             tokenizer_factory = lambda: embroider.JinaTokenizer.open_files(
                 str(tokenizer_path),
@@ -265,6 +278,7 @@ class OKFRouter:
                 truncate_dim=self.embedding_dim,
                 device=rust_device,
                 cache_dir=cache_dir,
+                max_length=self.max_length,
             )
             tokenizer_factory = lambda: embroider.JinaTokenizer.open(
                 model_id,
@@ -319,7 +333,7 @@ class OKFRouter:
             self.conn, self.bundle_root, self._write_lock_ctx,
             self.enable_chunking, self.schema_mgr, self.delta_mgr, self.embed_engine,
             self.image_mgr, self.purge_mgr,
-            self.encoder.count_tokens, embroider.MAX_LENGTH,
+            self.encoder.count_tokens, self.max_length,
             db_path=db_path,
         )
         self.ingest_mgr = IngestManager(

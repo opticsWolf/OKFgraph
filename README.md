@@ -1,4 +1,4 @@
-# OKFgraph 0.2.14
+# OKFgraph 0.3.0
 
 [![PyPI](https://img.shields.io/pypi/v/okfgraph)](https://pypi.org/project/okfgraph/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
@@ -27,7 +27,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
 | Category | Features |
 |---|---|
-| **Embeddings** | Jina v5 (`jina-embeddings-v5-text-small-retrieval`) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (32–1024, default 512); omni model (`…-omni-small-retrieval`) lazy-loaded for images only |
+| **Embeddings** | Jina v5 (`jina-embeddings-v5-text-small-retrieval`) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (32–1024, default 512); token ceiling configurable (`--max-length`, default 8192, up to 32768 — the Qwen3 position limit); omni model (`…-omni-small-retrieval`) lazy-loaded for images only |
 | **Search** | Hybrid RRF fusion (vector + FTS) at concept and chunk granularity; `rank=none\|hub\|ppr` — including **PPR**: lexical seeds → exact Personalized PageRank, zero model load, deterministic |
 | **Read** | Body / chunks / rebuilt document / graph context, with optional **token budgets** (`max_tokens`): self first, then PPR-ranked neighbours, index-first for context |
 | **Storage** | LadybugDB `==0.20.3` (pinned — newer 0.20.x segfaults index builds): graph + vector + FTS in one file |
@@ -141,7 +141,7 @@ pdf — reasoning you already hold beats re-extracting it from files.
 ## CLI reference
 
 Five verbs mirror the MCP tools; maintenance commands cover the rest. Global
-flags (`--db`, `--bundle`, `--dim`, …) are documented once in `okf --help`,
+flags (`--db`, `--bundle`, `--dim`, `--max-length`, …) are documented once in `okf --help`,
 accepted everywhere, and usually live in `okfgraph.toml`.
 
 | Command | Description |
@@ -154,7 +154,8 @@ accepted everywhere, and usually live in `okfgraph.toml`.
 | `okf diff [OLD] [NEW] [--json]` | Snapshot (two dirs, no model) or drift (graph vs dir); exit 0 identical / 1 different |
 | `okf lint [DIR] [--json]` | Pre-import gate (no DB, no model); exit 0 clean / 1 errors / 2 bad dir |
 | `okf doctor [--fix] [--strict] [--stale-days N] [--json]` | Score + findings; `--fix` repairs safely, `--strict` exits 1 on any finding |
-| `okf import [--all] [--purge] [--mode text\|optional\|omni]` | Bulk/single import, delta-aware |
+| `okf import [--all] [--purge] [--mode text\|optional\|omni] [--force]` | Bulk/single import, delta-aware (`--force` re-attaches a detached graph) |
+| `okf detach [--bundle DIR] [--no-verify] [--force]` | End the mirror: the DB becomes the artifact (verify-first; imports refuse without `--force`) |
 | `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf deleted-*` | Setup, cache inspection, REPL, index rebuild, link + soft-delete maintenance |
 
 Every CLI call cold-boots the router (model load ~30s when the embedder is
@@ -216,9 +217,9 @@ Delta ──► Schema ──► ImageAssets ──► Purge ──► Ingest �
    │                                                    (bobine seam)
    └──────────────── LadybugDB (graph + vector + FTS, one file) ──┘
                          ▲
-              Rust embroider (Jina v5, ORT) — tokenize, last-token
-              pool, L2-norm, Matryoshka truncate; numerics pinned
-              by tests/test_parity.py
+              Rust embroider (Jina v5, ORT) — tokenize (ceiling `--max-length`,
+              default 8192, max 32768), last-token pool, L2-norm,
+              Matryoshka truncate; numerics pinned by tests/test_parity.py
 ```
 
 Components live in `okfgraph/components/` (one concern each, dependencies

@@ -131,18 +131,31 @@ def _length_bucketed_encode(
     encode_batch_size: int,
     encode_fn,
     progress=None,
+    token_budget: Optional[int] = None,
+    count_fn=None,
 ) -> List[Any]:
     """Encode texts shortest-first in small buckets, restoring input order.
 
     Concept search_texts span three orders of magnitude (a one-line stub
-    vs an 8K-truncated architecture doc). The encoder pads every sequence
+    vs a 32K-truncated architecture doc). The encoder pads every sequence
     to the batch max, so naive batching inflates 31 small docs sharing a
     batch with one giant into a 32x8192-token forward (tens of GB, tens
     of minutes on CPU). Sorting by length bounds each bucket's padding to
     its own max; vectors are identical (padding is masked out), only the
     compute order changes. ``progress(done, total, longest)`` is called
     after each bucket for visibility on large imports.
+
+    With ``token_budget`` (and ``count_fn``), buckets are additionally
+    capped by total tokens (greedy bins over token-sorted texts, at least
+    one text per bin): a long text can no longer drag 7 others into a
+    giant padded forward, which bounds peak ORT memory regardless of the
+    configured truncation ceiling.
     """
+    if token_budget is not None and count_fn is not None:
+        return _token_bucketed_encode(
+            texts, encode_batch_size, encode_fn, progress,
+            token_budget, count_fn,
+        )
     order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
     out: List[Any] = [None] * len(texts)
     total = (len(order) + encode_batch_size - 1) // encode_batch_size
@@ -153,6 +166,39 @@ def _length_bucketed_encode(
             out[i] = emb
         if progress is not None:
             progress(b + 1, total, max(len(texts[i]) for i in idx))
+    return out
+
+
+def _token_bucketed_encode(
+    texts: List[str],
+    encode_batch_size: int,
+    encode_fn,
+    progress,
+    token_budget: int,
+    count_fn,
+) -> List[Any]:
+    """Greedy token-capped bins over token-sorted texts (see above)."""
+    counts = [int(count_fn(t)) for t in texts]
+    order = sorted(range(len(texts)), key=lambda i: counts[i])
+    bins: List[List[int]] = []
+    cur: List[int] = []
+    cur_tokens = 0
+    for i in order:
+        if cur and (len(cur) >= encode_batch_size
+                     or cur_tokens + counts[i] > token_budget):
+            bins.append(cur)
+            cur, cur_tokens = [], 0
+        cur.append(i)
+        cur_tokens += counts[i]
+    if cur:
+        bins.append(cur)
+    out: List[Any] = [None] * len(texts)
+    for b, idx in enumerate(bins):
+        embs = encode_fn([texts[i] for i in idx])
+        for i, emb in zip(idx, embs):
+            out[i] = emb
+        if progress is not None:
+            progress(b + 1, len(bins), max(len(texts[i]) for i in idx))
     return out
 
 
@@ -556,6 +602,8 @@ class ImportManager:
         # Phase 2: Batch encode (length-bucketed; see _length_bucketed_encode).
         # batch_size drives DB writes; encoding uses small buckets so one
         # giant doc cannot pad 31 small ones into a 32x8192-token forward.
+        # The token budget additionally caps each forward (~16K tokens ≈
+        # 1GB ORT arena), so raising --max-length cannot OOM the box.
         _t1 = time.monotonic()
         all_search_texts = [p["search_text"] for p in parsed]
         encode_batch_size = min(batch_size, 8)
@@ -569,6 +617,8 @@ class ImportManager:
             encode_batch_size,
             lambda bucket: self.embed_engine._encode_batch(bucket, task="Document"),
             progress=_encode_progress,
+            token_budget=16384,
+            count_fn=self.embed_engine.count_tokens,
         )
         logger.info("encode: %d texts in %.1fs", len(all_search_texts), time.monotonic() - _t1)
 

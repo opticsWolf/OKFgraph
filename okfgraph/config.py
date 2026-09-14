@@ -23,6 +23,7 @@ Example TOML (``okfgraph.toml``):
     device = "cuda"
     cache_dir = "/mnt/models"
     omni_model_id = "jinaai/jina-embeddings-v5-omni-small-retrieval"
+    max_length = 8192  # token truncation ceiling, 1..=32768 (default: 8192)
 
     [import]
     mode = "optional"
@@ -77,6 +78,7 @@ class EmbeddingConfig:
     device: str = "cpu"
     cache_dir: Optional[str] = None
     omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval"
+    max_length: Optional[int] = None
 
     def validate(self) -> List[str]:
         """Validate embedding settings. Returns list of error messages."""
@@ -85,6 +87,10 @@ class EmbeddingConfig:
         if self.device not in valid_devices:
             errors.append(
                 f"embedding.device must be one of {valid_devices}, got '{self.device}'"
+            )
+        if self.max_length is not None and not 1 <= self.max_length <= 32768:
+            errors.append(
+                f"embedding.max_length must be within 1..=32768, got {self.max_length}"
             )
         if self.cache_dir and not Path(self.cache_dir).is_absolute():
             errors.append("embedding.cache_dir must be an absolute path")
@@ -260,6 +266,8 @@ class OKFConfig:
             config.embedding.omni_model_id = emb.get(
                 "omni_model_id", config.embedding.omni_model_id
             )
+            if emb.get("max_length") is not None:
+                config.embedding.max_length = int(emb["max_length"])
 
         # Import section
         if "import" in data:
@@ -301,6 +309,8 @@ class OKFConfig:
             config.embedding.cache_dir = val
         if val := os.environ.get(f"{prefix}OMNI_MODEL_ID"):
             config.embedding.omni_model_id = val
+        if val := os.environ.get(f"{prefix}MAX_LENGTH"):
+            config.embedding.max_length = int(val)
 
         # Import settings
         if val := os.environ.get(f"{prefix}MODE"):
@@ -341,6 +351,8 @@ class OKFConfig:
             config.bundle = str(cli_args["bundle"])
         if "omni_model_id" in cli_args and cli_args["omni_model_id"]:
             config.embedding.omni_model_id = str(cli_args["omni_model_id"])
+        if "max_length" in cli_args and cli_args["max_length"]:
+            config.embedding.max_length = int(cli_args["max_length"])
         if "chunk_size" in cli_args and cli_args["chunk_size"]:
             config.import_config.chunk_size = int(cli_args["chunk_size"])
         if "chunk_overlap" in cli_args and cli_args["chunk_overlap"]:
@@ -374,6 +386,8 @@ class OKFConfig:
             base.embedding.cache_dir = overlay.embedding.cache_dir
         if overlay.embedding.omni_model_id != EmbeddingConfig().omni_model_id:
             base.embedding.omni_model_id = overlay.embedding.omni_model_id
+        if overlay.embedding.max_length != EmbeddingConfig().max_length:
+            base.embedding.max_length = overlay.embedding.max_length
 
         # Merge import settings
         if overlay.import_config.mode != ImportConfig().mode:

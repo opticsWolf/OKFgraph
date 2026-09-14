@@ -47,6 +47,7 @@ def make_lifespan(
     device: str,
     embedding_dim: int,
     enable_chunking: bool,
+    max_length: Optional[int] = None,
 ):
     """Factory that returns a lifespan async-context-manager for MCPServer."""
 
@@ -59,6 +60,7 @@ def make_lifespan(
             bundle_root=root,
             device=device,
             embedding_dim=embedding_dim,
+            max_length=max_length,
             enable_chunking=enable_chunking,
         )
         logger.info(
@@ -93,6 +95,7 @@ def create_mcp_server(
     device: str = "cpu",
     embedding_dim: int = 512,
     enable_chunking: bool = True,
+    max_length: Optional[int] = None,
 ) -> MCPServer:
     """Create an MCP server instance connected to an OKFgraph database.
 
@@ -102,6 +105,7 @@ def create_mcp_server(
         device: Device for ONNX inference ("cpu" or "cuda").
         embedding_dim: Dimension of the embedding vectors.
         enable_chunking: Whether to enable document chunking.
+        max_length: Token truncation ceiling 1..=32768 (default: 8192).
 
     Returns:
         Configured MCPServer server instance.
@@ -112,6 +116,7 @@ def create_mcp_server(
         device=device,
         embedding_dim=embedding_dim,
         enable_chunking=enable_chunking,
+        max_length=max_length,
     )
 
     mcp = MCPServer(
@@ -418,6 +423,12 @@ def main():
         help="Dimension of the embedding vectors (default: 512; Matryoshka ladder: 32, 64, 128, 256, 512, 768, 1024).",
     )
     parser.add_argument(
+        "--max-length",
+        type=int,
+        default=None,
+        help="Token truncation ceiling 1..=32768 (default: 8192).",
+    )
+    parser.add_argument(
         "--no-chunking",
         action="store_true",
         help="Disable document chunking.",
@@ -451,6 +462,7 @@ def main():
         device=args.device,
         embedding_dim=args.embedding_dim,
         enable_chunking=not args.no_chunking,
+        max_length=args.max_length,
     )
 
     # Run with stdio transport (default for MCP servers)

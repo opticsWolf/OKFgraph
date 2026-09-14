@@ -159,7 +159,7 @@ search/read/export/traverse identical before/after; import refuses, mismatched-r
 `--force` refuses, matching-root `--force` re-baselines; deleted-* still work;
 v6→v7 migration test.
 
-## Phase 2 — multi-root bundles (0.3.0)
+## Phase 2 — multi-root bundles (0.4.0; was 0.3.0 before the token-limit release took the number)
 
 One graph, N live roots, no copies, no ID collisions.
 
@@ -273,7 +273,7 @@ unmodified single-root (backward-compat proof).
 ### 2.10 Rollout
 
 Order: 2.1 → 2.2 → 2.3 → 2.4 → 2.6/2.7/2.8 → 2.9. Docs: `architecture.md` bundle
-model rewrite, skills, CHANGELOG. Release **0.3.0**. Acceptance: OKFgraph + bobine +
+model rewrite, skills, CHANGELOG. Release **0.4.0**. Acceptance: OKFgraph + bobine +
 embroider live docs in one graph, copies retired; kill one root → serve + refuse
 purge + resume on remount.
 

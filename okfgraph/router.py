@@ -109,7 +109,9 @@ class OKFRouter:
         cache_dir: Optional[str] = None,
         model_path: Optional[str] = None,
         tokenizer_path: Optional[str] = None,
-        device: str = "cpu",
+        device: str = "auto",
+        precision: str = "auto",
+        cpu_arena: bool = False,
         allow_remote_images: bool = False,
         allowed_image_domains: Optional[List[str]] = None,
         chunk_size: int = 512,
@@ -132,7 +134,19 @@ class OKFRouter:
                 skips every download — air-gapped / reproducible installs.
                 An external-data sidecar must sit next to this file.
             tokenizer_path: Explicit local `tokenizer.json` (with `model_path`).
-            device: "cpu" (CUDA is opportunistic inside the Rust loader).
+            device: "auto" (default) resolves to CUDA when the loaded ORT
+                has a CUDA provider, else CPU. "cpu" / "cuda" pin it;
+                CUDA-requested-but-missing warns and degrades to CPU.
+            precision: "auto" (default) follows the resolved device
+                (CUDA → FP16, CPU → FP32). "fp32" / "fp16" pin it;
+                explicit fp16 on CPU warns (slow, not corrupt). FP16
+                weights download from the published mirror repo; explicit
+                `model_path` files bypass selection (they report fp32).
+                The first session open pins the graph's precision in Meta
+                and later opens refuse on mismatch — never mix precisions
+                in one graph (reimport fresh to switch).
+            cpu_arena: Enable the CPU arena allocator (default False: ~8x
+                lower peak RSS for ~1.4x encode time, measured).
             allow_remote_images: Whether http(s) image URLs may be fetched.
             allowed_image_domains: Domain allowlist for remote images.
             chunk_size: Target chunk size in tokens.
@@ -156,7 +170,7 @@ class OKFRouter:
         except ImportError:
             raise RuntimeError(
                 "the embroider wheel is required for text embeddings: "
-                "pip install 'embroider>=0.1.4,<0.2'"
+                "pip install 'embroider>=0.1.5,<0.2'"
             ) from None
         if embedding_dim > 1024:
             raise ValueError(f"embedding_dim must be <= 1024 (model output), got {embedding_dim}")
@@ -230,6 +244,18 @@ class OKFRouter:
             raise ValueError(
                 f"device must be 'auto', 'cpu' or 'cuda', got '{device}'"
             )
+        if precision not in ("auto", "fp32", "fp16"):
+            raise ValueError(
+                f"precision must be 'auto', 'fp32' or 'fp16', got '{precision}'"
+            )
+        if precision == "fp16" and rust_device == "cpu":
+            logger.warning(
+                "precision='fp16' with device='cpu': FP16 on CPU runs >40x "
+                "slower than FP32-CPU (emulated kernels). Use precision='auto' "
+                "or 'fp32' for CPU sessions."
+            )
+        self.precision = precision
+        self.cpu_arena = cpu_arena
         if (model_path is None) != (tokenizer_path is None):
             raise ValueError(
                 "model_path and tokenizer_path must be given together "
@@ -249,9 +275,14 @@ class OKFRouter:
             logger.debug("using explicit model files: %s", model_path)
 
         def _report_encoder_open(encoder) -> None:
+            # Precision pin (fail-closed): the first open records the
+            # landed precision; later opens refuse on mismatch so FP16
+            # and FP32 vectors never share one graph.
+            from okfgraph.components.embedding import enforce_precision_pin
+            pinned = enforce_precision_pin(self.conn, encoder.precision)
             logger.info(
-                "text embeddings: %s dim=%d cuda=%s",
-                model_id, self.embedding_dim, encoder.used_cuda,
+                "text embeddings: %s dim=%d cuda=%s precision=%s",
+                model_id, self.embedding_dim, encoder.used_cuda, pinned,
             )
             if device == "cuda" and not encoder.used_cuda:
                 logger.warning(
@@ -274,6 +305,7 @@ class OKFRouter:
                 truncate_dim=self.embedding_dim,
                 device=rust_device,
                 max_length=self.max_length,
+                cpu_arena=self.cpu_arena,
             )
             tokenizer_factory = lambda: embroider.JinaTokenizer.open_files(
                 str(tokenizer_path),
@@ -286,6 +318,8 @@ class OKFRouter:
                 device=rust_device,
                 cache_dir=cache_dir,
                 max_length=self.max_length,
+                precision=self.precision,
+                cpu_arena=self.cpu_arena,
             )
             tokenizer_factory = lambda: embroider.JinaTokenizer.open(
                 model_id,

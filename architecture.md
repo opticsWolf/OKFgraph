@@ -74,7 +74,7 @@ Integrated into `load_image_bytes()` in `images.py`:
 Added `validate()` methods to all config dataclasses:
 
 - `DatabaseConfig`: path non-empty, dim in [32, 1024], recommended Matryoshka dims
-- `EmbeddingConfig`: device in [cpu, cuda, mps, auto], cache_dir absolute
+- `EmbeddingConfig`: device in [cpu, cuda, mps, auto], precision in [auto, fp32, fp16], cache_dir absolute
 - `ImportConfig`: mode in [text, optional, omni], batch_size in [1, 256], chunk_size in [64, 8192]
 - `OKFConfig`: aggregates all section validations
 
@@ -1279,7 +1279,9 @@ mcp.run(transport="stdio")
 | **Session Lifecycle** | Lazy — opens on first encode; router construction stays cheap |
 | **Air-gapped** | `model_path` + `tokenizer_path` pin both files (zero network, fail-fast on missing) |
 | **Acquisition** | HF hub into the model cache, or explicit paths — identical vectors, pinned by test |
-| **GPU Support** | `--device cuda` (auto/cpu/cuda aliases) against the single pinned ORT; CUDA is opportunistic, CPU always works |
+| **GPU Support** | `--device auto` (default; CUDA when present, else CPU) against the single pinned ORT; CUDA is opportunistic, CPU always works |
+| **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`; explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
+| **CPU Arena** | Off by default (`--cpu-arena` opts in): 8x lower peak RSS for ~1.4x encode time (measured) |
 
 ### Omni (Multimodal) Model
 

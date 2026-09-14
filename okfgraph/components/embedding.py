@@ -11,6 +11,65 @@ from pathlib import Path
 
 import mordant
 from typing import Any, Dict, List, Optional
+
+#: Meta key pinning the weight precision a graph was imported with.
+#: Stored as INT64 (16/32) — the Meta value column is integer-typed.
+PRECISION_META_KEY = "embedding_precision"
+_PRECISION_CODE = {"fp16": 16, "fp32": 32}
+
+
+def enforce_precision_pin(conn, precision: str) -> str:
+    """Fail-closed precision pin for a graph (0.5.0).
+
+    FP16 and FP32 vectors share the dimension but live in different
+    spaces — delta hashes would never catch a precision switch, so the
+    first session open records the precision in Meta and every later
+    open refuses on mismatch. Empty graphs re-pin silently (adoption,
+    no migration); explicit local files always report ``fp32``.
+
+    Returns the pinned precision. Raises RuntimeError on mismatch.
+    """
+    conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS Meta (key STRING PRIMARY KEY, value INT64)"
+    )
+    try:
+        rows = conn.execute(
+            f"MATCH (m:Meta {{key: '{PRECISION_META_KEY}'}}) RETURN m.value AS v"
+        ).rows_as_dict().get_all()
+    except Exception:
+        rows = []
+    if rows:
+        pinned = {16: "fp16", 32: "fp32"}.get(rows[0]["v"], None)
+        if pinned is None or pinned == precision:
+            return precision if pinned is None else pinned
+        # Mismatch — but an empty graph carries no vectors, so re-pin.
+        try:
+            n = conn.execute(
+                "MATCH (c:Concept) RETURN c.id AS cid LIMIT 1"
+            ).rows_as_dict().get_all()
+        except Exception:
+            n = []
+        if not n:
+            conn.execute(
+                f"MERGE (m:Meta {{key: '{PRECISION_META_KEY}'}}) "
+                f"SET m.value = {_PRECISION_CODE[precision]}"
+            )
+            logger.info(
+                "empty graph re-pinned to precision=%s", precision)
+            return precision
+        raise RuntimeError(
+            f"graph is pinned to precision={pinned} but the session opened "
+            f"with precision={precision}: FP16 and FP32 vectors share the "
+            f"dimension but live in different spaces and must never mix. "
+            f"Reimport into a fresh database with precision={precision}, or "
+            f"reopen with precision={pinned}."
+        )
+    conn.execute(
+        f"MERGE (m:Meta {{key: '{PRECISION_META_KEY}'}}) "
+        f"SET m.value = {_PRECISION_CODE[precision]}"
+    )
+    logger.debug("graph pinned to precision=%s", precision)
+    return precision
 logger = logging.getLogger(__name__)
 
 _ORT_MODULE_NAMES = ("onnxruntime", "onnxruntime-gpu")
@@ -335,15 +394,26 @@ class EmbeddingEngine:
         if self._omni is None:
             from sentence_transformers import SentenceTransformer
 
+            # The torch path takes torch device strings — "auto" (the
+            # 0.5.0 router default) is not one. Precision selection does
+            # not apply here: omni always runs FP32 on this path.
+            device = self.device
+            if device == "auto":
+                try:
+                    import torch
+
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                except ImportError:
+                    device = "cpu"
             logger.info(
                 "Loading omni model %s (vision modality) on %s ...",
-                self.omni_model_id, self.device,
+                self.omni_model_id, device,
             )
             self._omni = SentenceTransformer(
                 self.omni_model_id,
                 trust_remote_code=True,
                 cache_folder=self.cache_dir,
-                device=self.device,
+                device=device,
                 model_kwargs={"modality": "vision"},  # skip the audio tower
             )
         return self._omni

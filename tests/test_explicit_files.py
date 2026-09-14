@@ -18,6 +18,7 @@ def _stub_embed(monkeypatch, calls):
         def __init__(self, via):
             self.via = via
             self.used_cuda = False
+            self.precision = "fp32"  # explicit files always report fp32
 
         def encode(self, text, task="Document"):
             calls["encode"] += 1
@@ -101,7 +102,7 @@ def test_encode_routes_to_open_files(tmp_path, monkeypatch):
 
     assert calls["open_files"] == [
         (str(onnx), str(tok), {"truncate_dim": 512, "device": "cpu",
-                               "max_length": 8192})
+                               "max_length": 8192, "cpu_arena": False})
     ]
     assert calls["tok_files"] == [str(tok)]
     assert calls["encode"] == 1
@@ -114,6 +115,7 @@ def test_default_path_still_uses_open(tmp_path, monkeypatch):
 
     class _Session:
         used_cuda = False
+        precision = "fp32"
 
         def encode(self, text, task="Document"):
             return [1.0]

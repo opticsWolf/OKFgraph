@@ -27,7 +27,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
 | Category | Features |
 |---|---|
-| **Embeddings** | Jina v5 (`jina-embeddings-v5-text-small-retrieval`) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (32–1024, default 512); token ceiling configurable (`--max-length`, default 8192, up to 32768 — the Qwen3 position limit); omni model (`…-omni-small-retrieval`) lazy-loaded for images only |
+| **Embeddings** | Jina v5 (`jina-embeddings-v5-text-small-retrieval`) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (32–1024, default 512); device `auto` (CUDA→FP16 mirror weights, CPU→FP32, `--precision` pins); CPU arena off by default (`--cpu-arena`); token ceiling configurable (`--max-length`, default 8192, up to 32768 — the Qwen3 position limit); precision pinned per graph, never mixed; omni model (`…-omni-small-retrieval`) lazy-loaded for images only |
 | **Search** | Hybrid RRF fusion (vector + FTS) at concept and chunk granularity; `rank=none\|hub\|ppr` — including **PPR**: lexical seeds → exact Personalized PageRank, zero model load, deterministic |
 | **Read** | Body / chunks / rebuilt document / graph context, with optional **token budgets** (`max_tokens`): self first, then PPR-ranked neighbours, index-first for context |
 | **Storage** | LadybugDB `==0.20.3` (pinned — newer 0.20.x segfaults index builds): graph + vector + FTS in one file |
@@ -217,9 +217,12 @@ Delta ──► Schema ──► ImageAssets ──► Purge ──► Ingest �
    │                                                    (bobine seam)
    └──────────────── LadybugDB (graph + vector + FTS, one file) ──┘
                          ▲
-              Rust embroider (Jina v5, ORT) — tokenize (ceiling `--max-length`,
-              default 8192, max 32768), last-token pool, L2-norm,
-              Matryoshka truncate; numerics pinned by tests/test_parity.py
+              Rust embroider (Jina v5, ORT) — device `auto` (CUDA→FP16 weights
+              from the published mirror, CPU→FP32; `--precision` pins it),
+              CPU arena off by default (`--cpu-arena` opts in), tokenize
+              (ceiling `--max-length`, default 8192, max 32768), last-token
+              pool, L2-norm, Matryoshka truncate; precision pinned per graph
+              (Meta, fail-closed); numerics pinned by tests/test_parity.py
 ```
 
 Components live in `okfgraph/components/` (one concern each, dependencies

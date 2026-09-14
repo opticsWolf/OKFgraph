@@ -49,6 +49,8 @@ def make_lifespan(
     enable_chunking: bool,
     max_length: Optional[int] = None,
     roots: Optional[Dict[str, str]] = None,
+    precision: str = "auto",
+    cpu_arena: bool = False,
 ):
     """Factory that returns a lifespan async-context-manager for MCPServer."""
 
@@ -64,11 +66,14 @@ def make_lifespan(
             max_length=max_length,
             enable_chunking=enable_chunking,
             roots=roots,
+            precision=precision,
+            cpu_arena=cpu_arena,
         )
         logger.info(
-            "OKFgraph MCP server started: db=%s device=%s",
+            "OKFgraph MCP server started: db=%s device=%s precision=%s",
             db_path,
             device,
+            precision,
         )
 
         try:
@@ -94,22 +99,26 @@ def _get_router(ctx: Context) -> OKFRouter:
 def create_mcp_server(
     db_path: str,
     bundle_root: Optional[str] = None,
-    device: str = "cpu",
+    device: str = "auto",
     embedding_dim: int = 512,
     enable_chunking: bool = True,
     max_length: Optional[int] = None,
     roots: Optional[Dict[str, str]] = None,
+    precision: str = "auto",
+    cpu_arena: bool = False,
 ) -> MCPServer:
     """Create an MCP server instance connected to an OKFgraph database.
 
     Args:
         db_path: Path to the Ladybug database file.
         bundle_root: Optional root directory for the OKF bundle.
-        device: Device for ONNX inference ("cpu" or "cuda").
+        device: Device for ONNX inference ("auto", "cpu" or "cuda").
         embedding_dim: Dimension of the embedding vectors.
         enable_chunking: Whether to enable document chunking.
         max_length: Token truncation ceiling 1..=32768 (default: 8192).
         roots: Optional additional {alias: path} bundle roots (§2.6).
+        precision: Weight precision ("auto" follows device).
+        cpu_arena: Enable the CPU arena allocator (default off).
 
     Returns:
         Configured MCPServer server instance.
@@ -122,6 +131,8 @@ def create_mcp_server(
         enable_chunking=enable_chunking,
         max_length=max_length,
         roots=roots,
+        precision=precision,
+        cpu_arena=cpu_arena,
     )
 
     mcp = MCPServer(
@@ -425,9 +436,21 @@ def main():
     parser.add_argument(
         "--device",
         type=str,
-        default="cpu",
-        choices=["cpu", "cuda"],
-        help="Device for ONNX inference (default: cpu).",
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="Device for ONNX inference (default: auto).",
+    )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="auto",
+        choices=["auto", "fp32", "fp16"],
+        help="Weight precision: auto follows device (default: auto).",
+    )
+    parser.add_argument(
+        "--cpu-arena",
+        action="store_true",
+        help="Enable the CPU arena allocator (default off).",
     )
     parser.add_argument(
         "--embedding-dim",
@@ -464,9 +487,10 @@ def main():
     )
 
     logger.info(
-        "starting OKFgraph MCP server: db=%s device=%s",
+        "starting OKFgraph MCP server: db=%s device=%s precision=%s",
         args.db_path,
         args.device,
+        args.precision,
     )
 
     roots: Optional[Dict[str, str]] = None
@@ -486,6 +510,8 @@ def main():
         enable_chunking=not args.no_chunking,
         max_length=args.max_length,
         roots=roots,
+        precision=args.precision,
+        cpu_arena=args.cpu_arena,
     )
 
     # Run with stdio transport (default for MCP servers)

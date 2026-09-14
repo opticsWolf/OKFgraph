@@ -8,7 +8,7 @@ TOML file locations (checked in order, first match wins):
   3. ``~/.config/okfgraph/config.toml``
 
 Environment variables (prefix ``OKFGRAPH_``):
-  DB, DIM, DEVICE, CACHE_DIR, BUNDLE, OMNI_MODEL_ID,
+  DB, DIM, DEVICE, PRECISION, CPU_ARENA, CACHE_DIR, BUNDLE, OMNI_MODEL_ID,
   CHUNK_SIZE, CHUNK_OVERLAP, BATCH_SIZE, MODE, WAL_MODE,
   ALLOW_REMOTE_IMAGES, ALLOWED_IMAGE_DOMAINS, NO_CHUNKING
 
@@ -20,7 +20,9 @@ Example TOML (``okfgraph.toml``):
     wal_mode = true
 
     [embedding]
-    device = "cuda"
+    device = "auto"  # auto | cpu | cuda (default: auto — CUDA when present)
+    precision = "auto"  # auto | fp32 | fp16 (default: auto — follows device)
+    cpu_arena = false  # CPU arena allocator (default off: 8x less RAM, ~1.4x time)
     cache_dir = "/mnt/models"
     omni_model_id = "jinaai/jina-embeddings-v5-omni-small-retrieval"
     max_length = 8192  # token truncation ceiling, 1..=32768 (default: 8192)
@@ -75,7 +77,9 @@ class DatabaseConfig:
 @dataclass
 class EmbeddingConfig:
     """Embedding model settings."""
-    device: str = "cpu"
+    device: str = "auto"
+    precision: str = "auto"
+    cpu_arena: bool = False
     cache_dir: Optional[str] = None
     omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval"
     max_length: Optional[int] = None
@@ -87,6 +91,11 @@ class EmbeddingConfig:
         if self.device not in valid_devices:
             errors.append(
                 f"embedding.device must be one of {valid_devices}, got '{self.device}'"
+            )
+        valid_precisions = ("auto", "fp32", "fp16")
+        if self.precision not in valid_precisions:
+            errors.append(
+                f"embedding.precision must be one of {valid_precisions}, got '{self.precision}'"
             )
         if self.max_length is not None and not 1 <= self.max_length <= 32768:
             errors.append(
@@ -275,6 +284,8 @@ class OKFConfig:
         if "embedding" in data:
             emb = data["embedding"]
             config.embedding.device = emb.get("device", config.embedding.device)
+            config.embedding.precision = emb.get("precision", config.embedding.precision)
+            config.embedding.cpu_arena = bool(emb.get("cpu_arena", config.embedding.cpu_arena))
             config.embedding.cache_dir = emb.get("cache_dir", config.embedding.cache_dir)
             config.embedding.omni_model_id = emb.get(
                 "omni_model_id", config.embedding.omni_model_id
@@ -335,6 +346,10 @@ class OKFConfig:
         # Embedding settings
         if val := os.environ.get(f"{prefix}DEVICE"):
             config.embedding.device = val
+        if val := os.environ.get(f"{prefix}PRECISION"):
+            config.embedding.precision = val
+        if val := os.environ.get(f"{prefix}CPU_ARENA"):
+            config.embedding.cpu_arena = val.lower() in ("1", "true", "yes")
         if val := os.environ.get(f"{prefix}CACHE_DIR"):
             config.embedding.cache_dir = val
         if val := os.environ.get(f"{prefix}OMNI_MODEL_ID"):
@@ -377,6 +392,10 @@ class OKFConfig:
             config.database.dim = int(cli_args["dim"])
         if "device" in cli_args and cli_args["device"]:
             config.embedding.device = str(cli_args["device"])
+        if "precision" in cli_args and cli_args["precision"]:
+            config.embedding.precision = str(cli_args["precision"])
+        if "cpu_arena" in cli_args and cli_args["cpu_arena"]:
+            config.embedding.cpu_arena = bool(cli_args["cpu_arena"])
         if "cache_dir" in cli_args and cli_args["cache_dir"]:
             config.embedding.cache_dir = str(cli_args["cache_dir"])
         if "bundle" in cli_args and cli_args["bundle"]:
@@ -428,6 +447,10 @@ class OKFConfig:
         # Merge embedding settings
         if overlay.embedding.device != EmbeddingConfig().device:
             base.embedding.device = overlay.embedding.device
+        if overlay.embedding.precision != EmbeddingConfig().precision:
+            base.embedding.precision = overlay.embedding.precision
+        if overlay.embedding.cpu_arena != EmbeddingConfig().cpu_arena:
+            base.embedding.cpu_arena = overlay.embedding.cpu_arena
         if overlay.embedding.cache_dir != EmbeddingConfig().cache_dir:
             base.embedding.cache_dir = overlay.embedding.cache_dir
         if overlay.embedding.omni_model_id != EmbeddingConfig().omni_model_id:

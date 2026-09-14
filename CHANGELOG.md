@@ -4,6 +4,24 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.5.0] — 2026-09-14
+
+### Changed (precision follows device, embroider>=0.1.5)
+- New defaults: `device="auto"` (CUDA when the loaded ORT has it, else
+  CPU), `precision="auto"` (follows the *resolved* device: CUDA → FP16
+  mirror weights, CPU → FP32), CPU arena off (8x lower peak RSS for
+  ~1.4x encode time, measured). FP16-CUDA encodes the spike corpus 96x
+  faster than FP32-CPU at 0.981 min / 0.997 mean cosine (length-
+  correlated drift) — see `quant_spike/README.md`.
+- New surface end-to-end (router → TOML/env/CLI → MCP): `precision`
+  (`auto`/`fp32`/`fp16`, `OKFGRAPH_PRECISION`), `--cpu-arena`
+  (`OKFGRAPH_CPU_ARENA`); `--device` gains `auto`. Explicit fp16 on CPU
+  warns loudly but is honoured; omni (torch path) always runs FP32.
+- Precision pinned per graph in Meta (`embedding_precision`, 16/32 — no
+  schema bump): first session open records it, later opens refuse on
+  mismatch (FP16/FP32 share the dim but not the space; delta hashes
+  would never catch a switch). Empty graphs re-pin silently.
+
 ## [0.4.0] — 2026-09-14
 
 ### Added (Phase 2 — multi-root bundles, plan `docs/plan-multi-root-detach.md`)

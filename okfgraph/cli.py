@@ -135,7 +135,9 @@ def _add_global(parser, mark=True):
     _add("--dim", type=int, default=None, help="Embedding dimension (Matryoshka ladder 32/64/128/256/512/768/1024; default: 512, or from okfgraph.toml)")
     _add("--max-length", type=int, default=None, help="Token truncation ceiling 1..=32768 (default: 8192, or from okfgraph.toml). Raising it changes long-doc vectors — reimport fully after changing.")
     _add("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface, or from okfgraph.toml)")
-    _add("--device", default=None, choices=["cpu", "cuda"], help="Inference device: cpu or cuda (default: cpu, or from okfgraph.toml)")
+    _add("--device", default=None, choices=["auto", "cpu", "cuda"], help="Inference device: auto (CUDA when present) / cpu / cuda (default: auto, or from okfgraph.toml)")
+    _add("--precision", default=None, choices=["auto", "fp32", "fp16"], help="Weight precision: auto follows device (CUDA->FP16, CPU->FP32); fp16 on CPU is >40x slower (default: auto, or from okfgraph.toml)")
+    _add("--cpu-arena", action="store_true", help="Enable the CPU arena allocator (default off: ~8x lower peak RSS for ~1.4x encode time)")
     _add("--omni-model-id", default=None, help="Multimodal model ID for image embeddings (default from okfgraph.toml)")
     _add("--chunk-size", type=int, default=None, help="Chunk size in words for overlap (default: 512, or from okfgraph.toml)")
     _add("--chunk-overlap", type=int, default=None, help="Overlap in words between chunks (default: 40, or from okfgraph.toml)")
@@ -172,6 +174,7 @@ def _router(args):
     # Build CLI args dict (only non-None values override config)
     cli_dict = {}
     for attr in ("db", "bundle", "dim", "max_length", "cache_dir", "device",
+                 "precision", "cpu_arena",
                  "omni_model_id", "chunk_size", "chunk_overlap",
                  "no_chunking", "mode", "batch_size",
                  "allow_remote_images", "wal_mode", "allowed_image_domains"):
@@ -210,6 +213,8 @@ def _router(args):
         omni_model_id=config.embedding.omni_model_id,
         cache_dir=config.embedding.cache_dir,
         device=config.embedding.device,
+        precision=config.embedding.precision,
+        cpu_arena=config.embedding.cpu_arena,
         allow_remote_images=config.import_config.allow_remote_images,
         allowed_image_domains=allowed_domains,
         chunk_size=config.import_config.chunk_size,
@@ -1141,7 +1146,9 @@ Commands:
                 bundle=args.bundle,
                 dim=args.dim,
                 cache_dir=getattr(args, "cache_dir", None),
-                device=getattr(args, "device", "cpu"),
+                device=getattr(args, "device", "auto") or "auto",
+                precision=getattr(args, "precision", "auto") or "auto",
+                cpu_arena=bool(getattr(args, "cpu_arena", False)),
                 omni_model_id=getattr(args, "omni_model_id", None),
                 chunk_size=getattr(args, "chunk_size", 512),
                 chunk_overlap=getattr(args, "chunk_overlap", 40),

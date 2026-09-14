@@ -25,6 +25,11 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
   becomes the artifact (verify-first; imports refuse without `--force` re-attach)
 - Global `--max-length N` (1..=32768, default 8192): token truncation ceiling.
   Raising it changes long-doc vectors — reimport fully after changing.
+- `--bundle-root ALIAS=PATH` (repeatable, combines with `--bundle`):
+  additional named roots mint `@alias/rel` IDs (TOML `[[roots]]` equivalent).
+  Absent roots are skipped with a warning (unmounted ≠ deleted); `--purge`
+  refuses while any root is absent. `[[alias/Name]]` links resolve cross-root;
+  `okf detach` covers all roots; `--force` re-attach needs the full set.
 
 ## Setup (once per project)
 

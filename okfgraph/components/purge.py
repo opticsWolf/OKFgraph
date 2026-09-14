@@ -110,11 +110,15 @@ class PurgeManager:
             )
 
             # 6. Remove FileHash entry for this concept (capture paths
-            #    first — step 7's mirror bookkeeping keys off them).
+            #    first — step 7's mirror bookkeeping keys off them). The
+            #    stored f.dir is the exact parent DirHash key (multi-root:
+            #    string math on a prefixed path is ambiguous); pre-0.4.0
+            #    rows lack it and fall back to the legacy derivation.
             mirror_paths = [
-                r["p"]
+                (r["p"], r.get("d") or str(Path(r["p"]).parent))
                 for r in self.conn.execute(
-                    "MATCH (f:FileHash {concept_id: $id}) RETURN f.path AS p",
+                    "MATCH (f:FileHash {concept_id: $id}) "
+                    "RETURN f.path AS p, f.concept_id AS c, f.dir AS d",
                     {"id": concept_id},
                 ).rows_as_dict().get_all()
             ]
@@ -130,7 +134,7 @@ class PurgeManager:
             #    for these files, and drop DirHash rows left with no
             #    remaining FileHash/DeletedPath children — otherwise purged
             #    deletions re-report on every future import.
-            for mp in mirror_paths:
+            for mp, _parent in mirror_paths:
                 self.conn.execute(
                     "MATCH (d:DeletedPath {path: $p}) DELETE d",
                     {"p": mp},
@@ -139,8 +143,7 @@ class PurgeManager:
             #    so the deletion stops re-detecting (the hash is unchanged —
             #    the purge resolved the difference). DirHash.files entries
             #    are dir-relative, so the basename is the right key.
-            for mp in mirror_paths:
-                parent = str(Path(mp).parent)
+            for mp, parent in mirror_paths:
                 name = Path(mp).name
                 rows = self.conn.execute(
                     "MATCH (dh:DirHash {path: $d}) RETURN dh.files AS f",
@@ -160,19 +163,19 @@ class PurgeManager:
                     )
             if mirror_paths:
                 remaining = {
-                    r["p"]
+                    (r["p"], r.get("d") or str(Path(r["p"]).parent))
                     for r in self.conn.execute(
-                        "MATCH (f:FileHash) RETURN f.path AS p"
+                        "MATCH (f:FileHash) "
+                        "RETURN f.path AS p, f.dir AS d"
                     ).rows_as_dict().get_all()
                 } | {
-                    r["p"]
+                    (r["p"], r.get("d") or str(Path(r["p"]).parent))
                     for r in self.conn.execute(
-                        "MATCH (d:DeletedPath) RETURN d.path AS p"
+                        "MATCH (d:DeletedPath) RETURN d.path AS p, d.dir AS d"
                     ).rows_as_dict().get_all()
                 }
-                live_dirs = {str(Path(mp).parent) for mp in remaining}
-                for mp in mirror_paths:
-                    parent = str(Path(mp).parent)
+                live_dirs = {d for _, d in remaining}
+                for mp, parent in mirror_paths:
                     if parent not in live_dirs:
                         self.conn.execute(
                             "MATCH (dh:DirHash {path: $d}) DELETE dh",

@@ -40,6 +40,15 @@ re-extracting it from files.
 - `--kind pdf --pdf-file F [--auto-import] [--routing-mode ...]`
   Bulk: `okf import --all --bundle DIR` (`--purge` drops deleted concepts).
 
+## Namespaced IDs (multi-root graphs)
+
+- A file inside a named root (`--bundle-root ALIAS=PATH`) mints
+  `@alias/rel` instead of the bare id — same stem in two roots no longer
+  collides. Omit `--concept-id` to get the resolved id; an explicit
+  `--concept-id` always wins.
+- PDF auto-imports mint `@pdf-<hash>/...` page ids (stable per source).
+- Link across roots with `[[alias/Name]]` (or the exact `[[@alias/Name]]`).
+
 ## Converter modes (pdf only)
 
 `routing_mode` controls when the converter spends ONNX compute:

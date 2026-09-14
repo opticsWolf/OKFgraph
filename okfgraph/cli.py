@@ -131,6 +131,7 @@ def _add_global(parser, mark=True):
 
     _add("--db", default=None, help="Database path (default: okfgraph.db, or from okfgraph.toml)")
     _add("--bundle", default=None, help="Bundle root directory (default: ., or from okfgraph.toml)")
+    _add("--bundle-root", action="append", default=None, metavar="ALIAS=PATH", help="Additional named bundle root (repeatable; combines with --bundle). Named roots mint @alias/rel IDs.")
     _add("--dim", type=int, default=None, help="Embedding dimension (Matryoshka ladder 32/64/128/256/512/768/1024; default: 512, or from okfgraph.toml)")
     _add("--max-length", type=int, default=None, help="Token truncation ceiling 1..=32768 (default: 8192, or from okfgraph.toml). Raising it changes long-doc vectors — reimport fully after changing.")
     _add("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface, or from okfgraph.toml)")
@@ -177,6 +178,17 @@ def _router(args):
         val = getattr(args, attr, None)
         if val is not None:
             cli_dict[attr] = val
+    # Repeatable --bundle-root ALIAS=PATH entries (parsed by the config
+    # layer; bad format is a clean usage error, not a traceback).
+    bundle_roots = getattr(args, "bundle_root", None)
+    if bundle_roots:
+        tmp = OKFConfig()
+        try:
+            OKFConfig._apply_cli(tmp, {"roots": bundle_roots})
+        except ValueError as e:
+            print(f"[ERROR] {e}")
+            raise SystemExit(2)
+        cli_dict["roots"] = tmp.roots
 
     # Resolve bundle root for TOML lookup
     bundle_root = cli_dict.get("bundle") or "."
@@ -192,6 +204,7 @@ def _router(args):
     router = OKFRouter(
         db_path=config.database.path,
         bundle_root=str(config.bundle),
+        roots=config.roots or None,
         embedding_dim=config.database.dim,
         max_length=config.embedding.max_length,
         omni_model_id=config.embedding.omni_model_id,
@@ -626,8 +639,10 @@ def _diff(args):
         return 2
     else:
         router = _router(args)
-        side = Path(old or new) if (old or new) else router.bundle_root
-        if not side.is_dir():
+        # No explicit side: drift against every configured tree (None =
+        # primary alone in single-root, all roots in multi-root, §2.8).
+        side = Path(old or new) if (old or new) else None
+        if side is not None and not side.is_dir():
             print(f"[ERROR] not a bundle directory: {side}")
             return 2
         result = router.diff_db_dir(side)
@@ -691,9 +706,12 @@ def _detach(args):
         logger.info("%d tracked source(s) already live only in the graph",
                       report["already_sourceless"])
     prov = report["provenance"]
-    print(f"[OK] detached from {prov['path']} "
-          f"({prov['file_count']} file(s) at detach). "
-          "Reads/search/export/recover keep working; imports refuse without --force.")
+    rows = prov if isinstance(prov, list) else [prov]
+    for row in rows:
+        label = f"@{row['alias']}" if row.get("alias") else "<primary>"
+        print(f"[OK] detached {label} from {row['path']} "
+              f"({row['file_count']} file(s) at detach).")
+    print("Reads/search/export/recover keep working; imports refuse without --force.")
     return 0
 
 
@@ -726,6 +744,11 @@ def _doctor(args):
         roots = ", ".join(r["path"] for r in d.get("roots", [])) or "<none>"
         print(f"  [detached] mirror ended (epoch {d.get('detached_at')}); "
               f"sources: {roots}")
+    for rt in report.get("roots", []):
+        state = "present" if rt["present"] else "ABSENT"
+        print(f"  [root {rt['alias']}] {state} {rt['path']} "
+              f"({rt['tracked_files']} tracked file(s), "
+              f"{rt['concepts']} concept(s))")
     if getattr(args, "strict", False) and report["findings"]:
         return 1
     return 0
@@ -1387,6 +1410,11 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    # NOTE: --bundle and --bundle-root COMBINE (primary + named extras);
+    # the plan draft said "mutually exclusive" but no actual conflict
+    # exists, so combination is allowed. Recorded as a deviation in the
+    # plan doc (Phase 2 §2.6).
 
     if not args.command:
         parser.print_help()

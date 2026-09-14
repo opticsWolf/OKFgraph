@@ -17,8 +17,10 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 
 ## Setup (once per project)
 
-1. The harness must wire `okf-mcp` with a stable `--db-path` and `--bundle`
-   (a temp dir means an empty graph every session).
+1. The harness must wire `okf-mcp` with a stable `--db-path` and `--bundle-root`
+   (a temp dir means an empty graph every session). Additional live trees
+   join via repeatable `--root ALIAS=PATH` (their files mint `@alias/rel`
+   ids; link them as `[[alias/Name]]`).
 2. First server boot creates the schema automatically — no init call needed.
 3. `ingest` / `export_bundle` are write tools: they need harness approval
    unless pre-approved. For a knowledge workflow, pre-approve them.

@@ -223,8 +223,15 @@ class TestWorkDirIsolation:
         ids = router.ingest_mgr._import_work_dir(
             work, 32, "text", False, Path(tmp) / "report.pdf"
         )
-        assert ids == ["report"]
-        assert "report" in _concepts(router.conn)
+        # Ingest namespace (§2.1): work-dir pages mint `@pdf-<hash>/...`
+        # IDs — stable per source, so a repeat import upserts idempotently.
+        assert len(ids) == 1 and ids[0].startswith("@pdf-")
+        assert ids[0].endswith("/report")
+        assert ids[0] in _concepts(router.conn)
+        ids2 = router.ingest_mgr._import_work_dir(
+            work, 32, "text", False, Path(tmp) / "report.pdf"
+        )
+        assert ids2 == ids
 
         # No temp keys leaked into the baseline...
         assert _dirhash_keys(router.conn) == before_dirs

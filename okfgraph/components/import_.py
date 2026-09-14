@@ -22,6 +22,10 @@ import yaml
 import frontmatter
 from okfgraph.models import ChunkModel, ConceptModel
 from okfgraph.images import IngestMode
+from okfgraph.components.roots import (
+    namespaced_id,
+    resolve_alias_for_path,
+)
 from okfgraph.components.links import (
     build_name_index,
     extract_md_links,
@@ -79,7 +83,7 @@ def sanitize_resource(uri: Any) -> Any:
     return f"{m.group('scheme')}***@{m.group('rest')}"
 
 def parse_source_file(
-    file_path: Path, root: Path
+    file_path: Path, root: Path, alias: str = ""
 ) -> Tuple["ConceptModel", str, str]:
     """Parse a .md/.txt source into ``(ConceptModel, body, concept_id)``.
 
@@ -87,6 +91,10 @@ def parse_source_file(
     a database-backed manager. ``ImportManager._parse_source_file`` delegates
     here; behaviour is identical (path-derived id, ``type``/``title``
     synthesis, frontmatter ``id:`` preserved as ``uid``).
+
+    Multi-root (0.4.0, Phase 2 §2.1): a non-empty ``alias`` namespaces the
+    path-derived ID (``@alias/rel``); the outside-root bare-stem fallback
+    stays bare — it carries no root relationship.
     """
     post = frontmatter.load(file_path)
     body = post.content
@@ -97,6 +105,7 @@ def parse_source_file(
         # with_suffix("") strips only the final extension (.md/.txt/.markdown),
         # avoiding the old str.replace(".md","") which could corrupt paths.
         concept_id = str(rel_path.with_suffix("")).replace("\\", "/")
+        concept_id = namespaced_id(alias, concept_id)
     else:
         # File lives outside bundle_root (common when a GUI writes each .md
         # next to its source). Fall back to the bare stem so the import
@@ -206,9 +215,20 @@ class ImportManager:
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
     def __init__(self, conn, bundle_root, _write_lock_ctx, enable_chunking,
                  schema_mgr, delta_mgr, embed_engine, image_mgr, purge_mgr,
-                 token_counter, context_window=8192, db_path=None):
+                 token_counter, context_window=8192, db_path=None, roots=None):
         self.conn = conn
         self.bundle_root = bundle_root
+        # Multi-root (0.4.0, Phase 2 §2.1): {alias: resolved Path} for trees
+        # beyond the primary bundle_root (validated by the router). {}
+        # means legacy single-root: every behaviour below is unchanged.
+        self.roots = {a: Path(p) for a, p in (roots or {}).items()}
+        # One delta detector per namespace, sharing the connection. The
+        # primary ("") detector is the router-owned delta_mgr, so
+        # single-root call sites keep working untouched.
+        from okfgraph.components.delta import DeltaDetector as _DD
+        self._delta_by_alias = {"": delta_mgr}
+        for _a, _rp in self.roots.items():
+            self._delta_by_alias[_a] = _DD(conn, _rp, _a)
         self._write_lock_ctx = _write_lock_ctx
         # Database location for detach's WILL-NOT-SURVIVE walk (0.2.16): the
         # graph's own files (.db + ladybug sidecars) are never source content.
@@ -369,8 +389,21 @@ class ImportManager:
         for raw in extract_wikilinks(body):
             if not raw or is_external(raw):
                 continue
-            out.append((source_id, resolve_wiki(raw, maps, known_ids), raw))
+            out.append((source_id,
+                         resolve_wiki(self._qualify_alias_link(raw),
+                                      maps, known_ids), raw))
         return out
+
+    def _qualify_alias_link(self, raw: str) -> str:
+        """Rewrite `[[alias/rest]]` → `[[@alias/rest]]` for known aliases.
+
+        Multi-root (0.4.0, Phase 2 §2.4): the human-friendly form without
+        `@` resolves via this pre-step; the `@`-form hits resolve_wiki's
+        exact-id probe for free. Rule shared with diff snapshots
+        (:func:`okfgraph.components.roots.qualify_alias_link`).
+        """
+        from okfgraph.components.roots import qualify_alias_link as _q
+        return _q(raw, self.roots)
 
     def _batch_extract_links(self, parsed: List[Dict[str, Any]]):
         """Extract and create LINKS_TO relationships for a batch of concepts.
@@ -495,16 +528,60 @@ class ImportManager:
         return row[0][f"c.{prop}"] if row else None
 
 
+    def _absent_roots(self) -> List[str]:
+        """Aliases ("" = primary) whose tree is not currently present."""
+        absent = []
+        if not Path(self.bundle_root).is_dir():
+            absent.append("")
+        for alias, rpath in self.roots.items():
+            if not Path(rpath).is_dir():
+                absent.append(alias)
+        return absent
+
+    def _alias_for_root(self, root) -> str:
+        """Namespace alias for an import tree: exact root match wins,
+        else longest-prefix match, else "" (legacy bare IDs)."""
+        try:
+            rp = Path(root).resolve()
+        except OSError:
+            return ""
+        for alias, rpath in self.roots.items():
+            if rp == Path(rpath):
+                return alias
+        return resolve_alias_for_path(rp, self.roots) or ""
+
+    def _detector_for(self, alias: str):
+        """Delta detector for a namespace (primary "" = router-owned)."""
+        return self._delta_by_alias.get(alias) or self._delta_by_alias[""]
+
     def _import_bundle_inner(
         self,
         bundle_path: Optional[Path],
         batch_size: int,
         mode: "str | IngestMode",
         purge_deleted: bool,
+        alias: Optional[str] = None,
     ) -> List[str]:
         """Inner implementation of import_bundle (called under write lock)."""
         mode = IngestMode.coerce(mode)
         root = bundle_path or self.bundle_root
+        if alias is None:
+            alias = self._alias_for_root(root)
+        det = self._detector_for(alias)
+        # Purge is fail-closed in multi-root graphs (§2.3): consuming
+        # tombstones while a root's state is unknown could purge live
+        # concepts as "deleted". Single-root graphs keep legacy behaviour.
+        # Suspended work-dir imports never purge (existing guard below),
+        # so the gate skips them too — PDF auto-import must not refuse
+        # over an unrelated unmounted root.
+        if purge_deleted and self.roots and not det._suspended:
+            absent = self._absent_roots()
+            if absent:
+                names = [a or "<primary>" for a in absent]
+                raise RuntimeError(
+                    f"purge refused: root(s) {names} not present — "
+                    "remount them so every tree's state is known, then retry."
+                )
         # Single walk, partitioned: reserved names (index.md, ...) are graph
         # noise, never knowledge — but counted in the log so silent loss is
         # impossible. Shared predicate with diff/delta/lint (is_concept_file).
@@ -518,8 +595,33 @@ class ImportManager:
                 "skipping %d reserved file(s) (index.md, ...)",
                 len(candidates) - len(source_files),
             )
-        if not source_files:
+        if not source_files and not Path(root).is_dir():
+            # Absent tree (unmounted root, mistyped path): no baseline can
+            # be computed — return before detection so nothing reads as
+            # deleted (liveness invariant, §2.3; the loud skip lands there).
+            # A PRESENT-but-empty tree is genuine (its last file was
+            # deleted): fall through so detection tombstones it and
+            # --purge-deleted can consume it. Without this, emptying a
+            # root's final file could never purge (the old early return).
             return []
+        if not alias:
+            # Reserved-prefix rule (§2.1): a legacy tree containing top-level
+            # `@*` entries would mint IDs that look namespaced but aren't
+            # (usually a re-imported multi-root export — harmless, but a
+            # future `alias` of the same name would collide). Warn, don't refuse.
+            for _fp in source_files:
+                try:
+                    _rel = _fp.relative_to(root)
+                except ValueError:
+                    continue
+                if _rel.parts and _rel.parts[0].startswith("@"):
+                    logger.warning(
+                        "bundle contains top-level '@'-prefixed entry %s: its "
+                        "concept ID will look namespaced; avoid adding a root "
+                        "alias with the same name",
+                        _rel.parts[0],
+                    )
+                    break
 
         _t0 = time.monotonic()
 
@@ -529,23 +631,23 @@ class ImportManager:
         # concepts commit (Phase 3b), so a crash can never leave hashes
         # describing state newer than the graph.
         _t1 = time.monotonic()
-        changed, deleted, dir_updates = self.delta_mgr._changed_directories(source_files)
+        changed, deleted, dir_updates = det._changed_directories(source_files)
         logger.info("directory-delta: %d changed, %d deleted (%.1fs)", len(changed), len(deleted), time.monotonic() - _t1)
 
         # Record deletions durably: tombstones survive no-purge runs so a
         # later --purge-deleted still sees them.
         if deleted:
-            self.delta_mgr._record_deletions(deleted)
+            det._record_deletions(deleted)
 
         # Purge deleted concepts if requested — consumes this run's
         # detections plus tombstones left by earlier no-purge runs.
         # Skipped for suspended (work-dir) imports: a temp import must
         # never tombstone real concepts.
-        if purge_deleted and not self.delta_mgr._suspended:
-            pending = self.delta_mgr._load_pending_deletions()
+        if purge_deleted and not det._suspended:
+            pending = det._load_pending_deletions()
             if pending:
                 purged = 0
-                cid_map = self.delta_mgr._load_file_hash_concept_ids()
+                cid_map = det._load_file_hash_concept_ids()
                 for path in pending:
                     cid = cid_map.get(path)
                     if cid and self.purge_mgr._purge_concept(cid):
@@ -553,7 +655,7 @@ class ImportManager:
                     else:
                         # Stale tombstone (already purged, or wedged with no
                         # concept): resolve it so it stops re-reporting.
-                        self.delta_mgr._clear_deletion(path)
+                        det._clear_deletion(path)
                 logger.info("purged %d deleted concept(s)", purged)
                 if len(pending) > purged:
                     logger.warning(
@@ -573,7 +675,7 @@ class ImportManager:
         failed_files: List[Path] = []
         for fp in source_files:
             try:
-                concept, body, cid = self._parse_source_file(fp, root)
+                concept, body, cid = self._parse_source_file(fp, root, alias)
                 search_text = f"{concept.title or ''} {concept.description or ''} {concept.body or ''}"
                 parsed.append({
                     "concept": concept,
@@ -644,12 +746,15 @@ class ImportManager:
         file_hashes: Dict[str, str] = {}
         for p in parsed:
             fp = p["fp"]
-            rel = str(fp.relative_to(self.bundle_root))
-            file_hashes[rel] = self.delta_mgr._file_hash(fp)
-        self.delta_mgr._store_file_hashes(file_hashes)
+            rel = str(fp.relative_to(root))
+            file_hashes[rel] = det._file_hash(fp)
+        det._store_file_hashes(file_hashes)
         for fp in failed_files:
-            dir_updates.pop(str(fp.parent.relative_to(self.bundle_root)), None)
-        self.delta_mgr._store_directory_hashes(dir_updates)
+            # dir_updates keys are DB (namespaced) keys — pop via the
+            # detector's key space, not the native rel.
+            from okfgraph.components.roots import prefix_key as _pk
+            dir_updates.pop(_pk(det.alias, str(fp.parent.relative_to(root))), None)
+        det._store_directory_hashes(dir_updates)
 
         # Phase 3.5: Chunk all documents (NEW) — per-concept error isolation
         _import_chunk_errors: List[Tuple[str, Exception]] = []
@@ -1045,7 +1150,7 @@ class ImportManager:
 
 
     def _parse_source_file(
-        self, file_path: Path, root: Path
+        self, file_path: Path, root: Path, alias: str = ""
     ) -> Tuple[ConceptModel, str, str]:
         """Parse a .md/.txt source into ``(ConceptModel, body, concept_id)``.
 
@@ -1056,7 +1161,7 @@ class ImportManager:
 
         Delegates to :func:`parse_source_file` (shared with the diff tool).
         """
-        return parse_source_file(file_path, root)
+        return parse_source_file(file_path, root, alias)
 
 
     def import_bundle(
@@ -1066,6 +1171,7 @@ class ImportManager:
         mode: "str | IngestMode" = IngestMode.TEXT,
         purge_deleted: bool = False,
         force: bool = False,
+        alias: Optional[str] = None,
     ) -> List[str]:
         """Import an entire OKF bundle directory with batched encoding.
 
@@ -1088,15 +1194,68 @@ class ImportManager:
         """
         # Acquire write lock (Gap #7b)
         with self._write_lock_ctx():
-            reattach = self._require_attached(
-                force, bundle_path or self.bundle_root
-            )
-            ids = self._import_bundle_inner(
-                bundle_path, batch_size, mode, purge_deleted
-            )
-            if reattach:
-                self.delta_mgr.clear_detached()
-            return ids
+            if bundle_path is not None or not self.roots:
+                # Explicit tree, or legacy single-root graph: one import.
+                # `alias` is the PDF work-dir ingest namespace (§2.1); it
+                # never re-attaches (a temp dir never matches provenance).
+                reattach = self._require_attached(
+                    force, bundle_path or self.bundle_root
+                )
+                ids = self._import_bundle_inner(
+                    bundle_path, batch_size, mode, purge_deleted,
+                    alias=alias,
+                )
+                if reattach:
+                    self.delta_mgr.clear_detached()
+                return ids
+            # Multi-root (Phase 2 §2.1–§2.3): primary tree (bare IDs) plus
+            # one import per named root (namespaced IDs). Absent roots are
+            # SKIPPED with a loud warning — unmounted ≠ deleted (§2.3).
+            # A --force re-attach requires the FULL configured root set to
+            # match the recorded provenance (open question 3, strict
+            # reading): a partial mirror must never clear detached state.
+            if force and self.delta_mgr.is_detached():
+                absent = self._absent_roots()
+                if absent:
+                    names = [a or "<primary>" for a in absent]
+                    raise RuntimeError(
+                        f"re-attach refused: root(s) {names} not present — "
+                        "remount the full recorded source tree, then retry."
+                    )
+                recorded = {
+                    r.get("alias", ""): r.get("path")
+                    for r in (self.delta_mgr.get_detached_state() or {}).get("roots", [])
+                }
+                configured = {"": str(Path(self.bundle_root).resolve())}
+                configured.update({a: str(Path(p).resolve())
+                                   for a, p in self.roots.items()})
+                if recorded != configured:
+                    raise RuntimeError(
+                        "re-attach refused: configured roots differ from the "
+                        f"recorded source tree ({recorded}). Create a new "
+                        "database for a different tree."
+                    )
+            all_ids: List[str] = []
+            for _alias, _root in [("", self.bundle_root)] + list(self.roots.items()):
+                if not Path(_root).is_dir():
+                    logger.warning(
+                        "import: root %s (%s) not present — skipped, "
+                        "nothing tombstoned (unmounted is not deleted)",
+                        _alias or "<primary>", _root,
+                    )
+                    continue
+                reattach = self._require_attached(force, _root)
+                _ids = self._import_bundle_inner(
+                    _root, batch_size, mode, purge_deleted, alias=_alias
+                )
+                logger.info(
+                    "import: root %s: %d concept(s)",
+                    _alias or "<primary>", len(_ids),
+                )
+                all_ids.extend(_ids)
+                if reattach:
+                    self.delta_mgr.clear_detached()
+            return all_ids
 
 
     def _require_attached(self, force: bool, root: Optional[Path] = None) -> bool:
@@ -1158,7 +1317,6 @@ class ImportManager:
         Raises RuntimeError when verification fails without --force, the
         bundle is missing with verify on, or the graph is already detached.
         """
-        root = Path(bundle_path) if bundle_path is not None else Path(self.bundle_root)
         if self.delta_mgr.is_detached():
             state = self.delta_mgr.get_detached_state() or {}
             since = state.get("detached_at")
@@ -1167,6 +1325,12 @@ class ImportManager:
                 + (f" (since epoch {since})" if since else "")
                 + "."
             )
+        # Multi-root whole-graph detach (§2.5): every configured tree is
+        # verified (with its alias) and recorded as its own SourceRoot row.
+        # An explicit bundle_path keeps the legacy single-tree meaning.
+        if self.roots and bundle_path is None:
+            return self._detach_multi(verify=verify, force=force)
+        root = Path(bundle_path) if bundle_path is not None else Path(self.bundle_root)
         report: Dict[str, Any] = {
             "bundle": str(root),
             "verified": False,
@@ -1222,6 +1386,74 @@ class ImportManager:
         )
         return report
 
+    def _detach_multi(self, verify: bool, force: bool) -> Dict[str, Any]:
+        """Whole-graph detach over primary + named roots (Phase 2 §2.5)."""
+        targets = [("", Path(self.bundle_root))] + [
+            (a, Path(p)) for a, p in self.roots.items()
+        ]
+        report: Dict[str, Any] = {
+            "bundle": ", ".join(str(r) for _, r in targets),
+            "verified": False,
+            "mismatched": [],
+            "untracked": [],
+            "non_source_files": [],
+            "already_sourceless": 0,
+            "file_count": 0,
+            "roots": {},
+        }
+        baseline_rows = self.conn.execute(
+            "MATCH (f:FileHash) RETURN count(f) AS n"
+        ).rows_as_dict().get_all()
+        baseline_count = baseline_rows[0]["n"] if baseline_rows else 0
+        per_root_counts: Dict[str, int] = {}
+        if verify:
+            for alias, root in targets:
+                name = alias or "<primary>"
+                if not root.is_dir():
+                    raise RuntimeError(
+                        f"root {name} ({root}) not found - nothing to verify "
+                        "against. Remount it, or pass --no-verify to detach "
+                        "without verification."
+                    )
+                before = report["file_count"]
+                self._verify_detach_fidelity(root, report, alias)
+                per_root_counts[alias] = report["file_count"] - before
+                report["roots"][name] = {
+                    "path": str(root),
+                    "file_count": per_root_counts[alias],
+                }
+            summary = (
+                f"{len(report['mismatched'])} mismatched, "
+                f"{len(report['untracked'])} untracked, "
+                f"{len(report['non_source_files'])} source-only"
+            )
+            if report["mismatched"] and not force:
+                raise RuntimeError(
+                    f"detach refused: {summary}. Re-import first so the graph "
+                    "matches the files, or pass --force to declare the "
+                    "database the artifact anyway."
+                )
+            if (report["untracked"] or report["non_source_files"]) and not force:
+                raise RuntimeError(
+                    f"detach refused: {summary} - these files have no counterpart "
+                    "in the graph and would not survive source deletion "
+                    "(WILL-NOT-SURVIVE). Pass --force to acknowledge."
+                )
+            report["verified"] = True
+        else:
+            report["file_count"] = baseline_count
+        self.conn.execute("MATCH (f:FileHash) DELETE f")
+        self.conn.execute("MATCH (d:DirHash) DELETE d")
+        self.conn.execute("MATCH (d:DeletedPath) DELETE d")
+        provenance = []
+        for alias, root in targets:
+            count = per_root_counts.get(alias, 0) if verify else 0
+            provenance.append(self.delta_mgr.set_detached(
+                str(root.resolve()), count, alias
+            ))
+        report["provenance"] = provenance
+        return report
+
     def _is_db_file(self, fp: Path) -> bool:
         """True for the graph's own database + ladybug sidecars (.lock/.wal/...).
 
@@ -1242,7 +1474,9 @@ class ImportManager:
         base = self._db_path.name
         return rp.name.startswith(base + ".") or rp.name.startswith(base + "-")
 
-    def _verify_detach_fidelity(self, root: Path, report: Dict[str, Any]) -> None:
+    def _verify_detach_fidelity(
+        self, root: Path, report: Dict[str, Any], alias: str = ""
+    ) -> None:
         """Fill the detach report by comparing bundle files to graph content.
 
         - concept file whose derived id has no stored concept -> `untracked`
@@ -1260,11 +1494,14 @@ class ImportManager:
             if fp.is_file() and fp.suffix.lower() in SOURCE_EXTS
         )
         concept_files = [fp for fp in candidates if is_concept_file(fp)]
-        report["file_count"] = len(concept_files)
+        report["file_count"] = report.get("file_count", 0) + len(concept_files)
         for fp in concept_files:
             rel = str(fp.relative_to(root))
+            if alias:
+                # Display namespaced so multi-root reports say which tree.
+                rel = f"@{alias}/{rel}"
             try:
-                concept, body, cid = self._parse_source_file(fp, root)
+                concept, body, cid = self._parse_source_file(fp, root, alias)
             except Exception as e:
                 report["untracked"].append(
                     {"path": rel, "reason": f"unparseable: {e}"}
@@ -1310,16 +1547,25 @@ class ImportManager:
                     continue
                 if fp.name.lower() in RESERVED_FILENAMES:
                     continue  # generated files (index.md) - export reproduces them
-            report["non_source_files"].append(str(rel))
+            _ns = str(rel)
+            if alias:
+                _ns = f"@{alias}/{_ns}"
+            report["non_source_files"].append(_ns)
         sourceless = 0
         for r in (
             self.conn.execute("MATCH (f:FileHash) RETURN f.path AS p")
             .rows_as_dict().get_all()
             or []
         ):
-            if not (root / r["p"]).exists():
+            # Only this root's namespace counts here (multi-root verify
+            # runs once per root; another root's rows are not sourceless).
+            from okfgraph.components.roots import strip_prefix as _sp
+            _native = _sp(alias, r["p"])
+            if _native is None:
+                continue
+            if not (root / _native).exists():
                 sourceless += 1
-        report["already_sourceless"] = sourceless
+        report["already_sourceless"] = report.get("already_sourceless", 0) + sourceless
 
     @staticmethod
     def _norm_tags(value: Any) -> List[str]:
@@ -1360,7 +1606,12 @@ class ImportManager:
         self._require_attached(force)
 
         # 1-2. Parse frontmatter/body and build the Concept model.
-        concept, body, concept_id = self._parse_source_file(file_path, self.bundle_root)
+        # Multi-root (§2.1/§2.6): a file inside a named root mints that
+        # root's namespaced ID; outside every root keeps the legacy
+        # bare-stem fallback.
+        _alias = resolve_alias_for_path(file_path, self.roots) or ""
+        _root = self.roots[_alias] if _alias else self.bundle_root
+        concept, body, concept_id = self._parse_source_file(file_path, _root, _alias)
 
         # 2.5. Chunk the body (NEW)
         if self.enable_chunking:

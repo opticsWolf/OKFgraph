@@ -277,6 +277,24 @@ model rewrite, skills, CHANGELOG. Release **0.4.0**. Acceptance: OKFgraph + bobi
 embroider live docs in one graph, copies retired; kill one root → serve + refuse
 purge + resume on remount.
 
+## Deviations (implementation, 0.4.0)
+
+1. **No `--bundle`/`--bundle-root` exclusion** (§2.6 said mutual exclusion):
+   no actual conflict exists — `--bundle` sets the primary, `--bundle-root`
+   adds named extras, and they combine freely.
+2. **Schema v7→v8 after all** (§2.2 assumed no bump): Ladybug's binder
+   rejects writes to undeclared properties, so the exact parent-DirHash key
+   (`FileHash.dir`/`DeletedPath.dir`) needed a declared column + backfill
+   migration. Probe-never-assume reads were reverted to direct queries.
+3. **Doctor roots omit `last_seen`** (§2.3 listed it): no per-root clock
+   exists while attached — presence + tracked-file/concept counts only.
+4. **Empty-tree fall-through** (found implementing §2.2): the old
+   `if not source_files: return []` made emptying a root's last file
+   unpurgeable; present-but-empty trees now run detection (absent trees
+   still return before it).
+5. **Phase number moved**: token-limit release took 0.3.0; this phase
+   shipped as 0.4.0.
+
 ## Non-goals (parked)
 
 Batch D (ladybug upstream, await macrame 0.18) · Phase 5 bobine text embedding ·

@@ -4,6 +4,25 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.4.0] — 2026-09-14
+
+### Added (Phase 2 — multi-root bundles, plan `docs/plan-multi-root-detach.md`)
+- One graph, N live roots: `OKFRouter(roots={alias: path})`, CLI
+  `--bundle-root ALIAS=PATH` (repeatable), TOML `[[roots]]`, MCP `--root`
+  + `create_mcp_server(roots=...)`. Named roots mint `@alias/rel` IDs;
+  the primary tree keeps bare IDs (no migration).
+- Per-root delta namespaces (schema v7→v8: `FileHash.dir`/`DeletedPath.dir`
+  store the exact parent DirHash key; v7 DBs migrate on open with backfill).
+- Liveness: absent roots skip with a warning (unmounted ≠ deleted);
+  `--purge-deleted` refuses unless all roots are present; doctor reports
+  per-root status (informational).
+- Cross-root links: `[[alias/Name]]` (+ exact `[[@alias/Name]]`, alias folds
+  case); export writes `@alias/rel.md` (single-root re-import round-trips);
+  drift diff unions all present trees; detach covers all roots with
+  per-alias provenance (full-set `--force` re-attach).
+- Ingest namespaces: path-based md ingest resolves roots (outside keeps
+  bare-stem fallback); PDF auto-import mints stable `@pdf-<hash12>/...` IDs.
+
 ## [0.3.0] — 2026-09-14
 
 ### Added

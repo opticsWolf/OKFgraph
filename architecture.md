@@ -1,6 +1,6 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.0 (as-built for okfgraph 0.2.12 — supersedes the v5.x design lineage as the authoritative surface)  
+**Version**: 6.1 (as-built for okfgraph 0.4.0 — §16 multi-root; supersedes the v5.x design lineage as the authoritative surface)  
 **Based on**: Architecture v5.9 (Core Gaps closure, 2026-07-09)  
 **Verified against**: LadybugDB v0.20.3, Python 3.11–3.13, `embroider 0.1.3`, `bobine 0.5.11`, `onnxruntime==1.29.0`
 
@@ -1659,7 +1659,53 @@ with it. What remains are standing constraints, not gaps:
 | **Frozen vector space** | Jina contract (prefixes, last-token pooling, truncation order) is identical across okfgraph 0.2.x and embroider 0.1.x — enforced by golden parity tests, never by convention alone |
 | **Floor-pinned embroider** | `embroider>=0.1,<0.2`: a new embroider minor without an okfgraph release is a *supported* state, and the suite proves the floor still passes (contract fixtures in the embroider repo `fixtures/`, vendored at `tests/fixtures/golden_jina_v5_text_small.json` + `tests/test_golden_vectors.py`; matrix: embroider `COMPAT.md`) |
 | **Schema v6** | `DeletedConcept` carries a full-fidelity snapshot (embeddings + metadata survive soft-delete → recover); v5 DBs migrate on open (ALTER existing table or CREATE it — 0.2.x fresh DBs never had it) |
+| **Schema v8** | `FileHash.dir` / `DeletedPath.dir` store the exact parent DirHash key (multi-root namespacing makes path-string math ambiguous); v7 DBs migrate on open with legacy-math backfill (exact for all pre-0.4.0 rows) |
 
 ---
+
+## 16. Multi-root bundles (0.4.0)
+
+One graph, N live roots, no copies, no ID collisions (plan:
+`docs/plan-multi-root-detach.md` Phase 2). The constructor `bundle_root`
+stays the primary tree — its files keep **bare IDs** (empty-alias rule, no
+migration for legacy graphs). `OKFRouter(roots={alias: path})` adds named
+trees whose files mint **`@alias/rel`** IDs (`@` is filename-safe, never a
+URI-scheme start; `:` was rejected: Windows-illegal on export and swallowed
+by `SCHEME_RE` in wikilinks).
+
+- **Identity**: derivation lives in `parse_source_file(..., alias)`; aliases
+  match `^[A-Za-z0-9][A-Za-z0-9_-]*$`, never start with `@`; roots must not
+  overlap (validated fail-fast, existence NOT required). Outside-root files
+  keep the bare-stem fallback. Per-alias `Directory` nodes fall out of the
+hierarchy builder (IDs split on `/`). Legacy trees with top-level `@*`
+  entries warn (re-imported exports reproduce exact IDs).
+- **Delta per root**: one `DeltaDetector` per namespace sharing the
+  connection; FileHash/DirHash/DeletedPath keys are `@alias/`-prefixed
+  (`roots.py:prefix_key`), concept IDs derive prefix-safe. Emptied-but-present
+  roots fall through detection (absent trees return early — see liveness).
+- **Liveness** (the phase invariant): import skips absent roots with a loud
+  warning and never tombstones them; `--purge-deleted` refuses unless **all**
+  roots are present (unknown must never read as deleted); reads/exports are
+  unaffected; doctor reports per-root presence + counts (informational).
+- **Links**: `[[@alias/rel]]` resolves via the exact-id probe for free;
+  `[[alias/rel]]` rewrites through `roots.qualify_alias_link` (alias folds
+  case, rest stays exact). Unqualified names keep uid→alias→title→stem order;
+  cross-root collisions become repairable BrokenLinks. Relative `](path)`
+  links stay source-unaware (deferred, as before).
+- **Surfaces**: CLI `--bundle-root ALIAS=PATH` (repeatable, combines with
+  `--bundle`); TOML `[[roots]]` (paths relative to the TOML file); MCP
+  `--root ALIAS=PATH` + `create_mcp_server(roots=...)`. Path-based `ingest md`
+  resolves longest-prefix-match; PDF work-dir imports mint a stable
+  `@pdf-<content-hash12>/...` namespace (same-stem pages from different PDFs
+  can no longer overwrite each other); thoughts IDs were already unique.
+- **Export/diff/detach**: export writes `<out>/@alias/rel.md` (single-root
+  re-import reproduces exact IDs); drift diff unions all present trees
+  (absent ≠ drift); detach verifies + records one SourceRoot row per alias
+  and `--force` re-attach requires the full configured root set to match.
+- **Deviations from the plan draft**: `--bundle`/`--bundle-root` combine
+  (no exclusion — none exists); schema went v7→v8 after all (Ladybug's binder
+  rejects unknown properties on write, so the `dir` key needed a declared
+  column); doctor roots omit `last_seen` (no per-root clock exists while
+  attached).
 
 *This specification is a living artifact. Update the version and sections as the tree changes — and mark superseded design docs historical instead of deleting them.*

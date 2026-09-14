@@ -24,6 +24,29 @@ from okfgraph.models import ChunkModel, ConceptModel, normalize_tags
 
 logger = logging.getLogger(__name__)
 
+def _ingest_namespace(pdf_path, work_dir) -> str:
+    """Stable ingest namespace for one PDF auto-import (Phase 2 §2.1).
+
+    `pdf-<hash12>` from the source bytes when readable, else a fingerprint
+    of the converted work dir (sorted paths + sizes). Either is stable
+    across re-imports of the same source and distinct across sources.
+    """
+    try:
+        with open(pdf_path, "rb") as _f:
+            return f"pdf-{hashlib.sha256(_f.read()).hexdigest()[:12]}"
+    except OSError:
+        pass
+    try:
+        entries = sorted(
+            f"{p.relative_to(work_dir)}:{p.stat().st_size}"
+            for p in sorted(Path(work_dir).rglob("*"))
+            if p.is_file()
+        )
+        return f"pdf-{hashlib.sha256(chr(10).join(entries).encode()).hexdigest()[:12]}"
+    except OSError:
+        return f"pdf-{uuid.uuid4().hex[:12]}"
+
+
 class IngestManager:
     def __init__(self, _write_lock_ctx, bundle_root, device, import_mgr, delta_mgr,
                  converter=None):
@@ -61,8 +84,18 @@ class IngestManager:
         post = frontmatter.load(md_path)
         fm = dict(post.metadata)
 
-        # Determine metadata
-        cid = concept_id or md_path.stem.replace(" ", "_").lower()
+        # Determine metadata. Without an explicit concept_id, a file inside
+        # a named root mints that root's namespaced ID (§2.6); outside every
+        # root keeps the legacy bare-stem fallback.
+        if concept_id:
+            cid = concept_id
+        else:
+            from okfgraph.components.import_ import parse_source_file
+            from okfgraph.components.roots import resolve_alias_for_path
+            _alias = resolve_alias_for_path(md_path, self.import_mgr.roots) or ""
+            _roots = self.import_mgr.roots
+            _root = _roots[_alias] if _alias else self.import_mgr.bundle_root
+            cid = parse_source_file(md_path, _root, _alias)[2]
         t = title or fm.get("title") or md_path.stem
         desc = description or fm.get("description") or fm.get("summary") or ""
         file_tags = normalize_tags(fm.get("tags", []))
@@ -445,6 +478,7 @@ class IngestManager:
 
     def _import_work_dir(self, work_dir, batch_size, mode, purge_deleted, pdf_path, force=False):
         """Import a converted-PDF work dir, keeping bundle_root overrides in sync."""
+        from okfgraph.components.delta import DeltaDetector as _DD
         old_bundle_root = self.bundle_root
         self.bundle_root = work_dir
         # Keep the injected DeltaDetector and ImportManager in sync:
@@ -452,23 +486,36 @@ class IngestManager:
         # _changed_directories rely on it (Phase 3 refactor).
         self.delta_mgr.bundle_root = work_dir
         self.import_mgr.bundle_root = work_dir
+        # Ingest namespace (§2.1): PDF pages mint `@pdf-<hash12>/...` IDs —
+        # stable per source (content hash), so same-stem pages from
+        # different PDFs never overwrite each other, and re-imports upsert
+        # idempotently. The ephemeral detector is suspended with the rest
+        # (no baseline writes) and unregistered afterwards.
+        _ns = _ingest_namespace(pdf_path, work_dir)
+        _mgr = self.import_mgr
+        _mgr._delta_by_alias[_ns] = _DD(_mgr.conn, work_dir, _ns)
         try:
             # Suspended (0.2.15): a TemporaryDirectory must never read or
             # write the shared delta baseline — its root-relative keys
             # would collide with the real bundle's (notably top-level ".").
-            # Work-dir imports are always full imports.
-            with self.delta_mgr.suspended():
+            # Work-dir imports are always full imports. The ephemeral
+            # namespace detector suspends too: it must neither persist
+            # namespaced keys into the shared tables nor consume tombstones.
+            with self.delta_mgr.suspended(), \
+                    _mgr._delta_by_alias[_ns].suspended():
                 ids = self.import_mgr.import_bundle(
                     work_dir,
                     batch_size=batch_size,
                     mode=mode,
                     purge_deleted=purge_deleted,
+                    alias=_ns,
                     force=force,
                 )
         finally:
             self.bundle_root = old_bundle_root
             self.delta_mgr.bundle_root = old_bundle_root
             self.import_mgr.bundle_root = old_bundle_root
+            self.import_mgr._delta_by_alias.pop(_ns, None)
         logger.info("imported %d concept(s) from %s", len(ids), pdf_path)
         return ids
 

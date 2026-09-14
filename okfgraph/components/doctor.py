@@ -207,7 +207,47 @@ class DoctorManager:
             # Detach state is informational (0.2.16): never a finding, so it
             # affects neither the score nor --strict.
             "detached": detached,
+            # Per-root mirror status (0.4.0, §2.3): likewise informational.
+            "roots": self._root_status(),
         }
+
+    def _root_status(self) -> List[Dict[str, Any]]:
+        """Configured mirror trees: presence + graph-side file/concept counts."""
+        from pathlib import Path as _P
+
+        mgr = self.import_mgr
+        roots = getattr(mgr, "roots", None) or {}
+        prim = getattr(mgr, "bundle_root", None)
+        targets = [("", prim)] + list(roots.items()) if prim else list(roots.items())
+        try:
+            hash_rows = self.conn.execute(
+                "MATCH (f:FileHash) RETURN f.path AS p"
+            ).rows_as_dict().get_all() or []
+            concept_rows = self.conn.execute(
+                "MATCH (c:Concept) RETURN c.id AS id"
+            ).rows_as_dict().get_all() or []
+        except Exception:
+            hash_rows, concept_rows = [], []
+        out = []
+        for alias, rpath in targets:
+            pre = f"@{alias}/" if alias else ""
+            if alias:
+                files = sum(1 for r in hash_rows if r["p"].startswith(pre))
+                concepts = sum(1 for r in concept_rows
+                               if r["id"].startswith(pre))
+            else:
+                files = sum(1 for r in hash_rows
+                            if not r["p"].startswith("@"))
+                concepts = sum(1 for r in concept_rows
+                               if not r["id"].startswith("@"))
+            out.append({
+                "alias": alias or "<primary>",
+                "path": str(rpath),
+                "present": bool(rpath) and _P(rpath).is_dir(),
+                "tracked_files": files,
+                "concepts": concepts,
+            })
+        return out
 
     # -- fix ------------------------------------------------------------
 

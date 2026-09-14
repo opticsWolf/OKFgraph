@@ -15,9 +15,10 @@ import hashlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from okfgraph.components.import_ import is_concept_file, parse_source_file
+from okfgraph.components.roots import qualify_alias_link
 from okfgraph.components.links import (
     build_name_index,
     extract_md_links,
@@ -48,20 +49,20 @@ class DiffState:
     broken: Set[Tuple[str, str]] = field(default_factory=set)
 
 
-def state_of_dir(bundle_dir: Path) -> DiffState:
-    """Parse a bundle directory into a DiffState (no database, no import)."""
-    state = DiffState()
-    files = sorted(fp for fp in Path(bundle_dir).rglob("*") if is_concept_file(fp))
+def _parse_dir(bundle_dir: Path, alias: str = ""):
+    """Parse one tree into (concepts, raw_links, index_concepts)."""
+    concepts: Dict[str, Dict[str, Any]] = {}
     raw_links: Dict[str, Dict[str, List[str]]] = {}
     index_concepts = []
+    files = sorted(fp for fp in Path(bundle_dir).rglob("*") if is_concept_file(fp))
     for fp in files:
         try:
-            concept, body, cid = parse_source_file(fp, Path(bundle_dir))
+            concept, body, cid = parse_source_file(fp, Path(bundle_dir), alias)
         except Exception as e:
             logger.warning("diff: skipping unparsable %s: %s", fp, e)
             continue
         extra = concept.model_extra or {}
-        state.concepts[cid] = {
+        concepts[cid] = {
             "title": concept.title,
             "type": concept.type,
             "hash": content_hash(body),
@@ -77,6 +78,13 @@ def state_of_dir(bundle_dir: Path) -> DiffState:
             "md": extract_md_links(body),
             "wiki": extract_wikilinks(body),
         }
+    return concepts, raw_links, index_concepts
+
+
+def _resolve_state(concepts, raw_links, index_concepts, aliases=()) -> DiffState:
+    """Resolve parsed links against the union name index."""
+    state = DiffState()
+    state.concepts = concepts
     maps, _ = build_name_index(index_concepts)
     known = set(state.concepts)
     for cid, links in raw_links.items():
@@ -91,7 +99,7 @@ def state_of_dir(bundle_dir: Path) -> DiffState:
         for raw in links["wiki"]:
             if not raw or is_external(raw):
                 continue
-            target = resolve_wiki(raw, maps, known)
+            target = resolve_wiki(qualify_alias_link(raw, aliases), maps, known)
             if target is not None:
                 state.edges.add((cid, target))
             else:
@@ -99,11 +107,34 @@ def state_of_dir(bundle_dir: Path) -> DiffState:
     return state
 
 
+def state_of_dir(bundle_dir: Path, alias: str = "", aliases=()) -> DiffState:
+    """Parse a bundle directory into a DiffState (no database, no import)."""
+    concepts, raw_links, index_concepts = _parse_dir(bundle_dir, alias)
+    own = {alias} if alias else set()
+    return _resolve_state(concepts, raw_links, index_concepts, own | set(aliases))
+
+
 class DiffManager:
     """Diffs involving the live graph (dir-vs-dir uses ``state_of_dir``)."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, roots=None, primary=None):
         self.conn = conn
+        # Multi-root drift (§2.8): {alias: Path} + primary tree. {} means
+        # legacy single-tree (explicit dir or primary).
+        self.roots = {a: Path(p) for a, p in (roots or {}).items()}
+        self.primary = Path(primary) if primary is not None else None
+
+    def _alias_for(self, bundle_dir) -> str:
+        """Namespace alias for an explicit drift tree ("" = legacy)."""
+        from okfgraph.components.roots import resolve_alias_for_path
+        try:
+            rp = Path(bundle_dir).resolve()
+        except OSError:
+            return ""
+        for alias, rpath in self.roots.items():
+            if rp == Path(rpath):
+                return alias
+        return resolve_alias_for_path(rp, self.roots) or ""
 
     def state_of_db(self) -> DiffState:
         """Read the live graph into a DiffState."""
@@ -163,10 +194,39 @@ class DiffManager:
             "identical": identical,
         }
 
-    def diff_dirs(self, old: Path, new: Path) -> Dict[str, Any]:
+    def diff_dirs(self, old: Path, new: Path, alias: str = "") -> Dict[str, Any]:
         """Snapshot mode: two bundle directories, no database needed."""
-        return self.compare(state_of_dir(old), state_of_dir(new))
+        return self.compare(state_of_dir(old, alias), state_of_dir(new, alias))
 
-    def diff_db_dir(self, bundle_dir: Path) -> Dict[str, Any]:
-        """Drift mode: live graph (old) vs bundle directory (new)."""
-        return self.compare(self.state_of_db(), state_of_dir(bundle_dir))
+    def diff_db_dir(
+        self, bundle_dir: Optional[Path] = None
+    ) -> Dict[str, Any]:
+        """Drift mode: live graph (old) vs bundle directorie(s) (new).
+
+        Multi-root (0.4.0, Phase 2 §2.8): no explicit dir drifts against
+        EVERY configured tree (primary + named roots, alias-aware parse);
+        an explicit dir drifts against that tree alone (alias resolved).
+        """
+        old_state = self.state_of_db()
+        if bundle_dir is not None:
+            alias = ""
+            if self.roots:
+                alias = self._alias_for(bundle_dir)
+            return self.compare(old_state, state_of_dir(bundle_dir, alias))
+        if not self.roots:
+            return self.compare(old_state, state_of_dir(self.primary))
+        # Union state: parse every present tree, resolve links once
+        # against the combined index (cross-root links are not drift).
+        concepts: Dict[str, Dict[str, Any]] = {}
+        raw_links: Dict[str, Dict[str, List[str]]] = {}
+        index_concepts = []
+        for alias, root in [("", self.primary)] + list(self.roots.items()):
+            if root is None or not Path(root).is_dir():
+                continue  # unmounted ≠ drift
+            c, l, i = _parse_dir(root, alias)
+            concepts.update(c)
+            raw_links.update(l)
+            index_concepts.extend(i)
+        merged = _resolve_state(concepts, raw_links, index_concepts,
+                                set(self.roots))
+        return self.compare(old_state, merged)

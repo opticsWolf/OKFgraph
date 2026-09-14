@@ -84,7 +84,7 @@ def _seed(router, tmp):
 class TestSchemaV7:
     def test_fresh_db_is_v7_with_sourceroot(self, env):
         router = env["router"]
-        assert router.schema_mgr._get_meta("schema_version") == 7
+        assert router.schema_mgr._get_meta("schema_version") == 8
         rows = router.conn.execute(
             "CALL TABLE_INFO('SourceRoot') RETURN *"
         ).rows_as_dict().get_all()
@@ -106,7 +106,7 @@ class TestSchemaV7:
         r = OKFRouter(db_path=db_path, bundle_root=str(tmp_path),
                        embedding_dim=512, enable_chunking=False, device="cpu")
         try:
-            assert r.schema_mgr._get_meta("schema_version") == 7
+            assert r.schema_mgr._get_meta("schema_version") == 8
             rows = r.conn.execute(
                 "CALL TABLE_INFO('SourceRoot') RETURN *"
             ).rows_as_dict().get_all()
@@ -115,6 +115,52 @@ class TestSchemaV7:
             (tmp_path / "m.md").write_text(
                 "# M\n\nMigrated database body text here.\n", encoding="utf-8")
             assert r.import_mgr.import_bundle(tmp_path) == ["m"]
+        finally:
+            r.close()
+
+    def test_v7_db_gains_dir_backfill(self, tmp_path):
+        """A 0.2.16–0.3.0 DB (version 7, mirror rows without `dir`)
+        migrates to v8 with the legacy parent math backfilled."""
+        import ladybug as lb
+
+        db_path = str(tmp_path / "v7.db")
+        conn = lb.Connection(lb.Database(db_path))
+        conn.execute(
+            "CREATE NODE TABLE Meta (key STRING PRIMARY KEY, value INT64)"
+        )
+        conn.execute(
+            "CREATE (m:Meta {key: 'schema_version', value: 7})"
+        )
+        conn.execute("""
+            CREATE NODE TABLE FileHash (
+                path STRING PRIMARY KEY, hash STRING, concept_id STRING
+            )
+        """)
+        conn.execute(
+            "CREATE (f:FileHash {path: 'sub/g.md', hash: 'h', "
+            "concept_id: 'sub/g'})"
+        )
+        conn.execute("""
+            CREATE NODE TABLE DeletedPath (
+                path STRING PRIMARY KEY, detected_at INT64
+            )
+        """)
+        conn.execute(
+            "CREATE (d:DeletedPath {path: 'old.md', detected_at: 1})"
+        )
+        del conn
+        r = OKFRouter(db_path=db_path, bundle_root=str(tmp_path),
+                       embedding_dim=512, enable_chunking=False, device="cpu")
+        try:
+            assert r.schema_mgr._get_meta("schema_version") == 8
+            fh = r.conn.execute(
+                "MATCH (f:FileHash) RETURN f.path AS p, f.dir AS d"
+            ).rows_as_dict().get_all()
+            assert [(x["p"], x["d"]) for x in fh] == [("sub/g.md", "sub")]
+            dp = r.conn.execute(
+                "MATCH (d:DeletedPath) RETURN d.path AS p, d.dir AS d"
+            ).rows_as_dict().get_all()
+            assert [(x["p"], x["d"]) for x in dp] == [("old.md", ".")]
         finally:
             r.close()
 

@@ -145,6 +145,10 @@ class OKFConfig:
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     import_config: ImportConfig = field(default_factory=ImportConfig)
     bundle: str = "."
+    # Multi-root (0.4.0, Phase 2 §2.6): additional {alias: path} trees.
+    # TOML `[[roots]]` entries may use paths relative to the TOML file;
+    # CLI `--bundle-root alias=path` entries resolve against the CWD.
+    roots: Dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> List[str]:
         """Validate all configuration sections. Returns list of error messages.
@@ -244,7 +248,16 @@ class OKFConfig:
         except Exception:
             return None  # Invalid TOML — skip silently
 
-        return cls._parse_toml(data)
+        config = cls._parse_toml(data)
+        # `[[roots]]` paths are relative to the TOML file (like an Obsidian
+        # vault config); the legacy `bundle` keeps its historical CWD rule.
+        if config.roots:
+            base = toml_path.parent
+            config.roots = {
+                a: p if Path(p).is_absolute() else str(base / p)
+                for a, p in config.roots.items()
+            }
+        return config
 
     @classmethod
     def _parse_toml(cls, data: Dict) -> "OKFConfig":
@@ -285,6 +298,23 @@ class OKFConfig:
         # Bundle root
         if "bundle" in data:
             config.bundle = data["bundle"]
+
+        # Additional named roots (TOML `[[roots]]` list of {alias, path}).
+        if "roots" in data:
+            entries = data["roots"]
+            if not isinstance(entries, list):
+                raise ValueError("[[roots]] must be a list of {alias, path} tables")
+            parsed = {}
+            for e in entries:
+                if (not isinstance(e, dict) or not isinstance(e.get("alias"), str)
+                        or not isinstance(e.get("path"), str)):
+                    raise ValueError(
+                        "[[roots]] entries need string 'alias' and 'path'")
+                if e["alias"] in parsed:
+                    raise ValueError(
+                        f"duplicate [[roots]] alias {e['alias']!r}")
+                parsed[e["alias"]] = e["path"]
+            config.roots = parsed
 
         return config
 
@@ -334,6 +364,8 @@ class OKFConfig:
         if val := os.environ.get(f"{prefix}BUNDLE"):
             config.bundle = val
 
+        # No env form for roots (map shape); CLI --bundle-root / TOML cover it.
+
         return config
 
     @staticmethod
@@ -349,6 +381,20 @@ class OKFConfig:
             config.embedding.cache_dir = str(cli_args["cache_dir"])
         if "bundle" in cli_args and cli_args["bundle"]:
             config.bundle = str(cli_args["bundle"])
+        if "roots" in cli_args and cli_args["roots"]:
+            given = cli_args["roots"]
+            if isinstance(given, dict):
+                config.roots = dict(given)
+            else:
+                # List of "alias=path" (CLI --bundle-root, repeatable).
+                parsed = {}
+                for item in given:
+                    alias, sep, path = str(item).partition("=")
+                    if not sep or not alias or not path:
+                        raise ValueError(
+                            f"--bundle-root must be ALIAS=PATH, got {item!r}")
+                    parsed[alias] = path
+                config.roots = parsed
         if "omni_model_id" in cli_args and cli_args["omni_model_id"]:
             config.embedding.omni_model_id = str(cli_args["omni_model_id"])
         if "max_length" in cli_args and cli_args["max_length"]:
@@ -408,3 +454,6 @@ class OKFConfig:
         # Merge bundle root
         if overlay.bundle != OKFConfig().bundle:
             base.bundle = overlay.bundle
+        # Named roots replace wholesale (CLI list overrides TOML).
+        if overlay.roots:
+            base.roots = dict(overlay.roots)

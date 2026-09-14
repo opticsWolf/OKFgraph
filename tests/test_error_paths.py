@@ -97,7 +97,7 @@ class TestSchemaErrors:
         del conn
         r = OKFRouter(db_path=db_path, bundle_root=str(tmp_path),
                        embedding_dim=512, enable_chunking=False, device="cpu")
-        assert r.schema_mgr._get_meta("schema_version") == 7
+        assert r.schema_mgr._get_meta("schema_version") == 8
         # The migrated table supports the full lifecycle.
         (tmp_path / "m.md").write_text("# M\n\nBody.\n", encoding="utf-8")
         r.embed_engine._encode = lambda text, task="Document": [0.0] * 512
@@ -128,7 +128,7 @@ class TestSchemaErrors:
         del conn
         r = OKFRouter(db_path=db_path, bundle_root=str(tmp_path),
                        embedding_dim=512, enable_chunking=False, device="cpu")
-        assert r.schema_mgr._get_meta("schema_version") == 7
+        assert r.schema_mgr._get_meta("schema_version") == 8
         (tmp_path / "m.md").write_text("# M\n\nBody.\n", encoding="utf-8")
         r.embed_engine._encode = lambda text, task="Document": [0.0] * 512
         r.import_mgr.import_bundle(tmp_path)

@@ -117,6 +117,7 @@ class OKFRouter:
         enable_chunking: bool = True,
         wal_mode: bool = False,
         converter=None,
+        roots: Optional[Dict[str, str]] = None,
     ):
         """Open (or create) the graph database and wire up all managers.
 
@@ -194,6 +195,12 @@ class OKFRouter:
         logger.debug("write lock file: %s", lock_path)
 
         self.bundle_root = Path(bundle_root).resolve()
+        # Multi-root (0.4.0, Phase 2 §2.1): additional {alias: path} trees.
+        # The constructor bundle_root stays the primary tree (bare IDs);
+        # named roots mint `@alias/rel` IDs. Validated fail-fast: unknown
+        # shapes, bad aliases, and overlapping trees are all rejected here.
+        from okfgraph.components.roots import validate_roots as _vr
+        self.roots = _vr(roots, primary=str(self.bundle_root))
         self.embedding_dim = embedding_dim
         self.model_id = model_id
         self.omni_model_id = omni_model_id
@@ -334,7 +341,7 @@ class OKFRouter:
             self.enable_chunking, self.schema_mgr, self.delta_mgr, self.embed_engine,
             self.image_mgr, self.purge_mgr,
             self.encoder.count_tokens, self.max_length,
-            db_path=db_path,
+            db_path=db_path, roots=self.roots,
         )
         self.ingest_mgr = IngestManager(
             self._write_lock_ctx, self.bundle_root, self.device,
@@ -342,7 +349,9 @@ class OKFRouter:
         )
         self.export_mgr = ExportManager(self.conn, self.search_engine)
         self.doctor_mgr = DoctorManager(self.conn, self.import_mgr)
-        self.diff_mgr = DiffManager(self.conn)
+        self.diff_mgr = DiffManager(
+            self.conn, roots=self.roots, primary=self.bundle_root
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle

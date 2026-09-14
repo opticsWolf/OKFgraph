@@ -6,13 +6,14 @@ here. Public callers reach these via router.<method> (component bridge).
 """
 import logging
 import re
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 class SchemaManager:
     """Owns schema migrations, meta KV store, and search-index rebuild."""
 
-    SCHEMA_VERSION = 7  # bumped when the on-disk schema changes
+    SCHEMA_VERSION = 8  # bumped when the on-disk schema changes
 
     def __init__(self, conn, embedding_dim, write_lock_ctx):
         self.conn = conn
@@ -155,6 +156,53 @@ class SchemaManager:
         """)
         logger.info("Schema migrated: v6 to v7 (SourceRoot)")
 
+    def _migrate_v7_to_v8(self) -> None:
+        """v7 → v8: parent-DirHash key (``dir``) on FileHash/DeletedPath.
+
+        Multi-root (0.4.0, Phase 2 §2.2) namespaces delta keys per root
+        (``@alias/rel``), and string math on a prefixed path cannot tell
+        ``@bb/.`` apart from a legacy ``@x`` row — so writers store the
+        exact parent DirHash key and purge/orphan-scrub join on it.
+        Backfill uses legacy parent math, which is exact for every
+        pre-0.4.0 row (all single-root bare paths). Probe-never-assume:
+        TABLE_INFO decides whether each ALTER is needed.
+        """
+        for table in ("FileHash", "DeletedPath"):
+            try:
+                info = self.conn.execute(
+                    f"CALL TABLE_INFO('{table}') RETURN *"
+                ).rows_as_dict().get_all()
+            except Exception:
+                info = None
+            if info and not any(r.get("name") == "dir" for r in info):
+                self.conn.execute(f"ALTER TABLE {table} ADD dir STRING")
+        # Backfill rows that predate the column (legacy math is exact:
+        # no namespaced keys exist before 0.4.0).
+        try:
+            rows = self.conn.execute(
+                "MATCH (f:FileHash) WHERE f.dir IS NULL "
+                "RETURN f.path AS p"
+            ).rows_as_dict().get_all() or []
+            for r in rows:
+                self.conn.execute(
+                    "MATCH (f:FileHash {path: $p}) SET f.dir = $d",
+                    {"p": r["p"],
+                     "d": str(Path(r["p"]).parent)},
+                )
+            rows = self.conn.execute(
+                "MATCH (d:DeletedPath) WHERE d.dir IS NULL "
+                "RETURN d.path AS p"
+            ).rows_as_dict().get_all() or []
+            for r in rows:
+                self.conn.execute(
+                    "MATCH (d:DeletedPath {path: $p}) SET d.dir = $d",
+                    {"p": r["p"],
+                     "d": str(Path(r["p"]).parent)},
+                )
+        except Exception as exc:
+            logger.debug("v7→v8 dir backfill skipped: %s", exc)
+        logger.info("Schema migrated: v7 → v8 (mirror dir keys)")
+
 
     _MIGRATIONS = {}
     _MIGRATIONS[1] = _migrate_v1_to_v2
@@ -163,6 +211,7 @@ class SchemaManager:
     _MIGRATIONS[4] = _migrate_v4_to_v5
     _MIGRATIONS[5] = _migrate_v5_to_v6
     _MIGRATIONS[6] = _migrate_v6_to_v7
+    _MIGRATIONS[7] = _migrate_v7_to_v8
 
     def _ensure_schema(self) -> None:
         """Create schema, extensions, and indexes if they don't exist."""
@@ -293,7 +342,8 @@ class SchemaManager:
             CREATE NODE TABLE IF NOT EXISTS FileHash (
                 path STRING PRIMARY KEY,
                 hash STRING,
-                concept_id STRING
+                concept_id STRING,
+                dir STRING
             )
         """)
 
@@ -317,7 +367,8 @@ class SchemaManager:
         self.conn.execute("""
             CREATE NODE TABLE IF NOT EXISTS DeletedPath (
                 path STRING PRIMARY KEY,
-                detected_at INT64
+                detected_at INT64,
+                dir STRING
             )
         """)
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set
 
 from okfgraph.components.import_ import is_concept_file
+from okfgraph.components.roots import prefix_key, strip_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +22,13 @@ class DeltaDetector:
 
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
 
-    def __init__(self, conn, bundle_root):
+    def __init__(self, conn, bundle_root, alias: str = ""):
         self.conn = conn
         self.bundle_root = bundle_root
+        # Multi-root namespace (0.4.0, Phase 2 §2.2): every DB key this
+        # detector reads/writes is prefixed `@alias/`; "" is the legacy
+        # bare key space (primary tree + single-root graphs, no migration).
+        self.alias = alias or ""
         self._suspended = False
 
     @contextmanager
@@ -109,6 +114,9 @@ class DeltaDetector:
             return
         try:
             for path, data in hashes.items():
+                # `files` stays native (dir-relative names, compared against
+                # recursive re-walks); only the row key is namespaced.
+                path = prefix_key(self.alias, path)
                 files_str = json.dumps(data.get("files", []))
                 self.conn.execute(
                     """
@@ -139,7 +147,10 @@ class DeltaDetector:
         """
         if self._suspended:
             return list(source_files), [], {}
-        stored_dir_hashes = self._load_directory_hashes()
+        # Own namespace only, in native coordinates: another root's rows
+        # must never read as this root's state (same native rel, e.g. ".",
+        # exists under every root).
+        stored_dir_hashes = self._owned_dir_hashes()
 
         # Group files by parent directory
         dir_files: Dict[str, List[Path]] = {}
@@ -224,7 +235,23 @@ class DeltaDetector:
                 deleted_paths[:5],  # Limit output
             )
 
-        return changed, deleted_paths, current_dir_hashes
+        # DB key space: prefix directory keys and deletion paths so
+        # per-root walks merge into one changed/deleted set (§2.2).
+        namespaced_dirs = {
+            prefix_key(self.alias, k): v for k, v in current_dir_hashes.items()
+        }
+        namespaced_deleted = [prefix_key(self.alias, p) for p in deleted_paths]
+        return changed, namespaced_deleted, namespaced_dirs
+
+    def _owned_dir_hashes(self) -> Dict[str, Dict]:
+        """This detector's DirHash rows, keyed by native (unprefixed) rel."""
+        raw = self._load_directory_hashes()
+        out: Dict[str, Dict] = {}
+        for key, val in raw.items():
+            native = strip_prefix(self.alias, key)
+            if native is not None:
+                out[native] = val
+        return out
 
 
     def _store_file_hashes(self, hashes: Dict[str, str]) -> None:
@@ -239,14 +266,25 @@ class DeltaDetector:
             return
         try:
             for path, h in hashes.items():
-                # Derive concept_id from path: strip extension, normalise separators.
-                concept_id = str(Path(path).with_suffix("")).replace("\\", "/")  # remove .md / .txt suffix, use forward slashes
+                # Callers pass native rels; the DB key is namespaced. The
+                # concept_id derivation is prefix-safe: aliases contain no
+                # dots (charset) and forward slashes pass through, so the
+                # stored concept_id is the real (namespaced) concept ID —
+                # which purge and the orphan-scrub join against.
+                db_path = prefix_key(self.alias, path)
+                concept_id = str(Path(db_path).with_suffix("")).replace("\\", "/")  # remove .md / .txt suffix, use forward slashes
+                # Parent DirHash key, computed from the NATIVE rel (exact —
+                # string math on the prefixed path can't tell `@bb/.` apart
+                # from a legacy `@x` row). Purge/orphan-scrub join on this.
+                dir_key = prefix_key(
+                    self.alias, str(Path(path).parent))
                 self.conn.execute(
                     """
                     MERGE (f:FileHash {path: $p})
-                    SET f.hash = $h, f.concept_id = $c
+                    SET f.hash = $h, f.concept_id = $c, f.dir = $d
                     """,
-                    {"p": path, "h": h, "c": concept_id},
+                    {"p": db_path, "h": h, "c": concept_id,
+                     "d": dir_key},
                 )
         except Exception as exc:
             logger.debug("could not store file hashes: %s", exc)
@@ -268,9 +306,17 @@ class DeltaDetector:
         recorded = 0
         try:
             for p in paths:
+                # Parent DirHash key, exact via this detector's namespace
+                # (purge's empty-dir GC joins on it; string math on a
+                # prefixed path is ambiguous). Pre-0.4.0 rows lack d.dir.
+                native = strip_prefix(self.alias, p)
+                dir_key = prefix_key(
+                    self.alias,
+                    str(Path(native).parent) if native is not None else ".")
                 self.conn.execute(
-                    "MERGE (d:DeletedPath {path: $p}) SET d.detected_at = $t",
-                    {"p": p, "t": now},
+                    "MERGE (d:DeletedPath {path: $p}) "
+                    "SET d.detected_at = $t, d.dir = $d",
+                    {"p": p, "t": now, "d": dir_key},
                 )
                 recorded += 1
         except Exception as exc:
@@ -319,8 +365,12 @@ class DeltaDetector:
         cleared_files = 0
         cleared_dirs = 0
         try:
+            # f.dir is the exact parent DirHash key (schema v8; backfilled
+            # on upgrade, so pre-0.4.0 rows read it too). Missing value
+            # (hand-written rows) falls back to legacy parent math.
             rows = self.conn.execute(
-                "MATCH (f:FileHash) RETURN f.path AS p, f.concept_id AS c"
+                "MATCH (f:FileHash) "
+                "RETURN f.path AS p, f.concept_id AS c, f.dir AS d"
             ).rows_as_dict().get_all() or []
             live = {
                 r["cid"]
@@ -353,7 +403,9 @@ class DeltaDetector:
                     "MATCH (f:FileHash {path: $p}) DELETE f", {"p": r["p"]}
                 )
                 cleared_files += 1
-                dir_keys.add(self._parent_dir_key(r["p"]))
+                # Stored dir key when present (multi-root exactness),
+                # else the legacy parent derivation.
+                dir_keys.add(r.get("d") or self._parent_dir_key(r["p"]))
             for d in dir_keys:
                 self.conn.execute(
                     "MATCH (dh:DirHash {path: $d}) DELETE dh", {"d": d}

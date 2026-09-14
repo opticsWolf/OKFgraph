@@ -100,7 +100,8 @@ def test_encode_routes_to_open_files(tmp_path, monkeypatch):
         router.close()
 
     assert calls["open_files"] == [
-        (str(onnx), str(tok), {"truncate_dim": 512, "device": "cpu"})
+        (str(onnx), str(tok), {"truncate_dim": 512, "device": "cpu",
+                               "max_length": 8192})
     ]
     assert calls["tok_files"] == [str(tok)]
     assert calls["encode"] == 1

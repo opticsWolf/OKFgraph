@@ -17,7 +17,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from okfgraph.components.import_ import is_concept_file, parse_source_file
+from okfgraph.components.import_ import (
+    in_skipped_dir,
+    is_concept_file,
+    parse_source_file,
+)
 from okfgraph.components.roots import qualify_alias_link
 from okfgraph.components.links import (
     build_name_index,
@@ -54,7 +58,8 @@ def _parse_dir(bundle_dir: Path, alias: str = ""):
     concepts: Dict[str, Dict[str, Any]] = {}
     raw_links: Dict[str, Dict[str, List[str]]] = {}
     index_concepts = []
-    files = sorted(fp for fp in Path(bundle_dir).rglob("*") if is_concept_file(fp))
+    files = sorted(fp for fp in Path(bundle_dir).rglob("*")
+                    if is_concept_file(fp) and not in_skipped_dir(fp))
     for fp in files:
         try:
             concept, body, cid = parse_source_file(fp, Path(bundle_dir), alias)

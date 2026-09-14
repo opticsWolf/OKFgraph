@@ -265,6 +265,21 @@ class TestLiveness:
         finally:
             r.close()
 
+    def test_doctor_reports_roots(self, tmp_path):
+        prim = _mkroot(tmp_path, "prim", {})
+        a = _mkroot(tmp_path, "a", {"one.md": _doc("One")})
+        r = _mrouter(tmp_path, prim, {"aa": str(a), "bb": str(tmp_path / "gone")})
+        try:
+            r.import_mgr.import_bundle()
+            roots = {x["alias"]: x for x in r.diagnose()["roots"]}
+            assert roots["aa"]["present"] is True
+            assert roots["aa"]["concepts"] == 1
+            assert roots["aa"]["tracked_files"] == 1
+            assert roots["bb"]["present"] is False
+        finally:
+            r.close()
+
+
 class TestCrossRootLinks:
     def _linked(self, tmp_path):
         prim = _mkroot(tmp_path, "prim", {})
@@ -308,6 +323,30 @@ class TestCrossRootLinks:
             assert broken == ["AA/TARGET", "target"]
         finally:
             r.close()
+
+class TestSkippedDirs:
+    def test_tool_dirs_invisible(self, tmp_path):
+        from okfgraph.components.diff import state_of_dir
+        from okfgraph.components.import_ import in_skipped_dir
+        from okfgraph.components.lint import lint_bundle
+
+        root = _mkroot(tmp_path, "r", {
+            "docs/keep.md": _doc("Keep"),
+            ".venv/pkg/LICENSE.md": _doc("Venv"),
+            "target/build/y.md": _doc("Build"),
+            "node_modules/dep/z.md": _doc("Dep"),
+            ".hidden/w.md": _doc("Hidden"),
+            "sub/normal.md": _doc("Normal"),
+        })
+        assert in_skipped_dir(root / ".venv" / "pkg" / "LICENSE.md")
+        assert in_skipped_dir(root / "target" / "build" / "y.md")
+        assert not in_skipped_dir(root / "docs" / "keep.md")
+        assert not in_skipped_dir(root / "sub" / "normal.md")
+        state = state_of_dir(root)
+        assert sorted(state.concepts) == ["docs/keep", "sub/normal"]
+        report = lint_bundle(root)
+        assert report["files"] == 2
+
 
 class TestSurfaces:
     def test_cli_bundle_root_flag(self):
@@ -439,20 +478,6 @@ class TestSurfaces:
             result = r.diff_db_dir(None)
             assert result["identical"] is False
             assert result["changed"] == ["@aa/q"]
-        finally:
-            r.close()
-
-    def test_doctor_reports_roots(self, tmp_path):
-        prim = _mkroot(tmp_path, "prim", {})
-        a = _mkroot(tmp_path, "a", {"one.md": _doc("One")})
-        r = _mrouter(tmp_path, prim, {"aa": str(a), "bb": str(tmp_path / "gone")})
-        try:
-            r.import_mgr.import_bundle()
-            roots = {x["alias"]: x for x in r.diagnose()["roots"]}
-            assert roots["aa"]["present"] is True
-            assert roots["aa"]["concepts"] == 1
-            assert roots["aa"]["tracked_files"] == 1
-            assert roots["bb"]["present"] is False
         finally:
             r.close()
 

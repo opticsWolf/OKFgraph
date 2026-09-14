@@ -46,6 +46,24 @@ RESERVED_FILENAMES = frozenset({"index.md"})
 #: Extensions import (and diff/delta/lint) treat as concept sources.
 SOURCE_EXTS = (".md", ".markdown", ".txt")
 
+#: Directory names never walked for concept sources (0.4.0): tool output,
+#: caches, and dependency trees are graph noise — and can be enormous
+#: (.venv LICENSE files, target/ build products). Any dot-dir is skipped
+#: (.git, .obsidian, .pytest_cache, ...); named non-hidden tool dirs join
+#: them. Shared by import, detach-verify, diff, lint, and delta hashing so
+#: all agree on the bundle's file set.
+SKIP_DIR_NAMES = frozenset({
+    "target", "node_modules", "__pycache__", "venv", "dist", "build",
+})
+
+
+def in_skipped_dir(fp: Path) -> bool:
+    """True when any path component is a skipped directory."""
+    return any(
+        part.startswith(".") or part in SKIP_DIR_NAMES
+        for part in fp.parts
+    )
+
 
 def is_concept_file(fp: Path) -> bool:
     """True when ``fp`` is a bulk-importable concept file.
@@ -588,6 +606,7 @@ class ImportManager:
         candidates = sorted(
             fp for fp in root.rglob("*")
             if fp.is_file() and fp.suffix.lower() in SOURCE_EXTS
+            and not in_skipped_dir(fp)
         )
         source_files = [fp for fp in candidates if is_concept_file(fp)]
         if len(source_files) != len(candidates):
@@ -1492,6 +1511,7 @@ class ImportManager:
         candidates = sorted(
             fp for fp in root.rglob("*")
             if fp.is_file() and fp.suffix.lower() in SOURCE_EXTS
+            and not in_skipped_dir(fp)
         )
         concept_files = [fp for fp in candidates if is_concept_file(fp)]
         report["file_count"] = report.get("file_count", 0) + len(concept_files)
@@ -1536,6 +1556,8 @@ class ImportManager:
                 )
         for fp in sorted(root.rglob("*")):
             if not fp.is_file():
+                continue
+            if in_skipped_dir(fp):
                 continue
             if self._is_db_file(fp):
                 continue

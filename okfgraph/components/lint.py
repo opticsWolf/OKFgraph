@@ -21,7 +21,11 @@ from typing import Any, Dict, List, Tuple
 
 import frontmatter
 
-from okfgraph.components.import_ import is_concept_file, parse_source_file
+from okfgraph.components.import_ import (
+    in_skipped_dir,
+    is_concept_file,
+    parse_source_file,
+)
 from okfgraph.components.links import (
     build_name_index,
     extract_md_links,
@@ -43,7 +47,8 @@ def _err(file: str, rule: str, message: str, **extra: Any) -> Dict[str, Any]:
 def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
     """Validate a bundle directory without touching any database or model."""
     root = Path(bundle_dir)
-    files = sorted(fp for fp in root.rglob("*") if is_concept_file(fp))
+    files = sorted(fp for fp in root.rglob("*")
+                    if is_concept_file(fp) and not in_skipped_dir(fp))
 
     errors: List[Dict[str, Any]] = []
     warnings: List[Dict[str, Any]] = []

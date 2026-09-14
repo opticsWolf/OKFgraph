@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set
 
-from okfgraph.components.import_ import is_concept_file
+from okfgraph.components.import_ import in_skipped_dir, is_concept_file
 from okfgraph.components.roots import prefix_key, strip_prefix
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class DeltaDetector:
         """
         file_hashes = []
         for fp in sorted(dir_path.rglob("*")):
-            if is_concept_file(fp):
+            if is_concept_file(fp) and not in_skipped_dir(fp):
                 rel = str(fp.relative_to(dir_path))
                 fh = self._file_hash(fp)
                 file_hashes.append((rel, fh))
@@ -78,7 +78,7 @@ class DeltaDetector:
         file_hashes = []
         file_paths = []
         for fp in sorted(dir_path.rglob("*")):
-            if is_concept_file(fp):
+            if is_concept_file(fp) and not in_skipped_dir(fp):
                 rel = str(fp.relative_to(dir_path))
                 fh = self._file_hash(fp)
                 file_hashes.append((rel, fh))
@@ -213,7 +213,7 @@ class DeltaDetector:
             current_names = {
                 str(fp.relative_to(dir_path))
                 for fp in sorted(dir_path.rglob("*"))
-                if is_concept_file(fp)
+                if is_concept_file(fp) and not in_skipped_dir(fp)
             }
             for rel_file in sorted(stored_files - current_names):
                 deleted_paths.append(str(Path(dir_rel) / rel_file))

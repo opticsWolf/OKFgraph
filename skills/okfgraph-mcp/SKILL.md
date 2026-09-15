@@ -37,6 +37,9 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 - Inference needs no flags: `--device auto` (CUDA when present, else CPU)
   with `--precision auto` following it (CUDA→FP16, CPU→FP32, pinned per
   graph). Same defaults on CLI, MCP, TOML, router.
+- `--model ID` (text-small default, text-nano) switches the embedding
+  model; the graph pins it fail-closed, so a switch forces a fresh
+  reimport — never mix models in one graph.
 - Default is **512 on every surface** (router, CLI `--dim`, MCP
   `--embedding-dim`, `okfgraph.toml`) — unified, no per-surface surprise.
 - Set freely at creation: `--embedding-dim` accepts the Matryoshka ladder

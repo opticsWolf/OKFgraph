@@ -4,6 +4,25 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.6.0] — 2026-09-15
+
+### Added (model registry: text-small + text-nano)
+- `embedding.model_id` (default `jinaai/jina-embeddings-v5-text-small-retrieval`,
+  frozen) on every surface: TOML, `OKFGRAPH_MODEL`, `--model` (CLI + MCP),
+  router `model_id=`. The default never moves — different weights live in
+  different vector spaces, so a model switch forces a fresh reimport.
+- Fail-closed model pin (`MetaText.embedding_model`, same contract as the
+  precision pin): first open records, later opens refuse on mismatch,
+  empty graphs re-pin silently. The space fork is impossible to do
+  accidentally — including via explicit local files (path pinned as id).
+- `precision` accepts `int8` (explicit opt-in only; `auto` never selects
+  it): nano probe kept rank @0.99980 with zero top-5 flips at 247MB.
+  Unlisted (model, precision) pairs fall back to fp32 in embroider.
+- Floor `embroider>=0.2.0` (registry + per-model ladders/ceilings).
+- Nano is the supported CPU-side choice (5-7x faster encodes than small),
+  not the default: a device-dependent default would fork vector spaces
+  across machines. Small stays the default everywhere.
+
 ## [0.5.1] — 2026-09-14
 
 ### Fixed (chunk cap now enforced, in tokens)

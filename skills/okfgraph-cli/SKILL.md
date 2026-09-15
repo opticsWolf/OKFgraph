@@ -31,6 +31,11 @@ Same graph as the MCP skill, through `okf` shell commands. Five verbs:
   CPU vectors; `--cpu-arena` trades ~8x RSS for ~1.4x encode speed.
   Chunks are capped at 512 tokens (`chunk_size`); overlap tails never exceed
   the receiving chunk (`chunk_overlap`, default 40 words).
+- `--model ID` selects the text embedding model (registry: text-small
+  default, text-nano; `--precision int8` needs a measured artifact).
+  The default is frozen — switching models pins fail-closed and forces a
+  fresh reimport (different weights = different space). Nano is the
+  supported CPU-side choice (5-7x faster), never the default.
 - `--bundle-root ALIAS=PATH` (repeatable, combines with `--bundle`):
   additional named roots mint `@alias/rel` IDs (TOML `[[roots]]` equivalent).
   Absent roots are skipped with a warning (unmounted ≠ deleted); `--purge`

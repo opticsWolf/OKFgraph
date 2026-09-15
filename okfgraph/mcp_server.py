@@ -51,6 +51,7 @@ def make_lifespan(
     roots: Optional[Dict[str, str]] = None,
     precision: str = "auto",
     cpu_arena: bool = False,
+    model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
 ):
     """Factory that returns a lifespan async-context-manager for MCPServer."""
 
@@ -61,6 +62,7 @@ def make_lifespan(
         router = OKFRouter(
             db_path=db_path,
             bundle_root=root,
+            model_id=model_id,
             device=device,
             embedding_dim=embedding_dim,
             max_length=max_length,
@@ -70,8 +72,9 @@ def make_lifespan(
             cpu_arena=cpu_arena,
         )
         logger.info(
-            "OKFgraph MCP server started: db=%s device=%s precision=%s",
+            "OKFgraph MCP server started: db=%s model=%s device=%s precision=%s",
             db_path,
+            model_id,
             device,
             precision,
         )
@@ -106,6 +109,7 @@ def create_mcp_server(
     roots: Optional[Dict[str, str]] = None,
     precision: str = "auto",
     cpu_arena: bool = False,
+    model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
 ) -> MCPServer:
     """Create an MCP server instance connected to an OKFgraph database.
 
@@ -119,6 +123,7 @@ def create_mcp_server(
         roots: Optional additional {alias: path} bundle roots (§2.6).
         precision: Weight precision ("auto" follows device).
         cpu_arena: Enable the CPU arena allocator (default off).
+        model_id: Text embedding model id (registry; switch forces reimport).
 
     Returns:
         Configured MCPServer server instance.
@@ -133,6 +138,7 @@ def create_mcp_server(
         roots=roots,
         precision=precision,
         cpu_arena=cpu_arena,
+        model_id=model_id,
     )
 
     mcp = MCPServer(
@@ -441,11 +447,17 @@ def main():
         help="Device for ONNX inference (default: auto).",
     )
     parser.add_argument(
+        "--model",
+        type=str,
+        default="jinaai/jina-embeddings-v5-text-small-retrieval",
+        help="Text embedding model id (registry: text-small default, text-nano). Switching models forces a fresh reimport.",
+    )
+    parser.add_argument(
         "--precision",
         type=str,
         default="auto",
-        choices=["auto", "fp32", "fp16"],
-        help="Weight precision: auto follows device (default: auto).",
+        choices=["auto", "fp32", "fp16", "int8"],
+        help="Weight precision: auto follows device (default: auto; int8 explicit only).",
     )
     parser.add_argument(
         "--cpu-arena",
@@ -487,8 +499,9 @@ def main():
     )
 
     logger.info(
-        "starting OKFgraph MCP server: db=%s device=%s precision=%s",
+        "starting OKFgraph MCP server: db=%s model=%s device=%s precision=%s",
         args.db_path,
+        args.model,
         args.device,
         args.precision,
     )
@@ -512,6 +525,7 @@ def main():
         roots=roots,
         precision=args.precision,
         cpu_arena=args.cpu_arena,
+        model_id=args.model,
     )
 
     # Run with stdio transport (default for MCP servers)

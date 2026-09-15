@@ -20,8 +20,9 @@ Example TOML (``okfgraph.toml``):
     wal_mode = true
 
     [embedding]
+    model_id = "jinaai/jina-embeddings-v5-text-small-retrieval"  # text model (registry id; switch forces reimport)
     device = "auto"  # auto | cpu | cuda (default: auto — CUDA when present)
-    precision = "auto"  # auto | fp32 | fp16 (default: auto — follows device)
+    precision = "auto"  # auto | fp32 | fp16 | int8 (default: auto — follows device; int8 explicit only)
     cpu_arena = false  # CPU arena allocator (default off: 8x less RAM, ~1.4x time)
     cache_dir = "/mnt/models"
     omni_model_id = "jinaai/jina-embeddings-v5-omni-small-retrieval"
@@ -74,9 +75,18 @@ class DatabaseConfig:
         return errors
 
 
+#: Default text embedding model. Adding registry entries never moves this:
+#: different weights = different vector space, so the default is frozen
+#: (a model switch forces a full reimport, enforced by the model pin).
+DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v5-text-small-retrieval"
+
+
 @dataclass
+
+
 class EmbeddingConfig:
     """Embedding model settings."""
+    model_id: str = DEFAULT_MODEL_ID
     device: str = "auto"
     precision: str = "auto"
     cpu_arena: bool = False
@@ -87,12 +97,21 @@ class EmbeddingConfig:
     def validate(self) -> List[str]:
         """Validate embedding settings. Returns list of error messages."""
         errors = []
+        if not self.model_id or "/" not in self.model_id:
+            errors.append(
+                f"embedding.model_id must be 'owner/name', got '{self.model_id}'"
+            )
+        elif any(c in self.model_id for c in ("'", '"', "\\", ";")):
+            # The model pin stores the id in a Cypher string literal.
+            errors.append(
+                f"embedding.model_id must not contain quotes/semicolons, got '{self.model_id}'"
+            )
         valid_devices = ("cpu", "cuda", "mps", "auto")
         if self.device not in valid_devices:
             errors.append(
                 f"embedding.device must be one of {valid_devices}, got '{self.device}'"
             )
-        valid_precisions = ("auto", "fp32", "fp16")
+        valid_precisions = ("auto", "fp32", "fp16", "int8")
         if self.precision not in valid_precisions:
             errors.append(
                 f"embedding.precision must be one of {valid_precisions}, got '{self.precision}'"
@@ -283,6 +302,7 @@ class OKFConfig:
         # Embedding section
         if "embedding" in data:
             emb = data["embedding"]
+            config.embedding.model_id = emb.get("model_id", config.embedding.model_id)
             config.embedding.device = emb.get("device", config.embedding.device)
             config.embedding.precision = emb.get("precision", config.embedding.precision)
             config.embedding.cpu_arena = bool(emb.get("cpu_arena", config.embedding.cpu_arena))
@@ -344,6 +364,8 @@ class OKFConfig:
             config.database.wal_mode = val.lower() in ("1", "true", "yes")
 
         # Embedding settings
+        if val := os.environ.get(f"{prefix}MODEL"):
+            config.embedding.model_id = val
         if val := os.environ.get(f"{prefix}DEVICE"):
             config.embedding.device = val
         if val := os.environ.get(f"{prefix}PRECISION"):
@@ -390,6 +412,8 @@ class OKFConfig:
             config.database.path = str(cli_args["db"])
         if "dim" in cli_args and cli_args["dim"]:
             config.database.dim = int(cli_args["dim"])
+        if "model" in cli_args and cli_args["model"]:
+            config.embedding.model_id = str(cli_args["model"])
         if "device" in cli_args and cli_args["device"]:
             config.embedding.device = str(cli_args["device"])
         if "precision" in cli_args and cli_args["precision"]:
@@ -451,6 +475,8 @@ class OKFConfig:
             base.database.wal_mode = overlay.database.wal_mode
 
         # Merge embedding settings
+        if overlay.embedding.model_id != EmbeddingConfig().model_id:
+            base.embedding.model_id = overlay.embedding.model_id
         if overlay.embedding.device != EmbeddingConfig().device:
             base.embedding.device = overlay.embedding.device
         if overlay.embedding.precision != EmbeddingConfig().precision:

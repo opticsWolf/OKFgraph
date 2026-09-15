@@ -27,9 +27,12 @@ def test_embedding_defaults_follow_device():
 
 
 def test_embedding_rejects_bad_precision():
-    cfg = EmbeddingConfig(precision="int8")
+    # int8 graduated to explicit opt-in with the 0.6.0 model registry
+    # (nano probe: rank kept); int4 stays rejected.
+    cfg = EmbeddingConfig(precision="int4")
     errors = cfg.validate()
     assert any("embedding.precision" in e for e in errors)
+    assert EmbeddingConfig(precision="int8").validate() == []
 
 
 def test_toml_parses_precision_and_arena(tmp_path):
@@ -67,7 +70,7 @@ def test_router_rejects_bad_precision_cold(tmp_path):
         OKFRouter(
             db_path=str(tmp_path / "p.db"),
             bundle_root=str(tmp_path),
-            precision="int8",
+            precision="int4",
         )
 
 

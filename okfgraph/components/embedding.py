@@ -103,6 +103,11 @@ def _cap_chunk_budget(
 #: Stored as INT64 (16/32) — the Meta value column is integer-typed.
 PRECISION_META_KEY = "embedding_precision"
 _PRECISION_CODE = {"fp16": 16, "fp32": 32}
+#: Meta key pinning the text model a graph was imported with. Model ids
+#: are strings, so this lives in its own MetaText table (Meta.value is
+#: INT64). Same fail-closed adoption semantics as the precision pin:
+#: first open records, later opens refuse on mismatch, empty graphs re-pin.
+MODEL_META_KEY = "embedding_model"
 
 
 def enforce_precision_pin(conn, precision: str) -> str:
@@ -157,6 +162,57 @@ def enforce_precision_pin(conn, precision: str) -> str:
     )
     logger.debug("graph pinned to precision=%s", precision)
     return precision
+
+
+def enforce_model_pin(conn, model_id: str) -> str:
+    """Fail-closed model pin for a graph (0.6.0).
+
+    Different weights = different vector space: a model switch is
+    undetectable to delta hashes and silently corrupts retrieval, so the
+    first session open records the model id in MetaText and every later
+    open refuses on mismatch. Empty graphs re-pin silently (adoption,
+    no migration) — the same contract as `enforce_precision_pin`.
+
+    Returns the pinned model id. Raises RuntimeError on mismatch.
+    """
+    conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS MetaText (key STRING PRIMARY KEY, value STRING)"
+    )
+    try:
+        rows = conn.execute(
+            f"MATCH (m:MetaText {{key: '{MODEL_META_KEY}'}}) RETURN m.value AS v"
+        ).rows_as_dict().get_all()
+    except Exception:
+        rows = []
+    if rows:
+        pinned = rows[0]["v"]
+        if pinned == model_id:
+            return pinned
+        try:
+            n = conn.execute(
+                "MATCH (c:Concept) RETURN c.id AS cid LIMIT 1"
+            ).rows_as_dict().get_all()
+        except Exception:
+            n = []
+        if not n:
+            conn.execute(
+                f"MERGE (m:MetaText {{key: '{MODEL_META_KEY}'}}) "
+                f"SET m.value = '{model_id}'"
+            )
+            logger.info("empty graph re-pinned to model=%s", model_id)
+            return model_id
+        raise RuntimeError(
+            f"graph is pinned to model={pinned} but the session opened "
+            f"with model={model_id}: different weights live in different "
+            f"vector spaces and must never mix. Reimport into a fresh "
+            f"database with model={model_id}, or reopen with model={pinned}."
+        )
+    conn.execute(
+        f"MERGE (m:MetaText {{key: '{MODEL_META_KEY}'}}) "
+        f"SET m.value = '{model_id}'"
+    )
+    logger.debug("graph pinned to model=%s", model_id)
+    return model_id
 logger = logging.getLogger(__name__)
 
 _ORT_MODULE_NAMES = ("onnxruntime", "onnxruntime-gpu")

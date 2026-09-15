@@ -244,9 +244,15 @@ class OKFRouter:
             raise ValueError(
                 f"device must be 'auto', 'cpu' or 'cuda', got '{device}'"
             )
-        if precision not in ("auto", "fp32", "fp16"):
+        if precision not in ("auto", "fp32", "fp16", "int8"):
             raise ValueError(
-                f"precision must be 'auto', 'fp32' or 'fp16', got '{precision}'"
+                f"precision must be 'auto', 'fp32', 'fp16' or 'int8', got '{precision}'"
+            )
+        if not model_id or "/" not in model_id or any(
+            c in model_id for c in ("'", '"', "\\", ";")
+        ):
+            raise ValueError(
+                f"model_id must be 'owner/name' without quotes/semicolons, got '{model_id}'"
             )
         if precision == "fp16" and rust_device == "cpu":
             logger.warning(
@@ -278,8 +284,16 @@ class OKFRouter:
             # Precision pin (fail-closed): the first open records the
             # landed precision; later opens refuse on mismatch so FP16
             # and FP32 vectors never share one graph.
-            from okfgraph.components.embedding import enforce_precision_pin
+            from okfgraph.components.embedding import (
+                enforce_model_pin,
+                enforce_precision_pin,
+            )
             pinned = enforce_precision_pin(self.conn, encoder.precision)
+            # Model pin (fail-closed, 0.6.0): different weights live in
+            # different spaces — a model switch forces a fresh reimport.
+            # Explicit local files bypass the registry (model_id is the
+            # file path, unique per file set, so pinning still separates).
+            enforce_model_pin(self.conn, model_id)
             logger.info(
                 "text embeddings: %s dim=%d cuda=%s precision=%s",
                 model_id, self.embedding_dim, encoder.used_cuda, pinned,

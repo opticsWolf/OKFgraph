@@ -1,4 +1,4 @@
-# OKFgraph 0.5.1
+# OKFgraph 0.6.0
 
 [![PyPI](https://img.shields.io/pypi/v/okfgraph)](https://pypi.org/project/okfgraph/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
@@ -27,7 +27,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
 | Category | Features |
 |---|---|
-| **Embeddings** | Jina v5 (`jina-embeddings-v5-text-small-retrieval`) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (32–1024, default 512); device `auto` (CUDA→FP16 mirror weights, CPU→FP32, `--precision` pins); CPU arena off by default (`--cpu-arena`); token ceiling configurable (`--max-length`, default 8192, up to 32768 — the Qwen3 position limit); precision pinned per graph, never mixed; omni model (`…-omni-small-retrieval`) lazy-loaded for images only |
+| **Embeddings** | Jina v5 (default `…-text-small-retrieval`, `--model` selects registry: text-nano) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (default 512, per-model ladder); device `auto` (CUDA→FP16 mirror weights, CPU→FP32, `--precision` pins incl. explicit `int8`); CPU arena off by default (`--cpu-arena`); token ceiling configurable (`--max-length`); model + precision pinned per graph, never mixed; omni model (`…-omni-small-retrieval`) lazy-loaded for images only |
 | **Search** | Hybrid RRF fusion (vector + FTS) at concept and chunk granularity; `rank=none\|hub\|ppr` — including **PPR**: lexical seeds → exact Personalized PageRank, zero model load, deterministic |
 | **Read** | Body / chunks / rebuilt document / graph context, with optional **token budgets** (`max_tokens`): self first, then PPR-ranked neighbours, index-first for context |
 | **Storage** | LadybugDB `==0.20.3` (pinned — newer 0.20.x segfaults index builds): graph + vector + FTS in one file |
@@ -63,7 +63,7 @@ uv sync --extra omni    # sentence-transformers + Pillow (image embeddings)
 uv sync --extra dev     # pytest
 ```
 
-Core dependencies are deliberately few: `ladybug==0.20.3`, `embroider>=0.1,<0.2`
+Core dependencies are deliberately few: `ladybug==0.20.3`, `embroider>=0.2,<0.3`
 (the shared embedding engine — github.com/opticsWolf/embroider, also used by
 bobine), `onnxruntime==1.29.0` (one pinned ORT binary shared by bobine +
 embroider; `ORT_DYLIB_PATH`-overridable), `mordant`, `mcp>=2.0`, `pydantic`,

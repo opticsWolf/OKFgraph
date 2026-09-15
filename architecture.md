@@ -1,6 +1,6 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.2 (as-built for okfgraph 0.5.x — §16 multi-root + §16.1 import scope/`--primary`, §4a.2 token cap + bounded tail, §6 inference surface; supersedes the v5.x design lineage as the authoritative surface)  
+**Version**: 6.3 (as-built for okfgraph 0.6.x — §6.1 model registry + model pin; §16 multi-root + §16.1 import scope/`--primary`, §4a.2 token cap + bounded tail, §6 inference surface; supersedes the v5.x design lineage as the authoritative surface)  
 **Based on**: Architecture v5.9 (Core Gaps closure, 2026-07-09)  
 **Verified against**: LadybugDB v0.20.3, Python 3.11–3.13, `embroider 0.1.3`, `bobine 0.5.11`, `onnxruntime==1.29.0`
 
@@ -1285,7 +1285,8 @@ mcp.run(transport="stdio")
 | **Air-gapped** | `model_path` + `tokenizer_path` pin both files (zero network, fail-fast on missing) |
 | **Acquisition** | HF hub into the model cache, or explicit paths — identical vectors, pinned by test |
 | **GPU Support** | `--device auto` (default; CUDA when present, else CPU) against the single pinned ORT; CUDA is opportunistic, CPU always works |
-| **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`; explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
+| **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`/`int8` (int8 explicit-only, needs a measured artifact); explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
+| **Model registry (0.6.0)** | `embedding.model_id` on every surface (default text-small, frozen); registry resolves (model, precision) → artifact with per-model ladder/ceiling (nano: 768 dim max, 8192 ctx); graph pins the id in MetaText fail-closed (mismatch refuses, empty re-pins) — a model switch forces a fresh reimport, never a silent space fork |
 | **CPU Arena** | Off by default (`--cpu-arena` opts in): 8x lower peak RSS for ~1.4x encode time (measured) |
 
 ### Omni (Multimodal) Model

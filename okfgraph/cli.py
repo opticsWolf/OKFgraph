@@ -131,13 +131,14 @@ def _add_global(parser, mark=True):
 
     _add("--db", default=None, help="Database path (default: okfgraph.db, or from okfgraph.toml)")
     _add("--bundle", default=None, help="Bundle root directory (default: ., or from okfgraph.toml). Pins single-tree import; use --primary to set the primary without pinning.")
+    _add("--model", default=None, help="Text embedding model id (registry: text-small default, text-nano; default: text-small, or from okfgraph.toml). Switching models forces a fresh reimport (fail-closed model pin).")
     _add("--primary", default=None, help="Primary root for multi-root scope (bare IDs) without pinning: 'import --all' imports every configured root. Overlaps with --bundle (error under import --all); TOML 'bundle' equivalent.")
     _add("--bundle-root", action="append", default=None, metavar="ALIAS=PATH", help="Additional named bundle root (repeatable; combines with --bundle). Named roots mint @alias/rel IDs.")
     _add("--dim", type=int, default=None, help="Embedding dimension (Matryoshka ladder 32/64/128/256/512/768/1024; default: 512, or from okfgraph.toml)")
     _add("--max-length", type=int, default=None, help="Token truncation ceiling 1..=32768 (default: 8192, or from okfgraph.toml). Raising it changes long-doc vectors — reimport fully after changing.")
     _add("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface, or from okfgraph.toml)")
     _add("--device", default=None, choices=["auto", "cpu", "cuda"], help="Inference device: auto (CUDA when present) / cpu / cuda (default: auto, or from okfgraph.toml)")
-    _add("--precision", default=None, choices=["auto", "fp32", "fp16"], help="Weight precision: auto follows device (CUDA->FP16, CPU->FP32); fp16 on CPU is >40x slower (default: auto, or from okfgraph.toml)")
+    _add("--precision", default=None, choices=["auto", "fp32", "fp16", "int8"], help="Weight precision: auto follows device (CUDA->FP16, CPU->FP32); fp16 on CPU is >40x slower; int8 explicit only, needs a measured artifact (default: auto, or from okfgraph.toml)")
     _add("--cpu-arena", action="store_true", help="Enable the CPU arena allocator (default off: ~8x lower peak RSS for ~1.4x encode time)")
     _add("--omni-model-id", default=None, help="Multimodal model ID for image embeddings (default from okfgraph.toml)")
     _add("--chunk-size", type=int, default=None, help="Chunk size in words for overlap (default: 512, or from okfgraph.toml)")
@@ -174,7 +175,7 @@ def _router(args):
     """
     # Build CLI args dict (only non-None values override config)
     cli_dict = {}
-    for attr in ("db", "bundle", "primary", "dim", "max_length", "cache_dir", "device",
+    for attr in ("db", "bundle", "primary", "model", "dim", "max_length", "cache_dir", "device",
                  "precision", "cpu_arena",
                  "omni_model_id", "chunk_size", "chunk_overlap",
                  "no_chunking", "mode", "batch_size",
@@ -211,6 +212,7 @@ def _router(args):
         roots=config.roots or None,
         embedding_dim=config.database.dim,
         max_length=config.embedding.max_length,
+        model_id=config.embedding.model_id,
         omni_model_id=config.embedding.omni_model_id,
         cache_dir=config.embedding.cache_dir,
         device=config.embedding.device,

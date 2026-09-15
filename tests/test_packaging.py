@@ -18,8 +18,8 @@ def test_embedding_dep_is_external_pin():
 
     Since 0.2.12 the embedding engine lives in the separate `embroider`
     repo (github.com/opticsWolf/embroider, wheels on PyPI, floor-pinned
-    <0.2 to keep the Jina contract and wheel matrix in lock-step with
-    okfgraph 0.2.x).
+    <0.3 to keep the model registry and wheel matrix in lock-step with
+    okfgraph 0.6.x).
     """
     raw = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "tool.uv.sources" not in raw, "embroider path dep must stay gone"

@@ -354,8 +354,9 @@ Check them before any commercial use.
   embed anything without one, so using okfgraph commercially requires a
   commercial licence from Jina AI (see the model cards).
 - **PDF tables:** bobine fetches SLANet-plus from a repository whose card
-  declares AGPL-3.0. Review that before redistributing a service built on
-  `--extra pdf`.
+  declares AGPL-3.0. Accepted as a runtime fetch (2026-10-01): weights are
+  downloaded, never redistributed. Review before redistributing a service
+  built on `--extra pdf`.
 - Licences are as declared in each repository's model card when checked
   (2026-09-27). The model cards are authoritative and can change. This
   table is a pointer, not legal advice.

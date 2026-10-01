@@ -89,7 +89,7 @@ Fixes D5. All three packages already load ORT dynamically, so the pin only needs
 - `okf doctor` (and bobine's startup log): report the resolved `ORT_DYLIB_PATH`, the ORT version and whether both `onnxruntime` and `onnxruntime-gpu` distributions are installed (hard warning). Use embroider `diag::OrtReport` where available (see Phase 4).
 - DoD: clean-venv installs of `okfgraph[cpu,pdf]` and `okfgraph[gpu,pdf]` each end up with exactly one ORT distribution; `--device cuda` on the GPU install reports `used_cuda=True`.
 
-## Phase 4 — embroider plumbing hardening (~1–2d)
+## Phase 4 — embroider plumbing hardening (~1–2d) ✅ DONE
 
 (Was plan-embroider Phase E1; driven by consumer pain, not speculation.)
 

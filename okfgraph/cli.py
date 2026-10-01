@@ -140,7 +140,6 @@ def _add_global(parser, mark=True):
     _add("--device", default=None, choices=["auto", "cpu", "cuda"], help="Inference device: auto (CUDA when present) / cpu / cuda (default: auto, or from okfgraph.toml)")
     _add("--precision", default=None, choices=["auto", "fp32", "fp16", "int8"], help="Weight precision: auto follows device (CUDA->FP16, CPU->FP32); fp16 on CPU is >40x slower; int8 explicit only, needs a measured artifact (default: auto, or from okfgraph.toml)")
     _add("--cpu-arena", action="store_true", help="Enable the CPU arena allocator (default off: ~8x lower peak RSS for ~1.4x encode time)")
-    _add("--omni-model-id", default=None, help="Multimodal model ID for image embeddings (default from okfgraph.toml)")
     _add("--chunk-size", type=int, default=None, help="Chunk size in words for overlap (default: 512, or from okfgraph.toml)")
     _add("--chunk-overlap", type=int, default=None, help="Overlap in words between chunks (default: 40, or from okfgraph.toml)")
     _add("--no-chunking", action="store_true", help="Disable chunking during ingestion")
@@ -177,7 +176,7 @@ def _router(args):
     cli_dict = {}
     for attr in ("db", "bundle", "primary", "model", "dim", "max_length", "cache_dir", "device",
                  "precision", "cpu_arena",
-                 "omni_model_id", "chunk_size", "chunk_overlap",
+                 "chunk_size", "chunk_overlap",
                  "no_chunking", "mode", "batch_size",
                  "allow_remote_images", "wal_mode", "allowed_image_domains"):
         val = getattr(args, attr, None)
@@ -213,7 +212,6 @@ def _router(args):
         embedding_dim=config.database.dim,
         max_length=config.embedding.max_length,
         model_id=config.embedding.model_id,
-        omni_model_id=config.embedding.omni_model_id,
         cache_dir=config.embedding.cache_dir,
         device=config.embedding.device,
         precision=config.embedding.precision,
@@ -324,7 +322,6 @@ def _search(args):
     if target == "images":
         results = router.image_mgr.search_images_with_text(
             text_query=args.query,
-            use_text_model=not getattr(args, "use_omni", False),
             limit=limit,
         )
         if not results:
@@ -913,8 +910,8 @@ def _shell(args):
     banner = """OKF Interactive Shell
 ========================================
 Commands:
-  import <file> [mode]       — import single OKF file (mode: text|optional|omni)
-  import-bundle [path] [mode]— import entire bundle (mode: text|optional|omni)
+  import <file>              — import single OKF file (images: caption-based)
+  import-bundle [path]       — import entire bundle (images: caption-based)
   search [target:]<query>    — search concepts (default), chunks:, images:
   search <query> expand      — chunk hits + graph neighborhood
   search <query> hub         — chunk hits reranked by hub score
@@ -956,8 +953,7 @@ Commands:
         elif cmd == "import" and rest:
             tokens = rest.strip().split()
             mode = "text"
-            if tokens and tokens[-1].lower() in ("text", "optional", "omni"):
-                mode = tokens[-1].lower()
+            if tokens and tokens[-1].lower() in ("text",):
                 tokens = tokens[:-1]
             fp = Path(" ".join(tokens))
             if not fp.exists():
@@ -971,8 +967,7 @@ Commands:
         elif cmd == "import-bundle":
             tokens = rest.strip().split()
             mode = "text"
-            if tokens and tokens[-1].lower() in ("text", "optional", "omni"):
-                mode = tokens[-1].lower()
+            if tokens and tokens[-1].lower() in ("text",):
                 tokens = tokens[:-1]
             bundle_path = Path(" ".join(tokens)) if tokens else None
             ids = router.import_mgr.import_bundle(bundle_path, mode=mode)
@@ -1157,7 +1152,6 @@ Commands:
                 device=getattr(args, "device", "auto") or "auto",
                 precision=getattr(args, "precision", "auto") or "auto",
                 cpu_arena=bool(getattr(args, "cpu_arena", False)),
-                omni_model_id=getattr(args, "omni_model_id", None),
                 chunk_size=getattr(args, "chunk_size", 512),
                 chunk_overlap=getattr(args, "chunk_overlap", 40),
                 no_chunking=False,
@@ -1218,10 +1212,9 @@ def build_parser():
                      "configured root; with --bundle, only that tree)")
     p.add_argument("--batch-size", type=int, default=32, help="Batch size for encoding (default: 32)")
     p.add_argument(
-        "--mode", default="text", choices=["text", "optional", "omni"],
-        help="Image ingestion mode: text (alt-text/filename, no omni), "
-             "optional (omni only for images lacking alt-text), "
-             "omni (omni for every image). Default: text",
+        "--mode", default="text", choices=["text"],
+        help="Image ingestion mode: text (alt-text/filename caption). "
+             "The torch-backed optional/omni routes were removed in 0.7.0.",
     )
     p.add_argument(
         "--purge", action="store_true", default=False,
@@ -1251,7 +1244,6 @@ def build_parser():
     p.add_argument("--context-hops", type=int, default=1, help="Expansion hops with --expand (default: 1)")
     p.add_argument("--hub-rerank", action="store_true", help="Chunks: rerank by graph hub score")
     p.add_argument("--hub-weight", type=float, default=0.3, help="Hub weight with --hub-rerank (default: 0.3)")
-    p.add_argument("--use-omni", action="store_true", help="Images: encode query with omni text side")
     p.add_argument("--rank", default="none", choices=["none", "hub", "ppr"],
                    help="Concepts: ranking — none (RRF order), hub (blend incoming-link "
                    "authority), ppr (model-free lexical-seed PPR, no ONNX load). "
@@ -1309,8 +1301,8 @@ def build_parser():
         help="ONNX routing mode (--kind pdf, default: auto)",
     )
     p.add_argument(
-        "--mode", default="text", choices=["text", "optional", "omni"],
-        help="Image ingestion mode (default: text)",
+        "--mode", default="text", choices=["text"],
+        help="Image ingestion mode: text (caption-based; optional/omni removed in 0.7.0)",
     )
     p.add_argument(
         "--batch-size", type=int, default=32,

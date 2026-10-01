@@ -5,22 +5,9 @@ library at module load time (``Pillow`` is imported lazily, only when raw image
 bytes actually need to be decoded). That keeps the mode-routing / extraction
 logic importable and unit-testable without the heavy embedding stack.
 
-Three ingestion modes control how an image becomes a vector in the unified
-``ImageAsset`` index:
-
-==========  ============================  ==============================
-Mode        Image WITH alt-text           Image WITHOUT alt-text
-==========  ============================  ==============================
-``text``    text-embed(alt_text)          text-embed(filename + image #)
-``optional``text-embed(alt_text)          omni-embed(image bytes)
-``omni``    omni-embed(image bytes)       omni-embed(image bytes)
-==========  ============================  ==============================
-
-The text-model and omni-model embeddings live in the *same* Matryoshka vector
-space (jina-embeddings-v5), so both can be queried from one index without
-reindexing. When ``omni`` is requested but the raw bytes are unavailable
-(e.g. a remote URL we don't fetch during ingest), planning falls back to the
-text path so ingestion never hard-fails on a missing asset.
+Images become vectors by embedding their caption (alt-text or filename
+fallback) with the text model. The torch-backed ``optional``/``omni`` routes
+were removed in 0.7.0; every image takes the text path.
 """
 
 from __future__ import annotations
@@ -37,18 +24,30 @@ from typing import List, Optional, Tuple
 
 
 class IngestMode(str, Enum):
-    """How images are turned into embeddings during ingestion."""
+    """How images are turned into embeddings during ingestion.
 
-    TEXT = "text"          # never load omni; alt-text or filename fallback
-    OPTIONAL = "optional"  # omni only for images lacking alt-text
-    OMNI = "omni"          # omni for every image
+    Since 0.7.0 only ``text`` exists (caption embedded with the text model).
+    The torch-backed ``optional``/``omni`` routes were removed with the omni
+    extra; requesting them raises instead of silently downgrading.
+    """
+
+    TEXT = "text"          # alt-text or filename fallback, text model
+    OPTIONAL = "optional"  # REMOVED in 0.7.0 (torch path); refused, see coerce()
+    OMNI = "omni"          # REMOVED in 0.7.0 (torch path); refused, see coerce()
 
     @classmethod
     def coerce(cls, value: "str | IngestMode | None", default: "IngestMode" = None) -> "IngestMode":
         """Parse a user-supplied mode string, tolerantly."""
         if value is None:
-            return default or cls.TEXT
+            if default is None or default in (cls.OPTIONAL, cls.OMNI):
+                return cls.TEXT
+            return default
         if isinstance(value, cls):
+            if value is not cls.TEXT:
+                raise ValueError(
+                    f"ingest mode {value.value!r} was removed in 0.7.0 (torch path); "
+                    "images embed by caption — use mode 'text'"
+                )
             return value
         key = str(value).strip().lower()
         aliases = {
@@ -56,6 +55,8 @@ class IngestMode(str, Enum):
             "text-only": cls.TEXT,
             "text_only": cls.TEXT,
             "alt": cls.TEXT,
+        }
+        removed = {
             "optional": cls.OPTIONAL,
             "hybrid": cls.OPTIONAL,
             "auto": cls.OPTIONAL,
@@ -63,6 +64,11 @@ class IngestMode(str, Enum):
             "full": cls.OMNI,
             "multimodal": cls.OMNI,
         }
+        if key in removed:
+            raise ValueError(
+                f"ingest mode {value!r} was removed in 0.7.0 (torch path); "
+                "images embed by caption — use mode 'text'"
+            )
         if key not in aliases:
             valid = ", ".join(m.value for m in cls)
             raise ValueError(f"Unknown ingest mode {value!r}. Valid modes: {valid}")
@@ -412,29 +418,18 @@ def build_extracted_images(
 def plan_embedding(img: ExtractedImage, mode: IngestMode) -> Tuple[EmbedRoute, Optional[str]]:
     """Decide how a single image should be embedded under ``mode``.
 
-    Returns ``(route, caption)``. For ``EmbedRoute.TEXT`` the caption is the
-    string to embed with the text model; for ``EmbedRoute.OMNI`` the caption is
-    ``None`` (the raw bytes are embedded instead).
-
-    If ``omni`` is selected but no bytes are available, the plan degrades
-    gracefully to the text route using the best available caption, so a missing
-    or remote asset never aborts ingestion.
+    Since 0.7.0 every image takes ``EmbedRoute.TEXT`` (caption embedded with
+    the text model). ``EmbedRoute.OMNI`` survives only as a stored-route
+    marker for pre-0.7.0 rows, which are treated as stale.
     """
+    if mode is not IngestMode.TEXT:
+        # coerce() normally rejects these first; belt-and-braces for direct
+        # IngestMode members passed by older callers.
+        raise ValueError(
+            f"ingest mode {mode.value!r} was removed in 0.7.0 (torch path); "
+            "images embed by caption — use mode 'text'"
+        )
     caption = img.alt_text if img.has_alt_text else fallback_caption(
         img.filename, img.index, img.concept_id
     )
-
-    if mode is IngestMode.TEXT:
-        return EmbedRoute.TEXT, caption
-
-    if mode is IngestMode.OPTIONAL:
-        if img.has_alt_text:
-            return EmbedRoute.TEXT, img.alt_text
-        if img.has_data:
-            return EmbedRoute.OMNI, None
-        return EmbedRoute.TEXT, caption  # graceful: no bytes -> use fallback caption
-
-    # IngestMode.OMNI — everything through the omni model when bytes exist
-    if img.has_data:
-        return EmbedRoute.OMNI, None
-    return EmbedRoute.TEXT, caption  # graceful fallback when bytes are missing
+    return EmbedRoute.TEXT, caption

@@ -168,21 +168,19 @@ def test_resolve_linux_gpu_preload_failure_is_nonfatal(monkeypatch, tmp_path):
     assert preload_calls["preload"] == 1
 
 
-def test_resolve_falls_through_to_gpu_package(monkeypatch, tmp_path):
+def test_resolve_single_module_name(monkeypatch, tmp_path):
+    # 0.7.0 (D6): `onnxruntime-gpu` installs the SAME `onnxruntime` module —
+    # there is no second importable name, so the resolver probes one module.
+    # A module whose package carries no runtime under capi/ falls through to
+    # the OS loader (None) instead of importing anything else real.
     monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
-    # First package has no runtime under capi/ — resolver must continue to
-    # onnxruntime-gpu instead of importing the real installed package.
     empty = tmp_path / "no-runtime"
     empty.mkdir()
     _fake_module(monkeypatch, "onnxruntime", empty)
-    pkg = _make_package(tmp_path, dirname="ortgpu", files=("onnxruntime.dll",))
-    _fake_module(monkeypatch, "onnxruntime-gpu", pkg)
     monkeypatch.setattr(os, "add_dll_directory", lambda path: None, raising=False)
 
-    got = emb.resolve_ort_dylib(os_name="nt", sys_platform="win32")
-
-    assert got == str(pkg / "capi" / "onnxruntime.dll")
-    assert os.environ["ORT_DYLIB_PATH"] == got
+    assert emb.resolve_ort_dylib(os_name="nt", sys_platform="win32") is None
+    assert "ORT_DYLIB_PATH" not in os.environ
 
 
 def test_resolve_missing_runtime_returns_none(monkeypatch, tmp_path):

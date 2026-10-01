@@ -215,7 +215,8 @@ def enforce_model_pin(conn, model_id: str) -> str:
     return model_id
 logger = logging.getLogger(__name__)
 
-_ORT_MODULE_NAMES = ("onnxruntime", "onnxruntime-gpu")
+# `onnxruntime-gpu` installs the same `onnxruntime` module name — one entry suffices.
+_ORT_MODULE_NAMES = ("onnxruntime",)
 
 
 def _candidate_ort_library_names(os_name=None, sys_platform=None):
@@ -461,7 +462,7 @@ class EmbeddingEngine:
     """
 
     def __init__(self, rust_encoder, embedding_dim, device,
-                 cache_dir, model_id, omni_model_id, omni,
+                 cache_dir, model_id,
                  chunk_size, chunk_overlap, enable_chunking, conn,
                  ort_dylib=None):
         self.encoder = rust_encoder
@@ -469,8 +470,6 @@ class EmbeddingEngine:
         self.device = device
         self.cache_dir = cache_dir
         self.model_id = model_id
-        self.omni_model_id = omni_model_id
-        self._omni = omni
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.enable_chunking = enable_chunking
@@ -482,7 +481,7 @@ class EmbeddingEngine:
 
         Returns an L2-normalised vector, truncated to the Matryoshka dim.
         Last-token pooling is REQUIRED (mean pooling lands in a different
-        space that will NOT align with the omni image embeddings).
+        space that will NOT match stored vectors).
         """
         return self.encoder.encode(text, task=task)
 
@@ -501,8 +500,8 @@ class EmbeddingEngine:
     def _truncate_normalize(self, vec: List[float]) -> List[float]:
         """Truncate to the configured Matryoshka dimension and L2-renormalise.
 
-        Both the text and omni encoders pass through here so every vector that
-        lands in a Ladybug FLOAT[dim] column is unit-norm and exactly dim-long.
+        Every vector that lands in a Ladybug FLOAT[dim] column passes through
+        here so it is unit-norm and exactly dim-long.
         """
         v = list(vec[: self.embedding_dim])
         if len(v) < self.embedding_dim:
@@ -530,63 +529,6 @@ class EmbeddingEngine:
             return []
         # Prefix guard lives in Rust; one boundary crossing for the batch.
         return self.encoder.encode_batch(texts, task=task)
-
-
-    def _get_omni(self):
-        """Load the omni model on first use (vision + text towers only)."""
-        if self._omni is None:
-            from sentence_transformers import SentenceTransformer
-
-            # The torch path takes torch device strings — "auto" (the
-            # 0.5.0 router default) is not one. Precision selection does
-            # not apply here: omni always runs FP32 on this path.
-            device = self.device
-            if device == "auto":
-                try:
-                    import torch
-
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-                except ImportError:
-                    device = "cpu"
-            logger.info(
-                "Loading omni model %s (vision modality) on %s ...",
-                self.omni_model_id, device,
-            )
-            self._omni = SentenceTransformer(
-                self.omni_model_id,
-                trust_remote_code=True,
-                cache_folder=self.cache_dir,
-                device=device,
-                model_kwargs={"modality": "vision"},  # skip the audio tower
-            )
-        return self._omni
-
-
-    def _encode_image(self, data: bytes) -> List[float]:
-        """Embed raw image bytes with the omni model (shared vector space)."""
-        from io import BytesIO
-
-        from PIL import Image
-
-        img = Image.open(BytesIO(data))
-        if img.mode not in ("RGB", "L"):
-            img = img.convert("RGB")
-        model = self._get_omni()
-        vec = model.encode(
-            img,
-            truncate_dim=self.embedding_dim,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        return self._truncate_normalize([float(x) for x in list(vec)])
-
-
-    def _encode_omni_text(self, text: str, task: str = "Query") -> List[float]:
-        """Embed text with the omni model's text side (for cross-modal queries)."""
-        model = self._get_omni()
-        encoder = model.encode_query if task == "Query" else model.encode_document
-        vec = encoder(text, truncate_dim=self.embedding_dim)
-        return self._truncate_normalize([float(x) for x in list(vec)])
 
 
     def _compute_overlap_payloads(

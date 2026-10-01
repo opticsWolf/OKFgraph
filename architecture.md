@@ -1,8 +1,8 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.3 (as-built for okfgraph 0.6.x — §6.1 model registry + model pin; §16 multi-root + §16.1 import scope/`--primary`, §4a.2 token cap + bounded tail, §6 inference surface; supersedes the v5.x design lineage as the authoritative surface)  
+**Version**: 6.4 (as-built for okfgraph 0.7.x — ONNX-only chain, torch/omni removal per `docs/plan-onnx-only.md` Phase 1; §6.1 model registry + model pin; §16 multi-root + §16.1 import scope/`--primary`, §4a.2 token cap + bounded tail, §6 inference surface; supersedes the v5.x design lineage as the authoritative surface)  
 **Based on**: Architecture v5.9 (Core Gaps closure, 2026-07-09)  
-**Verified against**: LadybugDB v0.20.3, Python 3.11–3.13, `embroider 0.1.3`, `bobine 0.5.11`, `onnxruntime==1.29.0`
+**Verified against**: LadybugDB v0.20.3, Python 3.11–3.13, `embroider 0.2.x`, `bobine 0.5.11`, `onnxruntime==1.29.0`
 
 > **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
 > `docs/OKF Graph V6.0.md`, `docs/Okfgraph 6.0 amendment.md`,
@@ -18,8 +18,7 @@
 **Storage**: LadybugDB (v0.20.3) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
 **Embedding Engine**: Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core).  
-**Multimodal Engine**: SentenceTransformer with `jinaai/jina-embeddings-v5-omni-small-retrieval` (vision tower, lazy-loaded, `omni` extra only).  
-**Unified Vector Space**: Both encoders write into one `ImageAsset.embedding` column indexed by `image_omni_idx`.  
+**Images**: caption-based text embeddings into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0.  
 **Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
 **Search Modes**: Hybrid (RRF fusion, vector + FTS), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
 
@@ -75,7 +74,7 @@ Added `validate()` methods to all config dataclasses:
 
 - `DatabaseConfig`: path non-empty, dim in [32, 1024], recommended Matryoshka dims
 - `EmbeddingConfig`: device in [cpu, cuda, mps, auto], precision in [auto, fp32, fp16], cache_dir absolute
-- `ImportConfig`: mode in [text, optional, omni], batch_size in [1, 256], chunk_size in [64, 8192] (tokens, 0.5.1+)
+- `ImportConfig`: mode in [text] (caption-based since 0.7.0), batch_size in [1, 256], chunk_size in [64, 8192] (tokens, 0.5.1+)
 - `OKFConfig`: aggregates all section validations
 
 Validation warnings logged on config load (non-blocking — CLI args can override).
@@ -174,15 +173,13 @@ PDF conversion runs through the `bobine` Rust engine behind the
 `BobineConverter`). No converter code lives in okfgraph — see §10 and
 `docs/converters.md`.
 
-### Multimodal images (optional — omni)
+### Images (caption-based since 0.7.0)
 
-```bash
-pip install "okfgraph[omni]"   # sentence-transformers + Pillow (image embeddings only)
-```
-
-Text-only installs never touch torch. The omni model
-(`jinaai/jina-embeddings-v5-omni-small-retrieval`, vision tower) loads
-lazily on first image encode.
+Images embed their caption (alt-text or filename fallback) with the text
+model — no extra, no torch anywhere. The `omni` extra
+(`sentence-transformers` + torch) and the `optional`/`omni` routes were
+removed in 0.7.0 (`docs/plan-onnx-only.md` Phase 1); pre-0.7.0 `omni` rows
+are stale and re-embed by caption on reimport.
 
 ---
 
@@ -214,10 +211,10 @@ CREATE NODE TABLE ImageAsset (
     mime_type STRING,
     alt_text STRING,
     caption STRING,                    -- provenance: how the image was embedded
-    embed_route STRING,                -- "text" | "omni"
+    embed_route STRING,                -- "text" ("omni" = pre-0.7.0 stale rows only)
     content_hash STRING,               -- change-detection key for re-embedding
     data BLOB,                         -- raw image bytes
-    embedding FLOAT[dim]               -- shared vector space (text or omni)
+    embedding FLOAT[dim]               -- text-model caption vectors (0.7.0+)
 );
 
 CREATE NODE TABLE Directory (id STRING PRIMARY KEY);
@@ -275,7 +272,7 @@ CALL CREATE_VECTOR_INDEX(
 -- Chunk full-text index on chunk_text
 CALL CREATE_FTS_INDEX('Chunk', 'chunk_fts', ['chunk_text']);
 
--- Unified image vector index (shared space: text-model alt-text vectors + omni-model image vectors)
+-- Image vector index (caption-based text vectors since 0.7.0)
 CALL CREATE_VECTOR_INDEX(
     'ImageAsset', 'image_omni_idx', 'embedding',
     mu := 30, ml := 60, metric := 'cosine', efc := 200
@@ -284,7 +281,7 @@ CALL CREATE_VECTOR_INDEX(
 
 ### Matryoshka Dimensions
 
-Both `jinaai/jina-embeddings-v5-text-small-retrieval` and `jinaai/jina-embeddings-v5-omni-small-retrieval` support Matryoshka truncation at these official dimensions:
+`jinaai/jina-embeddings-v5-text-small-retrieval` supports Matryoshka truncation at these official dimensions:
 
 | Dimension | Use Case |
 |---|---|
@@ -418,7 +415,7 @@ class ImageAssetModel(BaseModel):
     mime_type: str = "application/octet-stream"
     alt_text: Optional[str] = None
     caption: Optional[str] = None       # provenance: how embedded
-    embed_route: Optional[str] = None   # "text" | "omni"
+    embed_route: Optional[str] = None   # "text" ("omni" = pre-0.7.0 stale rows)
     content_hash: Optional[str] = None  # change-detection key
     embedding: Optional[List[float]] = None
 
@@ -440,7 +437,6 @@ class OKFRouter:
         db_path: str,
         bundle_root: str,
         model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
-        omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval",
         embedding_dim: int = 512,
         cache_dir: Optional[str] = None,
         model_path: Optional[str] = None,      # explicit local ONNX …
@@ -501,10 +497,10 @@ L2 normalise → Matryoshka truncate (32–1024, default 512) → re-normalise
 ```
 
 **Last-token pooling (NOT mean)** — required by Jina v5; mean pooling
-puts text vectors in a different space than the omni image vectors,
-silently breaking the unified index. This was the v4.0 pooling fix and
-remains a frozen vector-space invariant: no consumer may change pooling,
-prefixes, or truncation order without re-indexing every database.
+puts text vectors in a different space than stored vectors, silently
+breaking the index. This was the v4.0 pooling fix and remains a frozen
+vector-space invariant: no consumer may change pooling, prefixes, or
+truncation order without re-indexing every database.
 
 **Lazy sessions.** `LazyRustEncoder` opens the ONNX session on first
 encode, not at router construction — importing a bundle, running doctor,
@@ -529,44 +525,18 @@ tuning levels inside one index is forbidden (ORT optimisation levels
 fuse differently at the 1e-8 level — documented in the embroider README
 benchmark table).
 
-### Omni Model (SentenceTransformer — lazy-loaded)
+### Omni Model (removed 0.7.0)
 
-```python
-def _get_omni(self):
-    """Load the omni model on first use (vision + text towers only)."""
-    if self._omni is None:
-        from sentence_transformers import SentenceTransformer
-        self._omni = SentenceTransformer(
-            self.omni_model_id,
-            trust_remote_code=True,
-            cache_folder=self.cache_dir,
-            device=self.device,
-            model_kwargs={"modality": "vision"},  # skip the audio tower
-        )
-    return self._omni
+The `SentenceTransformer` omni path (`_get_omni` / `_encode_image` /
+`_encode_omni_text`, torch) was removed in 0.7.0 per
+`docs/plan-onnx-only.md` Phase 1. Image search is caption-based (text
+model over alt-text/filename). Pre-0.7.0 `route='omni'` rows are stale
+and re-embed by caption on reimport.
 
-def _encode_image(self, data: bytes) -> List[float]:
-    """Embed raw image bytes with the omni model (shared vector space)."""
-    from io import BytesIO
-    from PIL import Image
-    img = Image.open(BytesIO(data))
-    if img.mode not in ("RGB", "L"):
-        img = img.convert("RGB")
-    model = self._get_omni()
-    vec = model.encode(img, truncate_dim=self.embedding_dim,
-                       normalize_embeddings=True,
-                       show_progress_bar=False)
-    return self._truncate_normalize([float(x) for x in list(vec)])
-
-def _encode_omni_text(self, text: str, task: str = "Query") -> List[float]:
-    """Embed text with the omni model's text side (for cross-modal queries)."""
-    model = self._get_omni()
-    encoder = model.encode_query if task == "Query" else model.encode_document
-    vec = encoder(text, truncate_dim=self.embedding_dim)
-    return self._truncate_normalize([float(x) for x in list(vec)])
 ```
-
-The omni model is **lazy-loaded** on first actual use — text-only pipelines pay none of its cost.
+# Removed 0.7.0: _encode_image / _encode_omni_text (torch SentenceTransformer).
+# Image search is caption-based; see `docs/plan-onnx-only.md` Phase 1.
+```
 
 ### Batch Encoding Algorithm
 
@@ -1092,13 +1062,12 @@ else is library/maintenance surface.
 | `--dim <int>` | `512` | Embedding dimension (32-1024, official Matryoshka) |
 | `--cache-dir <path>` | `~/.cache/huggingface` | HuggingFace model cache directory |
 | `--device cpu\|cuda` | `cpu` | Inference device (or from okfgraph.toml) |
-| `--omni-model-id <id>` | `jinaai/jina-embeddings-v5-omni-small-retrieval` | Multimodal model ID |
 
 ### 5.4. Import Options
 
 | Option | Default | Description |
 |---|---|---|
-| `--mode <mode>` | `text` | Image ingestion mode: `text`, `optional`, `omni` |
+| `--mode <mode>` | `text` | Image ingestion mode: `text` (caption-based; optional/omni removed 0.7.0) |
 | `--allow-remote-images` | — | Fetch `http(s)://` image URLs during ingestion (off by default) |
 | `--batch-size <int>` | `32` | Batch size for encoding |
 | `--purge` | — | Also purge concepts whose source files were deleted from disk (removes concept, chunks, links, and orphaned image assets) |
@@ -1289,17 +1258,11 @@ mcp.run(transport="stdio")
 | **Model registry (0.6.0)** | `embedding.model_id` on every surface (default text-small, frozen); registry resolves (model, precision) → artifact with per-model ladder/ceiling (nano: 768 dim max, 8192 ctx); graph pins the id in MetaText fail-closed (mismatch refuses, empty re-pins) — a model switch forces a fresh reimport, never a silent space fork |
 | **CPU Arena** | Off by default (`--cpu-arena` opts in): 8x lower peak RSS for ~1.4x encode time (measured) |
 
-### Omni (Multimodal) Model
+### Omni (Multimodal) Model — removed 0.7.0
 
-| Feature | Detail |
-|---|---|
-| **Model** | `jinaai/jina-embeddings-v5-omni-small-retrieval` |
-| **Framework** | `sentence-transformers` (modality="vision" — skips audio tower) |
-| **Dimensions** | **1024** (Matryoshka truncation: same as text model) |
-| **Pooling** | Model-native (shared vector space with text model) |
-| **Normalization** | `normalize_embeddings=True` (shared vector space) |
-| **Lazy Loading** | Loaded on first actual use — text-only pipelines pay no cost |
-| **Image Input** | Raw image bytes via `Pillow` |
+The torch `sentence-transformers` omni path was removed per
+`docs/plan-onnx-only.md` Phase 1 (ONNX-only chain). Image search is
+caption-based. ONNX image embeddings may return in 0.8.0 (Phase 6).
 | **Text Query** | `model.encode_query()` / `model.encode_document()` for cross-modal search |
 
 ### Unified Vector Space

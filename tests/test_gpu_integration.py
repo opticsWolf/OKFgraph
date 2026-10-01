@@ -340,72 +340,33 @@ class TestGPUMemoryHandling:
 
 
 # ---------------------------------------------------------------------------
-# Test: GPU with multimodal (omni) encoder
+# Test: omni routes removed (0.7.0, plan-onnx-only Phase 1)
 # ---------------------------------------------------------------------------
 
-class TestGPUMultimodal:
-    """Test GPU with the SentenceTransformer (omni) encoder path."""
+class TestOmniRemoved:
+    """The torch-backed omni/optional routes refuse instead of downgrading."""
 
-    @pytest.mark.skipif(not _has_onnxruntime_gpu(), reason="onnxruntime-gpu not installed")
-    def test_gpu_omni_encoder_initialization(self, tmp_dir):
-        """GPU router with omni mode initializes the SentenceTransformer encoder."""
-        import shutil
+    def test_omni_mode_refused(self, tmp_dir):
+        from okfgraph.images import IngestMode
+        with pytest.raises(ValueError, match="removed in 0.7.0"):
+            IngestMode.coerce("omni")
+        with pytest.raises(ValueError, match="removed in 0.7.0"):
+            IngestMode.coerce("optional")
+        with pytest.raises(ValueError, match="removed in 0.7.0"):
+            IngestMode.coerce("auto")
+        assert IngestMode.coerce("text") is IngestMode.TEXT
+        assert IngestMode.coerce(None) is IngestMode.TEXT
 
-        # Create a fresh bundle for this test
-        test_dir = Path(tmp_dir) / "gpu_omni_test"
-        test_dir.mkdir(exist_ok=True)
-        _write_okf(str(test_dir), "doc_a.md", "Doc A", "Alpha concept. " * 50)
-
+    def test_omni_search_flag_refused(self, tmp_dir):
         r = OKFRouter(
-            db_path=str(Path(tmp_dir) / "test_gpu_omni.db"),
-            bundle_root=str(test_dir),
-            embedding_dim=512,
-            device="cpu",  # Use CPU since CUDA may not be available
+            db_path=str(Path(tmp_dir) / "test_no_omni.db"),
+            bundle_root=str(tmp_dir),
+            embedding_dim=64,
+            device="cpu",
         )
-        ids = r.import_mgr.import_bundle(mode="omni")
-        assert len(ids) == 1
-
-        # Verify the omni encoder was loaded by checking _encode_omni_text works
-        try:
-            emb = r.embed_engine._encode_omni_text("test sentence")
-            assert emb is not None
-            assert len(emb) == 512
-        except ImportError:
-            pytest.skip("sentence_transformers not installed")
-
+        with pytest.raises(ValueError, match="removed in 0.7.0"):
+            r.image_mgr.search_images_with_text("q", use_text_model=False)
         r.close()
-
-        shutil.rmtree(test_dir, ignore_errors=True)
-
-    @pytest.mark.skipif(not _has_onnxruntime_gpu(), reason="onnxruntime-gpu not installed")
-    def test_gpu_omni_encoding_produces_embeddings(self, tmp_dir):
-        """GPU omni encoding produces valid embeddings."""
-        import shutil
-
-        # Create a fresh bundle for this test
-        test_dir = Path(tmp_dir) / "gpu_omni_enc_test"
-        test_dir.mkdir(exist_ok=True)
-        _write_okf(str(test_dir), "doc_a.md", "Doc A", "Alpha concept. " * 50)
-
-        r = OKFRouter(
-            db_path=str(Path(tmp_dir) / "test_gpu_omni_enc.db"),
-            bundle_root=str(test_dir),
-            embedding_dim=512,
-            chunk_size=50,
-            chunk_overlap=10,
-            enable_chunking=True,
-            device="cpu",  # Use CPU since CUDA may not be available
-        )
-        ids = r.import_mgr.import_bundle(mode="omni")
-        assert len(ids) == 1
-
-        concept = r.get_by_id(ids[0])
-        assert concept is not None
-        assert concept.embedding is not None
-        assert len(concept.embedding) == 512
-        r.close()
-
-        shutil.rmtree(test_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

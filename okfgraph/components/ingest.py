@@ -349,7 +349,7 @@ class IngestManager:
             title: Optional title override (defaults to frontmatter or filename).
             description: Optional description override (defaults to frontmatter).
             tags: Optional tags to apply to the concept.
-            mode: Image ingestion mode (text | optional | omni).
+            mode: Image ingestion mode ('text'; optional/omni removed in 0.7.0).
 
         Returns:
             Dict with keys:
@@ -404,8 +404,8 @@ class IngestManager:
                 If False, write to disk only.
             output_dir: Output directory for the markdown (used when
                 auto_import=False). Defaults to the PDF's parent directory.
-            mode: Image ingestion mode for auto-import — "text", "optional",
-                or "omni". Only used when auto_import=True.
+            mode: Image ingestion mode for auto-import — "text".
+                Only used when auto_import=True.
             batch_size: Batch size for encoding during auto-import.
             purge_deleted: If True, purge deleted concepts during auto-import.
             force: Bypass the detached-graph refusal (0.2.16). Note: the

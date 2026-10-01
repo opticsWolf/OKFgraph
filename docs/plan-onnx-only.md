@@ -33,7 +33,7 @@ Consistency defects found alongside:
 
 This plan assumes **A now, B as Phase 6 once A has shipped** (0.7.0 removes the torch path; 0.8.0 re-adds image content on ONNX).
 
-## Phase 0 — guardrails first (~0.5d)
+## Phase 0 — guardrails first (~0.5d) ✅ DONE (dev 65f93ae)
 
 Lock the invariant in tests before touching code so the removal can't regress.
 
@@ -42,7 +42,7 @@ Lock the invariant in tests before touching code so the removal can't regress.
 - Add a CI grep step (all three repos): fail on `import torch` / `sentence_transformers` / `optimum` outside `tests/`, `docs/` and embroider `tools/export/` (dev-only model export scripts, never packaged; Phase 6).
 - DoD: new tests fail on current `dev` (the omni extra trips the packaging test), which proves they bite.
 
-## Phase 1 — okfgraph: remove torch (0.7.0, ~1d)
+## Phase 1 — okfgraph: remove torch (0.7.0, ~1d) ✅ DONE
 
 Removing an extra and an ingest mode is a breaking change → minor bump.
 

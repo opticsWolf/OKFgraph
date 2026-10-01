@@ -173,9 +173,10 @@ class DbBackend:
             r["_kind"] = "concept"
         return results
 
-    def search_images(self, query: str, use_omni: bool, limit: int) -> List[Dict[str, Any]]:
+    def search_images(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        # 0.7.0: caption-based only (torch/omni path removed).
         results = self.router.search_images_with_text(
-            text_query=query, use_text_model=not use_omni, limit=limit
+            text_query=query, limit=limit
         )
         for r in results:
             r["_kind"] = "image"
@@ -369,14 +370,12 @@ class MainWindow(QMainWindow):
         self.type_edit = QLineEdit(); self.type_edit.setPlaceholderText("type")
         self.tags_edit = QLineEdit(); self.tags_edit.setPlaceholderText("tags (comma-separated)")
         self.parent_edit = QLineEdit(); self.parent_edit.setPlaceholderText("parent directory id")
-        self.omni_cb = QCheckBox("Query with omni model")
         self.limit_spin = QSpinBox(); self.limit_spin.setRange(1, 100); self.limit_spin.setValue(10)
 
         filt.addWidget(QLabel("Filters:"), 0, 0)
         filt.addWidget(self.type_edit, 0, 1)
         filt.addWidget(self.tags_edit, 0, 2)
         filt.addWidget(self.parent_edit, 0, 3)
-        filt.addWidget(self.omni_cb, 0, 4)
         filt.addWidget(QLabel("Limit:"), 0, 5)
         filt.addWidget(self.limit_spin, 0, 6)
         filt.setColumnStretch(1, 1)
@@ -426,7 +425,6 @@ class MainWindow(QMainWindow):
         concept = self._is_concept_mode()
         for w in (self.type_edit, self.tags_edit, self.parent_edit):
             w.setEnabled(concept)
-        self.omni_cb.setEnabled(not concept)
 
     # -- search -----------------------------------------------------------
 
@@ -457,7 +455,6 @@ class MainWindow(QMainWindow):
                 "cfg": cfg,
                 "args": {
                     "query": query,
-                    "use_omni": self.omni_cb.isChecked(),
                     "limit": self.limit_spin.value(),
                 },
             })

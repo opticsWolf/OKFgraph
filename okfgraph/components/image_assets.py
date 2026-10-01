@@ -58,13 +58,13 @@ class ImageAssetManager:
     ) -> Dict[str, int]:
         """Extract, embed, and store the images referenced by a concept.
 
-        Per-image routing follows ``mode``:
-          * ``text``     — alt-text (or filename + image-number fallback), text model
-          * ``optional`` — alt-text via text model; images without alt-text via omni
-          * ``omni``     — every image via the omni model
+        Every image embeds its caption (alt-text or filename fallback) with the
+        text model (0.7.0+: the torch-backed omni routes are removed).
 
-        Unchanged images (same content hash) are skipped so the omni model is
-        not re-run on re-import. Images removed from the document are pruned.
+        Unchanged images (same content hash) are skipped on re-import. Images
+        removed from the document are pruned. Pre-0.7.0 rows stored with
+        ``route='omni'`` hash a different payload, so they miss the reuse check
+        and are re-embedded by caption automatically.
         Returns a small stats dict.
         """
         mode = IngestMode.coerce(mode)
@@ -93,7 +93,7 @@ class ImageAssetManager:
         planned_aids = [img.asset_id for img in images]
         existing = self._existing_assets(planned_aids)  # {aid: (hash, has_data)}
 
-        # --- Encode outside any DB transaction (omni can be slow) ---
+        # --- Encode outside any DB transaction ---
         pending: List[Dict[str, Any]] = []
         planned_ids = set()
         for img in images:
@@ -132,12 +132,11 @@ class ImageAssetManager:
                 )
                 continue
 
-            if route is EmbedRoute.OMNI:
-                embedding = self.embed_engine._encode_image(img.data)
-                stats["omni"] += 1
-            else:
-                embedding = self.embed_engine._encode(caption or img.filename, task="Document")
-                stats["text"] += 1
+            # EmbedRoute.OMNI is never minted since 0.7.0; stale pre-0.7.0 rows
+            # arrive here as TEXT (their stored omni hash missed above) and are
+            # re-embedded by caption. `stats["omni"]` stays 0 by construction.
+            embedding = self.embed_engine._encode(caption or img.filename, task="Document")
+            stats["text"] += 1
 
             pending.append({
                 "img": img,
@@ -324,16 +323,17 @@ class ImageAssetManager:
         use_text_model: bool = True,
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """Find image assets from a text query via the unified vector index.
+        """Find image assets from a text query via the vector index.
 
-        ``use_text_model=True`` (default) encodes the query with the lightweight
-        text model — no omni load required, since both models share the vector
-        space. Set it to ``False`` to route the query through the omni text side.
+        The query is encoded with the text model. ``use_text_model=False``
+        (omni text side) was removed in 0.7.0 with the torch path.
         """
-        if use_text_model:
-            query_vec = self.embed_engine._encode(text_query, task="Query")
-        else:
-            query_vec = self.embed_engine._encode_omni_text(text_query, task="Query")
+        if not use_text_model:
+            raise ValueError(
+                "use_text_model=False was removed in 0.7.0 (torch path); "
+                "image search is caption-based"
+            )
+        query_vec = self.embed_engine._encode(text_query, task="Query")
 
         if self._db is None:
             result = self.conn.execute(

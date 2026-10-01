@@ -66,10 +66,11 @@ class TestEmbeddingConfigValidation:
         errors = config.validate()
         assert not any("absolute path" in e for e in errors)
 
-    def test_empty_omni_model_id(self):
-        config = EmbeddingConfig(omni_model_id="")
+    def test_legacy_omni_model_id_ignored(self):
+        # Removed in 0.7.0: accepted-but-ignored so old configs warn, not break.
+        config = EmbeddingConfig(omni_model_id="anything")
         errors = config.validate()
-        assert any("non-empty" in e for e in errors)
+        assert errors == []
 
 
 class TestImportConfigValidation:
@@ -81,10 +82,13 @@ class TestImportConfigValidation:
         assert errors == []
 
     def test_valid_modes(self):
-        for mode in ("text", "optional", "omni"):
+        config = ImportConfig(mode="text")
+        errors = config.validate()
+        assert not any("must be one of" in e for e in errors)
+        for mode in ("optional", "omni"):
             config = ImportConfig(mode=mode)
             errors = config.validate()
-            assert not any("must be one of" in e for e in errors)
+            assert any("must be one of" in e for e in errors)
 
     def test_invalid_mode(self):
         config = ImportConfig(mode="fast")

@@ -31,12 +31,24 @@ PNG_1x1 = base64.b64decode(
 
 def test_mode_coercion():
     assert IngestMode.coerce("text") is IngestMode.TEXT
-    assert IngestMode.coerce("optional") is IngestMode.OPTIONAL
-    assert IngestMode.coerce("full") is IngestMode.OMNI
-    assert IngestMode.coerce("OMNI") is IngestMode.OMNI
     assert IngestMode.coerce(None) is IngestMode.TEXT
-    assert IngestMode.coerce(None, default=IngestMode.OMNI) is IngestMode.OMNI
-    assert IngestMode.coerce(IngestMode.OPTIONAL) is IngestMode.OPTIONAL
+    assert IngestMode.coerce(None, default=IngestMode.TEXT) is IngestMode.TEXT
+    assert IngestMode.coerce(IngestMode.TEXT) is IngestMode.TEXT
+    # Removed in 0.7.0 (torch path): refuse, don't downgrade.
+    for dead in ("optional", "hybrid", "auto", "omni", "full", "multimodal", "OMNI"):
+        try:
+            IngestMode.coerce(dead)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for removed mode {dead}")
+    for dead_member in (IngestMode.OPTIONAL, IngestMode.OMNI):
+        try:
+            IngestMode.coerce(dead_member)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for removed mode {dead_member}")
     try:
         IngestMode.coerce("banana")
     except ValueError:
@@ -116,27 +128,15 @@ def test_plan_text_mode():
     assert "f.png" in cap and "image 1" in cap
 
 
-def test_plan_optional_mode():
-    # alt-text -> text path
-    route, cap = plan_embedding(_img(alt="chart", data=PNG_1x1), IngestMode.OPTIONAL)
-    assert route is EmbedRoute.TEXT and cap == "chart"
-    # no alt-text + bytes -> omni
-    route, cap = plan_embedding(_img(alt=None, data=PNG_1x1), IngestMode.OPTIONAL)
-    assert route is EmbedRoute.OMNI and cap is None
-    # no alt-text + no bytes -> graceful text fallback
-    route, cap = plan_embedding(_img(alt=None, data=None), IngestMode.OPTIONAL)
-    assert route is EmbedRoute.TEXT and cap and "image 1" in cap
-
-
-def test_plan_omni_mode():
-    # bytes present -> omni regardless of alt-text
-    route, cap = plan_embedding(_img(alt="ignored", data=PNG_1x1), IngestMode.OMNI)
-    assert route is EmbedRoute.OMNI and cap is None
-    # no bytes -> graceful text fallback (alt-text wins when present)
-    route, cap = plan_embedding(_img(alt="desc", data=None), IngestMode.OMNI)
-    assert route is EmbedRoute.TEXT and cap == "desc"
-    route, cap = plan_embedding(_img(alt=None, data=None), IngestMode.OMNI)
-    assert route is EmbedRoute.TEXT and "image 1" in cap
+def test_plan_removed_modes_refused():
+    # Removed in 0.7.0 (torch path): refuse even with bytes present.
+    for dead in (IngestMode.OPTIONAL, IngestMode.OMNI):
+        try:
+            plan_embedding(_img(alt="chart", data=PNG_1x1), dead)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for removed mode {dead}")
 
 
 def test_build_extracted_images_local_and_inline(tmp_path):
@@ -175,16 +175,16 @@ def test_okf_asset_resolves_from_store(tmp_path):
     assert len(imgs) == 2
     resolved, missing = imgs
 
-    # Resolved: bytes present -> omni-eligible, id passed through verbatim
+    # Resolved: bytes present, id passed through verbatim; text route.
     assert resolved.asset_id == "img_deadbeef"
     assert resolved.has_data and resolved.mime_type == "image/png"
-    route, cap = plan_embedding(resolved, IngestMode.OMNI)
-    assert route is EmbedRoute.OMNI and cap is None
+    route, cap = plan_embedding(resolved, IngestMode.TEXT)
+    assert route is EmbedRoute.TEXT
 
-    # Missing on disk: no bytes -> graceful text fallback even in omni mode
+    # Missing on disk: caption fallback.
     assert missing.asset_id == "img_missing"
     assert not missing.has_data
-    route, cap = plan_embedding(missing, IngestMode.OMNI)
+    route, cap = plan_embedding(missing, IngestMode.TEXT)
     assert route is EmbedRoute.TEXT
 
 

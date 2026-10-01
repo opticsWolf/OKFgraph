@@ -25,11 +25,10 @@ Example TOML (``okfgraph.toml``):
     precision = "auto"  # auto | fp32 | fp16 | int8 (default: auto — follows device; int8 explicit only)
     cpu_arena = false  # CPU arena allocator (default off: 8x less RAM, ~1.4x time)
     cache_dir = "/mnt/models"
-    omni_model_id = "jinaai/jina-embeddings-v5-omni-small-retrieval"
     max_length = 8192  # token truncation ceiling, 1..=32768 (default: 8192)
 
     [import]
-    mode = "optional"
+    mode = "text"
     batch_size = 64
     chunk_size = 512
     chunk_overlap = 40
@@ -91,7 +90,9 @@ class EmbeddingConfig:
     precision: str = "auto"
     cpu_arena: bool = False
     cache_dir: Optional[str] = None
-    omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval"
+    # Removed in 0.7.0 with the torch path: kept as an accepted-but-ignored
+    # field so old configs/CLI flags warn instead of breaking (see load()).
+    omni_model_id: Optional[str] = None
     max_length: Optional[int] = None
 
     def validate(self) -> List[str]:
@@ -122,8 +123,6 @@ class EmbeddingConfig:
             )
         if self.cache_dir and not Path(self.cache_dir).is_absolute():
             errors.append("embedding.cache_dir must be an absolute path")
-        if not self.omni_model_id:
-            errors.append("embedding.omni_model_id must be a non-empty string")
         return errors
 
 
@@ -141,10 +140,11 @@ class ImportConfig:
     def validate(self) -> List[str]:
         """Validate import settings. Returns list of error messages."""
         errors = []
-        valid_modes = ("text", "optional", "omni")
+        valid_modes = ("text",)
         if self.mode not in valid_modes:
             errors.append(
-                f"import.mode must be one of {valid_modes}, got '{self.mode}'"
+                f"import.mode must be one of {valid_modes}, got '{self.mode}' "
+                "('optional'/'omni' were removed in 0.7.0 — use 'text')"
             )
         if self.batch_size < 1 or self.batch_size > 256:
             errors.append("import.batch_size must be between 1 and 256")
@@ -307,9 +307,11 @@ class OKFConfig:
             config.embedding.precision = emb.get("precision", config.embedding.precision)
             config.embedding.cpu_arena = bool(emb.get("cpu_arena", config.embedding.cpu_arena))
             config.embedding.cache_dir = emb.get("cache_dir", config.embedding.cache_dir)
-            config.embedding.omni_model_id = emb.get(
-                "omni_model_id", config.embedding.omni_model_id
-            )
+            if emb.get("omni_model_id") is not None:
+                logger.warning(
+                    "okfgraph.toml: embedding.omni_model_id is ignored since "
+                    "0.7.0 (torch path removed); image search is caption-based"
+                )
             if emb.get("max_length") is not None:
                 config.embedding.max_length = int(emb["max_length"])
 
@@ -375,7 +377,9 @@ class OKFConfig:
         if val := os.environ.get(f"{prefix}CACHE_DIR"):
             config.embedding.cache_dir = val
         if val := os.environ.get(f"{prefix}OMNI_MODEL_ID"):
-            config.embedding.omni_model_id = val
+            logger.warning(
+                "OKFGRAPH_OMNI_MODEL_ID is ignored since 0.7.0 (torch path removed)"
+            )
         if val := os.environ.get(f"{prefix}MAX_LENGTH"):
             config.embedding.max_length = int(val)
 
@@ -444,8 +448,6 @@ class OKFConfig:
                             f"--bundle-root must be ALIAS=PATH, got {item!r}")
                     parsed[alias] = path
                 config.roots = parsed
-        if "omni_model_id" in cli_args and cli_args["omni_model_id"]:
-            config.embedding.omni_model_id = str(cli_args["omni_model_id"])
         if "max_length" in cli_args and cli_args["max_length"]:
             config.embedding.max_length = int(cli_args["max_length"])
         if "chunk_size" in cli_args and cli_args["chunk_size"]:
@@ -485,8 +487,6 @@ class OKFConfig:
             base.embedding.cpu_arena = overlay.embedding.cpu_arena
         if overlay.embedding.cache_dir != EmbeddingConfig().cache_dir:
             base.embedding.cache_dir = overlay.embedding.cache_dir
-        if overlay.embedding.omni_model_id != EmbeddingConfig().omni_model_id:
-            base.embedding.omni_model_id = overlay.embedding.omni_model_id
         if overlay.embedding.max_length != EmbeddingConfig().max_length:
             base.embedding.max_length = overlay.embedding.max_length
 

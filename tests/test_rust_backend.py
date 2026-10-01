@@ -28,7 +28,6 @@ def encoder():
 def engine(encoder):
     return EmbeddingEngine(
         encoder, 64, "cpu", None, MODEL,
-        "jinaai/jina-embeddings-v5-omni-small-retrieval", None,
         512, 40, True, None,
     )
 

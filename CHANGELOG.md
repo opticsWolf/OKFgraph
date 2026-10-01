@@ -4,6 +4,21 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.7.0] — 2026-10-01
+
+### Removed (BREAKING: ONNX-only chain, plan-onnx-only Phase 1)
+- Torch image path: `omni` extra (`sentence-transformers`, `Pillow`),
+  `IngestMode` optional/omni, `EmbedRoute` omni minting, `_get_omni` /
+  `_encode_image` / `_encode_omni_text`, `--omni-model-id`, `--use-omni`,
+  `use_text_model=False`, MCP/tool `mode` enum now `["text"]`.
+  `mode="optional"/"omni"` (API/CLI/TOML/MCP) and `OKFGRAPH_OMNI_MODEL_ID`
+  refuse or warn instead of silently downgrading — use `mode="text"`.
+- `requirements.txt` deleted (pyproject is the source of truth).
+- Existing graphs: pre-0.7.0 `route='omni'` image rows are stale (different
+  space); the next import re-embeds them by caption automatically, and
+  `okf doctor` reports the count (`stale_omni_images`, informational).
+- `pip install okfgraph` is now torch-free end to end.
+
 ## [0.6.0] — 2026-09-15
 
 ### Added (model registry: text-small + text-nano)

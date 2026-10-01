@@ -182,6 +182,22 @@ class DoctorManager:
             for cid, n in indeg
         ]
 
+        # Pre-0.7.0 image rows (torch omni route) are stale: their space no
+        # longer exists, so the next import re-embeds them by caption.
+        try:
+            stale_omni = self.conn.execute(
+                "MATCH (i:ImageAsset) WHERE i.embed_route = 'omni' "
+                "RETURN i.id AS iid"
+            ).rows_as_dict().get_all()
+        except Exception:
+            stale_omni = []
+        if stale_omni:
+            info.append({
+                "rule": "stale_omni_images",
+                "message": f"{len(stale_omni)} image asset(s) use the removed "
+                             "omni route — re-import to re-embed by caption",
+            })
+
         detached = None
         try:
             detached = self.import_mgr.delta_mgr.get_detached_state()

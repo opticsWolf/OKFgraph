@@ -186,10 +186,10 @@ def test_backend_search_tags_kind_and_maps_omni():
     assert FakeRouter.last_hybrid["concept_type"] == "document"
     assert FakeRouter.last_hybrid["tags"] == ["t1"]
 
-    ires = b.search_images("q", use_omni=True, limit=3)
+    ires = b.search_images("q", limit=3)
     assert ires[0]["_kind"] == "image"
-    # use_omni=True  -> use_text_model=False
-    assert FakeRouter.last_images["use_text_model"] is False
+    # 0.7.0: caption-based only, no omni flag is forwarded.
+    assert "use_text_model" not in FakeRouter.last_images
 
 
 def run():

@@ -27,7 +27,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
 | Category | Features |
 |---|---|
-| **Embeddings** | Jina v5 (default `…-text-small-retrieval`, `--model` selects registry: text-nano) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (default 512, per-model ladder); device `auto` (CUDA→FP16 mirror weights, CPU→FP32, `--precision` pins incl. explicit `int8`); CPU arena off by default (`--cpu-arena`); token ceiling configurable (`--max-length`); model + precision pinned per graph, never mixed; omni model (`…-omni-small-retrieval`) lazy-loaded for images only |
+| **Embeddings** | Jina v5 (default `…-text-small-retrieval`, `--model` selects registry: text-nano) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (default 512, per-model ladder); device `auto` (CUDA→FP16 mirror weights, CPU→FP32, `--precision` pins incl. explicit `int8`); CPU arena off by default (`--cpu-arena`); token ceiling configurable (`--max-length`); model + precision pinned per graph, never mixed. No torch anywhere (0.7.0+) |
 | **Search** | Hybrid RRF fusion (vector + FTS) at concept and chunk granularity; `rank=none\|hub\|ppr` — including **PPR**: lexical seeds → exact Personalized PageRank, zero model load, deterministic |
 | **Read** | Body / chunks / rebuilt document / graph context, with optional **token budgets** (`max_tokens`): self first, then PPR-ranked neighbours, index-first for context |
 | **Storage** | LadybugDB `==0.20.3` (pinned — newer 0.20.x segfaults index builds): graph + vector + FTS in one file |
@@ -37,7 +37,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 | **Diff** | `okf diff`: structural snapshot (dir vs dir, no model load) and drift (graph vs dir) modes; CI exit codes + `--json` |
 | **Doctor** | `okf doctor`: 0–100 health score (broken/orphan/stale/duplicate-title/missing-description), safe `--fix` that never touches `reviewed: true`, `--strict` CI gate |
 | **Export** | OKF round-trip with See Also / Cited By enrichment + index files, or `--flavor obsidian` (`[[Title]]` wikilinks, no index files, edge-lossless re-import) |
-| **Images** | Modes `text` / `optional` / `omni`, shared text+image vector space, content-hash dedup, `okf-asset://` protocol |
+| **Images** | Caption-based (`mode=text` only since 0.7.0), content-hash dedup, `okf-asset://` protocol |
 | **MCP** | 5 tools (`search`, `read`, `traverse`, `ingest`, `export_bundle`), MCP ≥ 2.0 (`MCPServer` + `ToolAnnotations`), stdio transport |
 | **CLI** | Same 5 verbs plus maintenance (`init`, `import`, `diff`, `doctor`, `shell`, `reindex`, `broken-links`, `deleted-*`, …), slim per-command help, `okfgraph.toml` config |
 | **Skills** | 3 harness-neutral skills (`okfgraph-mcp`, `okfgraph-cli`, `okfgraph-ingest`), `.mcp.json` wiring included |
@@ -49,7 +49,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 Requires Python ≥ 3.11.
 
 ```bash
-pip install "okfgraph[pdf,omni]"   # PyPI (embeddings come from the published `embroider` wheels)
+pip install "okfgraph[pdf]"   # PyPI (embeddings come from the published `embroider` wheels)
 ```
 
 Or from source with `uv` (no Rust toolchain needed — the embedding
@@ -59,7 +59,6 @@ engine is the external `embroider` package):
 git clone <repo> && cd OKFgraph
 uv sync                 # core: ladybug, embroider, onnxruntime, mordant, mcp, …
 uv sync --extra pdf     # bobine PDF converter
-uv sync --extra omni    # sentence-transformers + Pillow (image embeddings)
 uv sync --extra dev     # pytest
 ```
 
@@ -154,7 +153,7 @@ accepted everywhere, and usually live in `okfgraph.toml`.
 | `okf diff [OLD] [NEW] [--json]` | Snapshot (two dirs, no model) or drift (graph vs dir); exit 0 identical / 1 different |
 | `okf lint [DIR] [--json]` | Pre-import gate (no DB, no model); exit 0 clean / 1 errors / 2 bad dir |
 | `okf doctor [--fix] [--strict] [--stale-days N] [--json]` | Score + findings; `--fix` repairs safely, `--strict` exits 1 on any finding |
-| `okf import [--all] [--purge] [--mode text\|optional\|omni] [--force]` | Bulk/single import, delta-aware (`--force` re-attaches a detached graph); repeatable `--bundle-root ALIAS=PATH` adds named roots (`@alias/` IDs, unmounted ≠ deleted, `--purge` refuses while any root is absent); `--bundle` pins one tree, `--primary` sets the bare-ID root for all-roots scope (both = refused) |
+| `okf import [--all] [--purge] [--mode text] [--force]` | Bulk/single import, delta-aware (`--force` re-attaches a detached graph); repeatable `--bundle-root ALIAS=PATH` adds named roots (`@alias/` IDs, unmounted ≠ deleted, `--purge` refuses while any root is absent); `--bundle` pins one tree, `--primary` sets the bare-ID root for all-roots scope (both = refused) |
 | `okf detach [--bundle DIR] [--no-verify] [--force]` | End the mirror: the DB becomes the artifact (verify-first; imports refuse without `--force`) |
 | `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf deleted-*` | Setup, cache inspection, REPL, index rebuild, link + soft-delete maintenance |
 
@@ -242,7 +241,7 @@ Key design decisions:
   counting uses a tokenizer-only handle, so PPR search, budgeted reads,
   diff, and doctor stay cold.
 - **Last-token pooling** (not mean) — required by Jina v5; mean pooling
-  breaks alignment with omni image embeddings.
+  breaks alignment with stored vectors.
 - **Single pinned ORT** (`onnxruntime==1.29.0`, `ORT_DYLIB_PATH`-overridable)
   shared by bobine + embroider.
 - **Bobine is a plugin, not a dependency** — `DocumentConverter.convert()`
@@ -305,7 +304,7 @@ okfgraph/
 │   ├── cli.py             # okf: 5 verbs + maintenance, slim help, okfgraph.toml
 │   ├── mcp_server.py      # okf-mcp: 5 tools, MCP ≥ 2.0, lifespan-managed router
 │   ├── config.py          # okfgraph.toml + env + CLI merge
-│   ├── images.py          # IngestMode (text|optional|omni), planning helpers
+│   ├── images.py          # IngestMode (text-only since 0.7.0), planning helpers
 │   ├── security.py        # SSRF/domain guards for remote images
 │   ├── tools.py           # legacy tool definitions (superseded by mcp_server)
 │   └── components/        # ranking, links, search, lint, import_, export, diff, doctor,
@@ -315,7 +314,7 @@ okfgraph/
 ├── docs/                  # converters, harness-integration, plan-retrieval-roundup, diagnostics…
 ├── .mcp.json              # ready MCP wiring (uv run --project . okf-mcp)
 ├── architecture.md        # long-form architecture spec (v6.0, as-built for 0.2.12)
-└── pyproject.toml         # slim core deps + pdf/omni/dev extras
+└── pyproject.toml         # slim core deps + pdf/dev extras
 ```
 
 ---
@@ -328,7 +327,6 @@ github.com/opticsWolf/embroider), `onnxruntime==1.29.0`, `mordant>=0.9`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.
 
 - `--extra pdf`: `bobine>=0.5` (default PDF converter).
-- `--extra omni`: `sentence-transformers>=3`, `Pillow>=10` (image embeddings).
 - `--extra dev`: `pytest>=8`.
 
 ---
@@ -344,7 +342,7 @@ Check them before any commercial use.
 | Text embeddings (default, fp32) | `jinaai/jina-embeddings-v5-text-small-retrieval` | embroider | CC BY-NC 4.0 |
 | Text embeddings (fp16) | `opticsWolf/jina-embeddings-v5-text-small-retrieval-onnx-fp16` (ONNX conversion of the above) | embroider | CC BY-NC 4.0 |
 | Text embeddings (nano) | `jinaai/jina-embeddings-v5-text-nano-retrieval` | embroider | CC BY-NC 4.0 |
-| Image embeddings (`--extra omni`) | `jinaai/jina-embeddings-v5-omni-small-retrieval` | sentence-transformers | CC BY-NC 4.0 |
+| Image embeddings (≤0.6.x `--extra omni`, removed 0.7.0) | `jinaai/jina-embeddings-v5-omni-small-retrieval` | sentence-transformers (torch path, removed) | CC BY-NC 4.0 |
 | PDF layout (`--extra pdf`) | `wybxc/DocLayout-YOLO-DocStructBench-onnx` | bobine | Apache-2.0 |
 | PDF OCR det/rec (`--extra pdf`) | `SWHL/RapidOCR` (PP-OCRv4) | bobine | Apache-2.0 |
 | PDF tables (`--extra pdf`) | `opendatalab/PDF-Extract-Kit-1.0` (`models/TabRec/SlanetPlus/slanet-plus.onnx`) | bobine | repo declares AGPL-3.0 |

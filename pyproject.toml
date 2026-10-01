@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "okfgraph"
-version = "0.6.0"
+version = "0.7.0"
 description = "Ladybug-backed OKF knowledge graph with ONNX + Jina v5 embeddings"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,11 +36,6 @@ dev = [
 # PDF conversion (default BobineConverter; custom converters need none of this)
 pdf = [
     "bobine>=0.5",
-]
-# Multimodal image path (omni embeddings; text-only installs skip this)
-omni = [
-    "sentence-transformers>=3.0",
-    "Pillow>=10.0",
 ]
 
 [project.scripts]

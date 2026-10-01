@@ -10,9 +10,8 @@ Design choices:
       present or not); a missing GPU warns once and falls back to CPU,
       never fatal.
     - **Last-token pooling**: Required by jina-embeddings-v5. Mean pooling
-      produces vectors in a different embedding space that will NOT align
-      with the omni model's image embeddings in the unified ImageAsset
-      index.
+      produces vectors in a different embedding space that will NOT match
+      stored vectors.
 """
 
 import hashlib
@@ -66,8 +65,7 @@ class OKFRouter:
     # Construction
     # ------------------------------------------------------------------
 
-    # Valid Matryoshka truncation levels shared by jina-embeddings-v5
-    # (text-small-retrieval and omni-small-retrieval both support these).
+    # Valid Matryoshka truncation levels for jina-embeddings-v5-text.
     ALLOWED_DIMS = (32, 64, 128, 256, 512, 768, 1024)
 
     # ── Component-backed classmethods (Phase 1 refactor) ──────────
@@ -103,7 +101,6 @@ class OKFRouter:
         db_path: str,
         bundle_root: str,
         model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
-        omni_model_id: str = "jinaai/jina-embeddings-v5-omni-small-retrieval",
         embedding_dim: int = 512,
         max_length: Optional[int] = None,
         cache_dir: Optional[str] = None,
@@ -127,7 +124,6 @@ class OKFRouter:
             db_path: Path to the Ladybug database file.
             bundle_root: Root directory of the OKF markdown bundle.
             model_id: HuggingFace ID of the Jina v5 text embedding model.
-            omni_model_id: HuggingFace ID of the Jina v5 omni model (images).
             embedding_dim: Truncated Matryoshka dimension (<= 1024).
             cache_dir: Model cache directory (defaults per-platform).
             model_path: Explicit local ONNX file (with `tokenizer_path`);
@@ -170,7 +166,7 @@ class OKFRouter:
         except ImportError:
             raise RuntimeError(
                 "the embroider wheel is required for text embeddings: "
-                "pip install 'embroider>=0.1.5,<0.2'"
+                "pip install 'embroider>=0.2,<0.3'"
             ) from None
         if embedding_dim > 1024:
             raise ValueError(f"embedding_dim must be <= 1024 (model output), got {embedding_dim}")
@@ -217,7 +213,6 @@ class OKFRouter:
         self.roots = _vr(roots, primary=str(self.bundle_root))
         self.embedding_dim = embedding_dim
         self.model_id = model_id
-        self.omni_model_id = omni_model_id
         self.cache_dir = cache_dir
         self.device = device
         self.allow_remote_images = allow_remote_images
@@ -227,10 +222,6 @@ class OKFRouter:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.enable_chunking = enable_chunking
-
-        # Omni (multimodal) model is loaded lazily — text-only ingestion never
-        # pays the cost of pulling in the ~1.5B-param vision tower.
-        self._omni = None
 
         # Text embeddings: Rust embroider wheel (Jina v5 via ORT). No Python
         # fallback — a mid-run stack switch would silently mix vector spaces
@@ -369,8 +360,8 @@ class OKFRouter:
         self.encoder._truncate_dim = self.embedding_dim
         self.embed_engine = EmbeddingEngine(
             self.encoder, self.embedding_dim,
-            self.device, self.cache_dir, self.model_id, self.omni_model_id,
-            self._omni, self.chunk_size, self.chunk_overlap, self.enable_chunking,
+            self.device, self.cache_dir, self.model_id,
+            self.chunk_size, self.chunk_overlap, self.enable_chunking,
             self.conn, self.ort_dylib,
         )
         self.image_mgr = ImageAssetManager(
@@ -570,7 +561,7 @@ class OKFRouter:
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
 
     # ------------------------------------------------------------------
-    # Image ingestion (unified text / omni embedding space)
+    # Image ingestion (caption-based text embeddings since 0.7.0)
     # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------

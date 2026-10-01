@@ -70,7 +70,7 @@ Docs:
 
 DoD: Phase 0 tests green, full suite green, `pip install okfgraph[pdf]` in a clean venv → `pip list` has no torch/transformers/optimum/sentence-transformers.
 
-## Phase 2 — alignment across the three repos (embroider 0.2.1, ~0.5d)
+## Phase 2 — alignment across the three repos (embroider 0.2.1, ~0.5d) ✅ DONE (embroider 933e606, bobine c619bd7, py-bobine c99fc46)
 
 (Was plan-embroider Phase E0.)
 

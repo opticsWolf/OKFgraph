@@ -14,6 +14,10 @@ commit history, newest first.
   `mode="optional"/"omni"` (API/CLI/TOML/MCP) and `OKFGRAPH_OMNI_MODEL_ID`
   refuse or warn instead of silently downgrading — use `mode="text"`.
 - `requirements.txt` deleted (pyproject is the source of truth).
+- ONNX Runtime moves to `cpu`/`gpu` extras (exactly one): core installs carry
+  no ORT wheel; the first encode fails fast with the install hint.
+  `okf doctor` reports the resolved runtime (`ort_runtime`, incl. a hard
+  error when both distributions are installed).
 - Existing graphs: pre-0.7.0 `route='omni'` image rows are stale (different
   space); the next import re-embeds them by caption automatically, and
   `okf doctor` reports the count (`stale_omni_images`, informational).

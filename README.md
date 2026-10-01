@@ -57,7 +57,8 @@ engine is the external `embroider` package):
 
 ```bash
 git clone <repo> && cd OKFgraph
-uv sync                 # core: ladybug, embroider, onnxruntime, mordant, mcp, …
+uv sync                 # core: ladybug, embroider, mordant, mcp, … (no ORT — pick cpu|gpu)
+uv sync --extra cpu     # ONNX Runtime CPU (or --extra gpu for CUDA)
 uv sync --extra pdf     # bobine PDF converter
 uv sync --extra dev     # pytest
 ```
@@ -321,10 +322,13 @@ okfgraph/
 
 ## Requirements
 
-Core (`uv sync`): `ladybug==0.20.3`, `embroider>=0.1,<0.2` (PyPI wheels,
-github.com/opticsWolf/embroider), `onnxruntime==1.29.0`, `mordant>=0.9`,
+Core (`uv sync`): `ladybug==0.20.3`, `embroider>=0.2,<0.3` (PyPI wheels,
+github.com/opticsWolf/embroider), `mordant>=0.9`,
 `mcp>=2.0`, `pydantic>=2`, `pyyaml>=6`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.
+Plus exactly one ORT provider: `okfgraph[cpu]` (`onnxruntime==1.29.0`)
+or `okfgraph[gpu]` (`onnxruntime-gpu[cuda,cudnn]==1.29.0`) — shared with
+bobine via `ORT_DYLIB_PATH`.
 
 - `--extra pdf`: `bobine>=0.5` (default PDF converter).
 - `--extra dev`: `pytest>=8`.

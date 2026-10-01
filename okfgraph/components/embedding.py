@@ -309,6 +309,41 @@ def _warm_ort_gpu_dlls(module) -> bool:
         return False
 
 
+def ort_info() -> Dict[str, Any]:
+    """Snapshot of the ONNX Runtime situation (Phase 3, plan-onnx-only).
+
+    Pure observation: reads ``ORT_DYLIB_PATH``, the installed distribution
+    version(s), and the provider list. Never opens a session. A core install
+    with neither ``okfgraph[cpu]`` nor ``okfgraph[gpu]`` reports
+    ``installed=False``; both distributions installed is a hard warning
+    (same module name — the loader picks one silently).
+    """
+    import os
+    from importlib import metadata as _metadata
+    installed = []
+    for dist in ("onnxruntime", "onnxruntime-gpu"):
+        try:
+            installed.append((dist, _metadata.version(dist)))
+        except _metadata.PackageNotFoundError:
+            pass
+    version: Optional[str] = None
+    providers: List[str] = []
+    try:
+        import onnxruntime as _ort
+        version = getattr(_ort, "__version__", None)
+        providers = list(_ort.get_available_providers())
+    except ImportError:
+        pass
+    return {
+        "dylib_path": os.environ.get("ORT_DYLIB_PATH"),
+        "installed": [name for name, _ in installed],
+        "version": version,
+        "providers": providers,
+        "cuda_usable": "CUDAExecutionProvider" in providers,
+        "both_installed": len(installed) > 1,
+    }
+
+
 def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None) -> Optional[str]:
     """Point ``ORT_DYLIB_PATH`` at a pip-installed ORT build when unset.
 

@@ -192,3 +192,35 @@ def test_resolve_missing_runtime_returns_none(monkeypatch, tmp_path):
 
     assert emb.resolve_ort_dylib() is None
     assert "ORT_DYLIB_PATH" not in os.environ
+
+
+def test_ort_info_reports_distributions(monkeypatch):
+    """ort_info() names the installed ORT distribution(s) without a session."""
+    info = emb.ort_info()
+    assert set(info) == {"dylib_path", "installed", "version",
+                         "providers", "cuda_usable", "both_installed"}
+    # This venv has exactly one ORT (cpu XOR gpu — never both).
+    assert len(info["installed"]) <= 1
+    assert info["both_installed"] is False
+
+
+def test_ort_info_no_runtime(monkeypatch):
+    """With neither distribution present, installed is empty (actionable)."""
+    import builtins
+    from importlib import metadata as _metadata
+    real_import = builtins.__import__
+
+    def _blocked(name, *args, **kwargs):
+        if name == "onnxruntime":
+            raise ImportError("blocked")
+        return real_import(name, *args, **kwargs)
+
+    def _missing(name):
+        raise _metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+    monkeypatch.setattr(_metadata, "version", _missing)
+    info = emb.ort_info()
+    assert info["installed"] == []
+    assert info["version"] is None
+    assert info["cuda_usable"] is False

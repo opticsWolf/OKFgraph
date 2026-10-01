@@ -80,7 +80,7 @@ DoD: Phase 0 tests green, full suite green, `pip install okfgraph[pdf]` in a cle
 - embroider `CHANGELOG.md`: `Unreleased` → `0.2.1`.
 - Legacy Python bobine 0.2.0: add a README banner "superseded by the Rust bobine ≥0.5 (same PyPI name); not maintained" and archive the repo. Don't publish from it again.
 
-## Phase 3 — one ONNX Runtime, CPU or GPU (~1d)
+## Phase 3 — one ONNX Runtime, CPU or GPU (~1d) ✅ DONE
 
 Fixes D5. All three packages already load ORT dynamically, so the pin only needs to decide which wheel provides the DLL.
 

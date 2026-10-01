@@ -300,36 +300,57 @@ class OKFRouter:
         # in one index. The wheel import above stays fail-fast; the session
         # open is lazy so model-free commands (PPR search, budgeted reads,
         # diff, doctor) never pay model-download/session-build costs.
+        def _no_ort_hint(exc: Exception) -> Exception:
+            # Core installs carry no ORT wheel (it lives in okfgraph[cpu|gpu]);
+            # make the first-encode failure actionable instead of a raw load error.
+            if self.ort_dylib is None:
+                try:
+                    import onnxruntime  # noqa: F401
+                except ImportError:
+                    raise RuntimeError(
+                        "no ONNX Runtime installed: pip install 'okfgraph[cpu]' "
+                        "or 'okfgraph[gpu]' (exactly one)"
+                    ) from exc
+            return exc
+
         if explicit_files:
-            session_factory = lambda: embroider.JinaV5.open_files(
-                str(model_path),
-                str(tokenizer_path),
-                # Read off self: the stored dimension wins over the
-                # requested one (§4.1 adoption) and factories run lazily,
-                # after construction — so this is the adopted value.
-                truncate_dim=self.embedding_dim,
-                device=rust_device,
-                max_length=self.max_length,
-                cpu_arena=self.cpu_arena,
-            )
+            def _open_session():
+                return embroider.JinaV5.open_files(
+                    str(model_path),
+                    str(tokenizer_path),
+                    # Read off self: the stored dimension wins over the
+                    # requested one (§4.1 adoption) and factories run lazily,
+                    # after construction — so this is the adopted value.
+                    truncate_dim=self.embedding_dim,
+                    device=rust_device,
+                    max_length=self.max_length,
+                    cpu_arena=self.cpu_arena,
+                )
             tokenizer_factory = lambda: embroider.JinaTokenizer.open_files(
                 str(tokenizer_path),
             )
         else:
-            session_factory = lambda: embroider.JinaV5.open(
-                model_id,
-                # See above: adopted dimension, resolved at first encode.
-                truncate_dim=self.embedding_dim,
-                device=rust_device,
-                cache_dir=cache_dir,
-                max_length=self.max_length,
-                precision=self.precision,
-                cpu_arena=self.cpu_arena,
-            )
+            def _open_session():
+                return embroider.JinaV5.open(
+                    model_id,
+                    # See above: adopted dimension, resolved at first encode.
+                    truncate_dim=self.embedding_dim,
+                    device=rust_device,
+                    cache_dir=cache_dir,
+                    max_length=self.max_length,
+                    precision=self.precision,
+                    cpu_arena=self.cpu_arena,
+                )
             tokenizer_factory = lambda: embroider.JinaTokenizer.open(
                 model_id,
                 cache_dir=cache_dir,
             )
+
+        def session_factory():
+            try:
+                return _open_session()
+            except Exception as exc:
+                raise _no_ort_hint(exc) from exc
         self.encoder = LazyRustEncoder(
             model_id=model_id,
             truncate_dim=embedding_dim,

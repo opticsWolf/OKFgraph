@@ -198,6 +198,36 @@ class DoctorManager:
                              "omni route — re-import to re-embed by caption",
             })
 
+        # ORT runtime report (Phase 3, plan-onnx-only): which wheel provides
+        # the shared binary, and whether both are installed (loader picks one
+        # silently — hard warning, cpu XOR gpu).
+        try:
+            from okfgraph.components.embedding import ort_info
+            ort = ort_info()
+        except Exception:
+            ort = {}
+        if ort:
+            if not ort.get("installed"):
+                info.append({
+                    "rule": "ort_runtime",
+                    "message": "no ONNX Runtime installed: pip install "
+                             "'okfgraph[cpu]' or 'okfgraph[gpu]' (exactly one)",
+                })
+            else:
+                info.append({
+                    "rule": "ort_runtime",
+                    "message": f"ORT {ort.get('version')} via "
+                                 f"{'+'.join(ort['installed'])}, dylib="
+                                 f"{ort.get('dylib_path') or '(loader search)'}, "
+                                 f"cuda_usable={ort.get('cuda_usable')}",
+                })
+            if ort.get("both_installed"):
+                findings.append({
+                    "path": "", "severity": "error", "rule": "ort_runtime",
+                    "message": "both onnxruntime and onnxruntime-gpu are "
+                               "installed (same module name — uninstall one)",
+                })
+
         detached = None
         try:
             detached = self.import_mgr.delta_mgr.get_detached_state()

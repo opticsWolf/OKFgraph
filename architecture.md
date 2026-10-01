@@ -138,14 +138,15 @@ Created `tests/test_pdf_e2e.py` with 6 tests:
 ### Core (required)
 
 ```bash
-pip install okfgraph   # ladybug, embroider, onnxruntime, mordant, mcp, …
+pip install "okfgraph[cpu]"   # ladybug, embroider, mordant, mcp, … + CPU ORT (or [gpu] for CUDA)
 ```
 
 ```toml
-# pyproject.toml (0.2.12) — deliberately few, all pinned or floor-pinned:
+# pyproject.toml (0.7.0) — deliberately few, all pinned or floor-pinned:
 ladybug == 0.20.3            # graph + vector + FTS store (newer 0.20.x segfaults index builds — pinned)
-embroider >= 0.1, < 0.2      # Jina v5 text embeddings (external Rust/ORT crate, PyPI wheels)
-onnxruntime == 1.29.0        # ONE pinned ORT binary, shared by bobine + embroider (load-dynamic)
+embroider >= 0.2, < 0.3      # Jina v5 text embeddings (external Rust/ORT crate, PyPI wheels)
+# onnxruntime == 1.29.0 lives in the cpu|gpu extras (exactly one): ONE pinned
+# ORT binary, shared by bobine + embroider (load-dynamic)
 mordant >= 0.9               # Rust GFM chunking
 mcp >= 2.0                   # MCP server surface
 pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
@@ -158,8 +159,8 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 > (`resolve_ort_dylib()` → `ORT_DYLIB_PATH`), lazy session lifecycle
 > (`LazyRustEncoder`), and explicit air-gapped model paths.
 
-**Verified versions** (0.2.12 tree):
-- `ladybug==0.20.3`, `onnxruntime==1.29.0`, `embroider==0.1.3`, `mordant` (Rust GFM parser)
+**Verified versions** (0.7.x tree):
+- `ladybug==0.20.3`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider==0.2.x`, `mordant` (Rust GFM parser)
 - Single pinned ORT binary shared by bobine + embroider — do not float.
 
 ### PDF conversion (optional — bobine)

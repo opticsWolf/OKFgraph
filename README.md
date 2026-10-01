@@ -333,6 +333,36 @@ github.com/opticsWolf/embroider), `onnxruntime==1.29.0`, `mordant>=0.9`,
 
 ---
 
+## Model licences
+
+okfgraph's **code** is Apache-2.0 OR MIT. The **model weights** it downloads
+at runtime are not part of this repository and carry their own licences.
+Check them before any commercial use.
+
+| Used for | Model (Hugging Face repo) | Fetched by | Licence |
+|---|---|---|---|
+| Text embeddings (default, fp32) | `jinaai/jina-embeddings-v5-text-small-retrieval` | embroider | CC BY-NC 4.0 |
+| Text embeddings (fp16) | `opticsWolf/jina-embeddings-v5-text-small-retrieval-onnx-fp16` (ONNX conversion of the above) | embroider | CC BY-NC 4.0 |
+| Text embeddings (nano) | `jinaai/jina-embeddings-v5-text-nano-retrieval` | embroider | CC BY-NC 4.0 |
+| Image embeddings (`--extra omni`) | `jinaai/jina-embeddings-v5-omni-small-retrieval` | sentence-transformers | CC BY-NC 4.0 |
+| PDF layout (`--extra pdf`) | `wybxc/DocLayout-YOLO-DocStructBench-onnx` | bobine | Apache-2.0 |
+| PDF OCR det/rec (`--extra pdf`) | `SWHL/RapidOCR` (PP-OCRv4) | bobine | Apache-2.0 |
+| PDF tables (`--extra pdf`) | `opendatalab/PDF-Extract-Kit-1.0` (`models/TabRec/SlanetPlus/slanet-plus.onnx`) | bobine | repo declares AGPL-3.0 |
+| PDF formulas (`--extra pdf`) | `OleehyO/TexTeller` | bobine | Apache-2.0 |
+
+- **Every Jina v5 model is non-commercial (CC BY-NC 4.0).** okfgraph cannot
+  embed anything without one, so using okfgraph commercially requires a
+  commercial licence from Jina AI (see the model cards).
+- **PDF tables:** bobine fetches SLANet-plus from a repository whose card
+  declares AGPL-3.0. Review that before redistributing a service built on
+  `--extra pdf`.
+- Licences are as declared in each repository's model card when checked
+  (2026-09-27). The model cards are authoritative and can change. This
+  table is a pointer, not legal advice.
+
+---
+
 ## License
 
-See LICENSE for details (Apache-2.0 OR MIT).
+The code is licensed Apache-2.0 OR MIT (see LICENSE). Downloaded model
+weights are licensed separately; see [Model licences](#model-licences).

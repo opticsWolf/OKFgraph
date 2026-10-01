@@ -26,3 +26,20 @@ def test_embedding_dep_is_external_pin():
     deps = tomllib.loads(raw)["project"]["dependencies"]
     assert any(d.startswith("embroider>=") for d in deps), deps
     assert not (ROOT / "rust" / "okf-embed").exists(), "in-tree crate must stay deleted"
+
+
+def test_no_torch_in_install_paths():
+    """No install path may pull torch/transformers/optimum/sentence-transformers.
+
+    Phase 0 guardrail (plan-onnx-only): the whole chain is ONNX-only.
+    Test-only uses (parity tokenizer) live in tests/, never in packaging.
+    FAILS on current dev via the `omni` extra — that is the point (Phase 1
+    deletes the extra).
+    """
+    banned = ("torch", "transformers", "optimum", "sentence-transformers")
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    declared = list(project.get("dependencies", []))
+    for extra in project.get("optional-dependencies", {}).values():
+        declared.extend(extra)
+    offenders = [d for d in declared if any(b in d.lower() for b in banned)]
+    assert not offenders, f"torch-path packages in install paths: {offenders}"

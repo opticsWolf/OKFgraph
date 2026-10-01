@@ -62,6 +62,9 @@ def test_backend_selection(router):
     assert r.encoder.is_loaded is False
 
 
+BANNED_HEAVY = ('torch', 'optimum', 'transformers', 'sentence_transformers')
+
+
 def test_no_heavy_imports():
     """Importing okfgraph must not pull torch/optimum/transformers (hermetic)."""
     import subprocess
@@ -69,8 +72,45 @@ def test_no_heavy_imports():
 
     code = (
         "import sys, okfgraph; "
-        "banned=[m for m in ('torch','optimum','transformers','sentence_transformers') "
+        f"banned=[m for m in {BANNED_HEAVY!r} "
         "if m in sys.modules]; "
+        "print('banned:', banned); raise SystemExit(1 if banned else 0)"
+    )
+    root = _Path(__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [sys.executable, "-c", code], cwd=root, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_no_heavy_imports_after_work(tmp_path):
+    """Full import + image-ingest path + image search must stay torch-free.
+
+    Phase 0 guardrail (plan-onnx-only): the caption (`text`) route must never
+    load the torch stack. Runs in a subprocess so `sys.modules` is pristine.
+    """
+    import subprocess
+    from pathlib import Path as _Path
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "intro.md").write_text(INTRO, encoding="utf-8")
+    # Unresolvable image ref exercises `_ingest_concept_images` (text mode)
+    # without needing real image bytes (phantom refs embed nothing).
+    (bundle / "pic.md").write_text(
+        "---\ntitle: Pic\ntype: note\n---\n\n![a cat](missing.png)\n",
+        encoding="utf-8",
+    )
+    db = tmp_path / "work.db"
+    code = (
+        "import sys;"
+        f"from okfgraph import OKFRouter; r = OKFRouter(db_path={str(db)!r},"
+        f" bundle_root={str(bundle)!r}, embedding_dim=64, device='cpu');"
+        f"r.import_mgr.import_bundle({str(bundle)!r}, mode='text');"
+        "r.image_mgr.search_images_with_text('a cat');"
+        "r.image_mgr.list_images('pic');"
+        "r.close();"
+        f"banned=[m for m in {BANNED_HEAVY!r} if m in sys.modules];"
         "print('banned:', banned); raise SystemExit(1 if banned else 0)"
     )
     root = _Path(__file__).resolve().parent.parent

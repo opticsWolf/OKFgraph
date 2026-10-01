@@ -42,6 +42,13 @@ jobs:
           tests/test_error_paths.py
           -q
 
+      - name: No torch imports outside tests/docs (plan-onnx-only Phase 0)
+        run: |
+          if grep -rn --include='*.py' -E '(import|from).*(torch|sentence_transformers|optimum)' okfgraph/ skills/ examples/ 2>/dev/null; then
+            echo 'torch-path import in shipped code'; exit 1;
+          fi
+          echo 'torch-free shipped code'
+
   build:
     name: build sdist + wheel
     runs-on: ubuntu-latest

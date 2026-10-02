@@ -1,0 +1,158 @@
+# Plan: ONNX-only — open topics after Phases 0–4
+
+**Status:** draft (2026-10-02)
+**Parent:** `docs/plan-onnx-only.md` (Phases 0–4 marked done there).
+**Scope:** `OKFgraph` (dev, 0.7.0), `D:/User/Documents/Rust/bobine` (rust_dev), `D:/User/Documents/Python/embroider` (main, 0.2.1).
+
+The audit of 2026-10-02 checked each phase of the parent plan against the three repos. This file lists what is still open, in order. Each item names the plan phase or completion criterion it closes.
+
+## Already fixed in the audit (uncommitted)
+
+| Repo | Change | Closes |
+|---|---|---|
+| okfgraph | `import_bundle` converts a `str` path to `Path`. The Phase 0 guardrail `test_no_heavy_imports_after_work` used to crash before its torch check; now it runs to it. | Phase 0 completion criterion |
+| okfgraph | Stale tests: the ingest `mode` enum is now `["text"]`; `test_default_device_is_auto` (default `"auto"` since 0.5.0) | Phase 1 "full suite green" |
+| okfgraph | `pyproject.toml` comment 0.6.x → 0.7.x | — |
+| bobine | `vision_policy()` is extracted and used by `session_builder`; `vision_slots_never_use_text_policy` now tests the wiring, not embroider's constructors | Phase 4 |
+| bobine | CI and release workflows: ORT 1.28.1 → 1.29.0; README/quickref `>=1.28` → `==1.29.0` | Phase 3 (single pinned ORT) |
+| bobine, embroider | CI step: no torch / torchvision / transformers / optimum / sentence-transformers imports or dependencies. Excludes `tests/`, `docs/`, embroider `tools/export/` and bobine `legacy/`. | Phase 0 / Phase 5 "grep in all three CIs" |
+
+Result: full okfgraph suite **666 passed, 11 skipped, 0 failed**; bobine `cargo test --lib vision_slots` passes.
+
+## Step 1 — commit the audit fixes (~0.1d) ✅ DONE
+
+One commit per repo, on its working branch:
+
+- okfgraph `dev`: "plan-onnx-only audit: str bundle paths, stale tests"
+- bobine `rust_dev`: "plan-onnx-only audit: pin vision policy wiring, CI on ORT 1.29.0, torch-free CI grep"
+- embroider `main`: "ci: torch-free grep (plan-onnx-only Phase 0)"
+
+Done when: CI is green on all three after push.
+
+## Step 2 — enforce "cpu XOR gpu" in the lockfiles (~0.2d) ✅ DONE (okfgraph; bobine declares conflicts, has no uv.lock — `uv lock` there fails on the pre-existing py3.9/gpu resolution, out of scope)
+
+Closes Phase 3 (D5) for development installs. Today `uv.lock` resolves `onnxruntime` and `onnxruntime-gpu` as compatible, so `uv sync --all-extras` installs both. Only `okf doctor` warns afterwards.
+
+- okfgraph and bobine `pyproject.toml`:
+  ```toml
+  [tool.uv]
+  conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
+  ```
+- `uv lock` in both. Check that the diff only forks the ORT resolution and moves no other pin.
+- pip users aren't affected (pip can't express this). The doctor warning stays the guard there.
+
+Done when: `uv sync --all-extras` fails with a conflict error, and `uv sync --extra cpu` and `uv sync --extra gpu` each succeed.
+
+## Step 3 — clean-venv install proof (~0.3d) ✅ DONE (wheel from working tree, 2026-10-02)
+
+- `[cpu,pdf]`: only `onnxruntime 1.29.0`; no torch/transformers/optimum/sentence-transformers (no Pillow either — unneeded).
+- `[gpu,pdf]`: only `onnxruntime-gpu 1.29.0`; `--device cuda` → `used_cuda=True`; doctor reports dylib + `cuda_usable=True`.
+- bare: first encode raises the `[cpu]`/`[gpu]` hint, cached, clean exit 0.
+
+Two bugs found and fixed while proving the bare row (this machine has a stale
+`onnxruntime.dll` 1.17.1 in System32): pyo3 `PanicException` derives from
+`BaseException`, so `except Exception` in `session_factory` and
+`LazyRustEncoder._get_encoder` missed ORT-load failures (no hint, no caching,
+poisoned-init retry). Both now catch `BaseException` (cancellations re-raised,
+never cached). The router additionally pre-checks before `JinaV5.open`: a
+failed ort init poisons its global lock and aborts the process at interpreter
+teardown — with the pre-check the backend is never touched and exit is clean.
+Recorded in parent plan Phases 1/3. Remaining teardown-abort on the
+no-ORT path without the pre-check (i.e. explicit bad `ORT_DYLIB_PATH`) belongs
+to embroider, not here.
+
+These Phase 1 and Phase 3 completion criteria were never run. Use throwaway venvs outside the repo, building from the working tree (wheel) or from the released packages after Step 5.
+
+| Install | Check |
+|---|---|
+| `okfgraph[cpu,pdf]` | `pip list`: no torch/torchvision/transformers/optimum/sentence-transformers; exactly one of `onnxruntime` / `onnxruntime-gpu` |
+| `okfgraph[gpu,pdf]` | same, plus `okf doctor` reports the resolved dylib, ORT 1.29.0, and `used_cuda=True` with `--device cuda` |
+| `okfgraph` (no extra) | first encode fails fast with "install okfgraph[cpu] or okfgraph[gpu]" |
+
+Optional: turn the first row into a CI job (Linux, CPU) so it stays proven.
+
+Done when: all three rows pass, and the result is recorded in the parent plan's Phase 1 and Phase 3 entries.
+
+## Step 4 — local dev venv re-sync (user decision)
+
+`OKFgraph/.venv` still has torch 2.14, transformers 5.17 and sentence-transformers 6.0.1. Its installed okfgraph metadata still says 0.6.0. `uv sync --extra cpu --extra pdf --extra dev` would remove 42 packages:
+
+- **wanted:** the torch stack
+- **probably not:** `gossamer-web`, `ddgs`, `tiktoken`, `huggingface-hub`, `transformers`
+
+Effects:
+
+- `tests/test_parity.py` skips as a whole once `transformers` is gone. The `dev` extra doesn't list it, so a clean dev install never runs the parity tests. `test_golden_vectors.py` still covers the embedding contract.
+  - Decide whether that's enough, or whether to add `transformers` (tokenizer only, no torch) to a `parity` test extra.
+- Tools installed by hand belong in their own venv/uv tool, not the project venv.
+- The omni spike's `ref_torch.py` moves to `omni_spike/.venv-export` (README updated).
+
+## Step 5 — release train (~0.5d + CI time)
+
+Closes Phases 2 and 5 (release). Nothing is pushed or tagged yet:
+
+- embroider: 3 commits ahead of `origin/main`; `Cargo.toml` 0.2.1; last tag `v0.2.0`
+- okfgraph: `dev` 7 commits ahead of `origin/dev`; `pyproject.toml` 0.7.0
+- bobine: Phase 2–4 commits on `rust_dev`
+
+Order (each step's CI green before the next):
+
+1. **embroider 0.2.1**: push, tag `v0.2.1` (the tag==version guard), trusted publishing to crates.io + PyPI. No API change; COMPAT matrix already says okfgraph 0.7.x.
+2. **bobine**: merge `rust_dev` → `main`, bump the patch version, CHANGELOG ("embroider 0.2, ORT ==1.29.0 extras, shared-runtime log"), release. Optionally `cargo update -p embroider` to 0.2.1 first, since `Cargo.lock` is on 0.2.0 (works; no new API is used).
+3. **okfgraph 0.7.0**: merge `dev` → `main`, tag, publish. The CHANGELOG breaking notes are in place:
+   - `omni` extra and `mode=omni|optional` removed
+   - ORT moved to `[cpu]`/`[gpu]`
+   - image search is caption-based
+   - stale `route='omni'` rows reported by `okf doctor`
+
+   The README install line must say `okfgraph[cpu]` or `okfgraph[gpu]`.
+4. Run Step 3 against the published packages.
+5. Legacy Python bobine (`D:/User/Documents/Python/bobine`): archive the GitHub repo (manual; the banner is already committed). Never publish from it again.
+
+## Step 6 — ladybug access violation (~0.5d to triage)
+
+This is an intermittent native crash, unrelated to ONNX but found during the audit:
+
+- **Where:** `okfgraph/components/schema.py:534` `_build_search_indexes` → `ladybug.connection.execute` while a test router is being built (`tests/test_chunking.py` fixture).
+- **When:** in the `import_bundle` subset run; it reproduces on the unmodified tree. The full suite passed twice.
+- **Context:** `pyproject.toml` already pins `ladybug==0.20.3` because of index-build segfaults on newer 0.20.x.
+- **Next:**
+  - loop `pytest tests/test_chunking.py` to get a repro rate
+  - check whether it's tied to Windows file handles / temp-dir reuse
+  - file upstream with the faulthandler trace
+  - if it hits users (it's in `_ensure_schema`), consider retry-on-open or serialising index builds
+
+## Step 7 — Phase 6 (ONNX image embeddings, omni-nano) — blocked
+
+The design and evidence are in the parent plan's Phase 6 and in `omni_spike/README.md`. Reordered so the go/no-go gate runs before the expensive Rust work:
+
+| Step | Work | Blocked on | Gate |
+|---|---|---|---|
+| 6.4a Real-image proof (moved first) | ~100 real figures/screenshots/photos from okfgraph PDFs in `omni_spike/images/user/` + `captions.json` with human-written queries. Rerun `run_all.sh` + `run_dyn.sh`, then compare image content vs captions vs torch native. | **User: the images and queries** | r@1 within 0.05 of torch native, and image content beats captions on text-in-image/chart questions. If not, stop: ship nothing, captions stay. |
+| 6.0 Artifact on HF | Upload fp32 + fp16 + tokenizer + manifest at a pinned commit. Model card: `license: cc-by-nc-4.0`, `base_model`, attribution, changes list, commercial-use line. | **User: upload approval**; only after 6.4a passes | sha256 of the download == manifest |
+| 6.1 embroider 0.3.0 `JinaV5Vision` | Port `grid.py` to Rust. Registry entry with `text_partner`. Fixtures from `test_grid.py` cases. Vision-slot session policy with `kSameAsRequested` + `gpu_mem_limit`. Export script into `tools/export/`. | 6.0 | Host tensors bit-identical; cos ≥ 0.9999 fp32 / 0.999 fp16; pure `cargo test --locked` |
+| 6.2 okfgraph 0.8.0 wiring | `EmbedRoute.VISION` (`vision-onnx`), `image_model_id`/`image_precision` pins, refusals, doctor, CLI/MCP modes, Pillow resize | 6.1 | Hermetic no-torch test covers the image path; refusal tests |
+| 6.3 In-situ parity | okfgraph ingest of the spike corpus vs torch native | 6.2 | cos ≥ 0.9999 / 0.999, r@1 = torch |
+| 6.5 Release | embroider 0.3.0 → okfgraph 0.8.0, COMPAT (image search needs text-nano) | 6.3 | Phase 5 release checks |
+
+## Order and effort
+
+| Step | Repo(s) | Effort | Depends on |
+|---|---|---|---|
+| 1 Commit audit fixes | all | 0.1d | — |
+| 2 uv conflicts | okfgraph, bobine | 0.2d | 1 |
+| 3 Clean-venv proof | okfgraph | 0.3d | 2 (local), 5 (published) |
+| 4 Dev venv re-sync | okfgraph (local) | — | user decision |
+| 5 Release train | all | 0.5d | 1, 2 |
+| 6 ladybug crash | okfgraph | 0.5d | — (parallel) |
+| 7 Phase 6 | embroider → okfgraph | 5–7d | 6.4a images, then HF approval |
+
+## Definition of done (parent plan), current state
+
+| Criterion | State |
+|---|---|
+| No torch stack in any install path (packaging test + hermetic import + CI grep) | packaging ✅, hermetic ✅ (now actually runs), CI grep ✅ in all three (uncommitted in bobine/embroider); clean-install proof → Step 3 |
+| Every runtime model file is `.onnx` on ORT 1.29.0 via embroider's layer | ✅ (bobine CI now also tests 1.29.0) |
+| One vector space per graph | ✅ for text + captions; Phase 6 adds image pins |
+| bobine on embroider 0.2, COMPAT current, goldens green, publish dry-run + wheel matrix | code ✅; publish → Step 5 |
+| CPU and GPU installs each resolve exactly one ORT | doctor warns ✅; lockfile enforcement → Step 2; proof → Step 3 |

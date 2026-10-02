@@ -44,6 +44,12 @@ pdf = [
     "bobine>=0.5",
 ]
 
+[tool.uv]
+# cpu XOR gpu enforced at resolve time (plan-onnx-only Step 2): both
+# distributions install the same `onnxruntime` module, so installing both
+# silently picks one. pip can't express this — `okf doctor` warns there.
+conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
+
 [project.scripts]
 okf = "okfgraph.cli:main"
 okf-mcp = "okfgraph.mcp_server:main"

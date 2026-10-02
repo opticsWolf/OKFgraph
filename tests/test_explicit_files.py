@@ -56,6 +56,10 @@ def _stub_embed(monkeypatch, calls):
         MAX_LENGTH=8192,
     )
     monkeypatch.setitem(sys.modules, "embroider", stub)
+    # The router pre-checks for an ORT install before touching the backend;
+    # a bare module stand-in keeps the stubbed world self-consistent on
+    # ORT-less CI (resolve_ort_dylib skips modules without __file__).
+    monkeypatch.setitem(sys.modules, "onnxruntime", types.ModuleType("onnxruntime"))
     return stub
 
 
@@ -141,6 +145,7 @@ def test_default_path_still_uses_open(tmp_path, monkeypatch):
         MAX_LENGTH=real_embed.MAX_LENGTH,
     )
     monkeypatch.setitem(sys.modules, "embroider", stub)
+    monkeypatch.setitem(sys.modules, "onnxruntime", types.ModuleType("onnxruntime"))
 
     router = _router(tmp_path)
     try:

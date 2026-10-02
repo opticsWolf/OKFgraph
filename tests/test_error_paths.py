@@ -81,7 +81,7 @@ class TestSchemaErrors:
         assert r.schema_mgr._indexes_dirty() is False
         r.close()
 
-    def test_v5_db_without_table_migrates(self, tmp_path):
+    def test_v5_db_without_table_migrates(self, tmp_path, monkeypatch):
         """A 0.2.x-era DB (version 5, no DeletedConcept table) gains the
         full v6 table on open."""
         import ladybug as lb
@@ -100,13 +100,16 @@ class TestSchemaErrors:
         assert r.schema_mgr._get_meta("schema_version") == 8
         # The migrated table supports the full lifecycle.
         (tmp_path / "m.md").write_text("# M\n\nBody.\n", encoding="utf-8")
-        r.embed_engine._encode = lambda text, task="Document": [0.0] * 512
+        # import_bundle embeds via the batch path; both must stay stubbed so
+        # no real session opens on ORT-less CI.
+        monkeypatch.setattr(r.embed_engine, "_encode", lambda text, task="Document": [0.0] * 512)
+        monkeypatch.setattr(r.embed_engine, "_encode_batch", lambda texts, task="Document": [[0.0] * 512 for _ in texts])
         r.import_mgr.import_bundle(tmp_path)
         assert r.purge_mgr._soft_delete_concept("m") is True
         assert r.purge_mgr._recover_concept("m") is True
         r.close()
 
-    def test_v5_table_gains_snapshot_column(self, tmp_path):
+    def test_v5_table_gains_snapshot_column(self, tmp_path, monkeypatch):
         """A pre-0.2.x DB whose v5 DeletedConcept lacks `snapshot` is
         ALTERed on open — the lifecycle then works against it."""
         import ladybug as lb
@@ -130,7 +133,8 @@ class TestSchemaErrors:
                        embedding_dim=512, enable_chunking=False, device="cpu")
         assert r.schema_mgr._get_meta("schema_version") == 8
         (tmp_path / "m.md").write_text("# M\n\nBody.\n", encoding="utf-8")
-        r.embed_engine._encode = lambda text, task="Document": [0.0] * 512
+        monkeypatch.setattr(r.embed_engine, "_encode", lambda text, task="Document": [0.0] * 512)
+        monkeypatch.setattr(r.embed_engine, "_encode_batch", lambda texts, task="Document": [[0.0] * 512 for _ in texts])
         r.import_mgr.import_bundle(tmp_path)
         assert r.purge_mgr._soft_delete_concept("m") is True
         assert r.purge_mgr._recover_concept("m") is True

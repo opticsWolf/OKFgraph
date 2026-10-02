@@ -200,3 +200,92 @@ def test_router_construction_stays_cold(tmp_path, monkeypatch):
         assert router.encoder.is_loaded is False
     finally:
         router.close()
+
+
+class _RustPanic(BaseException):
+    """Stands in for pyo3 PanicException: derives from BaseException, not
+    Exception (verified: a real ORT-load panic propagates straight through
+    `except Exception`)."""
+
+
+def test_base_exception_failure_is_cached():
+    """A Rust-side open failure (BaseException) is cached like any error —
+    it must not retry the poisoned ORT init on every encode."""
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        raise _RustPanic("Failed to load ONNX Runtime dylib")
+
+    proxy, _ = _make_proxy(session_factory=boom)
+    for _ in range(2):
+        try:
+            proxy.encode("x")
+        except _RustPanic:
+            pass
+        else:
+            raise AssertionError("encode should have raised")
+    assert calls["n"] == 1
+
+
+def test_keyboard_interrupt_not_cached():
+    """Cancellations pass through and are never cached as open failures."""
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        raise KeyboardInterrupt
+
+    proxy, _ = _make_proxy(session_factory=boom)
+    for _ in range(2):
+        try:
+            proxy.encode("x")
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError("encode should have raised")
+    assert calls["n"] == 2
+
+
+def test_no_ort_hint_wraps_rust_panic(tmp_path, monkeypatch):
+    """Step 3 gate: with no ORT installed, the first encode fails fast with
+    the install hint even when the backend raises a pyo3-style panic
+    (BaseException, e.g. stale system DLL) instead of a normal error."""
+    import builtins
+    from okfgraph.router import OKFRouter
+
+    real_import = builtins.__import__
+
+    def _no_ort(name, *args, **kwargs):
+        if name == "onnxruntime":
+            raise ImportError("blocked for test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_ort)
+    monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
+
+    def panic_open(*args, **kwargs):
+        raise _RustPanic("Failed to load ONNX Runtime dylib")
+
+    stub = types.SimpleNamespace(
+        JinaV5=types.SimpleNamespace(open=panic_open),
+        JinaTokenizer=types.SimpleNamespace(open=panic_open),
+        MAX_LENGTH=8192,
+    )
+    monkeypatch.setitem(sys.modules, "embroider", stub)
+
+    router = OKFRouter(
+        db_path=str(tmp_path / "hint.db"),
+        bundle_root=str(tmp_path),
+        device="cpu",
+    )
+    try:
+        assert router.ort_dylib is None
+        try:
+            router.encoder.encode("hello")
+        except RuntimeError as exc:
+            assert "okfgraph[cpu]" in str(exc) and "okfgraph[gpu]" in str(exc)
+        else:
+            raise AssertionError("encode should have raised the install hint")
+    finally:
+        router.close()

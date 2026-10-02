@@ -456,7 +456,14 @@ class LazyRustEncoder:
                 raise self._encoder_error
             try:
                 encoder = self._session_factory()
-            except Exception as exc:
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except BaseException as exc:
+                # BaseException, not Exception: a failed ORT load surfaces
+                # as pyo3 PanicException, which derives from BaseException
+                # and would otherwise bypass the cache and retry the
+                # (poisoned) init on every encode. Cancellations are never
+                # cached.
                 self._encoder_error = exc
                 raise
             self._encoder = encoder

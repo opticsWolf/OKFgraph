@@ -70,6 +70,12 @@ Docs:
 
 DoD: Phase 0 tests green, full suite green, `pip install okfgraph[pdf]` in a clean venv → `pip list` has no torch/transformers/optimum/sentence-transformers.
 
+Proven 2026-10-02 (follow-up Step 3, wheel built from `dev`): `[cpu,pdf]` →
+only `onnxruntime 1.29.0`, no torch stack; `[gpu,pdf]` → only
+`onnxruntime-gpu 1.29.0`, `used_cuda=True`, doctor reports the dylib;
+bare install → first encode raises the `[cpu]`/`[gpu]` hint (with a
+pre-open check, so a stale system DLL can't poison ort's init lock).
+
 ## Phase 2 — alignment across the three repos (embroider 0.2.1, ~0.5d) ✅ DONE (embroider 933e606, bobine c619bd7, py-bobine c99fc46)
 
 (Was plan-embroider Phase E0.)
@@ -87,7 +93,7 @@ Fixes D5. All three packages already load ORT dynamically, so the pin only needs
 - okfgraph: move `onnxruntime==1.29.0` out of core into extras, mirroring bobine: `cpu = ["onnxruntime==1.29.0"]`, `gpu = ["onnxruntime-gpu[cuda,cudnn]==1.29.0"]`. Core without either → `resolve_ort_dylib()` returns `None` and the first encode fails fast with "install okfgraph[cpu] or okfgraph[gpu]".
 - bobine: tighten its extras from `>=1.28` to `==1.29.0` so both consumers resolve the same binary; keep the "cpu XOR gpu" note.
 - `okf doctor` (and bobine's startup log): report the resolved `ORT_DYLIB_PATH`, the ORT version and whether both `onnxruntime` and `onnxruntime-gpu` distributions are installed (hard warning). Use embroider `diag::OrtReport` where available (see Phase 4).
-- DoD: clean-venv installs of `okfgraph[cpu,pdf]` and `okfgraph[gpu,pdf]` each end up with exactly one ORT distribution; `--device cuda` on the GPU install reports `used_cuda=True`.
+- DoD: clean-venv installs of `okfgraph[cpu,pdf]` and `okfgraph[gpu,pdf]` each end up with exactly one ORT distribution; `--device cuda` on the GPU install reports `used_cuda=True`. ✅ proven 2026-10-02 (follow-up Step 3). `uv` additionally enforces cpu-XOR-gpu at resolve time (`[tool.uv] conflicts`); pip relies on the doctor warning.
 
 ## Phase 4 — embroider plumbing hardening (~1–2d) ✅ DONE
 

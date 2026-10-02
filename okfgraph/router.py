@@ -300,18 +300,18 @@ class OKFRouter:
         # in one index. The wheel import above stays fail-fast; the session
         # open is lazy so model-free commands (PPR search, budgeted reads,
         # diff, doctor) never pay model-download/session-build costs.
-        def _no_ort_hint(exc: Exception) -> Exception:
-            # Core installs carry no ORT wheel (it lives in okfgraph[cpu|gpu]);
-            # make the first-encode failure actionable instead of a raw load error.
-            if self.ort_dylib is None:
-                try:
-                    import onnxruntime  # noqa: F401
-                except ImportError:
-                    raise RuntimeError(
-                        "no ONNX Runtime installed: pip install 'okfgraph[cpu]' "
-                        "or 'okfgraph[gpu]' (exactly one)"
-                    ) from exc
-            return exc
+        def _ort_missing() -> bool:
+            # Core installs carry no ORT wheel (it lives in okfgraph[cpu|gpu]).
+            if self.ort_dylib is not None:
+                return False
+            try:
+                import onnxruntime  # noqa: F401
+            except ImportError:
+                return True
+            return False
+
+        _ORT_HINT = ("no ONNX Runtime installed: pip install 'okfgraph[cpu]' "
+                     "or 'okfgraph[gpu]' (exactly one)")
 
         if explicit_files:
             def _open_session():
@@ -347,10 +347,21 @@ class OKFRouter:
             )
 
         def session_factory():
+            if _ort_missing():
+                # Fail before JinaV5.open: a failed ORT init poisons ort's
+                # global lock and aborts the process at teardown, so the
+                # backend must never be touched when no runtime exists.
+                raise RuntimeError(_ORT_HINT)
             try:
                 return _open_session()
-            except Exception as exc:
-                raise _no_ort_hint(exc) from exc
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except BaseException as exc:
+                # BaseException: ORT load failures arrive as pyo3
+                # PanicException (BaseException, not Exception).
+                if _ort_missing():
+                    raise RuntimeError(_ORT_HINT) from exc
+                raise
         self.encoder = LazyRustEncoder(
             model_id=model_id,
             truncate_dim=embedding_dim,

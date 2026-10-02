@@ -49,7 +49,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 Requires Python ≥ 3.11.
 
 ```bash
-pip install "okfgraph[pdf]"   # PyPI (embeddings come from the published `embroider` wheels)
+pip install "okfgraph[cpu,pdf]"   # PyPI (embeddings come from the published `embroider` wheels; use [gpu,pdf] for CUDA)
 ```
 
 Or from source with `uv` (no Rust toolchain needed — the embedding

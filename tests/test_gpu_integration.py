@@ -376,14 +376,14 @@ class TestOmniRemoved:
 class TestGPUDeviceEdgeCases:
     """Test edge cases in GPU device selection."""
 
-    def test_default_device_is_cpu(self, tmp_dir):
-        """Default device should be 'cpu'."""
+    def test_default_device_is_auto(self, tmp_dir):
+        """Default device is 'auto' (since 0.5.0)."""
         r = OKFRouter(
             db_path=str(Path(tmp_dir) / "test_default_device.db"),
             bundle_root=tmp_dir,
             embedding_dim=512,
         )
-        assert r.device == "cpu"
+        assert r.device == "auto"
         r.close()
 
     @pytest.mark.skipif(not _has_onnxruntime_gpu(), reason="onnxruntime-gpu not installed")

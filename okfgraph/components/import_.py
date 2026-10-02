@@ -582,7 +582,7 @@ class ImportManager:
     ) -> List[str]:
         """Inner implementation of import_bundle (called under write lock)."""
         mode = IngestMode.coerce(mode)
-        root = bundle_path or self.bundle_root
+        root = Path(bundle_path or self.bundle_root)
         if alias is None:
             alias = self._alias_for_root(root)
         det = self._detector_for(alias)
@@ -1215,6 +1215,9 @@ class ImportManager:
         Returns:
             List of imported concept IDs.
         """
+        # Callers (MCP, scripts) may pass a str; the walk needs a Path.
+        if bundle_path is not None:
+            bundle_path = Path(bundle_path)
         # Acquire write lock (Gap #7b)
         with self._write_lock_ctx():
             if bundle_path is not None or not self.roots:

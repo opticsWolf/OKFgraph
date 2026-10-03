@@ -175,6 +175,6 @@ The design and evidence are in the parent plan's Phase 6 and in `omni_spike/READ
 |---|---|
 | No torch stack in any install path (packaging test + hermetic import + CI grep) | packaging ✅, hermetic ✅ (now actually runs), CI grep ✅ in all three (uncommitted in bobine/embroider); clean-install proof → Step 3 |
 | Every runtime model file is `.onnx` on ORT 1.29.0 via embroider's layer | ✅ (bobine CI now also tests 1.29.0) |
-| One vector space per graph | ✅ for text + captions; Phase 6 adds image pins |
+| One vector space per graph | ✅ text + captions + images (image model/precision pins, text_partner gate, 0.8.0) |
 | bobine on embroider 0.2, COMPAT current, goldens green, publish dry-run + wheel matrix | code ✅; publish → Step 5 |
 | CPU and GPU installs each resolve exactly one ORT | doctor warns ✅; lockfile enforcement → Step 2; proof → Step 3 |

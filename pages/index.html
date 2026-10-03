@@ -1,488 +1,249 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OKFgraph — the file-first knowledge graph for humans and agents</title>
-<meta name="description" content="OKFgraph keeps knowledge as plain Markdown and serves it with hybrid ONNX retrieval over a ladybug index — via MCP, CLI, and Python. Ingestion by bobine, embeddings by embroider.">
-<link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c1017">
+  <title>OKFgraph — local knowledge, connected</title>
+  <meta name="description" content="Turn Markdown, documents, and working notes into a local knowledge graph. Hybrid search, graph traversal, and persistent agent memory through MCP, CLI, and Python.">
+  <link rel="preload" href="fonts/space-grotesk-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-<nav class="top">
-  <a class="brand" href="#top"><span class="mark"></span>OKFgraph</a>
+<a class="skip-link" href="#main">Skip to content</a>
+<nav class="top" aria-label="Main navigation">
+  <a class="brand" href="#top">
+    <svg class="mark" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M6 7 21 5 23 21 7 23 6 7Zm0 0 17 14M21 5 7 23" stroke="currentColor" stroke-width="1.5"/><g fill="currentColor"><circle cx="6" cy="7" r="3"/><circle cx="21" cy="5" r="3"/><circle cx="23" cy="21" r="3"/><circle cx="7" cy="23" r="3"/></g></svg>
+    OKFgraph <span class="release">0.9.0</span>
+  </a>
   <div class="links">
-    <a href="#positioning">Positioning</a>
+    <a href="#positioning">Why OKFgraph</a>
     <a href="#workflow">Workflow</a>
-    <a href="#features">Features</a>
-    <a href="#retrieval">Retrieval</a>
-    <a href="#surfaces">Surfaces</a>
-    <a href="#bobine">bobine</a>
-    <a href="#embroider">embroider</a>
+    <a href="#features">Capabilities</a>
+    <a href="#surfaces">Use it</a>
+    <a href="#stack">The stack</a>
   </div>
-  <a class="btn small" href="https://github.com/opticsWolf/OKFgraph">GitHub</a>
+  <a class="source-link" href="https://github.com/opticsWolf/OKFgraph">GitHub <span aria-hidden="true">↗</span></a>
 </nav>
 
 <header class="hero" id="top">
-  <div class="glow"></div>
-  <p class="kicker">Markdown-native · ONNX-only · MCP-ready · v0.9.0</p>
-  <h1>Your notes are the database.</h1>
-  <p class="sub">OKFgraph is a <strong>file-first knowledge graph</strong>. Your knowledge lives
-  as plain Markdown files — readable in any editor, versioned in git, openable in Obsidian —
-  while a <strong>ladybug index</strong> serves it back with hybrid semantic search over
-  locally-run Jina&nbsp;v5 embeddings. There is no server to operate, no torch anywhere in
-  the stack, and no export step standing between you and your data: it was files all along,
-  the database is just a disposable, rebuildable view over them.</p>
-  <p class="cta">
-    <a class="btn" href="https://github.com/opticsWolf/OKFgraph">Get started</a>
-    <a class="btn ghost" href="https://pypi.org/project/okfgraph/">PyPI · okfgraph</a>
-  </p>
-<pre class="install"><code>pip install "okfgraph[cpu,pdf]"
-okf init --db kb.db --bundle kb/
-okf import --all --bundle kb/
-okf search "how does table OCR route providers?"</code></pre>
-  <ul class="chips">
-    <li><strong>5</strong> MCP tools</li>
-    <li><strong>0</strong> torch imports</li>
-    <li><strong>1</strong> index file</li>
-    <li><strong>3</strong> retrieval gears</li>
-    <li><strong>100%</strong> deterministic</li>
+  <div class="hero-copy">
+    <h1>Local knowledge.<br><span>Connected thinking.</span></h1>
+    <p class="sub">A knowledge graph for your documents, decisions, and working notes — searchable by meaning, connected by links, and available to your agents.</p>
+    <p class="hero-detail">OKFgraph turns plain Markdown into a local graph with hybrid retrieval. Keep editing in your own tools; use MCP, the CLI, or Python to find the right passage and follow the relationships around it. Embeddings run locally over ONNX Runtime, without torch.</p>
+    <div class="cta">
+      <a class="btn" href="#workflow">Build your first graph <span aria-hidden="true">↓</span></a>
+      <a class="text-link" href="https://github.com/opticsWolf/OKFgraph#quick-start">Read the documentation <span aria-hidden="true">↗</span></a>
+    </div>
+  </div>
+  <figure class="knowledge-preview">
+    <figcaption><span class="status-dot" aria-hidden="true"></span> From a note to a connected corpus</figcaption>
+    <div class="file-preview">
+      <div class="file-path">kb/auth.md <span>Markdown source</span></div>
+      <pre tabindex="0" aria-label="Illustrative Markdown note"><code><span class="syntax-muted">---</span>
+<span class="syntax-key">title:</span> Session auth
+<span class="syntax-key">tags:</span> [auth, sessions]
+<span class="syntax-muted">---</span>
+
+## Design decision
+Use short-lived access tokens.
+Refresh flow: <span class="syntax-link">[[token-refresh]]</span></code></pre>
+    </div>
+    <div class="preview-index"><span>Index locally</span><span>chunks · vectors · links</span></div>
+    <div class="preview-query"><span class="syntax-muted">Retrieve</span><strong>“How does session auth work?”</strong><p>Find the note. Read the passage.<br>Follow the linked decision.</p></div>
+    <p class="preview-caption">Illustrative workflow · your files remain yours.</p>
+  </figure>
+  <ul class="principles" aria-label="At a glance">
+    <li>Markdown-native</li><li>Local inference</li><li>Five MCP tools</li><li>Graph + vector + full-text retrieval</li>
   </ul>
 </header>
 
-<main>
-
-<!-- ============ POSITIONING ============ -->
-<section id="positioning">
-  <p class="sec-no">01 · Positioning</p>
-  <h2>Files are the truth.<br>The graph is the index.</h2>
-  <p class="lede">Most knowledge systems swallow your documents into a database you can never
-  cleanly leave: the files go in, vectors and edges come out, and the originals rot or
-  vanish. Migration becomes a project, auditing becomes archaeology, and the moment the
-  vendor changes direction, your corpus is hostage. OKFgraph inverts the relationship.
-  The <strong>bundle</strong> — a directory of Markdown files with frontmatter metadata,
-  <code>[[wikilinks]]</code>, and content-hash image assets — is the source of truth, and it
-  stays that way forever. The database is a <em>derived index</em>: delete it, re-import the
-  same folder, and you get the same graph back, deterministically.</p>
-  <p class="lede">This inversion shapes every workflow the system supports. Because files are
-  canonical, editing knowledge means editing text — in any editor, through any review process,
-  with full git history — and re-importing only what changed. Because the index is disposable,
-  there is no backup strategy to design and no schema migration to fear: the index is rebuilt,
-  never migrated. And because agents speak to the graph through five stable, deterministic
-  tools, the same question returns the same answer on every run, which is what makes
-  evaluation and regression testing of knowledge workflows possible at all.</p>
-  <div class="flow">
-    <div class="node"><strong>Bundle</strong><span>Markdown + frontmatter + [[links]]</span></div>
-    <div class="arrow">→</div>
-    <div class="node"><strong>import</strong><span>lint · chunk · embed · link</span></div>
-    <div class="arrow">→</div>
-    <div class="node"><strong>ladybug index</strong><span>graph + vectors + FTS, one file</span></div>
-    <div class="arrow">→</div>
-    <div class="node"><strong>search / export</strong><span>answer, or Markdown back out</span></div>
-  </div>
-  <div class="tenets">
-    <div class="card">
-      <h3>For humans</h3>
-      <p>Knowledge work stays in tools you already trust. Write notes in your editor of choice,
-      review them as pull requests, sync them with git, and open the very same folder in
-      Obsidian when you want a visual graph. Curation — fixing a link, clarifying a paragraph,
-      merging two duplicates — is just editing text, and the next import picks it up. There is
-      no admin console to learn and no proprietary format silently holding your thinking hostage.</p>
-    </div>
-    <div class="card">
-      <h3>For agents</h3>
-      <p>Coding agents need memory they can read and write without ceremony. Five MCP tools —
-      <code>search</code>, <code>read</code>, <code>traverse</code>, <code>ingest</code>,
-      <code>export_bundle</code> — cover the whole lifecycle, and every one of them returns
-      deterministic output: sorted traversal order, fixed ranking constants, pinned fixtures.
-      Persist session reasoning with <code>ingest_thoughts</code>, recall it weeks later with
-      <code>search</code>, and trust that an eval written today still means the same thing next quarter.</p>
-    </div>
-    <div class="card">
-      <h3>For pipelines</h3>
-      <p>Production knowledge bases are built, not written. Delta-aware import re-embeds only
-      changed files, so nightly re-indexing of a ten-thousand-file corpus costs minutes, not hours.
-      <code>diff</code> and <code>doctor</code> return CI exit codes, so a docs PR can gate on graph
-      health the same way code PRs gate on tests. And <code>produce</code> turns a SQLite database
-      into a linted, observation-annotated bundle — structured data in, curated knowledge out.</p>
+<main id="main">
+<section id="positioning" aria-labelledby="positioning-title">
+  <div class="section-intro">
+    <h2 id="positioning-title">Keep the files.<br>Gain the connections.</h2>
+    <div class="prose">
+      <p>A folder of notes is easy to own, but harder to query as it grows. Vector search finds related text, but doesn't necessarily explain how one decision connects to another. OKFgraph brings these views together: your Markdown bundle supplies the content, and a LadybugDB index stores concepts, passages, links, vectors, and full-text indexes.</p>
+      <p>In a file-backed workflow, edit and review the bundle as normal, then import the changes. You can rebuild the index from those sources or export graph content back to Markdown. There is no hosted service to run, and no proprietary authoring format to adopt.</p>
     </div>
   </div>
+  <ol class="flow" aria-label="File-backed knowledge workflow">
+    <li><span class="flow-label">Source</span><strong>Markdown bundle</strong><p>Notes, metadata, links, and assets</p></li>
+    <li><span class="flow-label">Index</span><strong>Import changes</strong><p>Parse, chunk, embed, resolve links</p></li>
+    <li><span class="flow-label">Retrieve</span><strong>LadybugDB graph</strong><p>Combine meaning, words, and structure</p></li>
+    <li><span class="flow-label">Use</span><strong>Read or export</strong><p>Relevant context for people and agents</p></li>
+  </ol>
+  <aside class="note"><h3>Prefer memory without a folder?</h3><p>Python also supports <code>OKFRouter(db_path="memory.db")</code> without a bundle root. Ingest thoughts directly, search them later, and export when you want files. In this mode, the database holds the original knowledge: back it up or export it before rebuilding. The same applies to graph-only thoughts added to a file-backed corpus.</p></aside>
 </section>
 
-<!-- ============ WORKFLOW ============ -->
-<section id="workflow">
-  <p class="sec-no">02 · Workflow</p>
-  <h2>A day with OKFgraph,<br>start to finish.</h2>
-  <p class="lede">What follows is the complete loop — from an empty folder to a queried, maintained,
-  exported knowledge base — exactly as you would run it. Each step shows the command, what it does,
-  and what happens underneath, so there is never any mystery about where your words go.</p>
+<section id="workflow" aria-labelledby="workflow-title">
+  <div class="section-intro">
+    <h2 id="workflow-title">From a first note<br>to a working memory.</h2>
+    <div class="prose"><p>Start with one folder and one local index. The example below follows a small authentication knowledge base through its full lifecycle: write the source, import it, retrieve context, record a new decision, and check the graph before sharing it.</p><p>Run the commands from your project directory. Configuration keeps subsequent calls pointed at the same database and bundle; the first embedding operation downloads model weights, and later calls reuse the cache.</p></div>
+  </div>
+  <div class="setup">
+    <div><h3>Install and configure</h3><p>Use the CPU extra for local embeddings. Add <code>pdf</code> only when you need PDF or Office conversion; use the GPU extra instead of CPU for a CUDA setup, not alongside it.</p><pre tabindex="0" aria-label="Installation commands"><code>pip install "okfgraph[cpu]"
+# Optional document conversion:
+# pip install "okfgraph[cpu,pdf]"</code></pre></div>
+    <div><h3>Save as <code>okfgraph.toml</code></h3><pre tabindex="0" aria-label="Project configuration"><code>bundle = "kb"
 
+[database]
+path = "kb.db"
+dim = 512
+
+[embedding]
+device = "cpu"</code></pre><p class="small-copy"><code>init</code> initializes the database; it does not write this configuration for you.</p></div>
+  </div>
   <div class="timeline">
-    <div class="step">
-      <p class="step-no">Step 1</p>
-      <h3>Plant the bundle</h3>
-      <p>A bundle is just a folder of Markdown files with a little frontmatter: a title, some tags,
-      a stable <code>id</code>, and <code>[[wikilinks]]</code> to other notes. You create it with any
-      editor — there is no special authoring tool, because the format <em>is</em> the tool. One command
-      records where the bundle lives and where its index will go, so every later command picks up the
-      same paths from <code>okfgraph.toml</code> without flags.</p>
-<pre><code>okf init --db kb.db --bundle kb/
-# kb/auth.md:
-# ---
-# title: Session auth
-# tags: [auth, sessions]
-# ---
-# ## Design
-# Decisions live here, linked as [[token-refresh]].</code></pre>
-    </div>
+    <article class="step">
+      <div class="step-copy"><span class="step-no">1</span><h3>Write a note you can own.</h3><p>Create <code>kb/</code> and save <code>auth.md</code> inside it. Frontmatter describes the note; its relative path gives it the concept ID <code>auth</code>. Save a second note as <code>token-refresh.md</code> to make the wikilink resolvable. Your editor and git remain the place to author and review knowledge.</p></div>
+      <div class="example"><span class="example-label">kb/auth.md</span><pre tabindex="0" aria-label="Example source note"><code>---
+title: Session auth
+tags: [auth, sessions]
+---
 
-    <div class="step">
-      <p class="step-no">Step 2</p>
-      <h3>Import once, re-import forever</h3>
-      <p>Import is a pipeline, not a copy. Each file is linted with mordant (fixable formatting healed
-      on the way in), split into semantic chunks by a Rust Markdown parser, embedded with Jina&nbsp;v5
-      through the embroider ONNX session, and linked — path links and wikilinks resolved against a name
-      index, broken ones tracked for later repair. File hashes are recorded, so the second import of an
-      unchanged folder is nearly free: only changed files re-embed. Nothing here is destructive; the
-      bundle is never modified by importing it.</p>
-<pre><code>okf import --all --bundle kb/
-# lint → chunk → embed → link → ladybug index
-okf import --all --bundle kb/   # second run: deltas only</code></pre>
-    </div>
+## Design
+Use short-lived access tokens.
+See [[token-refresh]] for renewal.</code></pre></div>
+    </article>
+    <article class="step">
+      <div class="step-copy"><span class="step-no">2</span><h3>Build the index, then update it.</h3><p>Import parses the notes, creates searchable chunks, embeds the content, and resolves links. Content hashes let later imports skip unchanged files. Edit a decision in your bundle and run import again; you don't need to re-embed the entire corpus each time.</p></div>
+      <div class="example"><span class="example-label">Initialize and import</span><pre tabindex="0" aria-label="Import commands"><code>okf init
+okf import --all
 
-    <div class="step">
-      <p class="step-no">Step 3</p>
-      <h3>Ask, in three gears</h3>
-      <p>Search fuses dense vectors with full-text matches (RRF), at concept or chunk granularity. When the
-      embedding model isn't loaded — a cold session, a quick check — the PPR gear answers from the link
-      graph alone: lexical seeds expanded by exact Personalized PageRank, in milliseconds. Reading is
-      budget-aware: <code>read</code> returns the concept first, then PPR-ranked neighbours, trimmed to your
-      token budget, so a RAG context window is filled in order of usefulness, not retrieval order.</p>
-<pre><code>okf search "how are sessions revoked?"
-okf search "sessions" --rank ppr        # cold: no model load
-okf read session-auth --include context --max-tokens 1500</code></pre>
-    </div>
+# After editing your notes:
+okf import --all
 
-    <div class="step">
-      <p class="step-no">Step 4</p>
-      <h3>Grow it while you work</h3>
-      <p>Knowledge work produces knowledge. Instead of letting decisions evaporate at session end, persist
-      reasoning directly: <code>ingest --kind thoughts</code> stores it as a searchable concept under a
-      namespaced ID (<code>thoughts/auth-refactor/…</code>), no file required. PDFs and Office documents
-      ride the same command — bobine converts them to Markdown first, through whichever page route each
-      page earns. Everything ingested is linted, chunked, embedded, and linked exactly like an import,
-      because it goes through the same pipeline rather than a side door.</p>
-<pre><code>okf ingest --kind thoughts --thoughts "Chose short-lived refresh…" --topic auth
-okf ingest --kind pdf --pdf-file paper.pdf --auto-import</code></pre>
-    </div>
+# Explicitly remove deleted sources:
+# okf import --all --purge</code></pre></div>
+    </article>
+    <article class="step">
+      <div class="step-copy"><span class="step-no">3</span><h3>Find the passage, follow the context.</h3><p>Ask an open question with hybrid search, or use PPR for lexical-seeded graph retrieval without loading an embedding model. Read the selected concept with a token budget and surrounding context, then traverse links when you need to inspect the relationships rather than just the prose.</p></div>
+      <div class="example"><span class="example-label">Search, read, traverse</span><pre tabindex="0" aria-label="Retrieval commands"><code>okf search "how are sessions renewed?"
+okf search "auth" --rank ppr
+okf read auth --include context \
+  --max-tokens 1500
+okf traverse auth --direction BOTH</code></pre></div>
+    </article>
+    <article class="step">
+      <div class="step-copy"><span class="step-no">4</span><h3>Keep the reasoning, not just the result.</h3><p>Record a decision before the session ends. Thoughts become searchable concepts under IDs such as <code>thoughts/auth/…</code>, without needing a source file. For a paper or Office document, install the PDF extra and let bobine stage the conversion to Markdown before importing it.</p></div>
+      <div class="example"><span class="example-label">Add working knowledge</span><pre tabindex="0" aria-label="Ingestion commands"><code>okf ingest --kind thoughts \
+  --thoughts "Use rotating refresh tokens." \
+  --topic auth
 
-    <div class="step">
-      <p class="step-no">Step 5</p>
-      <h3>Keep it healthy, prove it, share it</h3>
-      <p>Corpora rot: links break, titles duplicate, content goes stale. <code>doctor</code> scores the
-      whole graph 0–100 and repairs what's safe (never touching <code>reviewed: true</code>), while
-      <code>diff</code> shows drift between the graph and the folder — both with CI exit codes, so health
-      becomes a gate rather than a chore. When the knowledge needs to travel, <code>export</code> writes
-      it back out as Markdown — enriched with See Also and Cited By sections from the graph — in OKF
-      format or as an Obsidian vault that re-imports edge-losslessly.</p>
-<pre><code>okf doctor --strict      # exit 1 on any finding: gate the PR
-okf diff                 # graph vs folder drift
-okf export --all --output out/ --flavor obsidian</code></pre>
-    </div>
+okf ingest --kind pdf \
+  --pdf-file paper.pdf --auto-import</code></pre></div>
+    </article>
+    <article class="step">
+      <div class="step-copy"><span class="step-no">5</span><h3>Check the graph. Share the knowledge.</h3><p>Doctor reports graph health; diff shows drift between the index and its source folder. Use strict checks in CI to make findings visible. Export writes graph content to a new directory, including thoughts created without files, with an Obsidian flavor when you want a vault.</p></div>
+      <div class="example"><span class="example-label">Maintain and export</span><pre tabindex="0" aria-label="Maintenance commands"><code>okf doctor --strict
+okf diff
+okf export --all --output out/ \
+  --flavor obsidian</code></pre></div>
+    </article>
   </div>
 </section>
 
-<!-- ============ FEATURES ============ -->
-<section id="features">
-  <p class="sec-no">03 · Core features</p>
-  <h2>Everything a knowledge base needs.<br>Nothing it doesn't.</h2>
-  <p class="lede">The feature set is deliberately closed: each capability below earned its place by
-  serving the loop above, and anything that didn't — dashboards, hosted sync, proprietary formats —
-  was left out. Slim dependencies and no legacy fallbacks are not slogans; they are why installing
-  the graph doesn't install a machine-learning workstation.</p>
+<section id="features" aria-labelledby="features-title">
+  <div class="section-intro"><h2 id="features-title">Useful at every stage<br>of the knowledge loop.</h2><div class="prose"><p>OKFgraph combines retrieval with the maintenance work a long-lived corpus needs. These capabilities share the same local graph, rather than introducing a separate service for every step.</p></div></div>
   <div class="feat-grid">
-    <div class="card">
-      <h3>Hybrid search</h3>
-      <p>Dense Jina&nbsp;v5 vectors fused with full-text search by RRF — at concept
-      <em>and</em> chunk granularity. Matryoshka truncation (default 512 dims) keeps
-      the index lean without re-embedding, and the model-plus-precision pair is pinned
-      per graph so vector spaces can never silently mix.</p>
-    </div>
-    <div class="card">
-      <h3>Model-free PPR</h3>
-      <p>Lexical seeds → exact Personalized PageRank over the link graph.
-      Topic search with <strong>no embedding model loaded</strong> — cold sessions answer in
-      milliseconds, and agents get a retrieval gear that works before any download finishes.</p>
-    </div>
-    <div class="card">
-      <h3>Delta-aware import</h3>
-      <p>File hashes decide what changed; only changed files re-embed.
-      <code>--purge</code> drops deleted concepts (with tombstones and soft-delete safety),
-      and multi-root bundles let several folders share one index under <code>@alias/</code> namespaces.</p>
-    </div>
-    <div class="card">
-      <h3>Doctor &amp; diff</h3>
-      <p>A 0–100 health score (broken links, orphans, stale, duplicates, missing descriptions) with safe
-      <code>--fix</code>; structural <code>diff</code> for drift between graph and folder. Both speak
-      <code>--json</code> and CI exit codes.</p>
-    </div>
-    <div class="card">
-      <h3>Obsidian interop</h3>
-      <p>Wikilinks resolve by <code>uid → aliases → title → stem</code>; ambiguous names
-      never resolve, broken ones are tracked and repairable. Export
-      <code>--flavor obsidian</code> round-trips edge-losslessly — your vault and your graph stay the same corpus.</p>
-    </div>
-    <div class="card">
-      <h3>Image awareness</h3>
-      <p>Caption route for cheap text graphs; ONNX vision route (Jina omni-nano, paired
-      with text-nano) embeds actual image content. Content-hash dedup across the corpus,
-      <code>okf-asset://</code> links, staged asset store.</p>
-    </div>
-    <div class="card">
-      <h3>Thoughts as knowledge</h3>
-      <p>Persist session reasoning directly — <code>ingest_thoughts(text, topic)</code>.
-      Namespaced IDs (<code>thoughts/&lt;topic&gt;/&lt;ts&gt;_&lt;id&gt;</code>) export into a tidy tree.
-      File-free mode runs a whole graph with no bundle directory: thoughts in, search out.</p>
-    </div>
-    <div class="card">
-      <h3>Produce from data</h3>
-      <p><code>okf produce --from sqlite</code> renders any database as a bundle —
-      one concept per table, FKs as links — with auto-generated
-      <code>## Observations</code> (empty tables, NULL/dup rates, orphan FKs) and a <code>log.md</code> changelog.
-      Stdlib only, lint pre-flighted, CLI-only by design.</p>
-    </div>
+    <article><h3>Search meaning and exact words</h3><p>Jina v5 vectors and full-text matches are fused with reciprocal rank fusion (RRF). Search concepts for an overview or chunks for a specific passage. Matryoshka dimensions let you choose a smaller vector representation when creating your index.</p></article>
+    <article><h3>Use the graph without a model</h3><p>PPR starts from lexical matches and expands through links with Personalized PageRank. It is useful for topic exploration and cold sessions: no query embedding or ONNX session is needed for this retrieval mode.</p></article>
+    <article><h3>Import only what changed</h3><p>Delta-aware import avoids re-embedding unchanged files. Multiple source roots can share one graph under <code>@alias/</code> namespaces; deletion tracking distinguishes a missing source from an unmounted root.</p></article>
+    <article><h3>Make corpus health visible</h3><p>Doctor reports broken links, orphans, stale content, duplicates, and missing descriptions with a 0–100 score. Diff exposes source/index drift. Safe repairs and structured output support repeatable maintenance and CI checks.</p></article>
+    <article><h3>Work with an Obsidian vault</h3><p>Wikilinks resolve through stable IDs, aliases, titles, and file stems; ambiguous names remain unresolved rather than being guessed. The Obsidian export flavor preserves graph links for vault-oriented workflows.</p></article>
+    <article><h3>Retrieve image content</h3><p>Use captions in text-only mode, or ONNX vision embeddings for image-aware retrieval. Vision uses omni-nano paired with a text-nano graph, with content-hash assets and an explicit preprocessing contract.</p></article>
+    <article><h3>Give agents lasting memory</h3><p>Thought ingestion stores decisions and reasoning as concepts with topic-based namespaces. Search, read, and traverse recover them in later sessions; export materializes them as Markdown when you want a file-backed record.</p></article>
+    <article><h3>Turn structured data into notes</h3><p><code>okf produce --from sqlite</code> creates one concept per table, links foreign keys, and adds observations about missing values, duplicates, and orphan references. A lint pre-flight checks the bundle before you import it; <code>log.md</code> records producer changes.</p></article>
   </div>
 </section>
 
-<!-- ============ RETRIEVAL ============ -->
-<section id="retrieval">
-  <p class="sec-no">04 · Retrieval</p>
-  <h2>Three gears, one deterministic engine.</h2>
-  <p class="lede">Retrieval quality usually comes at the cost of reproducibility: re-rankers sample,
-  tie-breaks wobble, and the fifth run disagrees with the first. OKFgraph refuses the trade.
-  Every query runs the same pipeline in the same order — pure ranking functions over sorted
-  inputs, fixed PPR constants, fixed accumulation order — and golden fixtures pin PPR scores,
-  diff reports, and doctor scores byte-stable across machines. The practical payoff is that
-  knowledge evals mean something: a regression in answer quality shows up as a diff, not a vibe.</p>
-  <p class="lede">The three gears share one index and differ only in how they walk it. The default gear
-  fuses both signals the index holds; the hub gear biases toward authoritative, well-linked
-  concepts; and the PPR gear skips embeddings entirely, which makes it the right choice for cold
-  sessions, topic-map questions, and any environment where the model hasn't downloaded yet.</p>
-  <table>
-    <tr><th>Gear</th><th>When</th><th>Model load</th><th>How</th></tr>
-    <tr><td><code>rank=none</code> <span class="tag">default</span></td><td>Open questions</td><td>Once per session</td><td>Vector + FTS, RRF-fused</td></tr>
-    <tr><td><code>rank=hub</code></td><td>Authority matters</td><td>Once per session</td><td>RRF blend with hub (link-authority) scores</td></tr>
-    <tr><td><code>rank=ppr</code></td><td>Cold / topic search</td><td><strong>None</strong></td><td>Lexical seeds → exact Personalized PageRank</td></tr>
-  </table>
-  <div class="impl">
-    <div>
-      <h3>Elegant by subtraction</h3>
-      <p>There is no re-ranker service, no sampling temperature, no background thread mutating scores.
-      Chunking is structural (headings and blocks, never mid-sentence slices), pooling is last-token
-      exactly as Jina&nbsp;v5 requires, vectors are L2-normalised Matryoshka truncations. Each of these
-      choices removes a way for two runs to disagree — and what remains is an engine simple enough to
-      hold in your head, and stable enough to build evals on.</p>
-    </div>
-    <div>
-<pre><code>okf search "table OCR routing" --rank ppr
-# → concepts, no ONNX session, ~ms
-
-okf search "table OCR routing" --target chunks
-# → exact passages, expandable to context
-
-okf read slanet --include context --max-tokens 1500
-# → self first, then PPR-ranked neighbours</code></pre>
-    </div>
+<section id="retrieval" aria-labelledby="retrieval-title">
+  <div class="section-intro"><h2 id="retrieval-title">Choose the signal<br>your question needs.</h2><div class="prose"><p>Use hybrid retrieval for open-ended questions, hub ranking when well-linked concepts should carry more weight, and PPR when relationships are the useful signal. The default preserves RRF ranking; the other modes are explicit choices, not hidden re-ranking steps.</p><p>Fixed graph-ranking rules, stable ordering, and checked-in fixtures support reproducible tests. Embedding conformance uses numerical tolerances: changing hardware, precision, or model weights is not a promise of bit-identical results. Model and precision pins help prevent incompatible embedding spaces from being mixed in one index.</p></div></div>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="Retrieval modes comparison">
+    <table><caption>Three retrieval modes over one graph</caption><thead><tr><th scope="col">Mode</th><th scope="col">Best fit</th><th scope="col">Query embedding</th><th scope="col">Signal</th></tr></thead><tbody>
+      <tr><th scope="row"><code>rank=none</code> <span class="tag">Default</span></th><td>Open-ended questions</td><td>Yes</td><td>Vector + full-text, fused with RRF</td></tr>
+      <tr><th scope="row"><code>rank=hub</code></th><td>Link-authority weighting</td><td>Yes</td><td>Hybrid ranking blended with hub scores</td></tr>
+      <tr><th scope="row"><code>rank=ppr</code></th><td>Topic exploration, cold sessions</td><td>No</td><td>Lexical seeds + Personalized PageRank</td></tr>
+    </tbody></table>
   </div>
+  <div class="impl"><div><h3>Small pieces. Explicit contracts.</h3><p>The implementation separates conversion, embedding, import, retrieval, and export behind the router facade. Rust handles document conversion and ONNX inference; LadybugDB holds the graph, vectors, and full-text indexes. That division keeps responsibilities inspectable without requiring a fleet of services.</p></div><pre tabindex="0" aria-label="Retrieval mode examples"><code># A graph query without an embedding session:
+okf search "auth" --rank ppr
+
+# Retrieve passages rather than whole concepts:
+okf search "token renewal" --target chunks
+
+# Read with a bounded context budget:
+okf read auth --include context \
+  --max-tokens 1500</code></pre></div>
 </section>
 
-<!-- ============ SURFACES ============ -->
-<section id="surfaces">
-  <p class="sec-no">05 · Surfaces</p>
-  <h2>One graph, three doors.</h2>
-  <p class="lede">MCP for agents, CLI for humans and CI, Python for pipelines — all three drive the same
-  <code>OKFRouter</code> facade over the same injected components, so behaviour never diverges between
-  surfaces. The tool surface agents see is deliberately the smallest that covers the lifecycle: search,
-  read, traverse, ingest, export. Everything administrative — importing bundles, scoring health,
-  repairing links — stays CLI-only, which keeps prompt context lean and write operations explicit.</p>
+<section id="surfaces" aria-labelledby="surfaces-title">
+  <div class="section-intro"><h2 id="surfaces-title">One graph.<br>Three ways in.</h2><div class="prose"><p>MCP gives agents a small tool surface, the CLI supports interactive work and automation, and Python exposes the router for your own pipelines. All use the same underlying components. Bundle import and maintenance remain outside the five MCP tools, so agents don't need a large administrative tool catalogue.</p></div></div>
   <div class="doors">
-    <div class="card">
-      <h3>MCP · agents</h3>
-<pre><code>{
+    <article><h3>MCP for agents</h3><p>Connect with stdio. The five tools are <code>search</code>, <code>read</code>, <code>traverse</code>, <code>ingest</code>, and <code>export_bundle</code>. Use persistent, absolute paths appropriate to your machine.</p><pre tabindex="0" aria-label="MCP client configuration"><code>{
   "mcpServers": {
     "okfgraph": {
       "command": "okf-mcp",
-      "args": ["--db-path", "./kb.db",
-               "--bundle-root", "./kb"]
+      "args": [
+        "--db-path", "/path/to/kb.db",
+        "--bundle-root", "/path/to/kb"
+      ]
     }
   }
-}</code></pre>
-      <p>5 tools · MCP ≥ 2.0 · stdio transport. Stable paths — a temp dir means amnesia. Pre-approve the write tools for knowledge workflows.</p>
-    </div>
-    <div class="card">
-      <h3>CLI · humans &amp; CI</h3>
-<pre><code>okf search "query" --rank ppr
-okf read savanna --include context
-okf traverse savanna --direction BOTH
-okf ingest --kind thoughts \
-  --thoughts "..." --topic auth
-okf doctor --strict   # exit 1 on findings</code></pre>
-      <p>Same 5 verbs + maintenance. Slim per-command help, <code>okfgraph.toml</code> config, JSON output where scripts need it.</p>
-    </div>
-    <div class="card">
-      <h3>Python · pipelines</h3>
-<pre><code>from okfgraph import OKFRouter
+}</code></pre></article>
+    <article><h3>CLI for people and CI</h3><p>Use the same retrieval verbs alongside import, diff, doctor, and export. Each command has help; configuration, environment variables, and flags let you choose how explicit to be.</p><pre tabindex="0" aria-label="CLI examples"><code>okf search "token renewal"
+okf read auth --include context
+okf traverse auth --direction BOTH
+
+# Inspect drift and graph health:
+okf diff
+okf doctor --strict</code></pre><a class="text-link" href="https://github.com/opticsWolf/OKFgraph#cli-reference">CLI reference <span aria-hidden="true">↗</span></a></article>
+    <article><h3>Python for pipelines</h3><p>Import a bundle, retrieve concepts, and export directly through <code>OKFRouter</code>. Omit <code>bundle_root</code> for graph-only thought workflows; close the router when you're done.</p><pre tabindex="0" aria-label="Python router example"><code>from pathlib import Path
+from okfgraph import OKFRouter
+
 r = OKFRouter(bundle_root="./kb",
               db_path="kb.db")
-r.import_from_okf("./kb")
-hits = r.search_hybrid("query", limit=5)
-r.export_mgr.export_bundle("./out")</code></pre>
-      <p>Thin facade over injected components. File-free: <code>OKFRouter(db_path=...)</code> alone is a complete graph.</p>
-    </div>
+try:
+    r.import_from_okf("./kb")
+    hits = r.search_hybrid("auth", limit=5)
+    r.export_mgr.export_bundle(Path("out"))
+finally:
+    r.close()</code></pre></article>
   </div>
 </section>
 
-<!-- ============ BOBINE ============ -->
-<section id="bobine">
-  <p class="sec-no">06 · Ingestion engine</p>
-  <h2>bobine <span class="ver">0.5.13</span></h2>
-  <p class="lede">Standalone PDF / Office / text → Markdown engine — pure-Rust core, Python
-  bindings. OKFgraph calls it for everything that isn't already Markdown, behind a
-  swappable <code>DocumentConverter</code> seam, which means the converter can evolve (or be
-  replaced) without touching the graph. Its own discipline mirrors the stack's: a single
-  pinned ONNX Runtime, no torch, no optimum, no opencv — not even on the Python side — with
-  GPU behaviour decided by measurement rather than optimism.</p>
-  <p class="lede">The signature idea is <strong>routed pages</strong>: every page takes exactly the
-  pass it needs. Born-digital text extracts in milliseconds and never sees a model; formula-bearing
-  pages get surgical TexTeller crops; only scans pay for full structure analysis. Office documents
-  take a parallel path — format-sniffed, converted to Markdown, with Excel additionally yielding
-  per-sheet CSV and typed JSON, and embedded pictures staged to content-hash assets.</p>
-  <div class="feat-grid">
-    <div class="card">
-      <h3>Routed pages</h3>
-      <p><code>never</code> for born-digital text (milliseconds),
-      <code>surgical</code> for formulas only, <code>always</code> for full structure on scans.
-      Line-aware math detection merges multi-line display equations while keeping columns apart.</p>
-    </div>
-    <div class="card">
-      <h3>Formula OCR</h3>
-      <p>TexTeller ONNX decodes math regions to LaTeX — int8 default (~319&nbsp;MB),
-      KV-cached, ~5× faster per crop than the legacy backend it replaced, with preprocessing
-      matched exactly to upstream.</p>
-    </div>
-    <div class="card">
-      <h3>Layout + tables</h3>
-      <p>DocLayout-YOLO structure, PaddleOCR lines in reading order, SLANet-plus table
-      structure — CPU-pinned by measurement, not superstition (see below).</p>
-    </div>
-    <div class="card">
-      <h3>Office, fully</h3>
-      <p>docx/xlsx/pptx plus legacy doc/xls/ppt. Excel yields per-sheet CSV and typed JSON
-      alongside Markdown; embedded pictures stage to content-hash assets.</p>
-    </div>
+<section id="stack" aria-labelledby="stack-title">
+  <div class="section-intro"><h2 id="stack-title">A focused stack,<br>with clear ownership.</h2><div class="prose"><p>OKFgraph owns the knowledge workflow and the embedding-space pins. Two independently usable Rust-backed libraries support it: bobine converts documents, and embroider supplies Jina embeddings and shared ONNX session policy. Each consumer owns its sessions; sharing runtime policy doesn't mean sharing one global inference session.</p><p>The graph store is LadybugDB, not SQLite. SQLite is supported as a source for bundle production. CPU and GPU runtime extras are alternatives: install one ONNX Runtime distribution, not both.</p></div></div>
+  <div class="package" id="bobine">
+    <div class="package-heading"><h3>bobine <span class="ver">0.5.13</span></h3><p>Documents → Markdown</p><a class="text-link" href="https://github.com/opticsWolf/bobine">Repository <span aria-hidden="true">↗</span></a></div>
+    <div class="prose"><p>PDF and Office conversion stays behind a replaceable converter boundary. PDF routes let you choose text extraction, surgical formula processing, or full layout/OCR analysis. DOCX, XLSX, PPTX and their legacy counterparts enter through extension-based dispatch; Excel also offers per-sheet CSV and typed JSON output.</p><p>Provider defaults follow measurement: CUDA helps layout and OCR, while SLANet-plus tables remain CPU-pinned. TexTeller defaults to int8 CPU, with fp32 CUDA available as an opt-in. Faster hardware is only useful when the model's graph benefits from it.</p></div>
   </div>
-  <h3>Measured, not assumed <span class="dim">(RTX 3090 · single pinned ORT)</span></h3>
-  <p class="lede">Each row below is a bench, not an estimate — and the routing column is the point:
-  CUDA wins layout and OCR by an order of magnitude, loses tables by up to 6× (SLANet's graph
-  fragments across devices), and quantization helps only where the hardware agrees with it. The
-  defaults encode this ledger, so users get the fast path with zero configuration.</p>
-  <table>
-    <tr><th>Workload</th><th>CPU</th><th>CUDA</th><th>Verdict</th></tr>
-    <tr><td>Layout 1024²</td><td>480 ms</td><td><strong>37 ms (~12.8×)</strong></td><td>CUDA auto-enabled</td></tr>
-    <tr><td>OCR det+rec 1024²</td><td>131 ms</td><td><strong>36 ms (~3.6×)</strong></td><td>CUDA auto-enabled</td></tr>
-    <tr><td>OCR 47-line page</td><td>0.79 s</td><td><strong>0.32 s</strong> (batched ×32)</td><td>CUDA + chunking</td></tr>
-    <tr><td>Table 700×400</td><td><strong>28.8 ms</strong></td><td>49 ms (0.6×)</td><td>Pinned to CPU</td></tr>
-    <tr><td>Table 1024²</td><td><strong>133 ms</strong></td><td>893 ms (0.15×)</td><td>Pinned to CPU</td></tr>
-    <tr><td>TexTeller int8</td><td><strong>0.50 s</strong></td><td>1.32 s</td><td>CPU default</td></tr>
-    <tr><td>TexTeller fp32</td><td>0.95 s</td><td><strong>0.42 s (~2.3×)</strong></td><td>CUDA opt-in</td></tr>
-  </table>
-  <p class="more"><a href="https://github.com/opticsWolf/bobine">bobine on GitHub →</a>
-  · <a href="https://pypi.org/project/bobine/">PyPI</a>
-  · <a href="https://crates.io/crates/bobine">crates.io</a>
-  · <a href="https://github.com/opticsWolf/bobine/blob/main/docs/benchmarks.md">Full benchmarks →</a></p>
-</section>
-
-<!-- ============ EMBROIDER ============ -->
-<section id="embroider">
-  <p class="sec-no">07 · Embedding runtime</p>
-  <h2>embroider <span class="ver">0.3.1</span></h2>
-  <p class="lede">Jina v5 text + image embeddings over ONNX Runtime — Rust core, PyO3.
-  The shared session-policy library both OKFgraph and bobine build on: one pinned runtime,
-  per-slot CPU/CUDA routing, golden-vector conformance. Its defining boundary is ownership —
-  embroider holds sessions and policy, while each consumer process owns inference — which is
-  why two crates can share one ONNX Runtime without sharing failure modes.</p>
-  <p class="lede">The contract it enforces is what keeps every stored vector comparable with every
-  other: a frozen vision resize grid, last-token pooling, L2 normalisation, a fixed Matryoshka
-  ladder, and acquisition that fails closed — a dimension or contract mismatch aborts before a
-  single vector is written, so a mid-run model switch can never silently poison an index. And
-  because precision rules are explicit (fp32 on CPU, fp16 on CUDA, fp16-on-CPU a hard error rather
-  than a stall), performance behaviour is as pinned as numerical behaviour.</p>
-  <div class="feat-grid">
-    <div class="card">
-      <h3>One runtime</h3>
-      <p><code>SessionPolicy::ort_defaults()</code> binds a single
-      <code>onnxruntime==1.29.0</code> dylib — CPU or CUDA, never both, chosen by install extra, never by luck.
-      An availability probe decides per slot; CPU-only libraries probe false at zero cost.</p>
-    </div>
-    <div class="card">
-      <h3>Devices × precision</h3>
-      <p><code>cpu</code> XOR <code>cuda</code>; fp32 on CPU, fp16 on CUDA.
-      Per-model provider lists encode what the benches proved, with explicit overrides when you know better.</p>
-    </div>
-    <div class="card">
-      <h3>Frozen contract</h3>
-      <p>Smart-resize vision contract, last-token pooling, L2-norm, Matryoshka ladder.
-      Checked-in golden vectors fail the build on drift — alignment with stored indexes is structural, not hoped-for.</p>
-    </div>
-    <div class="card">
-      <h3>Fail-closed acquisition</h3>
-      <p>Models fetch from pinned revisions into a versioned cache with content-hash filenames.
-      A Meta mismatch aborts before anything is written; concurrent processes share the cache safely.</p>
-    </div>
+  <details class="benchmark"><summary>Inspect the CPU / CUDA measurements</summary><p>RTX 3090 results from the published bobine benchmarks, measured with ORT 1.28.1 before the current 1.29.0 pin. These are workload-specific observations, not latency guarantees for your machine.</p><div class="table-wrap" tabindex="0" role="region" aria-label="CPU and CUDA benchmark comparison"><table><caption>Published conversion benchmarks</caption><thead><tr><th scope="col">Workload</th><th scope="col">CPU</th><th scope="col">CUDA</th><th scope="col">Routing choice</th></tr></thead><tbody>
+    <tr><th scope="row">Layout 1024²</th><td>480 ms</td><td>37 ms</td><td>CUDA when available</td></tr>
+    <tr><th scope="row">OCR det + rec 1024²</th><td>131 ms</td><td>36 ms</td><td>CUDA when available</td></tr>
+    <tr><th scope="row">OCR 47-line page</th><td>0.79 s</td><td>0.32 s (batched ×32)</td><td>CUDA + batching</td></tr>
+    <tr><th scope="row">Table 700 × 400</th><td>28.8 ms</td><td>49 ms</td><td>CPU pinned</td></tr>
+    <tr><th scope="row">Table 1024²</th><td>133 ms</td><td>893 ms</td><td>CPU pinned</td></tr>
+    <tr><th scope="row">TexTeller int8</th><td>0.50 s</td><td>1.32 s</td><td>CPU default</td></tr>
+    <tr><th scope="row">TexTeller fp32</th><td>0.95 s</td><td>0.42 s</td><td>CUDA opt-in</td></tr>
+  </tbody></table></div><a class="text-link" href="https://github.com/opticsWolf/bobine/blob/main/docs/benchmarks.md">Methodology and full results <span aria-hidden="true">↗</span></a></details>
+  <div class="package" id="embroider">
+    <div class="package-heading"><h3>embroider <span class="ver">0.3.1</span></h3><p>Jina v5 → ONNX embeddings</p><a class="text-link" href="https://github.com/opticsWolf/embroider">Repository <span aria-hidden="true">↗</span></a></div>
+    <div class="prose"><p>embroider combines a Rust embedding engine with Python bindings and an ONNX session-policy API. OKFgraph uses its Jina v5 text and vision encoders; bobine uses the runtime policy for its own conversion models, not Jina inference.</p><p>Text pooling, normalization, model dimensions, and vision preprocessing are explicit contracts. Checked-in conformance fixtures test numerical alignment. Automatic precision follows the device: fp32 CPU or fp16 CUDA; vision fp16 on CPU is rejected. Text models also offer an explicit int8 option.</p><p><a href="https://github.com/opticsWolf/embroider/blob/main/docs/quickref.md">API quick reference</a> · <a href="https://github.com/opticsWolf/embroider/blob/main/docs/compat.md">Runtime compatibility</a></p></div>
   </div>
-  <h3>Registry</h3>
-  <table>
-    <tr><th>Model</th><th>Precisions</th><th>Role</th></tr>
-    <tr><td>jina-v5-text-small-retrieval</td><td>fp32 · fp16 · int8</td><td>Default text embeddings</td></tr>
-    <tr><td>jina-v5-text-nano-retrieval</td><td>fp32 · fp16 · int8</td><td>Fast text · vision partner</td></tr>
-    <tr><td>jina-v5-omni-nano-retrieval-vision</td><td>fp32 · fp16</td><td>Image content (pairs text-nano)</td></tr>
-  </table>
-  <p class="more"><a href="https://github.com/opticsWolf/embroider">embroider on GitHub →</a>
-  · <a href="https://pypi.org/project/embroider/">PyPI</a>
-  · <a href="https://github.com/opticsWolf/embroider/tree/main/docs">Docs (quickref · compat) →</a></p>
+  <div class="table-wrap" tabindex="0" role="region" aria-label="Package versions"><table><caption>Published stack</caption><thead><tr><th scope="col">Responsibility</th><th scope="col">Package</th><th scope="col">Version</th></tr></thead><tbody>
+    <tr><th scope="row">Knowledge graph · retrieval · MCP</th><td><a href="https://pypi.org/project/okfgraph/">okfgraph</a></td><td>0.9.0</td></tr>
+    <tr><th scope="row">PDF / Office conversion</th><td><a href="https://pypi.org/project/bobine/">bobine</a></td><td>0.5.13</td></tr>
+    <tr><th scope="row">Jina embeddings · runtime policy</th><td><a href="https://pypi.org/project/embroider/">embroider</a></td><td>0.3.1</td></tr>
+    <tr><th scope="row">Graph · vectors · full-text index</th><td>ladybug</td><td>0.21.2</td></tr>
+    <tr><th scope="row">Inference runtime (CPU or GPU)</th><td>onnxruntime</td><td>1.29.0</td></tr>
+  </tbody></table></div>
+  <aside class="note"><h3>Open code. Separately licensed models.</h3><p>The trio's code is Apache-2.0 OR MIT. Model weights have their own terms: Jina v5 is CC BY-NC 4.0, and the SLANet-plus source repository declares AGPL-3.0. Runtime downloading does not remove those obligations. Review the <a href="https://github.com/opticsWolf/OKFgraph#model-licences">model licence table</a> before commercial use or redistribution.</p></aside>
 </section>
 
-<!-- ============ STACK ============ -->
-<section id="stack">
-  <p class="sec-no">08 · The stack</p>
-  <h2>Three crates, one philosophy:<br>slim deps, no legacy fallbacks.</h2>
-  <p class="lede">Each layer does exactly one job and trusts its neighbours to do theirs: OKFgraph curates
-  and retrieves, bobine converts, embroider embeds. Shared floors (one ONNX Runtime, one embroider
-  minor range) keep the trio in lockstep without coupling their releases — any 0.3.x embroider serves,
-  any compliant converter can sit behind the seam. The whole install is a handful of pinned packages;
-  what isn't needed isn't installed.</p>
-  <table>
-    <tr><th>Layer</th><th>Package</th><th>Version</th><th>Licence</th></tr>
-    <tr><td>Graph · retrieval · MCP</td><td><a href="https://github.com/opticsWolf/OKFgraph">okfgraph</a></td><td>0.9.0</td><td rowspan="3">Apache-2.0 OR MIT (code; model weights carry their own licences)</td></tr>
-    <tr><td>PDF / Office → Markdown</td><td><a href="https://github.com/opticsWolf/bobine">bobine</a></td><td>0.5.13</td></tr>
-    <tr><td>ONNX sessions · Jina v5</td><td><a href="https://github.com/opticsWolf/embroider">embroider</a></td><td>0.3.1</td></tr>
-    <tr><td>Graph store + algorithms</td><td>ladybug</td><td>0.21.2</td><td>Runtime dependency</td></tr>
-    <tr><td>Inference runtime</td><td>onnxruntime</td><td>1.29.0</td><td>Single shared dylib</td></tr>
-  </table>
-  <p class="lede">Model weights (Jina v5 CC&nbsp;BY-NC&nbsp;4.0, SLANet-plus AGPL-3.0 fetch, Apache-2.0 OCR/layout)
-  download at runtime and are never redistributed — see the
-  <a href="https://github.com/opticsWolf/OKFgraph#model-licences">licence table</a>.</p>
-</section>
-
+<section class="closing" aria-labelledby="closing-title"><h2 id="closing-title">Start with the knowledge<br>you already have.</h2><p>One folder, a local graph, and a retrieval interface your agents can use. Build a small corpus first, inspect its connections, then bring the workflow into your project.</p><div class="cta"><a class="btn" href="#workflow">Follow the workflow <span aria-hidden="true">↑</span></a><a class="text-link" href="https://github.com/opticsWolf/OKFgraph/blob/main/architecture.md">Explore the architecture <span aria-hidden="true">↗</span></a></div></section>
 </main>
-
-<footer>
-  <p>OKFgraph · bobine · embroider — files first, deterministic always.</p>
-  <p class="dim">Docs:
-  <a href="https://github.com/opticsWolf/OKFgraph/tree/main/docs">OKFgraph</a> ·
-  <a href="https://github.com/opticsWolf/bobine/tree/main/docs">bobine</a> ·
-  <a href="https://github.com/opticsWolf/embroider/tree/main/docs">embroider</a></p>
-</footer>
-
+<footer><a class="brand" href="#top">OKFgraph</a><p>Local knowledge, connected.</p><div><a href="https://github.com/opticsWolf/OKFgraph">Source</a><a href="https://github.com/opticsWolf/OKFgraph#quick-start">Documentation</a><a href="https://pypi.org/project/okfgraph/">PyPI</a></div></footer>
 </body>
 </html>

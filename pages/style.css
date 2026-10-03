@@ -12,6 +12,10 @@
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
+::selection { background: rgba(108, 184, 255, 0.32); }
+::-webkit-scrollbar { width: 11px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: #2b3444; border-radius: 6px; border: 2px solid var(--bg); }
 body {
   margin: 0;
   background: var(--bg);
@@ -93,10 +97,34 @@ p code, li code, td code, h3 code {
 
 /* ---------- hero ---------- */
 .hero {
+  position: relative;
   max-width: 900px;
   margin: 0 auto;
-  padding: 72px 24px 40px;
+  padding: 88px 24px 48px;
   text-align: center;
+  overflow: visible;
+}
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: -40px -20vw 0;
+  z-index: -2;
+  background-image:
+    linear-gradient(rgba(108, 184, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(108, 184, 255, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 75% 70% at 50% 30%, black 30%, transparent 75%);
+}
+.hero .glow {
+  position: absolute;
+  top: -120px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 640px;
+  height: 420px;
+  z-index: -1;
+  background: radial-gradient(ellipse at center, rgba(108, 184, 255, 0.14), rgba(180, 140, 255, 0.07) 55%, transparent 72%);
+  pointer-events: none;
 }
 .kicker {
   color: var(--accent);
@@ -179,10 +207,16 @@ a { color: var(--accent); }
 
 /* ---------- cards & grids ---------- */
 .card {
-  background: var(--panel);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 40%), var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 20px 22px;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.feat-grid .card:hover, .tenets .card:hover, .doors .card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(108, 184, 255, 0.45);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(108, 184, 255, 0.12);
 }
 .card h3 { color: var(--accent); }
 .card p { margin: 0; color: var(--muted); font-size: 15px; }
@@ -244,6 +278,49 @@ tr:hover td { background: rgba(108, 184, 255, 0.04); }
 }
 .impl p { color: var(--muted); }
 .impl pre { margin: 0; }
+
+/* ---------- workflow timeline ---------- */
+.timeline {
+  position: relative;
+  margin-top: 32px;
+  padding-left: 34px;
+}
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2), transparent);
+  border-radius: 2px;
+}
+.step { position: relative; padding-bottom: 36px; }
+.step:last-child { padding-bottom: 4px; }
+.step::before {
+  content: "";
+  position: absolute;
+  left: -31px;
+  top: 4px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 12px rgba(108, 184, 255, 0.55);
+}
+.step-no {
+  color: var(--accent-2);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin: 0 0 4px;
+}
+.step h3 { font-size: 22px; margin-bottom: 8px; }
+.step p { color: var(--muted); max-width: 760px; }
+.step p strong { color: var(--ink); }
+.step pre { max-width: 760px; }
 
 footer {
   text-align: center;

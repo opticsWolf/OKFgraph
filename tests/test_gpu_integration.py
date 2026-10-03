@@ -215,7 +215,9 @@ class TestGPUBatchEncoding:
     @pytest.mark.skipif(not _has_onnxruntime_gpu(), reason="onnxruntime-gpu not installed")
     @pytest.mark.skipif(not _has_cuda(), reason="CUDA not available on this machine")
     def test_gpu_encoding_produces_same_output_as_cpu(self, tmp_dir, seed_bundle):
-        """GPU and CPU encoding produce the same embeddings (within tolerance)."""
+        """GPU and CPU encoding produce the same embeddings (within tolerance:
+        precision="auto" is fp32 on CPU vs fp16 on CUDA, so atol=1e-3 covers
+        cross-precision drift)."""
         import numpy as np
 
         texts = ["test sentence for alignment", "another test sentence here"]
@@ -237,7 +239,7 @@ class TestGPUBatchEncoding:
         emb_gpu = np.array(r_gpu.embed_engine._encode_batch(texts, task="Document"))
 
         # GPU and CPU may differ slightly due to floating-point precision
-        np.testing.assert_allclose(emb_cpu, emb_gpu, rtol=1e-3, atol=1e-4)
+        np.testing.assert_allclose(emb_cpu, emb_gpu, rtol=1e-3, atol=1e-3)
 
         r_cpu.close()
         r_gpu.close()
@@ -419,7 +421,8 @@ class TestGPUDeviceEdgeCases:
 
     @pytest.mark.skipif(not _has_cuda(), reason="CUDA not available")
     def test_cuda_embeddings_match_cpu(self, tmp_dir):
-        """When CUDA is available, GPU embeddings should match CPU embeddings (within floating-point tolerance)."""
+        """When CUDA is available, GPU embeddings should match CPU embeddings
+        (within floating-point tolerance: fp32 CPU vs fp16 CUDA, atol=1e-3)."""
         import numpy as np
 
         texts = ["test sentence for alignment", "another test sentence here"]
@@ -441,7 +444,7 @@ class TestGPUDeviceEdgeCases:
         emb_gpu = np.array(r_gpu.embed_engine._encode_batch(texts, task="Document"))
 
         # GPU and CPU may differ slightly due to floating-point precision
-        np.testing.assert_allclose(emb_cpu, emb_gpu, rtol=1e-3, atol=1e-4)
+        np.testing.assert_allclose(emb_cpu, emb_gpu, rtol=1e-3, atol=1e-3)
 
         r_cpu.close()
         r_gpu.close()

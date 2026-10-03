@@ -117,9 +117,11 @@ Order (each step's CI green before the next):
 4. ✅ Step 3 re-run against published packages: `[cpu,pdf]` → one ORT
    1.29.0, trio (okfgraph 0.7.0 + embroider 0.2.1 + bobine 0.5.12) resolves;
    bare → hint + clean exit; `[gpu]` trio → `used_cuda=True`.
-5. ⏳ Legacy Python bobine (`D:/User/Documents/Python/bobine`): archive the
-   GitHub repo (**manual — user**; the banner is already committed). Never
-   publish from it again.
+5. ✅ Legacy Python bobine: **nothing to archive.** `opticsWolf/bobine` on
+   GitHub is already the Rust repo (history rewritten at 0.3.0 — "legacy
+   template"); no separate legacy repo exists. The local legacy clone's
+   banner commit stays local-only (its origin now tracks Rust history —
+   never force-push it).
 
 ## Step 6 — ladybug access violation ✅ DONE (fixed by upstream upgrade)
 

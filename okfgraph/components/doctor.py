@@ -198,6 +198,37 @@ class DoctorManager:
                              "omni route — re-import to re-embed by caption",
             })
 
+        # Image-route report (0.8.0): counts per embed route plus the
+        # pinned image model/precision. Missing tables (pre-image graphs)
+        # report as unpinned, never as findings.
+        try:
+            route_rows = self.conn.execute(
+                "MATCH (i:ImageAsset) RETURN i.embed_route AS route, count(*) AS n"
+            ).rows_as_dict().get_all()
+        except Exception:
+            route_rows = []
+        if route_rows:
+            counts = ", ".join(
+                f"{r['route']}={r['n']}" for r in sorted(route_rows, key=lambda r: r["route"] or "")
+            )
+            try:
+                im = self.conn.execute(
+                    "MATCH (m:MetaText) WHERE m.key = 'embedding_image_model' "
+                    "RETURN m.value AS v"
+                ).rows_as_dict().get_all()
+                ip = self.conn.execute(
+                    "MATCH (m:Meta) WHERE m.key = 'embedding_image_precision' "
+                    "RETURN m.value AS v"
+                ).rows_as_dict().get_all()
+            except Exception:
+                im, ip = [], []
+            model = im[0]["v"] if im else "(unpinned)"
+            prec = {16: "fp16", 32: "fp32"}.get(ip[0]["v"], "(unpinned)") if ip else "(unpinned)"
+            info.append({
+                "rule": "image_routes",
+                "message": f"image assets: {counts}; image model={model} precision={prec}",
+            })
+
         # ORT runtime report (Phase 3, plan-onnx-only): which wheel provides
         # the shared binary, and whether both are installed (loader picks one
         # silently — hard warning, cpu XOR gpu).

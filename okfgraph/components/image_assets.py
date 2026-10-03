@@ -1,8 +1,9 @@
 """ImageAssetManager — okf-asset:// URI storage, content-hash deduplication,
 and text-based image search.
 
-Encoding delegates to the injected EmbeddingEngine; write-epoch bumps route
-to the injected SchemaManager.
+Encoding delegates to the injected EmbeddingEngine (text captions) and its
+lazy vision session (image bytes, 0.8.0+); write-epoch bumps route to the
+injected SchemaManager.
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ from okfgraph.images import (
     IngestMode,
     _is_remote_src,
     build_extracted_images,
+    fallback_caption,
     plan_embedding,
+    prepare_vision_rgb,
 )
 from okfgraph.models import ChunkModel, ConceptModel
 
@@ -58,8 +61,10 @@ class ImageAssetManager:
     ) -> Dict[str, int]:
         """Extract, embed, and store the images referenced by a concept.
 
-        Every image embeds its caption (alt-text or filename fallback) with the
-        text model (0.7.0+: the torch-backed omni routes are removed).
+        Caption images embed their caption with the text model; vision
+        images embed their bytes with the ONNX vision model (0.8.0+).
+        The vision content hash covers (model, precision, contract), so a
+        contract change re-embeds only image vectors.
 
         Unchanged images (same content hash) are skipped on re-import. Images
         removed from the document are pruned. Pre-0.7.0 rows stored with
@@ -82,7 +87,7 @@ class ImageAssetManager:
             bundle_root=self.bundle_root,
         )
 
-        stats = {"total": len(images), "text": 0, "omni": 0, "reused": 0, "pruned": 0, "skipped": 0}
+        stats = {"total": len(images), "text": 0, "vision": 0, "omni": 0, "reused": 0, "pruned": 0, "skipped": 0}
         if not images and not self._concept_has_assets(concept_id):
             return stats
 
@@ -113,8 +118,28 @@ class ImageAssetManager:
                 stats["skipped"] += 1
                 continue
             route, caption = plan_embedding(img, mode)
-            payload = img.data if route is EmbedRoute.OMNI else (caption or "").encode("utf-8")
-            content_hash = self._content_hash(route, payload)
+            if route is EmbedRoute.VISION:
+                try:
+                    rgb, rh, rw = self._prepare_vision(img)
+                except (ValueError, RuntimeError) as exc:
+                    # Undecodable bytes (or no vision wheel): graceful
+                    # fallback to the caption path, like missing bytes.
+                    logger.warning(
+                        "image %s: %s — embedding caption instead",
+                        img.asset_id, exc,
+                    )
+                    route = EmbedRoute.TEXT
+                    caption = img.alt_text if img.has_alt_text else fallback_caption(
+                        img.filename, img.index, img.concept_id
+                    )
+            if route is EmbedRoute.VISION:
+                from okfgraph.components.embedding import vision_content_hash
+                ve = self.embed_engine.vision_encoder
+                content_hash = vision_content_hash(
+                    ve.model_id, self._vision_precision(), img.data
+                )
+            else:
+                content_hash = self._content_hash(route, (caption or "").encode("utf-8"))
             planned_ids.add(img.asset_id)
 
             if known is not None and known[0] == content_hash:
@@ -135,8 +160,13 @@ class ImageAssetManager:
             # EmbedRoute.OMNI is never minted since 0.7.0; stale pre-0.7.0 rows
             # arrive here as TEXT (their stored omni hash missed above) and are
             # re-embedded by caption. `stats["omni"]` stays 0 by construction.
-            embedding = self.embed_engine._encode(caption or img.filename, task="Document")
-            stats["text"] += 1
+            if route is EmbedRoute.VISION:
+                embedding = self._encode_vision_image(rgb, rh, rw)
+                stats["vision"] += 1
+                caption = ""  # bytes embedded, not text
+            else:
+                embedding = self.embed_engine._encode(caption or img.filename, task="Document")
+                stats["text"] += 1
 
             pending.append({
                 "img": img,
@@ -145,6 +175,12 @@ class ImageAssetManager:
                 "content_hash": content_hash,
                 "embedding": embedding,
             })
+        if stats["vision"] and self.embed_engine.device == "cpu":
+            logger.info(
+                "vision batch on CPU: %d image(s) at ~0.6-6.7 s each; "
+                "use device='cuda' or mode='text' (captions) to skip the wait",
+                stats["vision"],
+            )
 
         stale_ids = [aid for aid in existing if aid not in planned_ids]
         stats["pruned"] = len(stale_ids)
@@ -172,12 +208,69 @@ class ImageAssetManager:
 
     @staticmethod
     def _content_hash(route: EmbedRoute, payload: bytes) -> str:
-        """Hash that changes whenever the embedding should be recomputed."""
+        """Hash that changes whenever the embedding should be recomputed.
+
+        Frozen for the TEXT route (caption churn on upgrade would re-embed
+        every caption row for identical vectors); the VISION route hashes
+        via `vision_content_hash` (model + precision + contract).
+        """
         h = hashlib.sha256()
         h.update(route.value.encode("utf-8"))
         h.update(b"|")
         h.update(payload or b"")
         return h.hexdigest()
+
+    def _vision_precision(self) -> str:
+        """Resolved vision precision for the content hash (0.8.0).
+
+        Mirrors the session's `auto`-follows-device resolution (embroiders
+        `Precision::resolve` against the landed device): an opened session
+        reports itself, otherwise the device request plus the CUDA probe
+        predicts it. The image-precision pin still fails closed on a real
+        mismatch at open; the hash only separates reuse buckets.
+        """
+        ve = self.embed_engine.vision_encoder
+        cfg = (ve._precision_cfg if ve is not None else "auto") or "auto"
+        if cfg != "auto":
+            return cfg
+        if ve is not None and ve.is_loaded:
+            return "fp16" if ve.used_cuda else "fp32"
+        device = ve._device if ve is not None else "auto"
+        if device == "cpu":
+            return "fp32"
+        try:
+            from embroider import cuda_available
+            cuda = bool(cuda_available())
+        except Exception:
+            cuda = False
+        return "fp16" if cuda else "fp32"
+
+    def _prepare_vision(self, img) -> Tuple[bytes, int, int]:
+        """Decode + resize image bytes for the vision encoder (0.8.0)."""
+        try:
+            import embroider
+        except ImportError:
+            raise RuntimeError(
+                "image-content search needs embroider>=0.3 "
+                "(JinaV5Vision); use mode=text (captions)"
+            ) from None
+        target_size_fn = getattr(embroider, "vision_target_size", None)
+        if target_size_fn is None:
+            raise RuntimeError(
+                "image-content search needs embroider>=0.3 "
+                "(vision_target_size); use mode=text (captions)"
+            )
+        return prepare_vision_rgb(img.data, target_size_fn=target_size_fn)
+
+    def _encode_vision_image(self, rgb: bytes, h: int, w: int):
+        """Embed one resized RGB buffer via the lazy vision session."""
+        ve = self.embed_engine.vision_encoder
+        if ve is None:
+            raise RuntimeError(
+                "vision encoder not wired (router without image support); "
+                "use mode=text (captions)"
+            )
+        return ve.encode_image(rgb, h, w)
 
 
     def _concept_has_assets(self, concept_id: str) -> bool:

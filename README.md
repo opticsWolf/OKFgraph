@@ -37,7 +37,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 | **Diff** | `okf diff`: structural snapshot (dir vs dir, no model load) and drift (graph vs dir) modes; CI exit codes + `--json` |
 | **Doctor** | `okf doctor`: 0–100 health score (broken/orphan/stale/duplicate-title/missing-description), safe `--fix` that never touches `reviewed: true`, `--strict` CI gate |
 | **Export** | OKF round-trip with See Also / Cited By enrichment + index files, or `--flavor obsidian` (`[[Title]]` wikilinks, no index files, edge-lossless re-import) |
-| **Images** | Caption-based (`mode=text` only since 0.7.0), content-hash dedup, `okf-asset://` protocol |
+| **Images** | Caption-based (`mode=text`) or image-content (`mode=optional`/`omni` via the ONNX vision model, needs a text-nano graph; 0.8.0+) content-hash dedup, `okf-asset://` protocol |
 | **MCP** | 5 tools (`search`, `read`, `traverse`, `ingest`, `export_bundle`), MCP ≥ 2.0 (`MCPServer` + `ToolAnnotations`), stdio transport |
 | **CLI** | Same 5 verbs plus maintenance (`init`, `import`, `diff`, `doctor`, `shell`, `reindex`, `broken-links`, `deleted-*`, …), slim per-command help, `okfgraph.toml` config |
 | **Skills** | 3 harness-neutral skills (`okfgraph-mcp`, `okfgraph-cli`, `okfgraph-ingest`), `.mcp.json` wiring included |
@@ -352,6 +352,7 @@ Check them before any commercial use.
 | Text embeddings (fp16) | `opticsWolf/jina-embeddings-v5-text-small-retrieval-onnx-fp16` (ONNX conversion of the above) | embroider | CC BY-NC 4.0 |
 | Text embeddings (nano) | `jinaai/jina-embeddings-v5-text-nano-retrieval` | embroider | CC BY-NC 4.0 |
 | Image embeddings (≤0.6.x `--extra omni`, removed 0.7.0) | `jinaai/jina-embeddings-v5-omni-small-retrieval` | sentence-transformers (torch path, removed) | CC BY-NC 4.0 |
+| Image embeddings (vision, 0.8.0+) | `opticsWolf/jina-embeddings-v5-omni-nano-retrieval-onnx` (dynamic-grid ONNX export of `jinaai/jina-embeddings-v5-omni-nano-retrieval`) | embroider (`JinaV5Vision`) | CC BY-NC 4.0 |
 | PDF layout (`--extra pdf`) | `wybxc/DocLayout-YOLO-DocStructBench-onnx` | bobine | Apache-2.0 |
 | PDF OCR det/rec (`--extra pdf`) | `SWHL/RapidOCR` (PP-OCRv4) | bobine | Apache-2.0 |
 | PDF tables (`--extra pdf`) | `opendatalab/PDF-Extract-Kit-1.0` (`models/TabRec/SlanetPlus/slanet-plus.onnx`) | bobine | repo declares AGPL-3.0 |

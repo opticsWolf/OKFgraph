@@ -109,6 +109,8 @@ class OKFRouter:
         device: str = "auto",
         precision: str = "auto",
         cpu_arena: bool = False,
+        image_model_id: Optional[str] = None,
+        image_precision: str = "auto",
         allow_remote_images: bool = False,
         allowed_image_domains: Optional[List[str]] = None,
         chunk_size: int = 512,
@@ -143,6 +145,15 @@ class OKFRouter:
                 in one graph (reimport fresh to switch).
             cpu_arena: Enable the CPU arena allocator (default False: ~8x
                 lower peak RSS for ~1.4x encode time, measured).
+            image_model_id: Vision model id for image-content search
+                (default: embroider's vision contract; registry only, no
+                explicit-files path). Image vectors share the vision
+                model's text-partner space — a non-partner text model is
+                refused at first vision encode (use mode=text captions).
+            image_precision: "auto" (default, follows device: CUDA →
+                FP16, CPU → FP32), "fp32" or "fp16". Explicit fp16 on
+                CPU fails fast (the vision graph stalls on CPU). Pinned
+                per graph like the text precision — never mix.
             allow_remote_images: Whether http(s) image URLs may be fetched.
             allowed_image_domains: Domain allowlist for remote images.
             chunk_size: Target chunk size in tokens.
@@ -239,6 +250,21 @@ class OKFRouter:
             raise ValueError(
                 f"precision must be 'auto', 'fp32', 'fp16' or 'int8', got '{precision}'"
             )
+        if image_precision not in ("auto", "fp32", "fp16"):
+            raise ValueError(
+                f"image_precision must be 'auto', 'fp32' or 'fp16', got "
+                f"'{image_precision}' (vision ships no int8 artifact)"
+            )
+        # Default vision id comes off the installed wheel when it knows
+        # the contract (>=0.3); the literal keeps older wheels failing
+        # with "unknown image model" instead of AttributeError.
+        if image_model_id is None:
+            image_model_id = getattr(
+                embroider, "VISION_NANO_MODEL",
+                "jina-v5-omni-nano-retrieval-vision",
+            )
+        self.image_model_id = image_model_id
+        self.image_precision = image_precision
         if not model_id or "/" not in model_id or any(
             c in model_id for c in ("'", '"', "\\", ";")
         ):
@@ -386,12 +412,63 @@ class OKFRouter:
         # The encoder was built pre-adoption: its factory now reads the
         # adopted dim lazily (above), but its stored dim/reporting must
         # agree too — same pattern as search_engine._search_available below.
+        # (The vision encoder's stored dim is synced where it is built.)
         self.encoder._truncate_dim = self.embedding_dim
+        # Vision session (0.8.0): same laziness as text — compat and pins
+        # run inside the factory, so text-only graphs never pay for them.
+        # No explicit-files path: vision opens by registry id only.
+        from okfgraph.components.embedding import (
+            enforce_image_model_pin,
+            enforce_image_precision_pin,
+            enforce_vision_compat,
+            LazyVisionEncoder,
+        )
+
+        def _report_vision_open(encoder) -> None:
+            pinned = enforce_image_precision_pin(self.conn, encoder.precision)
+            enforce_image_model_pin(self.conn, image_model_id)
+            logger.info(
+                "image embeddings: %s dim=%d cuda=%s precision=%s",
+                image_model_id, self.embedding_dim, encoder.used_cuda, pinned,
+            )
+
+        def _vision_session_factory():
+            if _ort_missing():
+                raise RuntimeError(_ORT_HINT)
+            # Fail-closed compat BEFORE any download: wrong text model,
+            # oversize dim, or unknown image id all refuse here.
+            enforce_vision_compat(
+                self.conn,
+                text_model_id=model_id,
+                embedding_dim=self.embedding_dim,
+                image_model_id=image_model_id,
+            )
+            return embroider.JinaV5Vision.open(
+                image_model_id,
+                truncate_dim=self.embedding_dim,
+                device=rust_device,
+                cache_dir=cache_dir,
+                precision=image_precision,
+                gpu_mem_limit=None,
+            )
+
+        self.vision_encoder = LazyVisionEncoder(
+            image_model_id=image_model_id,
+            truncate_dim=embedding_dim,
+            device=rust_device,
+            session_factory=_vision_session_factory,
+            on_open=_report_vision_open,
+            precision=image_precision,
+        )
+        # Same pre-adoption sync as the text encoder above: the factory
+        # reads the adopted dim lazily, the stored dim follows it here.
+        self.vision_encoder._truncate_dim = self.embedding_dim
         self.embed_engine = EmbeddingEngine(
             self.encoder, self.embedding_dim,
             self.device, self.cache_dir, self.model_id,
             self.chunk_size, self.chunk_overlap, self.enable_chunking,
             self.conn, self.ort_dylib,
+            vision_encoder=self.vision_encoder,
         )
         self.image_mgr = ImageAssetManager(
             self.conn, self.embed_engine, self.schema_mgr,

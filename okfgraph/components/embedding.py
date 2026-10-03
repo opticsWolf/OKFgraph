@@ -213,6 +213,273 @@ def enforce_model_pin(conn, model_id: str) -> str:
     )
     logger.debug("graph pinned to model=%s", model_id)
     return model_id
+
+
+#: MetaText key pinning the vision model a graph's image vectors use.
+#: Same fail-closed adoption semantics as the text model pin: first
+#: vision open records, later opens refuse on mismatch, empty graphs
+#: re-pin. A second image model in one graph is refused — image vectors
+#: only compare within one (model, precision, contract) triple.
+IMAGE_MODEL_META_KEY = "embedding_image_model"
+#: Meta key pinning the vision weight precision (INT64 16/32, reuses
+#: `_PRECISION_CODE`). FP16 and FP32 vision weights live in different
+#: spaces, same as text.
+IMAGE_PRECISION_META_KEY = "embedding_image_precision"
+
+
+def enforce_image_model_pin(conn, image_model_id: str) -> str:
+    """Fail-closed vision-model pin for a graph (0.8.0).
+
+    Mirrors `enforce_model_pin` under `IMAGE_MODEL_META_KEY`: the first
+    vision open records the image model id, later opens refuse on
+    mismatch, empty graphs re-pin silently.
+    """
+    conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS MetaText (key STRING PRIMARY KEY, value STRING)"
+    )
+    try:
+        rows = conn.execute(
+            f"MATCH (m:MetaText {{key: '{IMAGE_MODEL_META_KEY}'}}) RETURN m.value AS v"
+        ).rows_as_dict().get_all()
+    except Exception:
+        rows = []
+    if rows:
+        pinned = rows[0]["v"]
+        if pinned == image_model_id:
+            return pinned
+        try:
+            n = conn.execute(
+                "MATCH (c:Concept) RETURN c.id AS cid LIMIT 1"
+            ).rows_as_dict().get_all()
+        except Exception:
+            n = []
+        if not n:
+            conn.execute(
+                f"MERGE (m:MetaText {{key: '{IMAGE_MODEL_META_KEY}'}}) "
+                f"SET m.value = '{image_model_id}'"
+            )
+            logger.info("empty graph re-pinned to image model=%s", image_model_id)
+            return image_model_id
+        raise RuntimeError(
+            f"graph is pinned to image model={pinned} but the vision session opened "
+            f"with image model={image_model_id}: image vectors only compare "
+            f"within one (model, precision, contract) triple. Reimport into a "
+            f"fresh database with image model={image_model_id}, or reopen "
+            f"with image model={pinned}."
+        )
+    conn.execute(
+        f"MERGE (m:MetaText {{key: '{IMAGE_MODEL_META_KEY}'}}) "
+        f"SET m.value = '{image_model_id}'"
+    )
+    logger.debug("graph pinned to image model=%s", image_model_id)
+    return image_model_id
+
+
+def enforce_image_precision_pin(conn, precision: str) -> str:
+    """Fail-closed vision-precision pin for a graph (0.8.0).
+
+    Mirrors `enforce_precision_pin` under `IMAGE_PRECISION_META_KEY`.
+    """
+    conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS Meta (key STRING PRIMARY KEY, value INT64)"
+    )
+    try:
+        rows = conn.execute(
+            f"MATCH (m:Meta {{key: '{IMAGE_PRECISION_META_KEY}'}}) RETURN m.value AS v"
+        ).rows_as_dict().get_all()
+    except Exception:
+        rows = []
+    if rows:
+        pinned = {16: "fp16", 32: "fp32"}.get(rows[0]["v"], None)
+        if pinned is None or pinned == precision:
+            return precision if pinned is None else pinned
+        try:
+            n = conn.execute(
+                "MATCH (c:Concept) RETURN c.id AS cid LIMIT 1"
+            ).rows_as_dict().get_all()
+        except Exception:
+            n = []
+        if not n:
+            conn.execute(
+                f"MERGE (m:Meta {{key: '{IMAGE_PRECISION_META_KEY}'}}) "
+                f"SET m.value = {_PRECISION_CODE[precision]}"
+            )
+            logger.info("empty graph re-pinned to image precision=%s", precision)
+            return precision
+        raise RuntimeError(
+            f"graph is pinned to image precision={pinned} but the vision session "
+            f"opened with precision={precision}: FP16 and FP32 vision vectors "
+            f"live in different spaces and must never mix. Reimport into a fresh "
+            f"database with precision={precision}, or reopen with precision={pinned}."
+        )
+    conn.execute(
+        f"MERGE (m:Meta {{key: '{IMAGE_PRECISION_META_KEY}'}}) "
+        f"SET m.value = {_PRECISION_CODE[precision]}"
+    )
+    logger.debug("graph pinned to image precision=%s", precision)
+    return precision
+
+
+def vision_text_partner(image_model_id: str) -> str:
+    """Text model sharing a vision model's vector space (0.8.0).
+
+    Read off embroider's registry (`available_models`), never hardcoded
+    here — the registry owns the contract. Raises RuntimeError for
+    unknown ids and for embroider wheels without the vision entry (<0.3).
+    """
+    try:
+        import embroider
+    except ImportError:
+        raise RuntimeError(
+            "the embroider wheel is required for image embeddings: "
+            "pip install 'embroider>=0.3,<0.4'"
+        ) from None
+    for m in embroider.available_models():
+        if m.get("id") == image_model_id:
+            partner = m.get("text_partner") or ""
+            if not partner:
+                raise RuntimeError(
+                    f"image model {image_model_id!r} names no text partner — "
+                    "image vectors would compare against nothing"
+                )
+            return partner
+    raise RuntimeError(
+        f"unknown image model {image_model_id!r} (needs embroider>=0.3, "
+        "which registers the vision contract)"
+    )
+
+
+def enforce_vision_compat(conn, *, text_model_id: str, embedding_dim: int,
+                          image_model_id: str) -> str:
+    """Refuse the vision route on an incompatible graph (0.8.0).
+
+    Image vectors only compare against their vision model's `text_partner`:
+    a graph whose text model isn't the partner (pinned or configured) is
+    refused with the caption fallback named, and dimensions above the
+    vision native ceiling (768) are refused — image vectors use the
+    graph's `truncate_dim`, which must fit the vision output.
+
+    Returns the partner text model id. Runs inside the vision session
+    factory, so text-only graphs never pay for it.
+    """
+    partner = vision_text_partner(image_model_id)
+    if embedding_dim > 768:
+        raise RuntimeError(
+            f"image-content search needs embedding_dim<=768 (vision native "
+            f"width; this graph uses dim={embedding_dim}): reimport with a "
+            "smaller dim, or use mode=text (captions)"
+        )
+    try:
+        rows = conn.execute(
+            f"MATCH (m:MetaText {{key: '{MODEL_META_KEY}'}}) RETURN m.value AS v"
+        ).rows_as_dict().get_all()
+    except Exception:
+        rows = []
+    pinned = rows[0]["v"] if rows else None
+    effective = pinned or text_model_id
+    if effective != partner:
+        raise RuntimeError(
+            f"image-content search needs a {partner} graph; this graph uses "
+            f"{effective} — use mode=text (captions)"
+        )
+    return partner
+
+
+def vision_content_hash(image_model_id: str, image_precision: str, payload: bytes) -> str:
+    """Content hash for vision-route rows (0.8.0).
+
+    Covers route + image model id + precision + resolution contract + raw
+    bytes, so any contract change re-embeds only the image vectors. The
+    TEXT route keeps its historical hash (stable across the upgrade — no
+    caption churn); pre-0.7.0 `omni` rows hash a different payload and
+    miss reuse, re-embedding by caption as before.
+    """
+    from okfgraph.images import EmbedRoute, VISION_CONTRACT
+    import hashlib
+
+    h = hashlib.sha256()
+    h.update(EmbedRoute.VISION.value.encode("utf-8"))
+    h.update(b"|")
+    h.update(image_model_id.encode("utf-8"))
+    h.update(b"|")
+    h.update(image_precision.encode("utf-8"))
+    h.update(b"|")
+    h.update(VISION_CONTRACT.encode("utf-8"))
+    h.update(b"|")
+    h.update(payload or b"")
+    return h.hexdigest()
+
+
+class LazyVisionEncoder:
+    """Defers the vision session open until the first image encode (0.8.0).
+
+    Mirrors `LazyRustEncoder`: the `embroider` wheel import is validated
+    eagerly, but `JinaV5Vision.open` — download + session build — waits
+    for the first `encode_image`. Failures cache and re-raise; threading
+    follows the same lock discipline. Text-only imports never touch it.
+    """
+
+    def __init__(self, *, image_model_id, truncate_dim, device,
+                 session_factory, on_open=None, precision="auto"):
+        self._image_model_id = image_model_id
+        self._truncate_dim = truncate_dim
+        self._device = device
+        self._precision_cfg = precision
+        self._session_factory = session_factory
+        self._on_open = on_open
+        self._lock = threading.Lock()
+        self._encoder = None
+        self._encoder_error = None
+        self._open_reported = False
+
+    @property
+    def is_loaded(self) -> bool:
+        """True once the vision session has been opened."""
+        return self._encoder is not None
+
+    @property
+    def model_id(self) -> str:
+        return self._image_model_id
+
+    @property
+    def used_cuda(self) -> bool:
+        """Effective device — opens the session on first access."""
+        return bool(self._get_encoder().used_cuda)
+
+    def encode_image(self, rgb: bytes, h: int, w: int):
+        """Embed one resized RGB buffer (row-major `[h, w, 3]` uint8)."""
+        return self._get_encoder().encode_image(rgb, h, w)
+
+    def _get_encoder(self):
+        encoder = self._encoder
+        if encoder is not None:
+            return encoder
+        with self._lock:
+            if self._encoder is not None:
+                return self._encoder
+            if self._encoder_error is not None:
+                raise self._encoder_error
+            try:
+                encoder = self._session_factory()
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except BaseException as exc:
+                # Same discipline as LazyRustEncoder: pyo3 panics derive
+                # from BaseException and must cache, not retry.
+                self._encoder_error = exc
+                raise
+            self._encoder = encoder
+            if self._on_open is not None and not self._open_reported:
+                self._open_reported = True
+                self._on_open(encoder)
+            return encoder
+
+    def __repr__(self) -> str:
+        state = "loaded" if self._encoder is not None else "cold"
+        return (
+            f"LazyVisionEncoder({self._image_model_id}, "
+            f"dim={self._truncate_dim}, {state})"
+        )
 logger = logging.getLogger(__name__)
 
 # `onnxruntime-gpu` installs the same `onnxruntime` module name — one entry suffices.
@@ -509,8 +776,12 @@ class EmbeddingEngine:
     def __init__(self, rust_encoder, embedding_dim, device,
                  cache_dir, model_id,
                  chunk_size, chunk_overlap, enable_chunking, conn,
-                 ort_dylib=None):
+                 ort_dylib=None, vision_encoder=None):
         self.encoder = rust_encoder
+        # Lazy vision session (0.8.0, None until the router wires it):
+        # image-content search shares the text-nano space via the vision
+        # model's text_partner. Text-only graphs never open it.
+        self.vision_encoder = vision_encoder
         self.embedding_dim = embedding_dim
         self.device = device
         self.cache_dir = cache_dir

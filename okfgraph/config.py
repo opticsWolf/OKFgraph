@@ -9,6 +9,7 @@ TOML file locations (checked in order, first match wins):
 
 Environment variables (prefix ``OKFGRAPH_``):
   DB, DIM, DEVICE, PRECISION, CPU_ARENA, CACHE_DIR, BUNDLE, OMNI_MODEL_ID,
+  IMAGE_MODEL, IMAGE_PRECISION,
   CHUNK_SIZE, CHUNK_OVERLAP, BATCH_SIZE, MODE, WAL_MODE,
   ALLOW_REMOTE_IMAGES, ALLOWED_IMAGE_DOMAINS, NO_CHUNKING
 
@@ -26,9 +27,11 @@ Example TOML (``okfgraph.toml``):
     cpu_arena = false  # CPU arena allocator (default off: 8x less RAM, ~1.4x time)
     cache_dir = "/mnt/models"
     max_length = 8192  # token truncation ceiling, 1..=32768 (default: 8192)
+    image_model_id = "jina-v5-omni-nano-retrieval-vision"  # vision model (registry only; needs a text-nano graph)
+    image_precision = "auto"  # auto | fp32 | fp16 (default: auto — follows device)
 
     [import]
-    mode = "text"
+    mode = "text"  # text | optional | omni (optional/omni embed image content via ONNX vision)
     batch_size = 64
     chunk_size = 512
     chunk_overlap = 40
@@ -94,6 +97,10 @@ class EmbeddingConfig:
     # field so old configs/CLI flags warn instead of breaking (see load()).
     omni_model_id: Optional[str] = None
     max_length: Optional[int] = None
+    # Vision model for image-content search (0.8.0): None selects
+    # embroider's vision contract at router build. Registry only.
+    image_model_id: Optional[str] = None
+    image_precision: str = "auto"
 
     def validate(self) -> List[str]:
         """Validate embedding settings. Returns list of error messages."""
@@ -116,6 +123,11 @@ class EmbeddingConfig:
         if self.precision not in valid_precisions:
             errors.append(
                 f"embedding.precision must be one of {valid_precisions}, got '{self.precision}'"
+            )
+        if self.image_precision not in ("auto", "fp32", "fp16"):
+            errors.append(
+                f"embedding.image_precision must be one of ('auto', 'fp32', 'fp16'), "
+                f"got '{self.image_precision}'"
             )
         if self.max_length is not None and not 1 <= self.max_length <= 32768:
             errors.append(
@@ -140,11 +152,10 @@ class ImportConfig:
     def validate(self) -> List[str]:
         """Validate import settings. Returns list of error messages."""
         errors = []
-        valid_modes = ("text",)
+        valid_modes = ("text", "optional", "omni")
         if self.mode not in valid_modes:
             errors.append(
-                f"import.mode must be one of {valid_modes}, got '{self.mode}' "
-                "('optional'/'omni' were removed in 0.7.0 — use 'text')"
+                f"import.mode must be one of {valid_modes}, got '{self.mode}'"
             )
         if self.batch_size < 1 or self.batch_size > 256:
             errors.append("import.batch_size must be between 1 and 256")
@@ -314,6 +325,10 @@ class OKFConfig:
                 )
             if emb.get("max_length") is not None:
                 config.embedding.max_length = int(emb["max_length"])
+            if emb.get("image_model_id") is not None:
+                config.embedding.image_model_id = emb["image_model_id"]
+            if emb.get("image_precision") is not None:
+                config.embedding.image_precision = emb["image_precision"]
 
         # Import section
         if "import" in data:
@@ -382,6 +397,10 @@ class OKFConfig:
             )
         if val := os.environ.get(f"{prefix}MAX_LENGTH"):
             config.embedding.max_length = int(val)
+        if val := os.environ.get(f"{prefix}IMAGE_MODEL"):
+            config.embedding.image_model_id = val
+        if val := os.environ.get(f"{prefix}IMAGE_PRECISION"):
+            config.embedding.image_precision = val
 
         # Import settings
         if val := os.environ.get(f"{prefix}MODE"):
@@ -450,6 +469,10 @@ class OKFConfig:
                 config.roots = parsed
         if "max_length" in cli_args and cli_args["max_length"]:
             config.embedding.max_length = int(cli_args["max_length"])
+        if "image_model" in cli_args and cli_args["image_model"]:
+            config.embedding.image_model_id = str(cli_args["image_model"])
+        if "image_precision" in cli_args and cli_args["image_precision"]:
+            config.embedding.image_precision = str(cli_args["image_precision"])
         if "chunk_size" in cli_args and cli_args["chunk_size"]:
             config.import_config.chunk_size = int(cli_args["chunk_size"])
         if "chunk_overlap" in cli_args and cli_args["chunk_overlap"]:
@@ -489,6 +512,10 @@ class OKFConfig:
             base.embedding.cache_dir = overlay.embedding.cache_dir
         if overlay.embedding.max_length != EmbeddingConfig().max_length:
             base.embedding.max_length = overlay.embedding.max_length
+        if overlay.embedding.image_model_id != EmbeddingConfig().image_model_id:
+            base.embedding.image_model_id = overlay.embedding.image_model_id
+        if overlay.embedding.image_precision != EmbeddingConfig().image_precision:
+            base.embedding.image_precision = overlay.embedding.image_precision
 
         # Merge import settings
         if overlay.import_config.mode != ImportConfig().mode:

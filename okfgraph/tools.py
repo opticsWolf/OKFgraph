@@ -365,9 +365,9 @@ TOOLS = [
                 },
                 "mode": {
                     "type": "string",
-                    "enum": ["text"],
+                    "enum": ["text", "optional", "omni"],
                     "default": "text",
-                    "description": "Image ingestion mode (caption-based; optional/omni removed in 0.7.0).",
+                    "description": "Image ingestion mode: text (captions), optional (vision for images lacking alt-text), omni (vision for every image).",
                 },
             },
             "required": ["md_path"],
@@ -440,11 +440,11 @@ TOOLS = [
                 },
                 "mode": {
                     "type": "string",
-                    "enum": ["text"],
+                    "enum": ["text", "optional", "omni"],
                     "default": "text",
                     "description": (
-                        "Image ingestion mode for the converted content "
-                        "(caption-based; optional/omni removed in 0.7.0)."
+                        "Image ingestion mode for the converted content: "
+                        "text (captions), optional/omni (ONNX vision)."
                     ),
                 },
                 "extract_images": {

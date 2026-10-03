@@ -82,13 +82,11 @@ class TestImportConfigValidation:
         assert errors == []
 
     def test_valid_modes(self):
-        config = ImportConfig(mode="text")
-        errors = config.validate()
-        assert not any("must be one of" in e for e in errors)
-        for mode in ("optional", "omni"):
+        # text/optional/omni all live since 0.8.0 (ONNX vision path).
+        for mode in ("text", "optional", "omni"):
             config = ImportConfig(mode=mode)
             errors = config.validate()
-            assert any("must be one of" in e for e in errors)
+            assert not any("must be one of" in e for e in errors), mode
 
     def test_invalid_mode(self):
         config = ImportConfig(mode="fast")

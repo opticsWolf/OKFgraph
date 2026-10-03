@@ -349,7 +349,7 @@ class IngestManager:
             title: Optional title override (defaults to frontmatter or filename).
             description: Optional description override (defaults to frontmatter).
             tags: Optional tags to apply to the concept.
-            mode: Image ingestion mode ('text'; optional/omni removed in 0.7.0).
+            mode: Image ingestion mode ('text' captions; 'optional'/'omni' for ONNX vision content, needs a text-nano graph).
 
         Returns:
             Dict with keys:

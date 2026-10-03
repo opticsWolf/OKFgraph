@@ -139,6 +139,8 @@ def _add_global(parser, mark=True):
     _add("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface, or from okfgraph.toml)")
     _add("--device", default=None, choices=["auto", "cpu", "cuda"], help="Inference device: auto (CUDA when present) / cpu / cuda (default: auto, or from okfgraph.toml)")
     _add("--precision", default=None, choices=["auto", "fp32", "fp16", "int8"], help="Weight precision: auto follows device (CUDA->FP16, CPU->FP32); fp16 on CPU is >40x slower; int8 explicit only, needs a measured artifact (default: auto, or from okfgraph.toml)")
+    _add("--image-model", default=None, help="Vision model id for image-content search (default: embroider vision contract; needs a text-nano graph, or from okfgraph.toml). Switching forces a fresh reimport (fail-closed image pin).")
+    _add("--image-precision", default=None, choices=["auto", "fp32", "fp16"], help="Vision weight precision: auto follows device (CUDA->FP16, CPU->FP32); explicit fp16 on CPU fails fast (default: auto, or from okfgraph.toml)")
     _add("--cpu-arena", action="store_true", help="Enable the CPU arena allocator (default off: ~8x lower peak RSS for ~1.4x encode time)")
     _add("--chunk-size", type=int, default=None, help="Chunk size in words for overlap (default: 512, or from okfgraph.toml)")
     _add("--chunk-overlap", type=int, default=None, help="Overlap in words between chunks (default: 40, or from okfgraph.toml)")
@@ -175,7 +177,7 @@ def _router(args):
     # Build CLI args dict (only non-None values override config)
     cli_dict = {}
     for attr in ("db", "bundle", "primary", "model", "dim", "max_length", "cache_dir", "device",
-                 "precision", "cpu_arena",
+                 "precision", "cpu_arena", "image_model", "image_precision",
                  "chunk_size", "chunk_overlap",
                  "no_chunking", "mode", "batch_size",
                  "allow_remote_images", "wal_mode", "allowed_image_domains"):
@@ -216,6 +218,8 @@ def _router(args):
         device=config.embedding.device,
         precision=config.embedding.precision,
         cpu_arena=config.embedding.cpu_arena,
+        image_model_id=config.embedding.image_model_id,
+        image_precision=config.embedding.image_precision,
         allow_remote_images=config.import_config.allow_remote_images,
         allowed_image_domains=allowed_domains,
         chunk_size=config.import_config.chunk_size,
@@ -1212,9 +1216,9 @@ def build_parser():
                      "configured root; with --bundle, only that tree)")
     p.add_argument("--batch-size", type=int, default=32, help="Batch size for encoding (default: 32)")
     p.add_argument(
-        "--mode", default="text", choices=["text"],
-        help="Image ingestion mode: text (alt-text/filename caption). "
-             "The torch-backed optional/omni routes were removed in 0.7.0.",
+        "--mode", default="text", choices=["text", "optional", "omni"],
+        help="Image ingestion mode: text (captions), optional (vision for "
+             "images lacking alt-text), omni (vision for every image).",
     )
     p.add_argument(
         "--purge", action="store_true", default=False,
@@ -1301,8 +1305,8 @@ def build_parser():
         help="ONNX routing mode (--kind pdf, default: auto)",
     )
     p.add_argument(
-        "--mode", default="text", choices=["text"],
-        help="Image ingestion mode: text (caption-based; optional/omni removed in 0.7.0)",
+        "--mode", default="text", choices=["text", "optional", "omni"],
+        help="Image ingestion mode: text (captions), optional/omni (ONNX vision).",
     )
     p.add_argument(
         "--batch-size", type=int, default=32,

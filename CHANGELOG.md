@@ -4,6 +4,30 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [Unreleased] (0.8.0: image-content search)
+
+### Added (ONNX vision route, plan-onnx-only Phase 6)
+- `mode="optional"`/`"omni"` are live again — on the ONNX vision model,
+  not torch: `optional` embeds images lacking alt-text by content,
+  `omni` embeds every image by content (`EmbedRoute VISION`, stored as
+  `vision-onnx`). Needs a text-nano graph (the vision `text_partner`)
+  and embroider>=0.3 (`JinaV5Vision`); anything else fails fast with the
+  caption fallback named. Requires `Pillow` (now a core dep) for
+  decode + bicubic resize to `vision_target_size`.
+- `image_model_id` / `image_precision` (`--image-model`,
+  `--image-precision`, TOML `[embedding]`, `OKFGRAPH_IMAGE_MODEL` /
+  `OKFGRAPH_IMAGE_PRECISION`): pinned per graph in Meta/MetaText
+  (`embedding_image_model`, `embedding_image_precision`) — a second
+  image model or precision is refused, never mixed. `auto` precision
+  follows the device (CUDA→FP16, CPU→FP32); explicit fp16 on CPU fails
+  fast (the vision graph stalls on CPU).
+- Vision content hash covers route + image model + precision +
+  resolution contract + bytes: contract changes re-embed only image
+  vectors. Caption rows keep their historical hash (no churn).
+- `okf doctor` reports per-route image counts plus the pinned image
+  model/precision (`image_routes`, informational). CPU vision batches
+  log the expected cost (~0.6–6.7 s/image).
+
 ## [0.7.0] — 2026-10-02
 
 ### Removed (BREAKING: ONNX-only chain, plan-onnx-only Phase 1)

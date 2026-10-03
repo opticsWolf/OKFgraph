@@ -346,18 +346,18 @@ class TestGPUMemoryHandling:
 # ---------------------------------------------------------------------------
 
 class TestOmniRemoved:
-    """The torch-backed omni/optional routes refuse instead of downgrading."""
+    """The torch-backed omni/optional routes are gone; the names now
+    select the ONNX vision route (0.8.0+)."""
 
-    def test_omni_mode_refused(self, tmp_dir):
-        from okfgraph.images import IngestMode
-        with pytest.raises(ValueError, match="removed in 0.7.0"):
-            IngestMode.coerce("omni")
-        with pytest.raises(ValueError, match="removed in 0.7.0"):
-            IngestMode.coerce("optional")
-        with pytest.raises(ValueError, match="removed in 0.7.0"):
-            IngestMode.coerce("auto")
+    def test_omni_mode_selects_vision(self, tmp_dir):
+        from okfgraph.images import EmbedRoute, IngestMode
+        assert IngestMode.coerce("omni") is IngestMode.OMNI
+        assert IngestMode.coerce("optional") is IngestMode.OPTIONAL
+        assert IngestMode.coerce("auto") is IngestMode.OPTIONAL
         assert IngestMode.coerce("text") is IngestMode.TEXT
         assert IngestMode.coerce(None) is IngestMode.TEXT
+        # The stored 'omni' route id is retired: vision mints 'vision-onnx'.
+        assert EmbedRoute.VISION.value == "vision-onnx"
 
     def test_omni_search_flag_refused(self, tmp_dir):
         r = OKFRouter(

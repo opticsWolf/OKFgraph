@@ -25,6 +25,10 @@ dependencies = [
     "mordant>=0.9",
     "mcp>=2.0",
     "fasteners>=0.19",
+    # Image decode + bicubic resize for the vision route (0.8.0): core,
+    # not an extra — images are core ingestion content. Imported lazily
+    # (only when image bytes are actually prepared).
+    "Pillow>=11",
 ]
 
 [project.optional-dependencies]

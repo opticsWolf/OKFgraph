@@ -336,7 +336,7 @@ def create_mcp_server(
         title: Annotated[Optional[str], Field(description="Title override (md only).")] = None,
         description: Annotated[Optional[str], Field(description="Description override (md only).")] = None,
         tags: Annotated[Optional[list[str]], Field(description="Tags to apply (md/thoughts).")] = None,
-        mode: Annotated[Literal["text"], Field(description="Image ingestion mode (caption-based; optional/omni removed in 0.7.0).", json_schema_extra={"enum": ["text"]})] = "text",
+        mode: Annotated[Literal["text", "optional", "omni"], Field(description="Image ingestion mode: text (captions), optional/omni (ONNX vision content, needs a text-nano graph).", json_schema_extra={"enum": ["text", "optional", "omni"]})] = "text",
         routing_mode: Annotated[
             Literal["auto", "surgical", "always", "never"],
             Field(description="PDF converter routing (kind='pdf'). 'never' = fast path, no ONNX."),

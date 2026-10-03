@@ -5,14 +5,28 @@ library at module load time (``Pillow`` is imported lazily, only when raw image
 bytes actually need to be decoded). That keeps the mode-routing / extraction
 logic importable and unit-testable without the heavy embedding stack.
 
-Images become vectors by embedding their caption (alt-text or filename
-fallback) with the text model. The torch-backed ``optional``/``omni`` routes
-were removed in 0.7.0; every image takes the text path.
+Three ingestion modes control how an image becomes a vector in the unified
+``ImageAsset`` index:
+
+==========  ============================  ==============================
+Mode        Image WITH alt-text           Image WITHOUT alt-text
+==========  ============================  ==============================
+``text``    text-embed(alt_text)          text-embed(filename + image #)
+``optional``text-embed(alt_text)          vision-embed(image bytes)
+``omni``    vision-embed(image bytes)     vision-embed(image bytes)
+==========  ============================  ==============================
+
+The text-model and vision-model embeddings live in the *same* vector space
+(vision's ``text_partner`` is text-nano), so both can be queried from one
+index without reindexing. When ``omni`` is requested but the raw bytes are
+unavailable (or undecodable), planning falls back to the text path so
+ingestion never hard-fails on a missing asset.
 """
 
 from __future__ import annotations
 
 import base64
+import io
 import mimetypes
 import re
 import urllib.parse
@@ -26,28 +40,22 @@ from typing import List, Optional, Tuple
 class IngestMode(str, Enum):
     """How images are turned into embeddings during ingestion.
 
-    Since 0.7.0 only ``text`` exists (caption embedded with the text model).
-    The torch-backed ``optional``/``omni`` routes were removed with the omni
-    extra; requesting them raises instead of silently downgrading.
+    ``optional``/``omni`` route images without alt-text (resp. all images)
+    through the ONNX vision model (0.8.0+); the torch path they used
+    pre-0.7.0 is gone, and ``EmbedRoute.OMNI`` survives only as a stale-row
+    marker for pre-0.7.0 rows.
     """
 
-    TEXT = "text"          # alt-text or filename fallback, text model
-    OPTIONAL = "optional"  # REMOVED in 0.7.0 (torch path); refused, see coerce()
-    OMNI = "omni"          # REMOVED in 0.7.0 (torch path); refused, see coerce()
+    TEXT = "text"          # never load vision; alt-text or filename fallback
+    OPTIONAL = "optional"  # vision only for images lacking alt-text
+    OMNI = "omni"          # vision for every image
 
     @classmethod
     def coerce(cls, value: "str | IngestMode | None", default: "IngestMode" = None) -> "IngestMode":
         """Parse a user-supplied mode string, tolerantly."""
         if value is None:
-            if default is None or default in (cls.OPTIONAL, cls.OMNI):
-                return cls.TEXT
-            return default
+            return default or cls.TEXT
         if isinstance(value, cls):
-            if value is not cls.TEXT:
-                raise ValueError(
-                    f"ingest mode {value.value!r} was removed in 0.7.0 (torch path); "
-                    "images embed by caption — use mode 'text'"
-                )
             return value
         key = str(value).strip().lower()
         aliases = {
@@ -55,8 +63,6 @@ class IngestMode(str, Enum):
             "text-only": cls.TEXT,
             "text_only": cls.TEXT,
             "alt": cls.TEXT,
-        }
-        removed = {
             "optional": cls.OPTIONAL,
             "hybrid": cls.OPTIONAL,
             "auto": cls.OPTIONAL,
@@ -64,11 +70,6 @@ class IngestMode(str, Enum):
             "full": cls.OMNI,
             "multimodal": cls.OMNI,
         }
-        if key in removed:
-            raise ValueError(
-                f"ingest mode {value!r} was removed in 0.7.0 (torch path); "
-                "images embed by caption — use mode 'text'"
-            )
         if key not in aliases:
             valid = ", ".join(m.value for m in cls)
             raise ValueError(f"Unknown ingest mode {value!r}. Valid modes: {valid}")
@@ -78,8 +79,15 @@ class IngestMode(str, Enum):
 class EmbedRoute(str, Enum):
     """Which encoder produces an image asset's embedding."""
 
-    TEXT = "text"   # embed the supplied caption string with the text model
-    OMNI = "omni"   # embed the raw image bytes with the omni model
+    TEXT = "text"            # embed the supplied caption string with the text model
+    OMNI = "omni"            # STALE marker: pre-0.7.0 torch rows, never minted since
+    VISION = "vision-onnx"  # embed the raw image bytes with the ONNX vision model
+
+
+#: Resolution contract baked into the vision content hash: changing any of
+#: these values changes the vectors, so the hash forces a re-embed instead
+#: of silently reusing vectors from a different contract.
+VISION_CONTRACT = "smart32/min262144/max1310720/bicubic-rgb"
 
 
 # ``![alt](src "optional title")`` — alt and title are optional.
@@ -418,18 +426,56 @@ def build_extracted_images(
 def plan_embedding(img: ExtractedImage, mode: IngestMode) -> Tuple[EmbedRoute, Optional[str]]:
     """Decide how a single image should be embedded under ``mode``.
 
-    Since 0.7.0 every image takes ``EmbedRoute.TEXT`` (caption embedded with
-    the text model). ``EmbedRoute.OMNI`` survives only as a stored-route
-    marker for pre-0.7.0 rows, which are treated as stale.
+    Returns ``(route, caption)``. For ``EmbedRoute.TEXT`` the caption is the
+    string to embed with the text model; for ``EmbedRoute.VISION`` the
+    caption is ``None`` (the raw bytes are embedded instead).
+
+    If ``omni`` is selected but no bytes are available, the plan degrades
+    gracefully to the text route using the best available caption, so a missing
+    or remote asset never aborts ingestion.
     """
-    if mode is not IngestMode.TEXT:
-        # coerce() normally rejects these first; belt-and-braces for direct
-        # IngestMode members passed by older callers.
-        raise ValueError(
-            f"ingest mode {mode.value!r} was removed in 0.7.0 (torch path); "
-            "images embed by caption — use mode 'text'"
-        )
     caption = img.alt_text if img.has_alt_text else fallback_caption(
         img.filename, img.index, img.concept_id
     )
-    return EmbedRoute.TEXT, caption
+
+    if mode is IngestMode.TEXT:
+        return EmbedRoute.TEXT, caption
+
+    if mode is IngestMode.OPTIONAL:
+        if img.has_alt_text:
+            return EmbedRoute.TEXT, img.alt_text
+        if img.has_data:
+            return EmbedRoute.VISION, None
+        return EmbedRoute.TEXT, caption  # graceful: no bytes -> use fallback caption
+
+    # IngestMode.OMNI — everything through the vision model when bytes exist
+    if img.has_data:
+        return EmbedRoute.VISION, None
+    return EmbedRoute.TEXT, caption  # graceful fallback when bytes are missing
+
+
+def prepare_vision_rgb(data: bytes, *, target_size_fn) -> Tuple[bytes, int, int]:
+    """Decode image bytes to resized RGB for the vision encoder.
+
+    Returns ``(raw_rgb, h, w)``: row-major ``[h, w, 3]`` uint8 where
+    ``(h, w)`` is its own resize target (Pillow bicubic when the source
+    differs). ``target_size_fn(h, w)`` is the embroider
+    ``vision_target_size`` binding — injected (not imported) so this
+    module stays importable without the embedding stack (hermetic tests
+    pass a stub).
+
+    Raises ``ValueError`` when the bytes don't decode to an image.
+    """
+    from PIL import Image as _Image
+
+    try:
+        img = _Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception as exc:
+        raise ValueError(f"image bytes do not decode: {exc}") from exc
+    rh, rw = target_size_fn(img.height, img.width)
+    if (rh, rw) != (img.height, img.width):
+        img = img.resize((rw, rh), _Image.Resampling.BICUBIC)
+    import numpy as _np
+
+    arr = _np.asarray(img, dtype=_np.uint8)
+    return bytes(arr.data), img.height, img.width

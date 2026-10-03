@@ -5,6 +5,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 # Load okfgraph/images.py directly by path so this test does not pull in the
 # heavy router/model stack via the package __init__.
 _IMAGES_PATH = Path(__file__).resolve().parents[1] / "okfgraph" / "images.py"
@@ -34,21 +36,16 @@ def test_mode_coercion():
     assert IngestMode.coerce(None) is IngestMode.TEXT
     assert IngestMode.coerce(None, default=IngestMode.TEXT) is IngestMode.TEXT
     assert IngestMode.coerce(IngestMode.TEXT) is IngestMode.TEXT
-    # Removed in 0.7.0 (torch path): refuse, don't downgrade.
-    for dead in ("optional", "hybrid", "auto", "omni", "full", "multimodal", "OMNI"):
-        try:
-            IngestMode.coerce(dead)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"expected ValueError for removed mode {dead}")
-    for dead_member in (IngestMode.OPTIONAL, IngestMode.OMNI):
-        try:
-            IngestMode.coerce(dead_member)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"expected ValueError for removed mode {dead_member}")
+    # Restored in 0.8.0 (ONNX vision path): optional/omni are live again.
+    assert IngestMode.coerce("optional") is IngestMode.OPTIONAL
+    assert IngestMode.coerce("hybrid") is IngestMode.OPTIONAL
+    assert IngestMode.coerce("auto") is IngestMode.OPTIONAL
+    assert IngestMode.coerce("omni") is IngestMode.OMNI
+    assert IngestMode.coerce("full") is IngestMode.OMNI
+    assert IngestMode.coerce("multimodal") is IngestMode.OMNI
+    assert IngestMode.coerce("OMNI") is IngestMode.OMNI
+    assert IngestMode.coerce(IngestMode.OPTIONAL) is IngestMode.OPTIONAL
+    assert IngestMode.coerce(IngestMode.OMNI) is IngestMode.OMNI
     try:
         IngestMode.coerce("banana")
     except ValueError:
@@ -128,15 +125,49 @@ def test_plan_text_mode():
     assert "f.png" in cap and "image 1" in cap
 
 
-def test_plan_removed_modes_refused():
-    # Removed in 0.7.0 (torch path): refuse even with bytes present.
-    for dead in (IngestMode.OPTIONAL, IngestMode.OMNI):
-        try:
-            plan_embedding(_img(alt="chart", data=PNG_1x1), dead)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"expected ValueError for removed mode {dead}")
+def test_plan_optional_routes():
+    # alt-text present -> caption path even with bytes
+    route, cap = plan_embedding(_img(alt="chart", data=PNG_1x1), IngestMode.OPTIONAL)
+    assert route is EmbedRoute.TEXT and cap == "chart"
+    # no alt-text + bytes -> vision path, no caption
+    route, cap = plan_embedding(_img(alt=None, data=PNG_1x1), IngestMode.OPTIONAL)
+    assert route is EmbedRoute.VISION and cap is None
+    # no alt-text + no bytes -> graceful caption fallback
+    route, cap = plan_embedding(_img(alt=None, data=None), IngestMode.OPTIONAL)
+    assert route is EmbedRoute.TEXT and "f.png" in cap
+
+
+def test_plan_omni_routes():
+    # bytes present -> vision path regardless of alt-text
+    for alt in ("chart", None, ""):
+        route, cap = plan_embedding(_img(alt=alt or None, data=PNG_1x1), IngestMode.OMNI)
+        assert route is EmbedRoute.VISION and cap is None
+    # missing bytes -> graceful caption fallback, never a hard fail
+    route, cap = plan_embedding(_img(alt=None, data=None), IngestMode.OMNI)
+    assert route is EmbedRoute.TEXT and "f.png" in cap
+
+
+def test_vision_route_id_and_contract():
+    # Distinct from the stale pre-0.7.0 'omni' marker.
+    assert EmbedRoute.VISION.value == "vision-onnx"
+    assert EmbedRoute.OMNI.value == "omni"
+    assert isinstance(images.VISION_CONTRACT, str) and images.VISION_CONTRACT
+
+
+def test_prepare_vision_rgb_resizes_to_target():
+    def fake_target(h, w):
+        return (64, 64)  # stub: everything maps to 64x64
+
+    # 1x1 PNG upscaled to the stub target: bicubic, RGB, row-major.
+    rgb, h, w = images.prepare_vision_rgb(PNG_1x1, target_size_fn=fake_target)
+    assert (h, w) == (64, 64)
+    assert len(rgb) == 64 * 64 * 3
+
+    def passthrough(h, w):
+        return (h, w)
+
+    with pytest.raises(ValueError):
+        images.prepare_vision_rgb(b"not an image", target_size_fn=passthrough)
 
 
 def test_build_extracted_images_local_and_inline(tmp_path):

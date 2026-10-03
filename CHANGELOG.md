@@ -4,7 +4,7 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [Unreleased] (0.8.0: image-content search)
+## [0.8.0] — 2026-10-03
 
 ### Added (ONNX vision route, plan-onnx-only Phase 6)
 - `mode="optional"`/`"omni"` are live again — on the ONNX vision model,

@@ -9,7 +9,7 @@ name: release
 # The embedding engine is NOT built here: since 0.2.12 it is the external
 # `embroider` crate (github.com/opticsWolf/embroider), whose own release
 # workflow publishes crates.io + PyPI wheels. This workflow only pins the
-# floor (`embroider>=0.2,<0.3`) — those wheels are already live when a
+# floor (`embroider>=0.3,<0.4`) — those wheels are already live when a
 # tag lands.
 
 on:

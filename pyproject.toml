@@ -9,6 +9,11 @@ description = "Ladybug-backed OKF knowledge graph with ONNX + Jina v5 embeddings
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0 OR MIT"
+
+[project.urls]
+Homepage = "https://opticswolf.github.io/OKFgraph/"
+Documentation = "https://opticswolf.github.io/OKFgraph/"
+Repository = "https://github.com/opticsWolf/OKFgraph"
 dependencies = [
     # Pinned: ladybug 0.20.x segfaults building a second in-process vector
     # index (~25% under pytest, Step 6 triage); 0.21.2 runs the same loop

@@ -1332,7 +1332,7 @@ def build_parser():
     p.add_argument("--kind", required=True, choices=["md", "pdf", "thoughts"],
                    help="What to ingest")
     p.add_argument("--md-file", default=None, help="Markdown file (--kind md)")
-    p.add_argument("--pdf-file", default=None, help="PDF file (--kind pdf)")
+    p.add_argument("--pdf-file", default=None, help="File to convert (--kind pdf): PDF or Office (docx/xlsx/pptx, legacy doc/xls/ppt)")
     p.add_argument("--thoughts", default=None, help="Raw reasoning text (--kind thoughts)")
     p.add_argument("--topic", default=None, help="Topic (--kind thoughts)")
     p.add_argument("--concept-id", default=None, help="Explicit concept ID (--kind md/thoughts; slashes are namespaces; thoughts default to thoughts/<topic>/<ts>_<id>)")

@@ -19,7 +19,7 @@ early, feed it structured.
 |---|---|---|
 | Decision, insight, or reasoning from this session | `thoughts` | Cheapest, highest value. Always set `topic`. |
 | Existing markdown (docs, notes, ADRs) | `md` | One file per call; bulk dirs via `okf import`. |
-| Papers, reports, scans | `pdf` | See converter modes below. |
+| Papers, reports, scans | `pdf` (`--pdf-file` also takes Office: docx/xlsx/pptx, legacy doc/xls/ppt — bobine dispatches on extension) | See converter modes below. |
 | Whole bundle directory changed | `okf import` (CLI) | Delta-aware: only changed files re-embed. |
 
 Rule of thumb: thoughts > md > pdf. Reasoning you already hold beats
@@ -52,7 +52,7 @@ re-extracting it from files.
 - PDF auto-imports mint `@pdf-<hash>/...` page ids (stable per source).
 - Link across roots with `[[alias/Name]]` (or the exact `[[@alias/Name]]`).
 
-## Converter modes (pdf only)
+## Converter modes (pdf/office)
 
 `routing_mode` controls when the converter spends ONNX compute:
 

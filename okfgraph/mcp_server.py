@@ -329,7 +329,7 @@ def create_mcp_server(
             Field(description="'md' = import a markdown file. 'pdf' = convert a PDF (bobine) and import. 'thoughts' = persist LLM reasoning as a searchable concept."),
         ],
         md_path: Annotated[Optional[str], Field(description="Markdown file to import (kind='md').")] = None,
-        pdf_path: Annotated[Optional[str], Field(description="PDF file to convert and import (kind='pdf').")] = None,
+        pdf_path: Annotated[Optional[str], Field(description="File to convert and import (kind='pdf'): PDF or Office (docx/xlsx/pptx, legacy doc/xls/ppt). Bobine dispatches on extension.")] = None,
         thoughts: Annotated[Optional[str], Field(description="Raw reasoning text (kind='thoughts').")] = None,
         topic: Annotated[Optional[str], Field(description="Topic for kind='thoughts' (required then).")] = None,
         concept_id: Annotated[Optional[str], Field(description="Explicit concept ID (md/thoughts). Generated if omitted (thoughts: thoughts/<topic>/<ts>_<id>, a virtual namespace — no file needed, exports there later). Slashes are namespaces.")] = None,

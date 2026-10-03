@@ -427,7 +427,8 @@ TOOLS = [
             "properties": {
                 "pdf_path": {
                     "type": "string",
-                    "description": "Path to the PDF file to convert and import.",
+                    "description": "Path to the file to convert and import (PDF or Office: docx/xlsx/pptx, legacy doc/xls/ppt — bobine dispatches on extension).",
+
                 },
                 "routing_mode": {
                     "type": "string",

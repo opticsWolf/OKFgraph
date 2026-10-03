@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-%E2%89%A52.0-purple)](https://modelcontextprotocol.io/)
 [![Ladybug](https://img.shields.io/badge/ladybug-0.21.2-orange)](https://pypi.org/project/ladybug/)
-[![Docs](https://img.shields.io/badge/docs-OKFgraph-blue)](https://opticswolf.github.io/OKFgraph/)
+[![Website](https://img.shields.io/badge/website-OKFgraph-blue)](https://opticswolf.github.io/OKFgraph/)
 
 **Ladybug-backed knowledge graph with Rust-driven Jina v5 embeddings, model-free
 graph retrieval, and agent-first MCP + CLI surfaces.**

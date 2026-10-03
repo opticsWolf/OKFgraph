@@ -13,7 +13,8 @@
   <p class="kicker">Markdown-native · ONNX-only · MCP-ready</p>
   <h1>OKFgraph</h1>
   <p class="sub">A file-first knowledge graph: your notes stay plain Markdown on disk,
-  SQLite carries the index, and Jina&nbsp;v5 embeddings run locally over ONNX&nbsp;Runtime.
+  ladybug-db carries the index (graph + vectors + full-text in one file),
+  and Jina&nbsp;v5 embeddings run locally over ONNX&nbsp;Runtime.
   No torch, no server, no lock-in.</p>
   <p class="cta">
     <a class="btn" href="https://github.com/opticsWolf/OKFgraph">GitHub</a>
@@ -37,7 +38,7 @@ okf search "your question" --db graph.db</code></pre>
   <h2>OKFgraph <span class="ver">0.9.0</span></h2>
   <p>Knowledge base as a <strong>bundle</strong>: one Markdown file per concept,
   frontmatter metadata, <code>[[wikilinks]]</code>, content-hash image assets.
-  Import once into SQLite; search with hybrid retrieval (FTS5 + RRF-fused dense
+  Import once into ladybug; search with hybrid retrieval (full-text + RRF-fused dense
   vectors + optional PPR/hub expansion). Files stay human-readable forever —
   the database is a derived index, and <code>okf export</code> round-trips it back.</p>
 
@@ -50,7 +51,7 @@ okf search "your question" --db graph.db</code></pre>
     <li><strong>Serve agents</strong> — exactly 5 MCP tools
       (<code>ingest</code>, <code>search</code>, <code>read</code>,
       <code>traverse</code>, <code>doctor</code>), stdio or HTTP.</li>
-    <li><strong>Work file-free</strong> — run a whole graph from SQLite alone;
+    <li><strong>Work file-free</strong> — run a whole graph from the ladybug DB alone;
       thoughts in, search out, no bundle directory required.</li>
   </ul>
 
@@ -133,7 +134,7 @@ r.export_db("graph.db", "./out")      # DB back to Markdown</code></pre>
     <tr><td>Graph + retrieval + MCP</td><td>okfgraph</td><td>0.9.0</td><td>What you install</td></tr>
     <tr><td>Ingestion engine</td><td>bobine</td><td>0.5.13</td><td>PDF / Office → Markdown</td></tr>
     <tr><td>Embedding runtime</td><td>embroider</td><td>0.3.1</td><td>ONNX sessions + Jina v5</td></tr>
-    <tr><td>Vector index + graph algorithms</td><td>ladybug</td><td>0.21.2</td><td>VECTOR + FTS extensions over the same .db; PPR / hub expansion</td></tr>
+    <tr><td>Graph store + retrieval</td><td>ladybug</td><td>0.21.2</td><td>Own LBUG file format: node tables, vector + FTS indexes, Cypher, PPR / hub expansion</td></tr>
     <tr><td>Inference runtime</td><td>onnxruntime</td><td>1.29.0</td><td>Single shared dylib</td></tr>
   </table>
   <p>License: Apache-2.0 OR MIT throughout. Docs:

@@ -61,8 +61,9 @@ re-extracting it from files.
 - `surgical` / `always` — force heavy passes (scans, complex layouts, tables).
 
 `extract_images=false` skips embedded images (pure-text import). Image
-*embedding* depth is separate: `mode=text` (caption-based; the torch-backed
-optional/omni routes were removed in 0.7.0). Converted markdown is
+*embedding* depth is separate: `mode=text` (captions) or
+`optional`/`omni` (image-content via the ONNX vision model, needs a
+text-nano graph). Converted markdown is
 mordant-linted and temp dirs are cleaned automatically.
 
 ## Conventions

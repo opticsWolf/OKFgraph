@@ -398,8 +398,9 @@ TOOLS = [
                 "concept_id": {
                     "type": "string",
                     "description": (
-                        "Optional explicit concept ID. If not provided, "
-                        "generated from topic + timestamp."
+                        "Optional explicit concept ID (slashes are namespaces). "
+                        "If not provided, generated as "
+                        "thoughts/<topic>/<ts>_<id> (virtual — no file needed)."
                     ),
                 },
                 "tags": {

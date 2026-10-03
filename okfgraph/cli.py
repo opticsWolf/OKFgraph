@@ -1335,7 +1335,7 @@ def build_parser():
     p.add_argument("--pdf-file", default=None, help="PDF file (--kind pdf)")
     p.add_argument("--thoughts", default=None, help="Raw reasoning text (--kind thoughts)")
     p.add_argument("--topic", default=None, help="Topic (--kind thoughts)")
-    p.add_argument("--concept-id", default=None, help="Explicit concept ID (--kind md/thoughts)")
+    p.add_argument("--concept-id", default=None, help="Explicit concept ID (--kind md/thoughts; slashes are namespaces; thoughts default to thoughts/<topic>/<ts>_<id>)")
     p.add_argument("--title", default=None, help="Title override (--kind md)")
     p.add_argument("--description", default=None, help="Description override (--kind md)")
     p.add_argument("--tags", default=None, help="Comma-separated tags (--kind md/thoughts)")

@@ -89,6 +89,7 @@ okf traverse savanna --relationship LINKS_TO --direction BOTH
 okf diff                                  # drift: graph vs bundle dir
 okf doctor                                # health score + findings
 okf lint kb/                               # pre-import gate: frontmatter + links, no model
+okf produce --from sqlite --source shop.db --output kb/  # SQLite → bundle (lint pre-flighted)
 ```
 
 ### Programmatic usage

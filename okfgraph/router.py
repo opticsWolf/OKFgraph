@@ -311,7 +311,8 @@ class OKFRouter:
             return False
 
         _ORT_HINT = ("no ONNX Runtime installed: pip install 'okfgraph[cpu]' "
-                     "or 'okfgraph[gpu]' (exactly one)")
+                     "or 'okfgraph[gpu]' (exactly one), or set ORT_DYLIB_PATH "
+                     "to an onnxruntime 1.29 library")
 
         if explicit_files:
             def _open_session():
@@ -352,16 +353,12 @@ class OKFRouter:
                 # global lock and aborts the process at teardown, so the
                 # backend must never be touched when no runtime exists.
                 raise RuntimeError(_ORT_HINT)
-            try:
-                return _open_session()
-            except (KeyboardInterrupt, SystemExit, GeneratorExit):
-                raise
-            except BaseException as exc:
-                # BaseException: ORT load failures arrive as pyo3
-                # PanicException (BaseException, not Exception).
-                if _ort_missing():
-                    raise RuntimeError(_ORT_HINT) from exc
-                raise
+            # No post-hoc wrap: _ort_missing() already returned False and
+            # nothing changes in between, so a second check after a failed
+            # open could never fire. Backend errors (including pyo3
+            # PanicException, a BaseException) propagate raw and are cached
+            # by LazyRustEncoder.
+            return _open_session()
         self.encoder = LazyRustEncoder(
             model_id=model_id,
             truncate_dim=embedding_dim,

@@ -247,10 +247,10 @@ def test_keyboard_interrupt_not_cached():
     assert calls["n"] == 2
 
 
-def test_no_ort_hint_wraps_rust_panic(tmp_path, monkeypatch):
+def test_no_ort_fails_before_backend(tmp_path, monkeypatch):
     """Step 3 gate: with no ORT installed, the first encode fails fast with
-    the install hint even when the backend raises a pyo3-style panic
-    (BaseException, e.g. stale system DLL) instead of a normal error."""
+    the install hint without ever touching the backend (a failed ORT init
+    poisons ort's global lock and aborts the process at teardown)."""
     import builtins
     from okfgraph.router import OKFRouter
 
@@ -264,7 +264,10 @@ def test_no_ort_hint_wraps_rust_panic(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _no_ort)
     monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
 
+    calls = {"open": 0}
+
     def panic_open(*args, **kwargs):
+        calls["open"] += 1
         raise _RustPanic("Failed to load ONNX Runtime dylib")
 
     stub = types.SimpleNamespace(
@@ -285,7 +288,9 @@ def test_no_ort_hint_wraps_rust_panic(tmp_path, monkeypatch):
             router.encoder.encode("hello")
         except RuntimeError as exc:
             assert "okfgraph[cpu]" in str(exc) and "okfgraph[gpu]" in str(exc)
+            assert "ORT_DYLIB_PATH" in str(exc)
         else:
             raise AssertionError("encode should have raised the install hint")
+        assert calls["open"] == 0, "backend must never be touched without ORT"
     finally:
         router.close()

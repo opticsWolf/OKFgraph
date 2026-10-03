@@ -355,7 +355,10 @@ def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None)
 
     1. Existing ``ORT_DYLIB_PATH``.
     2. Pip-installed ``onnxruntime`` or ``onnxruntime-gpu`` package.
-    3. OS loader path (represented by returning ``None``).
+    3. OS loader path (represented by returning ``None``) — diagnostics
+       only. Encoding never relies on it: the router refuses before opening
+       a session when no runtime resolves, so a stale system DLL (e.g. an
+       old ``onnxruntime.dll`` in System32) can't poison the load.
 
     Missing runtimes never raise here; session creation or encoding is the
     fail-fast boundary. ``os_name``/``sys_platform`` are explicit so unit

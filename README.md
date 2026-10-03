@@ -63,6 +63,11 @@ uv sync --extra pdf     # bobine PDF converter
 uv sync --extra dev     # pytest
 ```
 
+Prefer a system-wide ONNX Runtime (conda, distro package, self-built)?
+Skip both extras and point `ORT_DYLIB_PATH` at your onnxruntime 1.29
+library instead — but never rely on bare OS-loader discovery: a stale
+system DLL (e.g. in `System32`) fails the load instead of being used.
+
 Core dependencies are deliberately few: `ladybug==0.20.3`, `embroider>=0.2,<0.3`
 (the shared embedding engine — github.com/opticsWolf/embroider, also used by
 bobine), `onnxruntime==1.29.0` (one pinned ORT binary shared by bobine +

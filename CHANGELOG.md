@@ -4,7 +4,7 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [0.7.0] — 2026-10-01
+## [0.7.0] — 2026-10-02
 
 ### Removed (BREAKING: ONNX-only chain, plan-onnx-only Phase 1)
 - Torch image path: `omni` extra (`sentence-transformers`, `Pillow`),

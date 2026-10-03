@@ -38,7 +38,7 @@ matching local embeddings on hub-heavy wikis with zero model infrastructure.
 3. Adjacency source: read edges from Ladybug once per call
    (`MATCH (a)-[:LINKS_TO]->(b) RETURN ...`), map concept ids to indices in
    sorted order. Dangling concepts (degree 0) keep seed mass only.
-4. Surface: `okf search --rank ppr|hub|none` (default `hub`, today's behavior);
+4. Surface: `okf search --rank ppr|hub|none` (default `none`, i.e. today's RRF behavior — kept deliberately at implementation (d3d7f8e) so existing order is unchanged; `hub`/`ppr` are opt-in);
    MCP `search(..., rank="ppr"|"hub")` — one optional param, descriptions carry
    the routing ("use ppr when cold, when deterministic, or when the query names
    topics rather than phrases").

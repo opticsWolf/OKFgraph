@@ -121,18 +121,26 @@ Order (each step's CI green before the next):
    GitHub repo (**manual — user**; the banner is already committed). Never
    publish from it again.
 
-## Step 6 — ladybug access violation (~0.5d to triage)
+## Step 6 — ladybug access violation ✅ DONE (fixed by upstream upgrade)
 
-This is an intermittent native crash, unrelated to ONNX but found during the audit:
+Intermittent native crash, unrelated to ONNX, found during the audit:
 
-- **Where:** `okfgraph/components/schema.py:534` `_build_search_indexes` → `ladybug.connection.execute` while a test router is being built (`tests/test_chunking.py` fixture).
-- **When:** in the `import_bundle` subset run; it reproduces on the unmodified tree. The full suite passed twice.
-- **Context:** `pyproject.toml` already pins `ladybug==0.20.3` because of index-build segfaults on newer 0.20.x.
-- **Next:**
-  - loop `pytest tests/test_chunking.py` to get a repro rate
-  - check whether it's tied to Windows file handles / temp-dir reuse
-  - file upstream with the faulthandler trace
-  - if it hits users (it's in `_ensure_schema`), consider retry-on-open or serialising index builds
+- **Where:** `okfgraph/components/schema.py:534` `_build_search_indexes` →
+  ladybug pybind `query()` running `CALL CREATE_VECTOR_INDEX`, always on the
+  *second* in-process Database (faulthandler trace captured).
+- **Rate:** ~25% (4/16 full `test_chunking.py` runs). Solo class 4/4 clean,
+  class triples 0/14, standalone 2–5-router scripts 0/20+ (cpu/cuda encode,
+  imports, vector search, close+rmtree, kept-alive routers) — pytest-process
+  context only. Suspect was the native worker-thread pool across DB
+  lifecycles (`num_threads=0` default).
+- **Resolution:** latest PyPI was 0.21.2 vs pinned 0.20.3. Scratch venv
+  (repo code + ladybug 0.21.2, real CUDA encodes): crash loop **0/12**,
+  full suite green (only exclusions: parity needs transformers; one
+  pre-existing GPU-vs-CPU tolerance failure proven ladybug-independent and
+  since loosened to atol=1e-3). No mitigation code, no upstream issue —
+  the 0.20.x crash is moot. Pin bumped to `ladybug==0.21.2`.
+- Production opens one router per process, so user exposure was limited to
+  multi-graph scripts; still, the bump removes it everywhere.
 
 ## Step 7 — Phase 6 (ONNX image embeddings, omni-nano) — blocked
 

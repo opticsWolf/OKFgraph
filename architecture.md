@@ -2,7 +2,7 @@
 
 **Version**: 6.4 (as-built for okfgraph 0.7.x — ONNX-only chain, torch/omni removal per `docs/plan-onnx-only.md` Phase 1; §6.1 model registry + model pin; §16 multi-root + §16.1 import scope/`--primary`, §4a.2 token cap + bounded tail, §6 inference surface; supersedes the v5.x design lineage as the authoritative surface)  
 **Based on**: Architecture v5.9 (Core Gaps closure, 2026-07-09)  
-**Verified against**: LadybugDB v0.20.3, Python 3.11–3.13, `embroider 0.2.x`, `bobine 0.5.11`, `onnxruntime==1.29.0`
+**Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.2.x`, `bobine 0.5.11`, `onnxruntime==1.29.0`
 
 > **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
 > `docs/OKF Graph V6.0.md`, `docs/Okfgraph 6.0 amendment.md`,
@@ -15,7 +15,7 @@
 > still hold against the 0.2.12 tree; every changed claim below was
 > re-verified against code.
 
-**Storage**: LadybugDB (v0.20.3) — graph + vector + full-text search.  
+**Storage**: LadybugDB (v0.21.2) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
 **Embedding Engine**: Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core).  
 **Images**: caption-based text embeddings into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0.  
@@ -143,7 +143,7 @@ pip install "okfgraph[cpu]"   # ladybug, embroider, mordant, mcp, … + CPU ORT 
 
 ```toml
 # pyproject.toml (0.7.0) — deliberately few, all pinned or floor-pinned:
-ladybug == 0.20.3            # graph + vector + FTS store (newer 0.20.x segfaults index builds — pinned)
+ladybug == 0.21.2            # graph + vector + FTS store (0.20.x segfaulted 2nd in-process vector-index builds — Step 6)
 embroider >= 0.2, < 0.3      # Jina v5 text embeddings (external Rust/ORT crate, PyPI wheels)
 # onnxruntime == 1.29.0 lives in the cpu|gpu extras (exactly one): ONE pinned
 # ORT binary, shared by bobine + embroider (load-dynamic)
@@ -160,7 +160,7 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 > (`LazyRustEncoder`), and explicit air-gapped model paths.
 
 **Verified versions** (0.7.x tree):
-- `ladybug==0.20.3`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider==0.2.x`, `mordant` (Rust GFM parser)
+- `ladybug==0.21.2`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider==0.2.x`, `mordant` (Rust GFM parser)
 - Single pinned ORT binary shared by bobine + embroider — do not float.
 
 ### PDF conversion (optional — bobine)
@@ -300,7 +300,7 @@ The default dimension was bumped from 384 → 512 because 384 is not an official
 
 ## 2a. Ladybug Query Syntax — Verified Patterns
 
-LadybugDB uses specific syntax that differs from standard Cypher. All patterns below are **verified against Ladybug v0.20.3**.
+LadybugDB uses specific syntax that differs from standard Cypher. All patterns below are **verified against Ladybug v0.21.2**.
 
 ### Index Management
 
@@ -1610,7 +1610,7 @@ remains the policy in the embroider crate.)*
 
 ---
 
-This specification is **verified against production LadybugDB v0.20.3**
+This specification is **verified against production LadybugDB v0.21.2**
 (okfgraph 0.2.12 tree: `embroider 0.1.3`, `bobine 0.5.11`,
 `onnxruntime==1.29.0`). All code patterns have been tested end-to-end
 with real data, real model inference, and real database operations.

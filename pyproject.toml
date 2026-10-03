@@ -10,8 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0 OR MIT"
 dependencies = [
-    # Pinned: ladybug index builds segfault on newer 0.20.x (verified 0.20.3).
-    "ladybug==0.20.3",
+    # Pinned: ladybug 0.20.x segfaults building a second in-process vector
+    # index (~25% under pytest, Step 6 triage); 0.21.2 runs the same loop
+    # 0/12 with the full suite green.
+    "ladybug==0.21.2",
     # Embedding engine — external crate (github.com/opticsWolf/embroider).
     # Floor-pinned <0.3: 0.7.x of okfgraph stays on embroider 0.2.x so the
     # model registry and wheel matrix move together with releases.

@@ -219,6 +219,12 @@ class DiffManager:
                 alias = self._alias_for(bundle_dir)
             return self.compare(old_state, state_of_dir(bundle_dir, alias))
         if not self.roots:
+            if self.primary is None:
+                raise ValueError(
+                    "diff_db_dir needs a bundle root: this router was "
+                    "opened without bundle_root (file-free mode). Pass an "
+                    "explicit directory to drift against."
+                )
             return self.compare(old_state, state_of_dir(self.primary))
         # Union state: parse every present tree, resolve links once
         # against the combined index (cross-root links are not drift).

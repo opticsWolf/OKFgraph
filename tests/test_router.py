@@ -222,7 +222,7 @@ class TestTools:
         tool = next(t for t in TOOLS if t["name"] == "ingest_md")
         assert "md_path" in tool["parameters"]["required"]
         assert "auto_import" not in tool["parameters"]["properties"]  # not exposed to LLM
-        assert tool["parameters"]["properties"]["mode"]["enum"] == ["text"]  # 0.7.0: captions only
+        assert tool["parameters"]["properties"]["mode"]["enum"] == ["text", "optional", "omni"]  # 0.8.0: vision route restored
 
     def test_ingest_thoughts_tool_parameters(self):
         from okfgraph.tools import TOOLS

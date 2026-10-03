@@ -100,8 +100,25 @@ def sanitize_resource(uri: Any) -> Any:
         return uri
     return f"{m.group('scheme')}***@{m.group('rest')}"
 
+def _require_root(root: Optional[Path], op: str) -> Path:
+    """Fail closed when a file-side op has no bundle root.
+
+    File-free routers (``bundle_root=None``) serve thoughts/search/read/
+    traverse/doctor/export from the graph alone. Anything that needs a
+    tree — default bundle import, drift diff, detach — raises a clear
+    ``ValueError`` naming the missing root instead of crashing on None.
+    """
+    if root is None:
+        raise ValueError(
+            f"{op} needs a bundle root: this router was opened without "
+            "bundle_root (file-free mode). Pass an explicit path, or open "
+            "the router with bundle_root set."
+        )
+    return root
+
+
 def parse_source_file(
-    file_path: Path, root: Path, alias: str = ""
+    file_path: Path, root: Optional[Path], alias: str = ""
 ) -> Tuple["ConceptModel", str, str]:
     """Parse a .md/.txt source into ``(ConceptModel, body, concept_id)``.
 
@@ -118,7 +135,11 @@ def parse_source_file(
     body = post.content
     fm = dict(post.metadata)
 
-    rel_path = file_path.relative_to(root) if file_path.is_relative_to(root) else None
+    rel_path = (
+        file_path.relative_to(root)
+        if root is not None and file_path.is_relative_to(root)
+        else None
+    )
     if rel_path is not None:
         # with_suffix("") strips only the final extension (.md/.txt/.markdown),
         # avoiding the old str.replace(".md","") which could corrupt paths.
@@ -549,7 +570,7 @@ class ImportManager:
     def _absent_roots(self) -> List[str]:
         """Aliases ("" = primary) whose tree is not currently present."""
         absent = []
-        if not Path(self.bundle_root).is_dir():
+        if self.bundle_root is not None and not Path(self.bundle_root).is_dir():
             absent.append("")
         for alias, rpath in self.roots.items():
             if not Path(rpath).is_dir():
@@ -582,10 +603,16 @@ class ImportManager:
     ) -> List[str]:
         """Inner implementation of import_bundle (called under write lock)."""
         mode = IngestMode.coerce(mode)
-        root = Path(bundle_path or self.bundle_root)
+        root = Path(bundle_path) if bundle_path is not None else _require_root(
+            self.bundle_root, "import_bundle")
         if alias is None:
             alias = self._alias_for_root(root)
         det = self._detector_for(alias)
+        if det.bundle_root is None:
+            # File-free router, explicit tree: the primary detector adopts
+            # it (delta state is content-keyed and DB-persisted, so a later
+            # switch of trees only costs redundant upserts, never skips).
+            det.bundle_root = root
         # Purge is fail-closed in multi-root graphs (§2.3): consuming
         # tombstones while a root's state is unknown could purge live
         # concepts as "deleted". Single-root graphs keep legacy behaviour.
@@ -1261,7 +1288,10 @@ class ImportManager:
                     r.get("alias", ""): r.get("path")
                     for r in (self.delta_mgr.get_detached_state() or {}).get("roots", [])
                 }
-                configured = {"": str(Path(self.bundle_root).resolve())}
+                configured = (
+                    {"": str(Path(self.bundle_root).resolve())}
+                    if self.bundle_root is not None else {}
+                )
                 configured.update({a: str(Path(p).resolve())
                                    for a, p in self.roots.items()})
                 if recorded != configured:
@@ -1271,7 +1301,14 @@ class ImportManager:
                         "database for a different tree."
                     )
             all_ids: List[str] = []
-            for _alias, _root in [("", self.bundle_root)] + list(self.roots.items()):
+            _targets = (
+                ([("", self.bundle_root)]
+                 if self.bundle_root is not None else [])
+                + list(self.roots.items())
+            )
+            if not _targets:
+                _require_root(None, "import_bundle")
+            for _alias, _root in _targets:
                 if not Path(_root).is_dir():
                     logger.warning(
                         "import: root %s (%s) not present — skipped, "
@@ -1365,7 +1402,11 @@ class ImportManager:
         # An explicit bundle_path keeps the legacy single-tree meaning.
         if self.roots and bundle_path is None:
             return self._detach_multi(verify=verify, force=force)
-        root = Path(bundle_path) if bundle_path is not None else Path(self.bundle_root)
+        root = (
+            Path(bundle_path)
+            if bundle_path is not None
+            else _require_root(self.bundle_root, "detach")
+        )
         report: Dict[str, Any] = {
             "bundle": str(root),
             "verified": False,
@@ -1423,9 +1464,11 @@ class ImportManager:
 
     def _detach_multi(self, verify: bool, force: bool) -> Dict[str, Any]:
         """Whole-graph detach over primary + named roots (Phase 2 §2.5)."""
-        targets = [("", Path(self.bundle_root))] + [
-            (a, Path(p)) for a, p in self.roots.items()
-        ]
+        targets = (
+            ([("", Path(self.bundle_root))]
+             if self.bundle_root is not None else [])
+            + [(a, Path(p)) for a, p in self.roots.items()]
+        )
         report: Dict[str, Any] = {
             "bundle": ", ".join(str(r) for _, r in targets),
             "verified": False,

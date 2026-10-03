@@ -7,6 +7,12 @@ commit history, newest first.
 ## [Unreleased]
 
 ### Added
+- File-free mode: `bundle_root` is now optional (`OKFRouter(db_path=...)`
+  alone is a complete constructor). Thoughts ingest, search, read,
+  traverse, doctor, and export work with no bundle; file-side calls
+  (default bundle import/drift/detach) fail fast naming the missing root.
+  Explicit paths still work (single file → bare-stem ID, explicit bundle
+  dir → adopted by the primary detector, named `roots=` without a primary).
 - Thought IDs are namespaced (`thoughts/<topic>/<ts>_<id>`): a fileless
   graph exports into a tidy tree with no export changes. Topic slugs are
   sanitized to one safe level (no nesting, no `..` traversal); explicit

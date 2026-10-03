@@ -99,7 +99,7 @@ class OKFRouter:
     def __init__(
         self,
         db_path: str,
-        bundle_root: str,
+        bundle_root: Optional[str] = None,
         model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
         embedding_dim: int = 512,
         max_length: Optional[int] = None,
@@ -125,6 +125,11 @@ class OKFRouter:
         Args:
             db_path: Path to the Ladybug database file.
             bundle_root: Root directory of the OKF markdown bundle.
+                Optional (file-free mode): thoughts ingest, search, read,
+                traverse, doctor, and export all work without one. Any
+                file-side call (bundle import/diff/detach, image staging
+                outside an explicit file's dir) fails fast naming the
+                missing root instead of crashing on a None path.
             model_id: HuggingFace ID of the Jina v5 text embedding model.
             embedding_dim: Truncated Matryoshka dimension (<= 1024).
             cache_dir: Model cache directory (defaults per-platform).
@@ -215,13 +220,17 @@ class OKFRouter:
         self._write_lock_timeout = 300  # 5 min timeout for acquire()
         logger.debug("write lock file: %s", lock_path)
 
-        self.bundle_root = Path(bundle_root).resolve()
+        self.bundle_root = Path(bundle_root).resolve() if bundle_root is not None else None
         # Multi-root (0.4.0, Phase 2 §2.1): additional {alias: path} trees.
         # The constructor bundle_root stays the primary tree (bare IDs);
         # named roots mint `@alias/rel` IDs. Validated fail-fast: unknown
         # shapes, bad aliases, and overlapping trees are all rejected here.
+        # A None primary (file-free mode) simply skips the overlap check.
         from okfgraph.components.roots import validate_roots as _vr
-        self.roots = _vr(roots, primary=str(self.bundle_root))
+        self.roots = _vr(
+            roots,
+            primary=str(self.bundle_root) if self.bundle_root is not None else None,
+        )
         self.embedding_dim = embedding_dim
         self.model_id = model_id
         self.cache_dir = cache_dir

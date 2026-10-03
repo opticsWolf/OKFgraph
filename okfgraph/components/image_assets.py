@@ -77,8 +77,9 @@ class ImageAssetManager:
         # Resolve relative image paths against the file's dir, then bundle root.
         search_dirs: List[Path] = []
         for d in (Path(base_dir), self.bundle_root):
-            if d not in search_dirs:
-                search_dirs.append(d)
+            if d is None or d in search_dirs:
+                continue
+            search_dirs.append(d)
 
         images = build_extracted_images(
             concept_id, body, search_dirs=search_dirs,

@@ -145,9 +145,11 @@ ingest paths like MCP/thoughts). Import keeps recording links
 standalone — it must work on bundles that never saw lint. Shared pure
 parsing, separate checks, consistency test to pin agreement.
 
-## Deferred: 3. SQLite producer + `SourceProducer` seam
+## 3. SQLite producer + `SourceProducer` seam ✅ DONE (0.8.x)
 
-**Idea.** google-okf's `BaseProducer.produce() -> Dict[str, Concept]` plus
+**Implemented** in `okfgraph/components/producers.py` (`SourceProducer`
+protocol + `PRODUCERS` registry + `SQLiteProducer`, `tests/test_produce.py`
+19 green). Original idea, kept for the record: google-okf's `BaseProducer.produce() -> Dict[str, Concept]` plus
 `output_prefix` namespacing, with the highest-value instance implemented
 in stdlib: a SQLite producer that maps `PRAGMA table_info` /
 `foreign_key_list` to one concept per table (schema table in body,
@@ -158,10 +160,11 @@ dependencies. Output is markdown written under a prefix
 stays source of truth and emitted links become `LINKS_TO` edges through
 existing import. Generalize to a `SourceProducer` protocol mirroring the
 `DocumentConverter` philosophy (provider owns options, missing optional
-dep → clear error, never silent fallback). DOCX-via-extra belongs here
-too. **Why deferred:** new surface (CLI `produce` verb? `ingest --kind
-db`?), new fixture DBs, and it should ride on top of `lint` (generated
-bundles get pre-flighted). Roughly a half-day with fixtures.
+dep → clear error, never silent fallback). **Shipped 0.8.x:** CLI `produce`
+verb (CLI-only, no MCP change), scratch DBs built in-test via stdlib
+sqlite3 (no binary fixtures), `lint_bundle` pre-flight inside `produce`
+(exit 1 on errors). DOCX-via-extra still belongs here (seam ready,
+provider not written).
 
 ## Deferred: 5. Observation notes in generated concepts
 

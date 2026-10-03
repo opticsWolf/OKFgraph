@@ -4,6 +4,17 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [Unreleased]
+
+### Added (bundle-hardening §3)
+- `okf produce --from sqlite --source DB --output DIR`: generate a bundle
+  from a SQLite database (stdlib only) — one concept per table under
+  `<output>/database/` (`tables/*.md` + `overview.md`), `PRAGMA`-mapped
+  schema tables, FKs as root-relative links, counts/PK in frontmatter
+  extras. `SourceProducer` protocol + `PRODUCERS` registry (DOCX-via-extra
+  fits the seam later). CLI-only (MCP stays at 5 tools); every run is
+  pre-flighted with `lint_bundle` (exit 1 on errors).
+
 ## [0.8.0] — 2026-10-03
 
 ### Added (ONNX vision route, plan-onnx-only Phase 6)

@@ -634,6 +634,54 @@ def _lint(args):
     return 0 if report["clean"] else 1
 
 
+def _produce(args):
+    """Generate a bundle from a data source (bundle-hardening §3).
+
+    Router-free like lint (no DB, no model cold-boot): produce answers
+    "what would this source look like as concepts?" The emitted bundle is
+    pre-flighted with lint_bundle against the output root, so the report
+    below covers both generation and well-formedness.
+    Exit 0 = produced + lint-clean, 1 = produced but lint errors (or the
+    source is unreadable), 2 = usage (unknown producer, missing file).
+    """
+    from okfgraph.components.lint import lint_bundle
+    from okfgraph.components.producers import PRODUCERS, producer_for
+
+    which = getattr(args, "from_", None)
+    if which not in PRODUCERS:
+        print(f"[ERROR] unknown producer {which!r} "
+              f"(available: {sorted(PRODUCERS)})")
+        return 2
+    source = getattr(args, "source", None)
+    out = Path(str(getattr(args, "output", None) or "."))
+    try:
+        bundle = producer_for(which).produce(
+            source,
+            out,
+            prefix=getattr(args, "prefix", None) or None,
+            overwrite=bool(getattr(args, "overwrite", False)),
+        )
+    except FileNotFoundError as exc:
+        print(f"[ERROR] {exc}")
+        return 2
+    except (ValueError, FileExistsError) as exc:
+        print(f"[ERROR] {exc}")
+        return 1
+    print(f"[OK] {bundle.producer}: {bundle.files} file(s) "
+          f"from {bundle.source} → {bundle.root / bundle.prefix}/")
+    report = lint_bundle(out)
+    n_err, n_warn = len(report["errors"]), len(report["warnings"])
+    print(f"lint: {report['files']} file(s): {n_err} error(s), {n_warn} warning(s)")
+    for e in report["errors"]:
+        print(f"  [ERROR] {e['file']} {e['rule']}: {e['message']}")
+    for w in report["warnings"]:
+        print(f"  [warn] {w['file']} {w['rule']}: {w['message']}")
+    if report["clean"]:
+        print("Bundle is lint-clean (safe to import).")
+        return 0
+    return 1
+
+
 def _diff(args):
     """Structural diff: snapshot (dir vs dir) or drift (graph vs dir).
 
@@ -1371,6 +1419,22 @@ def build_parser():
                    help="Bundle directory (default: --bundle, okfgraph.toml, or .)")
     p.add_argument("--json", action="store_true", help="Machine-readable report")
 
+    # produce
+    p = sub.add_parser("produce", help="Generate a bundle from a data source")
+    _add_global(p)
+    _add_logging_flags(p)
+    p.add_argument("--from", dest="from_", required=True,
+                   help="Producer name (today: sqlite)")
+    p.add_argument("--source", required=True,
+                   help="Source to read (sqlite: path to the .db file)")
+    p.add_argument("--output", default=None,
+                   help="Bundle root to write under (default: .); files go "
+                   "to <output>/<prefix>/ so lint + import agree on ids")
+    p.add_argument("--prefix", default=None,
+                   help="Namespace directory (default: the producer's own)")
+    p.add_argument("--overwrite", action="store_true",
+                   help="Rewrite existing producer output files")
+
     # shell
     p = sub.add_parser("shell", help="Interactive REPL")
     _add_global(p)
@@ -1463,6 +1527,7 @@ def main():
         "diff": _diff,
         "doctor": _doctor,
         "lint": _lint,
+        "produce": _produce,
         "reindex": _reindex,
         "deleted-list": _deleted_list,
         "deleted-recover": _deleted_recover,

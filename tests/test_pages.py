@@ -5,6 +5,7 @@ import shlex
 import tomllib
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from okfgraph.cli import build_parser
 from okfgraph.config import OKFConfig
@@ -57,7 +58,20 @@ def test_pages_local_links_and_assets():
         if link.startswith("#"):
             assert link[1:] in parsed.ids
     for asset in parsed.assets:
-        assert (PAGES / asset).is_file()
+        assert (PAGES / urlsplit(asset).path).is_file()
+
+
+def test_pages_stylesheet_is_versioned():
+    stylesheet = next(a for a in page().assets if urlsplit(a).path == "style.css")
+    assert parse_qs(urlsplit(stylesheet).query).get("v")
+
+
+def test_pages_agent_memory_is_discoverable():
+    parsed = page()
+    assert "agent-memory" in parsed.ids
+    assert "#agent-memory" in parsed.links
+    html = (PAGES / "index.html").read_text(encoding="utf-8")
+    assert "vault for lasting agent memory" in html
 
 
 def test_pages_cli_examples_parse():

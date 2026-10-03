@@ -1,8 +1,9 @@
 # OKFGraph — Implementation Status
 
 > **Historical snapshot.** Omni/SentenceTransformer rows below describe ≤0.6.x.
-> The torch path was removed in 0.7.0 (`docs/plan-onnx-only.md` Phase 1);
-> `architecture.md` (v6.4+) is authoritative.
+> The torch path was removed in 0.7.0 (`docs/plan-onnx-only.md` Phase 1)
+> and replaced by ONNX vision in 0.8.0 (follow-up Phase 6);
+> `architecture.md` (v6.5+) is authoritative.
 
 **Date**: 2026-06-25  
 **Environment**: `C:\Users\Frank\AppData\Local\Python\developenv` (Python 3.13.x)  

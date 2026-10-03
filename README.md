@@ -30,9 +30,9 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 | **Embeddings** | Jina v5 (default `…-text-small-retrieval`, `--model` selects registry: text-nano) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (default 512, per-model ladder); device `auto` (CUDA→FP16 mirror weights, CPU→FP32, `--precision` pins incl. explicit `int8`); CPU arena off by default (`--cpu-arena`); token ceiling configurable (`--max-length`); model + precision pinned per graph, never mixed. No torch anywhere (0.7.0+) |
 | **Search** | Hybrid RRF fusion (vector + FTS) at concept and chunk granularity; `rank=none\|hub\|ppr` — including **PPR**: lexical seeds → exact Personalized PageRank, zero model load, deterministic |
 | **Read** | Body / chunks / rebuilt document / graph context, with optional **token budgets** (`max_tokens`): self first, then PPR-ranked neighbours, index-first for context |
-| **Storage** | LadybugDB `==0.20.3` (pinned — newer 0.20.x segfaults index builds): graph + vector + FTS in one file |
+| **Storage** | LadybugDB `==0.21.2` (pinned — 0.20.x segfaulted 2nd in-process vector-index builds): graph + vector + FTS in one file |
 | **Links** | Path links (`](doc.md)`) + `[[wikilinks]]` resolved by name (`uid` → `aliases` → `title` → filename stem); ambiguous names never resolve; broken links tracked and repairable |
-| **Import** | Single files, whole bundles (delta-aware: only changed files re-embed, `--purge` drops deleted concepts), markdown / PDF / raw thoughts; mordant lint on the way in |
+| **Import** | Single files, whole bundles (delta-aware: only changed files re-embed, `--purge` drops deleted concepts), markdown / PDF+Office / raw thoughts; mordant lint on the way in |
 | **PDF** | `DocumentConverter` seam with `BobineConverter` default (routing `auto\|surgical\|always\|never`); bring your own converter, no code changes |
 | **Diff** | `okf diff`: structural snapshot (dir vs dir, no model load) and drift (graph vs dir) modes; CI exit codes + `--json` |
 | **Doctor** | `okf doctor`: 0–100 health score (broken/orphan/stale/duplicate-title/missing-description), safe `--fix` that never touches `reviewed: true`, `--strict` CI gate |
@@ -68,7 +68,7 @@ Skip both extras and point `ORT_DYLIB_PATH` at your onnxruntime 1.29
 library instead — but never rely on bare OS-loader discovery: a stale
 system DLL (e.g. in `System32`) fails the load instead of being used.
 
-Core dependencies are deliberately few: `ladybug==0.20.3`, `embroider>=0.2,<0.3`
+Core dependencies are deliberately few: `ladybug==0.21.2`, `embroider>=0.3,<0.4`
 (the shared embedding engine — github.com/opticsWolf/embroider, also used by
 bobine), `onnxruntime==1.29.0` (one pinned ORT binary shared by bobine +
 embroider; `ORT_DYLIB_PATH`-overridable), `mordant`, `mcp>=2.0`, `pydantic`,
@@ -311,7 +311,7 @@ okfgraph/
 │   ├── cli.py             # okf: 5 verbs + maintenance, slim help, okfgraph.toml
 │   ├── mcp_server.py      # okf-mcp: 5 tools, MCP ≥ 2.0, lifespan-managed router
 │   ├── config.py          # okfgraph.toml + env + CLI merge
-│   ├── images.py          # IngestMode (text-only since 0.7.0), planning helpers
+│   ├── images.py          # IngestMode (text + vision-onnx since 0.8.0), planning helpers
 │   ├── security.py        # SSRF/domain guards for remote images
 │   ├── tools.py           # legacy tool definitions (superseded by mcp_server)
 │   └── components/        # ranking, links, search, lint, import_, export, diff, doctor,
@@ -320,7 +320,7 @@ okfgraph/
 ├── tests/fixtures/        # conformance corpus: ppr, diff, doctor, obsidian, bundles
 ├── docs/                  # converters, harness-integration, plan-retrieval-roundup, diagnostics…
 ├── .mcp.json              # ready MCP wiring (uv run --project . okf-mcp)
-├── architecture.md        # long-form architecture spec (v6.0, as-built for 0.2.12)
+├── architecture.md        # long-form architecture spec (v6.5, as-built for 0.8.x)
 └── pyproject.toml         # slim core deps + pdf/dev extras
 ```
 
@@ -328,7 +328,7 @@ okfgraph/
 
 ## Requirements
 
-Core (`uv sync`): `ladybug==0.20.3`, `embroider>=0.2,<0.3` (PyPI wheels,
+Core (`uv sync`): `ladybug==0.21.2`, `embroider>=0.3,<0.4` (PyPI wheels,
 github.com/opticsWolf/embroider), `mordant>=0.9`,
 `mcp>=2.0`, `pydantic>=2`, `pyyaml>=6`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.

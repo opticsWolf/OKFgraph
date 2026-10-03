@@ -1,8 +1,8 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.4 (as-built for okfgraph 0.7.x — ONNX-only chain, torch/omni removal per `docs/plan-onnx-only.md` Phase 1; §6.1 model registry + model pin; §16 multi-root + §16.1 import scope/`--primary`, §4a.2 token cap + bounded tail, §6 inference surface; supersedes the v5.x design lineage as the authoritative surface)  
-**Based on**: Architecture v5.9 (Core Gaps closure, 2026-07-09)  
-**Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.2.x`, `bobine 0.5.11`, `onnxruntime==1.29.0`
+**Version**: 6.5 (as-built for okfgraph 0.8.x — ONNX vision restored per `docs/plan-onnx-only-followup.md` Phase 6 (`JinaV5Vision` via embroider 0.3); §10d producers + observations, file-free `bundle_root=None`, namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)  
+**Based on**: Architecture v6.4 (0.7.x tree)  
+**Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.3.x`, `bobine 0.5.12`, `onnxruntime==1.29.0`
 
 > **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
 > `docs/OKF Graph V6.0.md`, `docs/Okfgraph 6.0 amendment.md`,
@@ -18,9 +18,28 @@
 **Storage**: LadybugDB (v0.21.2) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
 **Embedding Engine**: Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core).  
-**Images**: caption-based text embeddings into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0.  
+**Images**: caption route (`text`) or ONNX vision route (`optional`/`omni` → `vision-onnx` via embroider `JinaV5Vision`, text-nano graphs only) into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0 and replaced by ONNX vision in 0.8.0 — same vector space, no torch anywhere.  
 **Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
-**Search Modes**: Hybrid (RRF fusion, vector + FTS), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
+**Search Modes**: Hybrid (RRF fusion, vector + FTS, `rank=none|hub|ppr`), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
+
+---
+
+## Summary of Changes (v6.4 → v6.5)
+
+As-built for okfgraph 0.8.x (`docs/plan-onnx-only-followup.md` Phase 6 +
+`docs/plan-bundle-hardening.md` §§3, 5 + `docs/plan-retrieval-roundup.md`
+closure):
+
+| Area | v6.4 (0.7.x) | v6.5 (0.8.x) | Reason |
+|---|---|---|---|
+| **Image embeddings** | Caption-only (`mode=text`) | **ONNX vision restored** (`optional`/`omni` → `vision-onnx`, embroider `JinaV5Vision`, text-nano graphs) | Follow-up Phase 6; 6.4a parity + 6.3 in-situ gates green |
+| **Dependencies** | `embroider>=0.2,<0.3` | **`embroider>=0.3,<0.4`**, `Pillow>=11` in core | Vision contract (resize/prompt) + caller-side decode |
+| **Bundle creation** | Human-written only | **`okf produce`** (`SourceProducer` seam, SQLite provider, `## Observations`, `log.md`) | Bundle-hardening §3 + §5 |
+| **Constructor** | `bundle_root` required | **`bundle_root=None`** (file-free thoughts loop; file-side ops fail closed) | Thoughts-in/search-out without a tree |
+| **Thought IDs** | `thought_<slug>_<ts>_<uuid>` flat | **`thoughts/<slug>/<ts>_<uuid6>`** (virtual namespace, export materialises it) | Tidy file-free trees |
+| **Reserved names** | `index.md` | **`index.md` + `log.md`** (producer changelog, never a concept) | §5 |
+| **Office ingest** | Undocumented | **`--kind pdf --pdf-file` takes docx/xlsx/pptx (+legacy)** — bobine dispatches on extension, proven live | Was already working; now specified |
+| **Rank default** | Plan said `hub` | **Code `none` confirmed deliberate** (plan text corrected) | Preserve existing RRF order; `hub`/`ppr` opt-in |
 
 ---
 
@@ -74,7 +93,7 @@ Added `validate()` methods to all config dataclasses:
 
 - `DatabaseConfig`: path non-empty, dim in [32, 1024], recommended Matryoshka dims
 - `EmbeddingConfig`: device in [cpu, cuda, mps, auto], precision in [auto, fp32, fp16], cache_dir absolute
-- `ImportConfig`: mode in [text] (caption-based since 0.7.0), batch_size in [1, 256], chunk_size in [64, 8192] (tokens, 0.5.1+)
+- `ImportConfig`: mode in [text, optional, omni] (captions vs ONNX vision since 0.8.0), batch_size in [1, 256], chunk_size in [64, 8192] (tokens, 0.5.1+)
 - `OKFConfig`: aggregates all section validations
 
 Validation warnings logged on config load (non-blocking — CLI args can override).
@@ -142,9 +161,10 @@ pip install "okfgraph[cpu]"   # ladybug, embroider, mordant, mcp, … + CPU ORT 
 ```
 
 ```toml
-# pyproject.toml (0.7.0) — deliberately few, all pinned or floor-pinned:
+# pyproject.toml (0.8.0) — deliberately few, all pinned or floor-pinned:
 ladybug == 0.21.2            # graph + vector + FTS store (0.20.x segfaulted 2nd in-process vector-index builds — Step 6)
-embroider >= 0.2, < 0.3      # Jina v5 text embeddings (external Rust/ORT crate, PyPI wheels)
+embroider >= 0.3, < 0.4      # Jina v5 text + vision embeddings (external Rust/ORT crate, PyPI wheels)
+pillow >= 11                 # caller-side vision decode/resize (core — the vision contract starts at RGB bytes)
 # onnxruntime == 1.29.0 lives in the cpu|gpu extras (exactly one): ONE pinned
 # ORT binary, shared by bobine + embroider (load-dynamic)
 mordant >= 0.9               # Rust GFM chunking
@@ -174,13 +194,15 @@ PDF conversion runs through the `bobine` Rust engine behind the
 `BobineConverter`). No converter code lives in okfgraph — see §10 and
 `docs/converters.md`.
 
-### Images (caption-based since 0.7.0)
+### Images (caption route + ONNX vision since 0.8.0)
 
-Images embed their caption (alt-text or filename fallback) with the text
-model — no extra, no torch anywhere. The `omni` extra
-(`sentence-transformers` + torch) and the `optional`/`omni` routes were
-removed in 0.7.0 (`docs/plan-onnx-only.md` Phase 1); pre-0.7.0 `omni` rows
-are stale and re-embed by caption on reimport.
+`mode=text` embeds the caption (alt-text or filename fallback) with the
+text model. `mode=optional`/`omni` route image bytes through the ONNX
+vision model (embroider `JinaV5Vision`, §4.3) — no extra, no torch
+anywhere. The torch `omni` extra was removed in 0.7.0
+(`docs/plan-onnx-only.md` Phase 1); pre-0.7.0 `omni` rows are stale and
+re-embed on reimport (by caption under `text`, by vision under
+`optional`/`omni`).
 
 ---
 
@@ -436,16 +458,19 @@ class OKFRouter:
     def __init__(
         self,
         db_path: str,
-        bundle_root: str,
+        bundle_root: Optional[str] = None,  # None = file-free (thoughts loop; file-side ops fail closed)
         model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
         embedding_dim: int = 512,
         cache_dir: Optional[str] = None,
         model_path: Optional[str] = None,      # explicit local ONNX …
         tokenizer_path: Optional[str] = None,  # … must be given together
-        device: str = "cpu",                 # cpu | cuda (+ "auto"/"mps" aliases)
+        device: str = "auto",                # auto | cpu | cuda (+ "mps" alias)
+        image_model_id: Optional[str] = None,  # default: registry vision partner of model_id
+        image_precision: str = "auto",
         allow_remote_images: bool = False,
         chunk_size: int = 512, chunk_overlap: int = 40,
         enable_chunking: bool = True,
+        roots: Optional[Dict[str, str]] = None,  # named trees (§16)
     ):
         # ... validates dim, resolves the ORT dylib, imports embroider —
         # the text session itself opens LAZILY on first encode (see §4.3)
@@ -526,18 +551,23 @@ tuning levels inside one index is forbidden (ORT optimisation levels
 fuse differently at the 1e-8 level — documented in the embroider README
 benchmark table).
 
-### Omni Model (removed 0.7.0)
+### Vision Model (ONNX, restored 0.8.0)
 
-The `SentenceTransformer` omni path (`_get_omni` / `_encode_image` /
-`_encode_omni_text`, torch) was removed in 0.7.0 per
-`docs/plan-onnx-only.md` Phase 1. Image search is caption-based (text
-model over alt-text/filename). Pre-0.7.0 `route='omni'` rows are stale
-and re-embed by caption on reimport.
-
-```
-# Removed 0.7.0: _encode_image / _encode_omni_text (torch SentenceTransformer).
-# Image search is caption-based; see `docs/plan-onnx-only.md` Phase 1.
-```
+The torch `SentenceTransformer` omni path was removed in 0.7.0 per
+`docs/plan-onnx-only.md` Phase 1 and replaced in 0.8.0 by ONNX vision
+per `docs/plan-onnx-only-followup.md` Phase 6: `LazyVisionEncoder`
+holds an embroider `JinaV5Vision` session over
+`opticsWolf/jina-embeddings-v5-omni-nano-retrieval-onnx` (registry id
+`jina-v5-omni-nano-retrieval-vision`), opened lazily like the text
+session. The graph pins `(text_model_id, image_model_id,
+image_precision)` in Meta fail-closed — the vision model must be the
+registry `text_partner` of the text model (text-nano graphs only), or
+import refuses rather than fork the vector space. Vision vectors land in
+the same `ImageAsset.embedding` space (6.4a parity: cos ≥ 0.9999 vs
+torch over 191 images; 6.3 in-situ: 1.00000 on stored vectors).
+Frozen contract: fp32 on CPU, fp16 on CUDA (fp16-on-CPU is a hard
+error — it stalls, not slows); Pillow bicubic RGB resize caller-side;
+`VISION_CONTRACT=smart32/min262144/max1310720/bicubic-rgb`.
 
 ### Batch Encoding Algorithm
 
@@ -560,15 +590,15 @@ Three modes control how images become vectors in the unified `ImageAsset` index:
 |---|---|---|
 | `text` | text-embed(alt-text) | text-embed(`filename + image-number`) |
 | `optional` | text-embed(alt-text) | **omni**-embed(image bytes) |
-| `omni` | **omni**-embed(image bytes) | **omni**-embed(image bytes) |
+| `omni` | **vision**-embed(image bytes) | **vision**-embed(image bytes) |
 
-Both encoders write into **one** vector space / index (`image_omni_idx` on `ImageAsset.embedding`). This works because jina-embeddings-v5 text-small-retrieval and omni-small-retrieval share a vector space — you can index with text and query with image (or vice-versa) without reindexing.
+Both encoders write into **one** vector space / index (`image_omni_idx` on `ImageAsset.embedding`). This works because the Jina v5 text and omni-nano models share a vector space — you can index with text and query with image (or vice-versa) without reindexing. `optional`/`omni` resolve to `EmbedRoute.VISION` (`"vision-onnx"`); the graph must be text-nano or the vision session refuses to open.
 
 When `omni` is requested but the raw bytes are unavailable (e.g. an `http(s)://` URL, which is not fetched unless `--allow-remote-images` is set, or a missing local file), the plan **degrades gracefully** to the text path (alt-text, else filename fallback) so ingestion never hard-fails.
 
 ### Content Hash Change Detection
 
-Each image asset stores a `content_hash` (SHA-256 of route + payload). On re-import, unchanged images are **not** re-embedded — critical for the costly omni path. Images removed from a document are pruned.
+Each image asset stores a `content_hash` (SHA-256 of route + payload). On re-import, unchanged images are **not** re-embedded — critical for the costly vision path. Images removed from a document are pruned.
 
 ---
 
@@ -737,8 +767,9 @@ def search_images_with_text(
     """Find image assets from a text query via the unified vector index.
 
     use_text_model=True (default) encodes the query with the lightweight
-    text model — no omni load required, since both models share the vector
-    space. Set it to False to route the query through the omni text side.
+    text model — no vision load required, since both models share the vector
+    space. Set it to False to route the query through the vision model's
+    text side.
     """
 
 def list_images(self, concept_id: str) -> List[Dict[str, Any]]:
@@ -805,7 +836,7 @@ def repair_links(self) -> int:
 
 ## 4.13. Reserved File Filtering
 
-The `exclude_reserved` flag in `search_hybrid()` filters out concepts whose IDs end with `index` or `log`:
+The `exclude_reserved` flag in `search_hybrid()` filters out concepts whose IDs end with `index` or `log` (`RESERVED_FILENAMES = {"index.md", "log.md"}` — export navigation files and the producer changelog (§10d) are graph noise, not knowledge):
 
 ```python
 def search_hybrid(self, query: str, ..., exclude_reserved: bool = True) -> List[Dict[str, Any]]:
@@ -1044,7 +1075,8 @@ else is library/maintenance surface.
 | `okf search <query> --rank hub\|ppr` | Rerank by hub score, or model-free PPR (§4.7) |
 | `okf read <id> [--include body\|chunks\|document\|context]` | Fetch a concept, its chunks, the reconstructed document, or graph context |
 | `okf traverse <id>` | Graph traversal (relationship/direction/depth); no id = root listing; two ids = shortest path |
-| `okf ingest --kind md\|pdf\|thoughts <path>` | Add one piece of content (PDF goes through bobine, §10) |
+| `okf ingest --kind md\|pdf\|thoughts <path>` | Add one piece of content (PDF/Office through bobine, §10; thoughts mint `thoughts/<topic>/<ts>_<id>` namespaces) |
+| `okf produce --from sqlite --source DB --output DIR` | Generate a bundle from a data source (§10d; lint pre-flight included) |
 | `okf export --all --output <dir>` | Export entire bundle (OKF or Obsidian flavor) |
 | `okf diff` | Structural diff: concepts/edges/broken-link deltas |
 | `okf doctor` | Health scan: score, findings, safe `--fix` |
@@ -1068,7 +1100,7 @@ else is library/maintenance surface.
 
 | Option | Default | Description |
 |---|---|---|
-| `--mode <mode>` | `text` | Image ingestion mode: `text` (caption-based; optional/omni removed 0.7.0) |
+| `--mode <mode>` | `text` | Image ingestion mode: `text` (captions), `optional`/`omni` (ONNX vision, text-nano graphs only) |
 | `--allow-remote-images` | — | Fetch `http(s)://` image URLs during ingestion (off by default) |
 | `--batch-size <int>` | `32` | Batch size for encoding |
 | `--purge` | — | Also purge concepts whose source files were deleted from disk (removes concept, chunks, links, and orphaned image assets) |
@@ -1259,11 +1291,14 @@ mcp.run(transport="stdio")
 | **Model registry (0.6.0)** | `embedding.model_id` on every surface (default text-small, frozen); registry resolves (model, precision) → artifact with per-model ladder/ceiling (nano: 768 dim max, 8192 ctx); graph pins the id in MetaText fail-closed (mismatch refuses, empty re-pins) — a model switch forces a fresh reimport, never a silent space fork |
 | **CPU Arena** | Off by default (`--cpu-arena` opts in): 8x lower peak RSS for ~1.4x encode time (measured) |
 
-### Omni (Multimodal) Model — removed 0.7.0
+### Vision (Multimodal) Model — ONNX, restored 0.8.0
 
 The torch `sentence-transformers` omni path was removed per
-`docs/plan-onnx-only.md` Phase 1 (ONNX-only chain). Image search is
-caption-based. ONNX image embeddings may return in 0.8.0 (Phase 6).
+`docs/plan-onnx-only.md` Phase 1 (ONNX-only chain) and replaced by the
+ONNX vision model per `docs/plan-onnx-only-followup.md` Phase 6: embroider
+`JinaV5Vision` over `opticsWolf/jina-embeddings-v5-omni-nano-retrieval-onnx`
+(registry `jina-v5-omni-nano-retrieval-vision`), text-nano graphs only
+(graph pins the `text_partner`, fail-closed). fp32 on CPU, fp16 on CUDA.
 | **Text Query** | `model.encode_query()` / `model.encode_document()` for cross-modal search |
 
 ### Unified Vector Space
@@ -1271,8 +1306,9 @@ caption-based. ONNX image embeddings may return in 0.8.0 (Phase 6).
 Both encoders write into the **same** `ImageAsset.embedding` FLOAT[dim] column indexed by `image_omni_idx`. This means:
 
 - Images embedded via alt-text (text model) can be queried by image
-- Images embedded via omni model can be queried by text
+- Images embedded via vision bytes (vision model) can be queried by text
 - No reindexing needed when mixing embeddings from both models
+- One vector space per graph *including images*: `(text_model_id, image_model_id, image_precision)` pinned in Meta, mismatch refuses
 
 ---
 
@@ -1285,7 +1321,7 @@ The `okfgraph.images` module handles image extraction, resolution, and embedding
 | Type | Description |
 |---|---|
 | `IngestMode` | `TEXT` / `OPTIONAL` / `OMNI` — how images become vectors |
-| `EmbedRoute` | `TEXT` / `OMNI` — which encoder produces the embedding |
+| `EmbedRoute` | `TEXT` / `VISION` (`"vision-onnx"`) — which encoder produces the embedding |
 | `ExtractedImage` | Dataclass: concept_id, index, src, alt_text, filename, mime_type, data, asset_id |
 
 ### Key Functions
@@ -1295,7 +1331,8 @@ The `okfgraph.images` module handles image extraction, resolution, and embedding
 | `extract_image_refs(body)` | Return `(alt_text, src)` pairs for every markdown image, in document order |
 | `asset_id_for(concept_id, index, src)` | Deterministic asset id (re-uses `okf-asset://` ids, generates UUID5 otherwise) |
 | `build_extracted_images(concept_id, body, search_dirs, allow_remote)` | Extract every image ref and resolve bytes/metadata |
-| `plan_embedding(img, mode)` | Decide how a single image should be embedded — returns `(route, caption)` |
+| `plan_embedding(img, mode)` | Decide how a single image should be embedded — returns `(route, caption)` (`optional`/`omni` → `VISION` on text-nano graphs) |
+| `prepare_vision_rgb(data)` | Decode + Pillow bicubic RGB resize to the contract target (`VISION_CONTRACT`); non-target arrays are rejected, never embedded |
 | `sniff_mime(data, filename)` | Best-effort MIME detection: magic bytes first, then filename extension |
 | `fallback_caption(filename, index, concept_id)` | Caption for text path when image has no alt-text |
 | `load_image_bytes(src, search_dirs, allow_remote)` | Resolve raw image bytes for a markdown src (data URIs, local files, optional remote) |
@@ -1343,8 +1380,8 @@ okfgraph owns orchestration (kind dispatch, staging, lint, import).
 | Kind | Path |
 |---|---|
 | `md` | Read in Python, mordant lint, chunk, embed, upsert |
-| `pdf` | `convert()` via the configured converter (default bobine), then the `md` pipeline |
-| `thoughts` | Persist LLM reasoning as a searchable concept |
+| `pdf` | `convert()` via the configured converter (default bobine), then the `md` pipeline. Despite the name this covers Office too — bobine dispatches on extension (docx/xlsx/pptx, legacy doc/xls/ppt), proven live end-to-end |
+| `thoughts` | Persist LLM reasoning as a searchable concept. Default ID `thoughts/<topic-slug>/<ts>_<uuid6>` (virtual namespace, no file needed — export materialises it); explicit `concept_id` slashes are namespaces too; flat legacy `thought_*` IDs still round-trip |
 
 Kinds are explicit on both surfaces (CLI `--kind`, MCP `ingest(kind=)`) —
 there is no format sniffing at the okfgraph layer. (bobine itself
@@ -1358,6 +1395,30 @@ concepts (born-digital fast path → full ONNX pipeline per page):
 `SURGICAL` is the default — formula crops via TexTeller, full pipeline
 only for scans. A missing converter (no `pdf` extra) fails fast with a
 clear error; there is no legacy fallback.
+
+## 10d. Generated bundles — producers + observations (`okf produce`)
+
+Bundles are usually human-written; `okf produce` generates one from a
+data source instead (`docs/plan-bundle-hardening.md` §§3, 5). The
+`SourceProducer` protocol keeps the seam minimal — providers resolve
+their own options against the shared lint/diff/import guards, no new MCP
+tools, no new required deps, deterministic outputs:
+
+- **SQLite provider** (stdlib only): one concept per table under
+  `<prefix>/tables/` + `overview.md`, bundle-root-relative links so lint
+  + import agree on IDs, views skipped, collision-safe stems. Scratch
+  DBs stay in-test — no binary fixtures.
+- **Observation notes** (`## Observations`, fixed check-suite): empty
+  table, NULL rate ≥ 50%, dup rate ≥ 10% (FK-holder columns exempt —
+  they duplicate by design), orphan FKs, storage-type variance. Absent
+  entirely when clean; over-cap tables (`observation_row_cap`, default
+  100k) get one skip line.
+- **Changelog**: every run appends one content-addressed line to
+  `<prefix>/log.md` (consecutive-duplicate suppressed, so reruns are
+  byte-identical). `log.md` is reserved (`RESERVED_FILENAMES`) — import,
+  diff, and lint skip it via the shared `is_concept_file` predicate.
+- **Single-writer rule**: files are written by producers/humans, the DB
+  is written by import only — no DB-direct observations or logging.
 
 ## 11. Summary of Changes (v2.2 → v4.0)
 
@@ -1673,7 +1734,8 @@ hierarchy builder (IDs split on `/`). Legacy trees with top-level `@*`
   CWD. Path-based `ingest md`
   resolves longest-prefix-match; PDF work-dir imports mint a stable
   `@pdf-<content-hash12>/...` namespace (same-stem pages from different PDFs
-  can no longer overwrite each other); thoughts IDs were already unique.
+  can no longer overwrite each other); thoughts default to
+  `thoughts/<topic>/<ts>_<uuid6>` namespaces (explicit slashes work too).
 - **Export/diff/detach**: export writes `<out>/@alias/rel.md` (single-root
   re-import reproduces exact IDs); drift diff unions all present trees
   (absent ≠ drift); detach verifies + records one SourceRoot row per alias

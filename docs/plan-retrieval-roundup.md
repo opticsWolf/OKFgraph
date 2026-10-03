@@ -5,6 +5,8 @@ structural diff, doctor, wikilinks). **Goal:** adopt the model-free ideas that
 upgrade okfgraph retrieval and maintenance without touching the embedding or
 converter seams. Order: PPR → context budgets → diff → doctor → Obsidian.
 
+**Status: ✅ COMPLETE (all 5 phases shipped; implemented in `d3d7f8e`, conformance pinned in `tests/test_retrieval_conformance.py`).** Post-build correction: the rank default is `none` (today's RRF order preserved; `hub`/`ppr` opt-in) — the `hub`-default in the Phase 1 design paragraph below predates implementation (`d3d7f8e`: "default none = today's behavior").
+
 **Invariants across all phases:**
 
 - No new MCP tools (stay at 5). Retrieval upgrades are optional params on

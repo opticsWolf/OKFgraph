@@ -323,9 +323,8 @@ okfgraph/
 │                          # embedding, converters, image_assets, delta, purge, schema, ingest
 ├── skills/                # okfgraph-mcp, okfgraph-cli, okfgraph-ingest (harness-neutral source)
 ├── tests/fixtures/        # conformance corpus: ppr, diff, doctor, obsidian, bundles
-├── docs/                  # converters, harness-integration, plan-retrieval-roundup, diagnostics…
+├── docs/                  # architecture spec (v6.5, as-built for 0.8.x–0.9.0), converters, plans, diagnostics…
 ├── .mcp.json              # ready MCP wiring (uv run --project . okf-mcp)
-├── architecture.md        # long-form architecture spec (v6.5, as-built for 0.8.x)
 └── pyproject.toml         # slim core deps + pdf/dev extras
 ```
 

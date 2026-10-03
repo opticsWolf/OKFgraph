@@ -33,7 +33,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://opticswolf.github.io/OKFgraph/"
-Documentation = "https://github.com/opticsWolf/OKFgraph/blob/main/architecture.md"
+Documentation = "https://github.com/opticsWolf/OKFgraph/blob/main/docs/architecture.md"
 Repository = "https://github.com/opticsWolf/OKFgraph"
 
 [project.optional-dependencies]

@@ -87,13 +87,21 @@ Effects:
 - Tools installed by hand belong in their own venv/uv tool, not the project venv.
 - The omni spike's `ref_torch.py` moves to `omni_spike/.venv-export` (README updated).
 
-## Step 5 — release train (~0.5d + CI time)
+## Step 5 — release train (~0.5d + CI time) ✅ DONE 2026-10-02 (except archive)
 
-Closes Phases 2 and 5 (release). Nothing is pushed or tagged yet:
+Closes Phases 2 and 5 (release). Shipped, in order, CI-green at each step:
 
-- embroider: 3 commits ahead of `origin/main`; `Cargo.toml` 0.2.1; last tag `v0.2.0`
-- okfgraph: `dev` 7 commits ahead of `origin/dev`; `pyproject.toml` 0.7.0
-- bobine: Phase 2–4 commits on `rust_dev`
+- embroider `v0.2.1`: crates.io + PyPI live (PyPI verified).
+- bobine `v0.5.12` (new CHANGELOG.md; `cargo update -p embroider` left at
+  0.2.0 — 0.2.1 wasn't on crates.io yet; the `0.2` floor accepts it).
+  Release workflow green (crates.io + 3-wheel matrix); PyPI shows 0.5.12.
+- okfgraph `v0.7.0`: merged `dev` → `main`, tagged, PyPI live.
+
+Two fixes went in along the way (both on `dev`, merged to `main`): fast
+tests that stub `embroider` now also stub the batch-encode path / a fake
+`onnxruntime` (CI fast env has no ORT); README install line is
+`okfgraph[cpu,pdf]`; release.yml embroider-floor comment fixed to
+`>=0.2,<0.3`.
 
 Order (each step's CI green before the next):
 
@@ -106,8 +114,12 @@ Order (each step's CI green before the next):
    - stale `route='omni'` rows reported by `okf doctor`
 
    The README install line must say `okfgraph[cpu]` or `okfgraph[gpu]`.
-4. Run Step 3 against the published packages.
-5. Legacy Python bobine (`D:/User/Documents/Python/bobine`): archive the GitHub repo (manual; the banner is already committed). Never publish from it again.
+4. ✅ Step 3 re-run against published packages: `[cpu,pdf]` → one ORT
+   1.29.0, trio (okfgraph 0.7.0 + embroider 0.2.1 + bobine 0.5.12) resolves;
+   bare → hint + clean exit; `[gpu]` trio → `used_cuda=True`.
+5. ⏳ Legacy Python bobine (`D:/User/Documents/Python/bobine`): archive the
+   GitHub repo (**manual — user**; the banner is already committed). Never
+   publish from it again.
 
 ## Step 6 — ladybug access violation (~0.5d to triage)
 

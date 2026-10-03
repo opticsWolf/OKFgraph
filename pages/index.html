@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OKFgraph — Markdown-native knowledge graph with ONNX retrieval</title>
+<meta name="description" content="OKFgraph: file-first Markdown knowledge graph with Jina v5 ONNX embeddings, MCP server, and the bobine ingestion engine + embroider ONNX Runtime policy.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <p class="kicker">Markdown-native · ONNX-only · MCP-ready</p>
+  <h1>OKFgraph</h1>
+  <p class="sub">A file-first knowledge graph: your notes stay plain Markdown on disk,
+  SQLite carries the index, and Jina&nbsp;v5 embeddings run locally over ONNX&nbsp;Runtime.
+  No torch, no server, no lock-in.</p>
+  <p class="cta">
+    <a class="btn" href="https://github.com/opticsWolf/OKFgraph">GitHub</a>
+    <a class="btn ghost" href="https://pypi.org/project/okfgraph/">PyPI · okfgraph 0.9.0</a>
+  </p>
+  <pre class="install"><code>pip install okfgraph[cpu]      # or [gpu] for CUDA
+okf ingest ./notes --db graph.db
+okf search "your question" --db graph.db</code></pre>
+</header>
+
+<nav class="toc">
+  <a href="#okfgraph">OKFgraph</a>
+  <a href="#bobine">bobine · ingestion</a>
+  <a href="#embroider">embroider · ONNX Runtime policy</a>
+  <a href="#stack">The stack</a>
+</nav>
+
+<main>
+
+<section id="okfgraph">
+  <h2>OKFgraph <span class="ver">0.9.0</span></h2>
+  <p>Knowledge base as a <strong>bundle</strong>: one Markdown file per concept,
+  frontmatter metadata, <code>[[wikilinks]]</code>, content-hash image assets.
+  Import once into SQLite; search with hybrid retrieval (FTS5 + RRF-fused dense
+  vectors + optional PPR/hub expansion). Files stay human-readable forever —
+  the database is a derived index, and <code>okf export</code> round-trips it back.</p>
+
+  <h3>What it does</h3>
+  <ul class="grid">
+    <li><strong>Ingest anything</strong> — Markdown, PDF, Office, thoughts, SQLite
+      databases (<code>okf produce</code>), with mordant lint on the way in.</li>
+    <li><strong>Retrieve</strong> — hybrid search tuned for RAG: dense + sparse +
+      graph expansion, deterministic output.</li>
+    <li><strong>Serve agents</strong> — exactly 5 MCP tools
+      (<code>ingest</code>, <code>search</code>, <code>read</code>,
+      <code>traverse</code>, <code>doctor</code>), stdio or HTTP.</li>
+    <li><strong>Work file-free</strong> — run a whole graph from SQLite alone;
+      thoughts in, search out, no bundle directory required.</li>
+  </ul>
+
+  <h3>Quick start</h3>
+<pre><code>from okfgraph import OKFRouter
+r = OKFRouter(bundle_root="./notes", db_path="graph.db")
+r.import_from_okf("./notes")          # index the bundle
+hits = r.search_hybrid("how is table OCR routed?", top_k=5)
+r.export_db("graph.db", "./out")      # DB back to Markdown</code></pre>
+  <p class="more"><a href="https://github.com/opticsWolf/OKFgraph#readme">Full README →</a></p>
+</section>
+
+<section id="bobine">
+  <h2>bobine <span class="ver">0.5.13</span></h2>
+  <p class="sub2">Standalone PDF / Office / text → Markdown ingestion engine — pure-Rust core,
+  Python bindings. The converter OKFgraph calls for everything that isn't already Markdown.</p>
+
+  <h3>Pipeline</h3>
+  <ul class="grid">
+    <li><strong>Fast path</strong> — <code>pdf_oxide</code> extracts born-digital text
+      in milliseconds; pages route NEVER / AUTO / SURGICAL / ALWAYS.</li>
+    <li><strong>Layout + OCR</strong> — DocLayout-YOLO structure, PaddleOCR lines,
+      line-aware reading order.</li>
+    <li><strong>Formulas</strong> — TexTeller ONNX (int8 default, ~319&nbsp;MB) decodes
+      math regions to LaTeX, ~5× faster than the legacy backend.</li>
+    <li><strong>Tables</strong> — SLANet-plus structure recognition, CPU-pinned by design.</li>
+    <li><strong>Office</strong> — docx/xlsx/pptx + legacy doc/xls/ppt; Excel also exports
+      per-sheet CSV + typed JSON; pictures stage to content-hash assets.</li>
+  </ul>
+
+  <h3>Performance (RTX 3090, ORT 1.28.1)</h3>
+  <table>
+    <tr><th>Workload</th><th>CPU</th><th>CUDA</th><th>Routing</th></tr>
+    <tr><td>Layout 1024²</td><td>480 ms</td><td><strong>37 ms (~12.8×)</strong></td><td>CUDA auto</td></tr>
+    <tr><td>OCR det+rec 1024²</td><td>131 ms</td><td><strong>36 ms (~3.6×)</strong></td><td>CUDA auto</td></tr>
+    <tr><td>OCR 47-line page</td><td>0.79 s</td><td><strong>0.32 s (batched)</strong></td><td>CUDA + chunks</td></tr>
+    <tr><td>Table 700×400</td><td><strong>28.8 ms</strong></td><td>49 ms (slower)</td><td>CPU pinned</td></tr>
+    <tr><td>TexTeller int8</td><td><strong>0.50 s</strong></td><td>1.32 s (slower)</td><td>CPU default</td></tr>
+    <tr><td>TexTeller fp32</td><td>0.95 s</td><td><strong>0.42 s (~2.3×)</strong></td><td>CUDA opt-in</td></tr>
+  </table>
+  <p class="more"><a href="https://github.com/opticsWolf/bobine">bobine on GitHub →</a>
+  · <a href="https://pypi.org/project/bobine/">PyPI</a>
+  · <a href="https://crates.io/crates/bobine">crates.io</a></p>
+</section>
+
+<section id="embroider">
+  <h2>embroider <span class="ver">0.3.1</span></h2>
+  <p class="sub2">Jina v5 text + image embeddings over ONNX Runtime (Rust core, PyO3).
+  The shared session-policy library both OKFgraph and bobine build on — one pinned
+  runtime, per-slot CPU/CUDA routing, no torch anywhere.</p>
+
+  <h3>What it owns</h3>
+  <ul class="grid">
+    <li><strong>Session policy</strong> — <code>SessionPolicy::ort_defaults()</code>:
+      one <code>onnxruntime==1.29.0</code> dylib, EP-availability probe,
+      per-model provider lists.</li>
+    <li><strong>Jina v5 engine</strong> — text-small / text-nano (fp32/fp16/int8) +
+      omni-nano vision, frozen contract, golden-vector conformance.</li>
+    <li><strong>Devices &amp; precision</strong> — <code>cpu</code> XOR <code>cuda</code>,
+      fp32-CPU / fp16-CUDA (fp16-on-CPU is a hard error, not a stall).</li>
+    <li><strong>Ownership boundary</strong> — embroider holds sessions and policy;
+      each consumer process owns inference. bobine uses the policy only.</li>
+  </ul>
+
+  <h3>Models</h3>
+  <table>
+    <tr><th>Model</th><th>Precisions</th><th>Use</th></tr>
+    <tr><td>jina-v5-text-small-retrieval</td><td>fp32 · fp16 · int8</td><td>Default text embeddings</td></tr>
+    <tr><td>jina-v5-text-nano-retrieval</td><td>fp32 · fp16 · int8</td><td>Fast text / vision partner</td></tr>
+    <tr><td>jina-v5-omni-nano-retrieval-vision</td><td>fp32 · fp16</td><td>Image embeddings (pairs text-nano)</td></tr>
+  </table>
+  <p class="more"><a href="https://github.com/opticsWolf/embroider">embroider on GitHub →</a>
+  · <a href="https://pypi.org/project/embroider/">PyPI</a></p>
+</section>
+
+<section id="stack">
+  <h2>The stack</h2>
+  <table>
+    <tr><th>Layer</th><th>Crate / package</th><th>Version</th><th>Role</th></tr>
+    <tr><td>Graph + retrieval + MCP</td><td>okfgraph</td><td>0.9.0</td><td>What you install</td></tr>
+    <tr><td>Ingestion engine</td><td>bobine</td><td>0.5.13</td><td>PDF / Office → Markdown</td></tr>
+    <tr><td>Embedding runtime</td><td>embroider</td><td>0.3.1</td><td>ONNX sessions + Jina v5</td></tr>
+    <tr><td>Graph algorithms</td><td>ladybug</td><td>0.21.2</td><td>PPR / hub expansion</td></tr>
+    <tr><td>Inference runtime</td><td>onnxruntime</td><td>1.29.0</td><td>Single shared dylib</td></tr>
+  </table>
+  <p>License: Apache-2.0 OR MIT throughout. Docs:
+  <a href="https://github.com/opticsWolf/OKFgraph/tree/main/docs">OKFgraph docs</a> ·
+  <a href="https://github.com/opticsWolf/bobine/tree/main/docs">bobine docs</a> ·
+  <a href="https://github.com/opticsWolf/embroider/tree/main/docs">embroider docs</a></p>
+</section>
+
+</main>
+
+<footer>
+  <p>OKFgraph · bobine · embroider — one ONNX-only stack, files first.</p>
+</footer>
+
+</body>
+</html>

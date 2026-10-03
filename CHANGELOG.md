@@ -4,7 +4,7 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [Unreleased]
+## [0.9.0] — 2026-10-03
 
 ### Added
 - Observation notes (bundle-hardening §5): `okf produce` runs a fixed

@@ -227,3 +227,4 @@ whl/
 
 # CodeRadar
 .coderadar/
+*.db

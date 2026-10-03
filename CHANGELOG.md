@@ -6,6 +6,13 @@ commit history, newest first.
 
 ## [Unreleased]
 
+### Added
+- Thought IDs are namespaced (`thoughts/<topic>/<ts>_<id>`): a fileless
+  graph exports into a tidy tree with no export changes. Topic slugs are
+  sanitized to one safe level (no nesting, no `..` traversal); explicit
+  `concept_id` values may use `/` namespaces. Flat legacy `thought_*`
+  IDs round-trip unchanged (no migration).
+
 ### Added (bundle-hardening §3)
 - `okf produce --from sqlite --source DB --output DIR`: generate a bundle
   from a SQLite database (stdlib only) — one concept per table under

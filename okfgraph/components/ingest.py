@@ -24,6 +24,18 @@ from okfgraph.models import ChunkModel, ConceptModel, normalize_tags
 
 logger = logging.getLogger(__name__)
 
+def _slugify_topic(topic: str) -> str:
+    """Map a thought topic to a single safe namespace level.
+
+    Lowercased, spaces to underscores, everything outside
+    ``[A-Za-z0-9_.-]`` collapsed to ``_`` — so no ``/`` (nesting) and no
+    ``..`` (export path traversal) can ever come from a topic string.
+    Returns ``""`` when nothing survives (caller falls back to a default).
+    """
+    slug = re.sub(r"[^A-Za-z0-9_.\-]+", "_", topic.lower().replace(" ", "_"))
+    return slug.strip("._")[:30]
+
+
 def _ingest_namespace(pdf_path, work_dir) -> str:
     """Stable ingest namespace for one PDF auto-import (Phase 2 §2.1).
 
@@ -140,11 +152,16 @@ class IngestManager:
         """Inner implementation of ingest_thoughts (called under write lock)."""
         import uuid
 
-        # Generate concept_id from topic if not provided
+        # Generate concept_id from topic if not provided. Namespaced
+        # (``thoughts/<slug>/...``) so a fileless graph exports into a tidy
+        # tree later — the namespace is virtual (no file needed) until an
+        # export materializes it. Slashes in an explicit concept_id work
+        # the same way. The slug is sanitized to one level: a topic like
+        # ``../../evil`` must never become path traversal on export.
         if not concept_id:
             ts = datetime.now().strftime("%Y%m%d%H%M%S")
-            slug = topic.lower().replace(" ", "_")[:30]
-            concept_id = f"thought_{slug}_{ts}_{str(uuid.uuid4())[:6]}"
+            slug = _slugify_topic(topic) or "untitled"
+            concept_id = f"thoughts/{slug}/{ts}_{str(uuid.uuid4())[:6]}"
 
         # Build OKF-compliant markdown
         header_lines = [

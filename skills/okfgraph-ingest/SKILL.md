@@ -29,6 +29,9 @@ re-extracting it from files.
 
 - `kind="thoughts"`: `thoughts` + `topic` (both required). Topic scheme per
   project, e.g. `auth-refactor`, `api-design` — consistency makes search work.
+  Generated IDs are namespaced `thoughts/<topic>/<ts>_<id>` (virtual — no
+  file needed, exports land there later); explicit `concept_id` may use
+  `/` namespaces the same way.
 - `kind="md"`: `md_path` (+ optional `concept_id`, `title`, `description`,
   `tags`, `mode`).
 - `kind="pdf"`: `pdf_path` (+ `routing_mode`, `extract_images`, `mode`).

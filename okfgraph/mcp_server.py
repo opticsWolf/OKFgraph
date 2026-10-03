@@ -332,7 +332,7 @@ def create_mcp_server(
         pdf_path: Annotated[Optional[str], Field(description="PDF file to convert and import (kind='pdf').")] = None,
         thoughts: Annotated[Optional[str], Field(description="Raw reasoning text (kind='thoughts').")] = None,
         topic: Annotated[Optional[str], Field(description="Topic for kind='thoughts' (required then).")] = None,
-        concept_id: Annotated[Optional[str], Field(description="Explicit concept ID (md/thoughts). Generated if omitted.")] = None,
+        concept_id: Annotated[Optional[str], Field(description="Explicit concept ID (md/thoughts). Generated if omitted (thoughts: thoughts/<topic>/<ts>_<id>, a virtual namespace — no file needed, exports there later). Slashes are namespaces.")] = None,
         title: Annotated[Optional[str], Field(description="Title override (md only).")] = None,
         description: Annotated[Optional[str], Field(description="Description override (md only).")] = None,
         tags: Annotated[Optional[list[str]], Field(description="Tags to apply (md/thoughts).")] = None,

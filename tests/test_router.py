@@ -414,7 +414,7 @@ class TestIngestThoughts:
             thoughts=bad_thoughts,
             topic="linting_test",
         )
-        assert result["concept_id"].startswith("thought_")
+        assert result["concept_id"].startswith("thoughts/linting_test/")
         # Lint result should be present
         assert "lint_issues" in result
         lint = result["lint_issues"]

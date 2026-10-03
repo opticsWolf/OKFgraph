@@ -7,6 +7,12 @@ commit history, newest first.
 ## [Unreleased]
 
 ### Added
+- Observation notes (bundle-hardening §5): `okf produce` runs a fixed
+  check-suite per table (empty, NULL rate ≥ 50%, dup rate ≥ 10%, orphan
+  FKs, storage-type variance; FK-holder columns exempt from dup-rate)
+  into `## Observations` — absent when there's nothing to say. Every run
+  appends one line to `<prefix>/log.md` (dedupe on rerun); `log.md`
+  joined `RESERVED_FILENAMES`, so import/diff/lint skip it.
 - File-free mode: `bundle_root` is now optional (`OKFRouter(db_path=...)`
   alone is a complete constructor). Thoughts ingest, search, read,
   traverse, doctor, and export work with no bundle; file-side calls

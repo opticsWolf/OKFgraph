@@ -13,6 +13,13 @@ timestamps) and stdlib-only unless the provider declares an extra.
 
 Planned providers: SQLite (here, stdlib), DOCX (needs an extra — the seam
 is ready, the provider is not).
+
+Observation notes (bundle-hardening §5) live here too: producers record
+computed, deterministic judgments (null rates, orphan FKs, type variance)
+in a ``## Observations`` section — transcription plus signal, so FTS/PPR
+can answer "which tables look unhealthy?". Every produce run also
+appends one line to ``<prefix>/log.md`` (the bundle changelog; a reserved
+name, never imported).
 """
 
 from __future__ import annotations
@@ -126,7 +133,32 @@ class SQLiteProducer:
 
     Views are skipped (schema-only mapping); attached databases are out of
     scope (open the file you mean).
+
+    Observations (fixed check-suite, all deterministic, no timestamps):
+
+    - empty table (0 rows),
+    - per-column NULL rate ≥ ``NULL_RATE_WARN`` (one pass per table),
+    - per-column duplicate rate ≥ ``DUP_RATE_WARN`` (over present values),
+    - orphan foreign keys (holder values with no match; NULL holders are
+      not orphans),
+    - storage-type variance (``typeof()`` yielding ≥2 real types — SQLite
+      dynamic typing; ``'null'`` alone never counts).
+
+    Tables above ``observation_row_cap`` rows get a single skip line
+    instead (offline producer, bounded cost). Tables with no findings
+    have no ``## Observations`` section at all — no "all good!" noise.
     """
+
+    NULL_RATE_WARN: ClassVar[float] = 0.5
+    DUP_RATE_WARN: ClassVar[float] = 0.1
+
+    def __init__(self, *, observation_row_cap: int = 100_000):
+        if observation_row_cap < 0:
+            raise ValueError(
+                "observation_row_cap must be >= 0, "
+                f"got {observation_row_cap}"
+            )
+        self.observation_row_cap = observation_row_cap
 
     name: ClassVar[str] = "sqlite"
     output_prefix: ClassVar[str] = "database"
@@ -163,6 +195,16 @@ class SQLiteProducer:
                     f"(pass overwrite=True): {', '.join(existing)}"
                 )
 
+        # Observations are computed before rendering: the overview marks
+        # tables that have any, and the changelog totals them.
+        observations: Dict[str, List[str]] = {}
+        con = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        try:
+            for t in tables:
+                observations[t.name] = self._observe(con, t)
+        finally:
+            con.close()
+
         referenced_by: Dict[str, List[_ForeignKey]] = {t.name: [] for t in tables}
         for t in tables:
             for fk in t.fks:
@@ -177,11 +219,18 @@ class SQLiteProducer:
                 referenced_by[t.name], key=lambda k: (k.from_col, k.ref_table)
             )
             (dest / f"{t.stem}.md").write_text(
-                self._table_doc(src.name, prefix, t, incoming, by_name),
+                self._table_doc(
+                    src.name, prefix, t, incoming, by_name,
+                    observations[t.name],
+                ),
                 encoding="utf-8",
             )
         (Path(output_dir) / prefix / "overview.md").write_text(
-            self._overview_doc(src.name, prefix, tables), encoding="utf-8"
+            self._overview_doc(src.name, prefix, tables, observations),
+            encoding="utf-8",
+        )
+        self._append_log(
+            Path(output_dir) / prefix, src.name, tables, observations
         )
         logger.info("produced %d concepts from %s under %s/", len(paths), src, prefix)
         return ProducedBundle(
@@ -255,6 +304,110 @@ class SQLiteProducer:
         finally:
             con.close()
 
+    # -- observations ------------------------------------------------------
+
+    @staticmethod
+    def _qi(name: str) -> str:
+        """Quote a SQLite identifier (table/column names come from the DB)."""
+        return '"' + name.replace('"', '""') + '"'
+
+    def _observe(self, con: "sqlite3.Connection", table: _Table) -> List[str]:
+        """Run the fixed check-suite over one table (deterministic order)."""
+        if table.row_count == 0:
+            return [f"Table `{table.name}` is empty (0 rows)."]
+        if table.row_count > self.observation_row_cap:
+            return [
+                f"Observations skipped for `{table.name}`: "
+                f"{table.row_count} rows > {self.observation_row_cap} cap."
+            ]
+        t = self._qi(table.name)
+        findings: List[str] = []
+        # One pass for every column: present count + distinct count.
+        cols = ", ".join(
+            f"COUNT({self._qi(c.name)}), "
+            f"COUNT(DISTINCT {self._qi(c.name)})" for c in table.columns
+        )
+        counts = con.execute(f"SELECT {cols} FROM {t}").fetchone()
+        for c, (present, distinct) in zip(
+            table.columns, zip(counts[0::2], counts[1::2])
+        ):
+            null_rate = 1.0 - present / table.row_count
+            if null_rate >= self.NULL_RATE_WARN:
+                findings.append(
+                    f"`{table.name}.{c.name}` is NULL in "
+                    f"{null_rate:.0%} of rows "
+                    f"({table.row_count - present}/{table.row_count}) — "
+                    "column may be deprecated or unpopulated."
+                )
+            # Holder-side FK columns duplicate by design (many children per
+            # parent) — flagging them for "missing uniqueness" would be
+            # noise. Integrity there is the orphan check's job below.
+            holder_cols = {fk.from_col for fk in table.fks}
+            if present > 0 and c.name not in holder_cols:
+                dup_rate = 1.0 - distinct / present
+                if dup_rate >= self.DUP_RATE_WARN:
+                    findings.append(
+                        f"`{table.name}.{c.name}` has "
+                        f"{dup_rate:.0%} duplicate values "
+                        f"({distinct} distinct / {present} present) — "
+                        "uniqueness constraint missing?"
+                    )
+            types = sorted(
+                r[0] for r in con.execute(
+                    f"SELECT DISTINCT typeof({self._qi(c.name)}) FROM {t}"
+                ).fetchall()
+            )
+            real = [x for x in types if x != "null"]
+            if len(real) >= 2:
+                findings.append(
+                    f"`{table.name}.{c.name}` stores multiple types: "
+                    f"{', '.join(real)} — schema variance, check producers."
+                )
+        for fk in table.fks:
+            orphans = con.execute(
+                f"SELECT COUNT(*) FROM {t} "
+                f"WHERE {self._qi(fk.from_col)} IS NOT NULL "
+                f"AND NOT EXISTS (SELECT 1 FROM {self._qi(fk.ref_table)} "
+                f"WHERE {self._qi(fk.ref_table)}."
+                f"{self._qi(fk.ref_col)} = {t}.{self._qi(fk.from_col)})"
+            ).fetchone()[0]
+            if orphans:
+                findings.append(
+                    f"`{table.name}.{fk.from_col}` has {orphans} value(s) "
+                    f"with no match in `{fk.ref_table}.{fk.ref_col}` — "
+                    "orphaned references."
+                )
+        return findings
+
+    @staticmethod
+    def _append_log(
+        prefix_dir: Path, db_name: str,
+        tables: List[_Table], observations: Dict[str, List[str]],
+    ) -> None:
+        """Append one content-addressed line to ``<prefix>/log.md``.
+
+        No timestamps (determinism invariant) — the entry names the
+        producer, source, file set, and finding count. A consecutive
+        duplicate (idempotent rerun) is skipped so the log doesn't grow.
+        """
+        total_obs = sum(len(v) for v in observations.values())
+        names = ", ".join(sorted(t.name for t in tables))
+        obs_word = "observation" + ("s" if total_obs != 1 else "")
+        entry = (
+            f"produce sqlite {db_name} → {len(tables) + 1} files "
+            f"({len(tables)} tables [{names}] + overview, "
+            f"{total_obs} {obs_word})\n"
+        )
+        log = prefix_dir / "log.md"
+        if log.is_file():
+            tail = log.read_text(encoding="utf-8").splitlines(keepends=True)
+            if tail and tail[-1] == entry:
+                return
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write(entry)
+        else:
+            log.write_text("# Producer log\n\n" + entry, encoding="utf-8")
+
     # -- rendering --------------------------------------------------------
 
     def _table_doc(
@@ -264,6 +417,7 @@ class SQLiteProducer:
         table: _Table,
         incoming: List[_ForeignKey],
         by_name: Dict[str, _Table],
+        observations: List[str],
     ) -> str:
         pk_cols = [c.name for c in table.columns if c.pk]
         fm = {
@@ -310,10 +464,14 @@ class SQLiteProducer:
                 lines.append(
                     f"- Referenced by `{inc.ref_table}.{inc.from_col}`"
                 )
+        if observations:
+            lines += ["", "## Observations", ""]
+            lines += [f"- {finding}" for finding in observations]
         return "\n".join(lines) + "\n"
 
     def _overview_doc(
-        self, db_name: str, prefix: str, tables: List[_Table]
+        self, db_name: str, prefix: str, tables: List[_Table],
+        observations: Dict[str, List[str]],
     ) -> str:
         fm = {
             "title": f"Database {db_name}",
@@ -324,9 +482,11 @@ class SQLiteProducer:
         lines = ["---", yaml.safe_dump(fm, sort_keys=False).rstrip(), "---", "",
                  f"# Database {db_name}", "", "## Tables", ""]
         for t in tables:
+            n_obs = len(observations.get(t.name, []))
+            marker = f", {n_obs} observation" + ("s" if n_obs != 1 else "") if n_obs else ""
             lines.append(
                 f"- [{t.name}]({prefix}/tables/{t.stem}.md) — "
-                f"{len(t.columns)} columns, {t.row_count} rows"
+                f"{len(t.columns)} columns, {t.row_count} rows{marker}"
             )
         return "\n".join(lines) + "\n"
 

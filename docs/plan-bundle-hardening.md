@@ -166,9 +166,21 @@ sqlite3 (no binary fixtures), `lint_bundle` pre-flight inside `produce`
 (exit 1 on errors). DOCX-via-extra still belongs here (seam ready,
 provider not written).
 
-## Deferred: 5. Observation notes in generated concepts
+## 5. Observation notes in generated concepts ✅ DONE (0.8.x)
 
-**Idea.** Their Mongo merger writes `⚠️ Schema variance: multiple types
+**Implemented** in `SQLiteProducer` (`_observe` fixed check-suite +
+`_append_log`, `tests/test_observations.py` 17 green). Notes on the
+original idea vs what shipped: the note schema is five fixed checks
+(empty table, NULL rate ≥ 0.5, dup rate ≥ 0.1 over present values,
+orphan FKs, storage-type variance) — no speculation needed. FK-holder
+columns are exempt from the dup check (they duplicate by design). Tables
+above `observation_row_cap` (default 100k, constructor option) get one
+skip line; clean tables get no section at all. `log.md` IS written by
+`produce` (one content-addressed line per run, consecutive-duplicate
+suppressed) and joined `RESERVED_FILENAMES` — import/diff/lint skip it
+via the shared predicate.
+
+Original text preserved below for the record: their Mongo merger writes `⚠️ Schema variance: multiple types
 detected` inline in the generated body — producers record *observations*,
 not just transcriptions. Any future producer (SQLite first) should emit
 null-rate / variance / row-count / staleness notes into the concept body

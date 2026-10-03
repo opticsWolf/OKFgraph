@@ -41,7 +41,10 @@ logger = logging.getLogger(__name__)
 #: noise (self-linking ``*/index`` nodes that dilute PPR), never knowledge.
 #: Explicit single-file ``import <path>/index.md`` still works — explicit
 #: beats implicit. Mirrors google-okf's ``RESERVED_FILENAMES``.
-RESERVED_FILENAMES = frozenset({"index.md"})
+# ``log.md`` is the producer-run changelog (bundle-hardening §5): written
+# by ``okf produce``, never a concept — reserving it only once the writer
+# exists, per the plan's own warning.
+RESERVED_FILENAMES = frozenset({"index.md", "log.md"})
 
 #: Extensions import (and diff/delta/lint) treat as concept sources.
 SOURCE_EXTS = (".md", ".markdown", ".txt")

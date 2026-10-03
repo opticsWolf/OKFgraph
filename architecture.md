@@ -1,6 +1,6 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.5 (as-built for okfgraph 0.8.x — ONNX vision restored per `docs/plan-onnx-only-followup.md` Phase 6 (`JinaV5Vision` via embroider 0.3); §10d producers + observations, file-free `bundle_root=None`, namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)  
+**Version**: 6.5 (as-built for okfgraph 0.8.x–0.9.0 — ONNX vision restored per `docs/plan-onnx-only-followup.md` Phase 6 (`JinaV5Vision` via embroider 0.3); §10d producers + observations, file-free `bundle_root=None`, namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)  
 **Based on**: Architecture v6.4 (0.7.x tree)  
 **Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.3.x`, `bobine 0.5.12`, `onnxruntime==1.29.0`
 
@@ -26,7 +26,7 @@
 
 ## Summary of Changes (v6.4 → v6.5)
 
-As-built for okfgraph 0.8.x (`docs/plan-onnx-only-followup.md` Phase 6 +
+As-built for okfgraph 0.8.x–0.9.0 (`docs/plan-onnx-only-followup.md` Phase 6 +
 `docs/plan-bundle-hardening.md` §§3, 5 + `docs/plan-retrieval-roundup.md`
 closure):
 

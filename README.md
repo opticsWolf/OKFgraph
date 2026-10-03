@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-%E2%89%A52.0-purple)](https://modelcontextprotocol.io/)
-[![Ladybug](https://img.shields.io/badge/ladybug-0.20.3-orange)](https://pypi.org/project/ladybug/)
+[![Ladybug](https://img.shields.io/badge/ladybug-0.21.2-orange)](https://pypi.org/project/ladybug/)
 
 **Ladybug-backed knowledge graph with Rust-driven Jina v5 embeddings, model-free
 graph retrieval, and agent-first MCP + CLI surfaces.**
@@ -32,7 +32,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 | **Read** | Body / chunks / rebuilt document / graph context, with optional **token budgets** (`max_tokens`): self first, then PPR-ranked neighbours, index-first for context |
 | **Storage** | LadybugDB `==0.21.2` (pinned — 0.20.x segfaulted 2nd in-process vector-index builds): graph + vector + FTS in one file |
 | **Links** | Path links (`](doc.md)`) + `[[wikilinks]]` resolved by name (`uid` → `aliases` → `title` → filename stem); ambiguous names never resolve; broken links tracked and repairable |
-| **Import** | Single files, whole bundles (delta-aware: only changed files re-embed, `--purge` drops deleted concepts), markdown / PDF+Office / raw thoughts; mordant lint on the way in |
+| **Import** | Single files, whole bundles (delta-aware: only changed files re-embed, `--purge` drops deleted concepts), markdown / PDF+Office / raw thoughts; mordant lint on the way in; `okf produce` generates bundles from SQLite (`## Observations` + `log.md` changelog) |
 | **PDF** | `DocumentConverter` seam with `BobineConverter` default (routing `auto\|surgical\|always\|never`); bring your own converter, no code changes |
 | **Diff** | `okf diff`: structural snapshot (dir vs dir, no model load) and drift (graph vs dir) modes; CI exit codes + `--json` |
 | **Doctor** | `okf doctor`: 0–100 health score (broken/orphan/stale/duplicate-title/missing-description), safe `--fix` that never touches `reviewed: true`, `--strict` CI gate |
@@ -161,12 +161,16 @@ accepted everywhere, and usually live in `okfgraph.toml`.
 | `okf lint [DIR] [--json]` | Pre-import gate (no DB, no model); exit 0 clean / 1 errors / 2 bad dir |
 | `okf doctor [--fix] [--strict] [--stale-days N] [--json]` | Score + findings; `--fix` repairs safely, `--strict` exits 1 on any finding |
 | `okf import [--all] [--purge] [--mode text] [--force]` | Bulk/single import, delta-aware (`--force` re-attaches a detached graph); repeatable `--bundle-root ALIAS=PATH` adds named roots (`@alias/` IDs, unmounted ≠ deleted, `--purge` refuses while any root is absent); `--bundle` pins one tree, `--primary` sets the bare-ID root for all-roots scope (both = refused) |
+| `okf produce --from sqlite --source DB --output DIR` | Generate a bundle from a data source (one concept per table, FK links, `## Observations` notes, `log.md` changelog); lint pre-flighted, CLI-only |
 | `okf detach [--bundle DIR] [--no-verify] [--force]` | End the mirror: the DB becomes the artifact (verify-first; imports refuse without `--force`) |
 | `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf deleted-*` | Setup, cache inspection, REPL, index rebuild, link + soft-delete maintenance |
 
 Every CLI call cold-boots the router (model load ~30s when the embedder is
 needed) — batch reads, and reach for `--rank ppr` for topic queries in cold
-sessions.
+sessions. Omit `--bundle` entirely for file-free mode: thoughts ingest,
+search, read, traverse, doctor, and export work from the DB alone (file-side
+ops fail fast naming the missing root). Thought IDs are namespaced
+(`thoughts/<topic>/<ts>_<id>`), so a fileless graph exports into a tidy tree.
 
 ---
 

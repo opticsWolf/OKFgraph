@@ -158,7 +158,7 @@ commit history, newest first.
 
 ## [0.4.0] — 2026-09-14
 
-### Added (Phase 2 — multi-root bundles, plan `docs/plan-multi-root-detach.md`)
+### Added (Phase 2 — multi-root bundles, plan `docs/archive/plan-multi-root-detach.md`)
 - One graph, N live roots: `OKFRouter(roots={alias: path})`, CLI
   `--bundle-root ALIAS=PATH` (repeatable), TOML `[[roots]]`, MCP `--root`
   + `create_mcp_server(roots=...)`. Named roots mint `@alias/rel` IDs;
@@ -352,7 +352,7 @@ wire-level MCP coverage and a scheduled full-suite workflow.
 
 ## [0.2.12] — 2026-09-13
 
-Spin-off Phase 3 (docs/plan-embed-spinoff.md): the embedding engine is no
+Spin-off Phase 3 (docs/archive/plan-embed-spinoff.md): the embedding engine is no
 longer built in-tree. `rust/okf-embed/` is deleted and okfgraph now depends
 on the released external crate — `embroider` (github.com/opticsWolf/embroider,
 crates.io rlib + PyPI wheels, version floor `>=0.1,<0.2`). Same Python
@@ -378,7 +378,7 @@ surface, same vectors, no Rust toolchain needed to build or use okfgraph.
 
 ## [0.2.11] — 2026-09-13
 
-ONNX-runtime alignment with bobine (`docs/plan-onnx-alignment.md`): robust
+ONNX-runtime alignment with bobine (`docs/archive/plan-onnx-alignment.md`): robust
 cross-platform runtime discovery, graceful accelerator fallback, lazy
 session init, and air-gapped model loading. Ships with `okf-embed 0.2.0`
 wheels (Rust changes in every phase below).
@@ -505,7 +505,7 @@ wheels (Rust changes in every phase below).
 - `DocumentConverter` seam (`okfgraph/components/converters.py`) with
   `BobineConverter` as the default PDF converter; bring-your-own converter
   supported, no legacy fallback.
-- Model-free retrieval round (`docs/plan-retrieval-roundup.md`):
+- Model-free retrieval round (`docs/archive/plan-retrieval-roundup.md`):
   - lexical seeds + exact Personalized PageRank — `search --rank ppr`
     (MCP `rank` param), zero embedding-model load;
   - token-budgeted reads — `read --max-tokens` (PPR-ranked neighbours);

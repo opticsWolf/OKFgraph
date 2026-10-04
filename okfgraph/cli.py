@@ -192,6 +192,14 @@ def _main_catchall(args):
 _OPEN_ROUTERS = []
 
 
+# Ambient router injection for in-process adapters (the interactive shell)
+# that must reuse ONE router across many op calls: each CLI handler calls
+# _router(args); while an injection is active it returns the injected router
+# instead of opening another (a second router on the same db would hit the
+# ladybug file lock).
+_INJECTED_ROUTER: list = []  # see _router; the shell injects its session
+
+
 def _router(args):
     """Build an OKFRouter from parsed args (registered for cleanup on exit).
 
@@ -200,6 +208,8 @@ def _router(args):
     CLI > env > TOML > defaults, per key. Bad values are a clean usage
     error, not a traceback.
     """
+    if _INJECTED_ROUTER:
+        return _INJECTED_ROUTER[-1]
     try:
         signal = cli_signal(args)
         settings = Settings.load(
@@ -1025,287 +1035,182 @@ def _deleted_purge(args):
     print(f"[OK] Permanently deleted {result['purged']} expired concept(s).")
 
 
-def _shell(args):
-    router = _router(args)
+def _shell_argv(cmd: str, rest: str):
+    """Translate one shell line into argv for :func:`build_parser`.
+
+    The shell keeps its ergonomic shorthand (``chunks:`` prefixes,
+    bare ``expand``/``hub`` modifiers, the two-forms traverse) but the
+    resulting argv always resolves through the SAME subparsers the CLI
+    uses — flags have exactly one definition and one renderer.
+    Returns ``None`` for words that are not shell verbs.
+    """
+    tokens = rest.strip().split()
+    if cmd == "import":
+        return ["import"] + tokens if tokens else None
+    if cmd == "import-bundle":
+        argv = ["import", "--all"]
+        if tokens:
+            argv += ["--bundle-path", " ".join(tokens)]
+        return argv
+    if cmd == "search":
+        if not tokens:
+            return None
+        query = tokens[0]
+        modifiers = {t for t in tokens[1:]}
+        extra = []
+        target = None
+        if ":" in query and query.split(":")[0] in ("concepts", "chunks", "images"):
+            target, query = query.split(":", 1)
+        for t in sorted(modifiers):
+            if t == "expand":
+                extra.append("--expand")
+            elif t == "hub":
+                extra.append("--hub-rerank")
+            elif t.startswith("type:"):
+                extra += ["--concept-type", t[5:]]
+            elif t.startswith("tags:"):
+                extra += ["--tags", t[5:]]
+            elif t.startswith("parent:"):
+                extra += ["--parent-id", t[7:]]
+            else:
+                query_parts = [query, t]
+                query = " ".join(query_parts)
+        if "expand" in modifiers or "hub" in modifiers:
+            target = target or "chunks"
+        argv = ["search", query]
+        if target and target != "concepts":
+            argv += ["--target", target]
+        argv += extra
+        return argv
+    if cmd == "read":
+        if not tokens:
+            return None
+        argv = ["read", tokens[0]]
+        if len(tokens) > 1:
+            argv += ["--include", tokens[1]]
+        return argv
+    if cmd == "traverse":
+        rels = ("CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET")
+        if not tokens:
+            return ["traverse"]
+        if len(tokens) == 1:
+            return ["traverse", tokens[0]]
+        if len(tokens) == 2 and tokens[1].upper() not in rels:
+            return ["traverse", tokens[0], "--target", tokens[1]]
+        argv = ["traverse", tokens[0]]
+        if len(tokens) > 1:
+            argv += ["--relationship", tokens[1].upper()]
+        if len(tokens) > 2:
+            argv += ["--direction", tokens[2]]
+        if len(tokens) > 3:
+            argv += ["--depth", tokens[3]]
+        return argv
+    if cmd == "images":
+        return ["images", rest.strip()]
+    if cmd == "export-bundle":
+        return ["export", "--all", "--output-dir", rest.strip()]
+    if cmd == "export":
+        if len(tokens) != 2:
+            return None
+        return ["export", "--concept-id", tokens[0], "--output-dir", tokens[1]]
+    if cmd == "ingest":
+        if not tokens:
+            return None
+        path = tokens[0]
+        auto = "--auto-import" in tokens[1:]
+        kind = "md" if path.lower().endswith(".md") else "pdf"
+        argv = ["ingest", "--kind", kind]
+        if kind == "md":
+            argv += ["--md-path", path]
+        else:
+            argv += ["--pdf-path", path]
+        if not auto:
+            argv += ["--no-auto-import"]
+        return argv
+    if cmd in ("model-info", "broken-links", "repair-links"):
+        return [cmd]
+    return None
+
+
+def _shell(args, router=None):
+    """Interactive shell: a REPL over the same subcommands as the CLI.
+
+    Every line is translated by :func:`_shell_argv` and handed to
+    ``build_parser()`` + the same handler as ``okf <verb>`` (§5 CLI row):
+    flags exist once and each op has one renderer. The session's own
+    router is reused for every line (a fresh ``_router`` per line would
+    clash on the ladybug file lock).
+    """
+    router = router or _router(args)
+    base = {k: v for k, v in vars(args).items() if k != "command"}
+    parser = build_parser()
     banner = """OKF Interactive Shell
 ========================================
 Commands:
-  import <file>              — import single OKF file (images: caption-based)
-  import-bundle [path]       — import entire bundle (images: caption-based)
-  search [target:]<query>    — search concepts (default), chunks:, images:
-  search <query> expand      — chunk hits + graph neighborhood
-  search <query> hub         — chunk hits reranked by hub score
+  import <file>              — import single OKF file (same as okf import)
+  import-bundle [path]       — import entire bundle (same as okf import --all)
+  search [target:]<query> [hub|expand|type:X|tags:a,b|parent:Y] — search
   read <id> [chunks|document|context] — read a concept (default: body)
-  traverse [id] [rel] [dir] [depth] — traverse (no id = root listing)
-  traverse <id1> <id2>       — shortest path between two concepts
+  traverse [id] [REL] [DIR] [depth] — traverse; 2 ids = shortest path
   images <concept_id>        — list images attached to a concept
   export-bundle <output_dir> — export all concepts
   export <id> <output_dir>   — export single concept
-  ingest <file> [--auto-import] — ingest .md or .pdf (auto-import PDFs)
+  ingest <file> [--auto-import] — ingest .md or .pdf (converts PDFs by default)
   model-info                 — show model cache status
+  broken-links / repair-links — link hygiene
   help                       — show this help
   quit / exit                — exit shell
+Any CLI flag works after the command, e.g. search --rank ppr --limit 5.
 ========================================"""
 
     print(banner)
 
-    while True:
-        try:
-            line = input("\n> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nBye.")
-            break
+    _INJECTED_ROUTER.append(router)
+    try:
+        while True:
+            try:
+                line = input("\n> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nBye.")
+                break
 
-        if not line:
-            continue
-
-        parts = line.split(None, 1)
-        cmd = parts[0].lower()
-        rest = parts[1] if len(parts) > 1 else ""
-
-        if cmd in ("quit", "exit", "q"):
-            print("Bye.")
-            break
-
-        elif cmd == "help":
-            print(banner)
-
-        elif cmd == "import" and rest:
-            tokens = rest.strip().split()
-            mode = "text"
-            if tokens and tokens[-1].lower() in ("text",):
-                tokens = tokens[:-1]
-            fp = Path(" ".join(tokens))
-            if not fp.exists():
-                print(f"Error: {fp} not found")
+            if not line:
                 continue
-            cid = router.import_file(fp, mode=mode)["concept_id"]
-            imgs = router.list_images(cid)
-            suffix = f" ({len(imgs)} image(s), mode: {mode})" if imgs else ""
-            print(f"[OK] Imported: {cid}{suffix}")
 
-        elif cmd == "import-bundle":
-            tokens = rest.strip().split()
-            mode = "text"
-            if tokens and tokens[-1].lower() in ("text",):
-                tokens = tokens[:-1]
-            bundle_path = Path(" ".join(tokens)) if tokens else None
-            ids = router.import_mgr.import_bundle(bundle_path, mode=mode)
-            print(f"[OK] Imported {len(ids)} concepts (image mode: {mode})")
+            parts = line.split(None, 1)
+            cmd = parts[0].lower()
+            rest = parts[1] if len(parts) > 1 else ""
 
-        elif cmd == "search" and rest:
-            tokens = rest.strip().split()
-            first = tokens[0]
-            target = "concepts"
-            if ":" in first and first.split(":")[0] in ("concepts", "chunks", "images"):
-                target, first = first.split(":", 1)
-                tokens[0] = first
-            query = tokens[0]
-            expand = "expand" in tokens[1:]
-            hub = "hub" in tokens[1:]
-            type_filter = tags_filter = parent_filter = None
-            for t in tokens[1:]:
-                if t.startswith("type:"):
-                    type_filter = t[5:]
-                elif t.startswith("tags:"):
-                    tags_filter = t[5:].split(",")
-                elif t.startswith("parent:"):
-                    parent_filter = t[7:]
-            if target == "images":
-                try:
-                    results = router.search(query, target="images")
-                except OKFError as err:
-                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-                    continue
-                for i, r in enumerate(results, 1):
-                    label = r.get("alt_text") or r.get("file_name") or r.get("id")
-                    print(f"  {i}. [{r['relevance_score']:.4f}] {label} ({r.get('embed_route')})")
-                    print(f"     id: {r['id']}")
-            elif target == "chunks":
-                try:
-                    results = router.search(
-                        query, target="chunks",
-                        concept_type=type_filter, tags=tags_filter,
-                        parent_id=parent_filter,
-                        hub_rerank=hub, expand=expand,
-                    )
-                except OKFError as err:
-                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-                    continue
-                for i, r in enumerate(results, 1):
-                    chunk = r.get("chunk", r)
-                    score = r.get("final_score", chunk.get("rrf_score", 0))
-                    print(f"  {i}. [{score:.4f}] {chunk.get('parent_title', '?')} §{chunk.get('chunk_index', '?')}")
-                    print(f"     {chunk.get('chunk_text', '')[:150]}")
-            else:
-                try:
-                    results = router.search(
-                        query=query, concept_type=type_filter,
-                        tags=tags_filter, parent_id=parent_filter,
-                    )
-                except OKFError as err:
-                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-                    continue
-                for i, r in enumerate(results, 1):
-                    print(f"  {i}. [{r['relevance_score']:.4f}] {r['title']} ({r['type']})")
-                    desc = r.get("description") or ""
-                    if desc:
-                        print(f"     {desc[:120]}")
+            if cmd in ("quit", "exit", "q"):
+                print("Bye.")
+                break
 
-        elif cmd == "read" and rest:
-            tokens = rest.strip().split()
-            cid = tokens[0]
-            include = tokens[1] if len(tokens) > 1 else "body"
-            if include == "chunks":
-                chunks = router.read(cid, include="chunks")
-                if not chunks:
-                    print("No chunks found.")
-                for c in chunks:
-                    print(f"  #{c.chunk_index} [{c.block_type}] {c.chunk_text[:120]}")
-            elif include == "document":
-                payload = router.read(cid, include="document")
-                text = payload["markdown"]
-                print(text if text else "No chunks found for this concept.")
-            elif include == "context":
-                ctx = router.read(cid, include="context")
-                for l in ctx["incoming_links"]:
-                    print(f"  ← {l.get('title', l.get('id', '?'))} (id: {l['id']})")
-                for l in ctx["outgoing_links"]:
-                    print(f"  → {l.get('title', l.get('id', '?'))} (id: {l['id']})")
-                for a in ctx["ancestry"]:
-                    print(f"  ↑ {a.get('title') or a['id']}")
-                for s in ctx["siblings"]:
-                    print(f"  · {s['title']} ({s['type']}) (id: {s['id']})")
-            else:
-                try:
-                    data = router.read(cid, include="body")
-                except OKFError as err:
-                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-                    continue
+            if cmd == "help":
+                print(banner)
+                continue
 
-        elif cmd == "traverse":
-            tokens = rest.strip().split()
-            if not tokens:
-                for item in router.list_directory(""):
-                    icon = "[D]" if item["type"] == "Directory" else "[F]"
-                    print(f"  {icon} {item['title']} ({item['type']})")
-            elif len(tokens) == 2 and tokens[1] not in ("CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET"):
-                try:
-                    nodes = router.traverse(tokens[0], target=tokens[1])
-                except OKFError as err:
-                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-                    continue
-                if not nodes:
-                    print(f"No path found between '{tokens[0]}' and '{tokens[1]}'.")
-                else:
-                    print(f"Path ({len(nodes)} nodes):")
-                    for i, n in enumerate(nodes, 1):
-                        print(f"  {i}. {n.get('title', '?')} ({n.get('type', '?')})")
-                        print(f"     id: {n['id']}")
-            else:
-                start_id = tokens[0]
-                rel = tokens[1] if len(tokens) > 1 else "CONTAINS"
-                direction = tokens[2] if len(tokens) > 2 else "OUTGOING"
-                depth = int(tokens[3]) if len(tokens) > 3 else 1
-                try:
-                    results = router.traverse(
-                        start_id, relationship=rel, direction=direction, depth=depth)
-                except OKFError as err:
-                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-                    continue
-                for r in results:
-                    print(f"  {r['id']} ({r['type']}) — {r.get('title', '')}")
+            argv = _shell_argv(cmd, rest)
+            if argv is None:
+                print(f"Unknown command: {cmd}. Type 'help' for usage.")
+                continue
 
-        elif cmd == "images" and rest:
-            imgs = router.list_images(rest.strip())
-            if not imgs:
-                print("No images attached.")
-            for im in imgs:
-                alt = im.get("alt_text") or "(no alt-text)"
-                print(f"  [{im.get('embed_route')}] {im.get('file_name')} — {alt}")
-                print(f"     id: {im.get('id')}")
-
-        elif cmd == "export-bundle" and rest:
-            result = router.export_bundle(Path(rest.strip()))
-            print(f"[OK] Exported {len(result['concept_ids'])} concepts to "
-                  f"{result['output_dir']} (flavor: {result['flavor']})")
-
-        elif cmd == "export" and rest:
-            tokens = rest.strip().split(None, 1)
-            if len(tokens) == 2:
-                cid, out_dir = tokens
-                try:
-                    result = router.export_concept(cid, output_dir=Path(out_dir))
-                except OKFError as err:
-                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-                    continue
-                print(f"[OK] Exported {result['concept_id']} → {result['path']}")
-            else:
-                print("Usage: export <concept_id> <output_dir>")
-
-        elif cmd == "model-info":
-            info = OKFRouter.model_info(cache_dir=router.cache_dir)
-            print(f"Model:  {info['model_id']}")
-            print(f"Cache:  {info['cache_dir']}")
-            if info["cached"]:
-                size_gb = info["disk_usage_bytes"] / (1024 ** 3)
-                print(f"Status: cached ({size_gb:.2f} GB)")
-                print(f"Path:   {info['snapshot_path']}")
-            else:
-                print("Status: not cached (will download on first use)")
-
-        elif cmd == "broken-links":
-            broken = router.list_broken_links()
-            if not broken:
-                print("No broken links found.")
-            else:
-                print(f"Found {len(broken)} broken link(s):")
-                for link in broken:
-                    print(f"  {link['source']} → {link['target']}")
-
-        elif cmd == "repair-links":
-            result = router.repair_links()
-            print(f"[OK] Repaired {result['repaired']} link(s)")
-
-        elif cmd == "ingest" and rest:
-            # Minimal shell dispatch for ingest — delegates to the CLI handler.
-            from okfgraph.cli import _ingest
-            from types import SimpleNamespace
-            src_path = rest.strip()
-            is_md = src_path.lower().endswith(".md")
-            shell_args = SimpleNamespace(
-                kind="md" if is_md else "pdf",
-                md_path=src_path if is_md else None,
-                pdf_path=None if is_md else src_path,
-                thoughts=None,
-                topic=None,
-                concept_id=None,
-                title=None,
-                description=None,
-                tags=None,
-                auto_import=False,
-                output_dir=None,
-                routing_mode="auto",
-                mode="text",
-                batch_size=32,
-                prune_missing=False,
-                no_extract_images=False,
-                db_path=getattr(args, "db_path", None),
-                bundle_root=getattr(args, "bundle_root", None),
-                embedding_dim=getattr(args, "embedding_dim", None),
-                cache_dir=getattr(args, "cache_dir", None),
-                device=getattr(args, "device", "auto") or "auto",
-                precision=getattr(args, "precision", "auto") or "auto",
-                cpu_arena=bool(getattr(args, "cpu_arena", False)),
-                chunk_size=getattr(args, "chunk_size", 512),
-                chunk_overlap=getattr(args, "chunk_overlap", 40),
-                no_chunking=False,
-                allow_remote_images=False,
-            )
-            _ingest(shell_args)
-
-        else:
-            print(f"Unknown command: {cmd}. Type 'help' for usage.")
+            # Parse with the session's settings pre-seeded: generated global
+            # flags are SUPPRESS-defaulted, so only args typed on the line
+            # overwrite them (D5/D6 hold; the shell is human-only by default).
+            ns = argparse.Namespace(**base)
+            try:
+                sub = parser.parse_args(argv, namespace=ns)
+            except SystemExit:
+                print(f"Error: bad usage for '{cmd}'.")
+                continue
+            try:
+                _COMMANDS[sub.command](sub)
+            except OKFError as err:
+                # Handlers catch their own op errors; this keeps the REPL
+                # alive for anything a renderer path let through (§4).
+                print(f"[ERROR] {err.titles()}", file=sys.stderr)
+    finally:
+        _INJECTED_ROUTER.clear()
 
 
 # ── argument parser ────────────────────────────────────────────────────────

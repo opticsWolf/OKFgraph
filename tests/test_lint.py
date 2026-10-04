@@ -90,7 +90,9 @@ class TestLintCli:
     def test_json_exit_1(self):
         proc = self._run(str(FIXTURE), "--json")
         assert proc.returncode == 1
-        report = json.loads(proc.stdout)
+        env = json.loads(proc.stdout)
+        assert env["ok"] is False and env["error"]["code"] == "LINT_ERRORS"
+        report = env["data"]
         assert report["files"] == 8 and report["clean"] is False
 
     def test_clean_exit_0(self, tmp_path):
@@ -134,5 +136,5 @@ class TestLintDoctorAgreement:
         shutil.copy(FIXTURE / "other.md", bundle / "other.md")
         assert lint_bundle(bundle)["clean"] is True
         self.router.import_mgr.import_bundle(bundle)
-        report = self.router.diagnose()
+        report = self.router.doctor(stale_days=365)["report"]
         assert [f for f in report["findings"] if f["rule"] == "broken_link"] == []

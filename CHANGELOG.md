@@ -4,6 +4,84 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.10.0] — 2026-10-04
+
+Surface unification. **Breaking release**: every operation exists once
+across CLI / MCP / Python — one vocabulary, one rendering, one error
+contract. Renames are atomic; legacy spellings are gone, not deprecated.
+
+### Added
+- **Typed errors + result envelope (§4).** `okfgraph.errors`:
+  `OKFError(code, message, fields?, remedy?)` with a closed code set;
+  the subclass encodes the class (usage `exit 2`, state/outcome `exit 1`;
+  diff/doctor/lint outcomes are domain results). Adapters: CLI prints
+  `[ERROR] code: message [remedy]` on stderr and exits by code; failure
+  exit codes all non-zero (0.9's silent-error paths are gone). Every
+  CLI/MCP success response is an envelope
+  `{ok, op, data, warnings, error}`; MCP failures raise so the result
+  carries `isError: true` with the error envelope as text, and untyped
+  exceptions arrive wrapped as `INTERNAL` — no bare tracebacks anywhere.
+- **Global `--json`** on every CLI command (D5): human render by default,
+  envelope on stdout with `--json` (outcome reports ride in `data`,
+  never inside `error`); `[ERROR]` lines stay on stderr (D6).
+- **Image ops on all three surfaces (Q5→B).** MCP tools `list_images`
+  and `get_image` (surface 5 → 8); CLI verbs `okf images CONCEPT_ID` and
+  `okf image ASSET_ID [--output-path F]`; ops `list_images(concept_id)` /
+  `get_image(asset_id)` (`UNKNOWN_CONCEPT` / `UNKNOWN_ASSET` typed).
+- **23 canonical ops on the `OKFRouter` facade** (`ops/query.py`,
+  `ops/ingest.py`, `ops/export.py`, `ops/admin.py`): query ops
+  (`search`, `read`, `traverse`), ingest (`ingest(kind,…)`), export
+  (`export_bundle`, `export_concept`), admin (`init`, `model_info`,
+  `import_bundle`, `import_file`, `doctor`, `diff`, `lint`, `produce`,
+  `reindex`, `list_deleted`/`recover_deleted`/`purge_deleted`, `detach`,
+  `list_broken_links`/`repair_links`, `list_images`/`get_image`);
+  static ops for router-free paths (model_info/lint/produce). The
+  interactive shell now parses every line through the same
+  `build_parser()` subcommands (`search chunks:<q> hub` shorthand kept).
+- `okfgraph.toml` is the canonical settings table (§3.1): per-key
+  precedence CLI > env > TOML > defaults with a presence-based merge;
+  generated CLI flags + env names; `[database] db_path` etc.; invalid
+  values/scopes are refused (`CONFIG_INVALID`).
+
+### Changed
+- **Ingest (§3.5):** one `ingest(kind, …)` dispatcher on `IngestManager`
+  and the router (`ingest_md`/`ingest_pdf`/`ingest_thoughts` deleted);
+  `auto_import` defaults **true** (X4) with CLI `--no-auto-import` for
+  convert-only; per-kind refusal typed as `MISSING_PARAM`, missing file
+  as `FILE_NOT_FOUND` (exit 2, was warning-with-success).
+- **Search refusals (X3):** a chosen path ignores a param →
+  `BAD_VALUE` naming it (images refuses all extras; rank on chunks
+  refused; documented precedence `hub_rerank` > `expand` > plain).
+  `read`: unknown ids refused (`UNKNOWN_CONCEPT`) instead of silent
+  empties; traversal walks the same (`node_exists` check); empty
+  `traverse` start lists the root.
+- **CLI flags (§3.6/§3.7):** `--db` → `--db-path`; `--bundle` →
+  `--bundle-root` (single value) or `--bundle-path` (one-call pin);
+  `--primary` collapsed into `--bundle-root`; append roots via
+  `okf init --root ALIAS=PATH`; `--dim` → `--embedding-dim`; `--model`
+  → `--model-id`; `--image-model` → `--image-model-id`; ingest
+  `--md-file/--pdf-file/--output` → `--md-path/--pdf-path/--output-dir`;
+  `--purge` → `--prune-missing` (also on `import`); export
+  `--output` → `--output-dir`, `--type` → `--concept-type`,
+  `--parent` → `--directory-id`; `no_chunking` → `enable_chunking`
+  (`--no-chunking` flips); `import_from_okf` → `import_file`;
+  `export_to_okf` → `export_concept`; `diagnose` → `doctor(stale_days,…)`
+  and `doctor_fix` → `doctor(fix=True)`; `diff_db_dir`/`diff_dirs` →
+  `diff(old?, new?)`; component `import_bundle(purge_deleted=…)` →
+  `prune_missing`; `PurgeManager._recover_concept` → public
+  `recover_deleted`. **`okfgraph/tools.py` deleted** (the duplicate
+  tool list) and `okfgraph/config.py` deleted (absorbed by
+  `okfgraph/settings.py` — config spellings raise a pointed error, X6).
+- **Exit codes (§4):** CLI exits `0` ok, `1` state/outcome (diff
+  different 0.9's exit 2 → 1, doctor `--strict`=1, lint errors),
+  `2` usage (refusals that 0.9 reported as 0-nowarn), `130` interrupt.
+
+### Removed
+- `okfgraph/config.py`, `okfgraph/tools.py`, the legacy tool list, all
+  facade `*args/**kwargs` proxies; 0.9's per-surface flag spellings
+  (`--db`, `--bundle`, `--dim`, `--model`, `--md-file`, `--pdf-file`,
+  `--purge`, `no_chunking`, …). No aliases: old spellings raise.
+
 ## [0.9.0] — 2026-10-03
 
 ### Added

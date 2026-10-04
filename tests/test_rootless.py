@@ -33,7 +33,7 @@ class TestFileFreeLoop:
             # traverse (graph-side)
             assert r.search_engine.get_by_id(cid) is not None
             # doctor (root status must not crash on a None primary)
-            report = r.doctor_mgr.diagnose()
+            report = r.doctor(stale_days=365)["report"]
             assert report["score"] >= 0
             # export (explicit output dir, no bundle needed)
             exported = r.export_mgr.export_bundle(tmp_path / "out")
@@ -77,7 +77,7 @@ class TestExplicitPaths:
                       encoding="utf-8")
         r = _rootless(tmp_path)
         try:
-            cid = r.import_mgr.import_from_okf(md)
+            cid = r.import_file(md)["concept_id"]
             assert cid == "note"
             assert r.search_engine.get_by_id("note") is not None
         finally:

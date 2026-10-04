@@ -6,15 +6,15 @@ prompt engineering); fall back to the **CLI** for scripts and debugging.
 ## MCP server
 
 ```bash
-uv run --project . okf-mcp --db-path ./kb.db --bundle .
+uv run --project . okf-mcp --db-path ./kb.db --bundle-root .
 ```
 
 - Transport: stdio (default). Entry point: `okf-mcp` (`okfgraph.mcp_server:main`).
 - Dependencies resolve from `pyproject.toml` (`uv sync`); the embedding
   engine is the external `embroider` package (PyPI wheels, also used by
   bobine — no Rust toolchain needed to run okfgraph).
-- The `pdf` extra (`bobine`) is needed only for `ingest_pdf` with the
-  default converter; the `omni` extra only for image embeddings.
+- The `pdf` extra (`bobine`) is needed only for `ingest` with `kind='pdf'`
+  and the default converter; the `omni` extra only for image embeddings.
 - Optional: `ORT_DYLIB_PATH` to pin the ONNX Runtime binary shared by
   bobine + embroider (defaults to the pip-installed `onnxruntime==1.29.0`).
 
@@ -29,7 +29,7 @@ automatically (runs with the project root as cwd):
     "okfgraph": {
       "command": "uv",
       "args": ["run", "--project", ".", "okf-mcp",
-               "--db-path", "./kb.db", "--bundle", "."]
+               "--db-path", "./kb.db", "--bundle-root", "."]
     }
   }
 }
@@ -44,7 +44,7 @@ automatically (runs with the project root as cwd):
 command = "uv"
 args = ["run", "--project", "D:/path/to/OKFgraph", "okf-mcp",
         "--db-path", "D:/path/to/OKFgraph/kb.db",
-        "--bundle", "D:/path/to/OKFgraph"]
+        "--bundle-root", "D:/path/to/OKFgraph"]
 ```
 
 ### pi / generic harnesses
@@ -67,10 +67,15 @@ with absolute paths. No auth, no headers, no sidecars.
 
 ## CLI fallback
 
-`uv run --project . okf --help` — the same five verbs (`search`, `read`,
-`traverse`, `ingest`, `export`) plus maintenance commands (`init`, `import`,
-`diff`, `doctor`, `shell`, `reindex`, `broken-links`, ...). Useful when MCP
-is unavailable or for shell scripting.
+`uv run --project . okf --help` — the same retrieval verbs (`search`, `read`,
+`traverse`, `ingest`, `export`) plus image ops (`images`, `image`) and
+maintenance commands (`init`, `model-info`, `import`, `diff`, `doctor`, `lint`,
+`produce`, `shell`, `reindex`, `broken-links`, `repair-links`, `deleted-*`,
+`detach`). Useful when MCP is unavailable or for shell scripting. Every
+command takes `--json`: the human renderer by default, the result envelope
+(`{ok, op, data, warnings, error}`) on stdout under `--json`; failure paths
+print `[ERROR] code: message` on stderr and exit 2 (usage) / 1 (state,
+diff/doctor/lint outcomes).
 
 ## Cold search (no model load)
 
@@ -81,11 +86,18 @@ embedder is cold or unavailable; keep hybrid ranking for phrasing-sensitive
 questions. `read --max-tokens N` / `max_tokens` caps any reading to a
 budgeted section list (self first, then PPR-ranked neighbours).
 
-## Tool surface (5 MCP tools)
+## Tool surface (8 MCP tools)
 
 - `search` (concepts/chunks/images, expand, hub_rerank, rank),
   `read` (body/chunks/document/context, max_tokens),
   `traverse` (relationships, directory listing, shortest path),
-  `ingest` (md/pdf/thoughts), `export_bundle` (okf/obsidian flavors).
+  `ingest` (md/pdf/thoughts), `export_bundle` (okf/obsidian flavors),
+  `export_concept` (single concept), `list_images` (assets on a concept),
+  `get_image` (metadata + base64 bytes).
+- Wire contract (D7): a success result is the envelope string
+  (`{ok: true, op, data, warnings}`); a failure raises, so the result
+  carries `isError: true` and the text is the error envelope — typed code,
+  message, fields, remedy; untyped component exceptions arrive wrapped as
+  `INTERNAL` with the type name (no bare tracebacks).
 All tools carry descriptions, JSON schemas, and read-only/destructive
 annotations — harnesses can gate writes on those.

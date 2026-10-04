@@ -103,10 +103,9 @@ class TestOKFRouterSmoke:
         from okfgraph.router import OKFRouter
         assert hasattr(OKFRouter, "get_by_id")
 
-    def test_import_from_okf_method_exists(self):
+    def test_import_file_op_exists(self):
         from okfgraph.router import OKFRouter
-        assert hasattr(OKFRouter, "import_from_okf")
-
+        assert hasattr(OKFRouter, "import_file")
     def test_export_ops_method_exists(self):
         from okfgraph.router import OKFRouter
         assert hasattr(OKFRouter, "export_concept")

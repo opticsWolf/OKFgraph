@@ -55,7 +55,7 @@ class TestDoctorLive:
         cls._router.close()
 
     def test_score_locked(self, router):
-        report = router.diagnose(stale_days=365)
+        report = router.doctor(stale_days=365)["report"]
         assert report["concepts"] == 6
         rules = sorted((f["rule"], f["path"]) for f in report["findings"])
         assert ("broken_link", "dangling") in rules
@@ -76,18 +76,18 @@ class TestDoctorLive:
         }
 
     def test_hub_info_never_scores(self, router):
-        report = router.diagnose()
+        report = router.doctor(stale_days=365)["report"]
         assert any(i["rule"] == "hub_concentration" for i in report["info"])
         assert "hub_concentration" not in report["summary"]
 
     def test_fix_respects_reviewed(self, router):
-        fixed = router.doctor_fix()
+        fixed = router.doctor_mgr.fix()
         assert fixed["skipped_reviewed"] == ["dangling"]
         # The reviewed concept's broken link is still recorded afterwards.
         remaining = { (b["source"], b["target"]) for b in router.list_broken_links() }
         assert ("dangling", "missing-target") in remaining
 
     def test_findings_sorted(self, router):
-        report = router.diagnose()
+        report = router.doctor(stale_days=365)["report"]
         keys = [(f["rule"], f["path"]) for f in report["findings"]]
         assert keys == sorted(keys)

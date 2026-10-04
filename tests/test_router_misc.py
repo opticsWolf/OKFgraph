@@ -204,7 +204,7 @@ class TestBrokenLinks:
         subdir.mkdir(exist_ok=True)
         body = "Hello [link to missing](./missing.md)"
         p = _write_okf(str(subdir), "present.md", "Present", body)
-        router.import_from_okf(p)
+        router.import_file(p)["concept_id"]
         links = router.list_broken_links()
         assert len(links) >= 1
         assert any(l["target"] == "missing" for l in links)
@@ -225,7 +225,7 @@ class TestBrokenLinks:
         # Import source with link to not-yet-imported target
         body = "See [the target](./target.md)"
         _write_okf(str(subdir), "source.md", "Source", body)
-        router.import_from_okf(Path(subdir) / "source.md", rebuild_indexes=False)
+        router.import_file(Path(subdir) / "source.md", rebuild_indexes=False)["concept_id"]
 
         # Broken link should exist — target_id is just the filename stem ("target")
         links = router.list_broken_links()
@@ -235,7 +235,7 @@ class TestBrokenLinks:
         # Now import a concept with ID "target" at the root level
         # (link extraction strips the path, so target_id is just "target")
         _write_okf(tmp_dir, "target.md", "Target", "Target content")
-        router.import_from_okf(Path(tmp_dir) / "target.md", rebuild_indexes=False)
+        router.import_file(Path(tmp_dir) / "target.md", rebuild_indexes=False)["concept_id"]
 
         # Repair should fix the link
         repaired = router.repair_links()
@@ -415,7 +415,7 @@ class TestContextWindowWarning:
         subdir.mkdir(exist_ok=True)
         _write_okf(str(subdir), "normal.md", "Normal", "Normal content " * 50)
         with caplog.at_level(logging.WARNING):
-            router.import_from_okf(Path(subdir) / "normal.md")
+            router.import_file(Path(subdir) / "normal.md")["concept_id"]
             # No context-window warnings for normal-sized content
             assert not any(
                 "context window" in record.message.lower()

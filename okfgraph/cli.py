@@ -645,15 +645,21 @@ def _lint(args):
     try:
         report = OKFRouter.lint(target)
     except OKFError as err:
+        report = err.fields["report"]
         if getattr(args, "json", False):
-            env = envelope("lint", data={"errors": err.fields["errors"]})
+            # Outcome envelope: the report rides in data (§4).
+            env = envelope("lint", data=report)
             env["ok"] = False
             env["error"] = {"code": err.code, "message": err.message}
             print(json.dumps(env, default=str, indent=2))
         else:
-            print(f"[ERROR] {err.titles()}", file=sys.stderr)
-            for e in err.fields["errors"]:
+            print(f"{report['files']} file(s): "
+                  f"{len(report['errors'])} error(s), "
+                  f"{len(report['warnings'])} warning(s)")
+            for e in report["errors"]:
                 print(f"  [ERROR] {e['file']} {e['rule']}: {e['message']}")
+            for w in report["warnings"]:
+                print(f"  [warn] {w['file']} {w['rule']}: {w['message']}")
         return 1
     if getattr(args, "json", False):
         env = envelope("lint", data=report)

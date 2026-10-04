@@ -172,7 +172,7 @@ def _import_vision_doc(router, monkeypatch):
     monkeypatch.setattr(
         router.image_mgr, "_prepare_vision", lambda img: (b"rgb", 32, 32)
     )
-    ids = router.import_mgr.import_from_okf(tmp / "doc.md", mode="omni")
+    ids = router.import_file(tmp / "doc.md", mode="omni")["concept_id"]
     assert ids
     return stub
 
@@ -204,7 +204,7 @@ def test_text_hash_stable_across_upgrade(router, monkeypatch):
 
 def test_doctor_reports_image_routes(router, monkeypatch):
     _import_vision_doc(router, monkeypatch)
-    report = router.diagnose()
+    report = router.doctor(stale_days=365)["report"]
     image_info = [i for i in report["info"] if i["rule"] == "image_routes"]
     assert image_info, report["info"]
     assert "vision-onnx=1" in image_info[0]["message"]

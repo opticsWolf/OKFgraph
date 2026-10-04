@@ -79,7 +79,7 @@ class TestIntegration:
         ids = {}
         for fname, title, body, tags in files:
             p = _write_okf(str(bundle_dir), fname, title, body, tags=tags)
-            cid = router.import_from_okf(p)
+            cid = router.import_file(p)["concept_id"]
             ids[title.lower()] = cid
 
         cls._full_bundle = ids

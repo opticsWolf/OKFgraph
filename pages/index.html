@@ -135,7 +135,7 @@ okf import --all
 okf import --all
 
 # Explicitly remove deleted sources:
-# okf import --all --purge</code></pre></div>
+# okf import --all --prune-missing</code></pre></div>
     </article>
     <article class="step">
       <div class="step-copy"><span class="step-no">3</span><h3>Find the passage, follow the context.</h3><p>Ask an open question with hybrid search, or use PPR for lexical-seeded graph retrieval without loading an embedding model. Read the selected concept with a token budget and surrounding context, then traverse links when you need to inspect the relationships rather than just the prose.</p></div>
@@ -152,13 +152,13 @@ okf traverse auth --direction BOTH</code></pre></div>
   --topic auth
 
 okf ingest --kind pdf \
-  --pdf-file paper.pdf --auto-import</code></pre></div>
+  --pdf-path paper.pdf</code></pre></div>
     </article>
     <article class="step">
       <div class="step-copy"><span class="step-no">5</span><h3>Check the graph. Share the knowledge.</h3><p>Doctor reports graph health; diff shows drift between the index and its source folder. Use strict checks in CI to make findings visible. Export writes graph content to a new directory, including thoughts created without files, with an Obsidian flavor when you want a vault.</p></div>
       <div class="example"><span class="example-label">Maintain and export</span><pre tabindex="0" aria-label="Maintenance commands"><code>okf doctor --strict
 okf diff
-okf export --all --output out/ \
+okf export --all --output-dir out/ \
   --flavor obsidian</code></pre></div>
     </article>
   </div>
@@ -199,9 +199,9 @@ okf read auth --include context \
 </section>
 
 <section id="surfaces" aria-labelledby="surfaces-title">
-  <div class="section-intro"><h2 id="surfaces-title">One graph.<br>Three ways in.</h2><div class="prose"><p>MCP gives agents a small tool surface, the CLI supports interactive work and automation, and Python exposes the router for your own pipelines. All use the same underlying components. Bundle import and maintenance remain outside the five MCP tools, so agents don't need a large administrative tool catalogue.</p></div></div>
+  <div class="section-intro"><h2 id="surfaces-title">One graph.<br>Three ways in.</h2><div class="prose"><p>MCP gives agents a small tool surface, the CLI supports interactive work and automation, and Python exposes the router for your own pipelines. All use the same underlying components. Bundle import and maintenance stay outside the eight MCP tools, so agents don't need a large administrative tool catalogue; anything snapshot-shaped (diff, doctor, lint, produce) is CLI-only.</p></div></div>
   <div class="doors">
-    <article><h3>MCP for agents</h3><p>Connect with stdio. The five tools are <code>search</code>, <code>read</code>, <code>traverse</code>, <code>ingest</code>, and <code>export_bundle</code>. Use persistent, absolute paths appropriate to your machine.</p><pre tabindex="0" aria-label="MCP client configuration"><code>{
+    <article><h3>MCP for agents</h3><p>Connect with stdio. The eight tools are <code>search</code>, <code>read</code>, <code>traverse</code>, <code>ingest</code>, <code>export_bundle</code>, <code>export_concept</code>, <code>list_images</code>, and <code>get_image</code>. Every tool returns the result envelope; failures carry <code>isError</code> with the typed error. Use persistent, absolute paths appropriate to your machine.</p><pre tabindex="0" aria-label="MCP client configuration"><code>{
   "mcpServers": {
     "okfgraph": {
       "command": "okf-mcp",
@@ -225,9 +225,9 @@ from okfgraph import OKFRouter
 r = OKFRouter(bundle_root="./kb",
               db_path="kb.db")
 try:
-    r.import_from_okf("./kb")
-    hits = r.search_hybrid("auth", limit=5)
-    r.export_mgr.export_bundle(Path("out"))
+    r.import_bundle(None)
+    hits = r.search("auth", limit=5)
+    r.export_bundle(Path("out"))
 finally:
     r.close()</code></pre></article>
   </div>

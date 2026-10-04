@@ -151,7 +151,8 @@ class AdminOps:
 
     @staticmethod
     def lint(bundle_dir=".") -> dict:
-        """Pre-import bundle gate; router-free. Errors → ``LINT_ERRORS``."""
+        """Pre-import bundle gate; router-free. Errors → ``LINT_ERRORS``
+        with the full report in ``fields`` (doctor-style outcome)."""
         from okfgraph.components.lint import lint_bundle
         report = lint_bundle(Path(bundle_dir))
         if report["errors"]:
@@ -159,7 +160,7 @@ class AdminOps:
                 "LINT_ERRORS",
                 f"{len(report['errors'])} lint error(s)",
                 op="lint",
-                fields={"errors": report["errors"]},
+                fields={"errors": report["errors"], "report": report},
             )
         return report
 

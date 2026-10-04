@@ -268,10 +268,14 @@ class TestDetachVerify:
         assert router.import_mgr.delta_mgr.is_detached()
 
     def test_verify_missing_bundle_refuses(self, env):
+        # Typed: FILE_NOT_FOUND names the bundle (remedy says --no-verify).
+        from okfgraph.errors import OKFError
         tmp, router = env["tmp"], env["router"]
         _seed(router, tmp)
-        with pytest.raises(RuntimeError, match="--no-verify"):
+        with pytest.raises(OKFError) as exc:
             router.import_mgr.detach(bundle_path=Path(tmp) / "gone")
+        assert exc.value.code == "FILE_NOT_FOUND"
+        assert "--no-verify" in exc.value.remedy
 
     def test_no_verify_missing_bundle_records_path(self, env):
         tmp, router = env["tmp"], env["router"]
@@ -305,7 +309,7 @@ class TestRefusalAndReattach:
         with pytest.raises(RuntimeError, match="detached"):
             router.ingest_mgr.ingest("thoughts", thoughts="some reasoning", topic="t")
         with pytest.raises(RuntimeError, match="detached"):
-            router.import_mgr.import_from_okf(outside)
+            router.import_file(outside)["concept_id"]
 
     def test_rootless_force_does_not_reattach(self, env, tmp_path):
         tmp, router = env["tmp"], env["router"]

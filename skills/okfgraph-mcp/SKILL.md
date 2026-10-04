@@ -2,7 +2,8 @@
 name: okfgraph-mcp
 description: >
   Ladybug-backed knowledge graph with Jina v5 semantic search, via MCP
-  tools (search, read, traverse, ingest, export_bundle). Use when the
+  tools (search, read, traverse, ingest, export_bundle, export_concept,
+  list_images, get_image). Use when the
   task needs persistent project knowledge and okf-mcp is wired: search
   past decisions and docs, navigate concept relationships, read stored
   documents, or persist new knowledge. Prefers graph lookup over
@@ -13,7 +14,7 @@ description: >
 # OKFgraph skill (MCP)
 
 OKFgraph is a persistent knowledge graph: markdown concepts with semantic
-(vector) + keyword (FTS) search and graph traversal, exposed as 5 MCP tools.
+(vector) + keyword (FTS) search and graph traversal, exposed as 8 MCP tools.
 
 ## Setup (once per project)
 
@@ -24,12 +25,12 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
    join via repeatable `--root ALIAS=PATH` (their files mint `@alias/rel`
    ids; link them as `[[alias/Name]]`).
 2. First server boot creates the schema automatically — no init call needed.
-   The five tools include no bundle import: (re)building a graph from a
+   The tools include no bundle import: (re)building a graph from a
    bundle (`import --all`, single-tree vs all-roots scope) is CLI/API
    only — see the CLI skill. `ingest` adds single files, never a tree.
 3. `ingest` / `export_bundle` are write tools: they need harness approval
    unless pre-approved. For a knowledge workflow, pre-approve them.
-   On a detached graph (`okf detach` was run) all five tools serve
+   On a detached graph (`okf detach` was run) all tools serve
    normally, but `ingest` refuses — re-attach from the CLI first.
 4. Verify: `search` anything (empty graph returns `[]`, which still proves
    the wiring works).
@@ -38,11 +39,12 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 
 - Inference needs no flags: `--device auto` (CUDA when present, else CPU)
   with `--precision auto` following it (CUDA→FP16, CPU→FP32, pinned per
-  graph). Same defaults on CLI, MCP, TOML, router.
-- `--model ID` (text-small default, text-nano) switches the embedding
+  graph). Same defaults on CLI, MCP, TOML, router. CLI flag spellings:
+  `--db-path`, `--bundle-root`, `--embedding-dim`, `--precision`, `--device`.
+- `--model-id ID` (text-small default, text-nano) switches the embedding
   model; the graph pins it fail-closed, so a switch forces a fresh
   reimport — never mix models in one graph.
-- Default is **512 on every surface** (router, CLI `--dim`, MCP
+- Default is **512 on every surface** (router, CLI `--embedding-dim`, MCP
   `--embedding-dim`, `okfgraph.toml`) — unified, no per-surface surprise.
 - Set freely at creation: `--embedding-dim` accepts the Matryoshka ladder
   (32, 64, 128, 256, 512, 768, 1024).
@@ -66,6 +68,9 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 | Same, capped to a token budget | `read` include=... max_tokens=N |
 | Links + ancestry + siblings of one concept | `read` include=context |
 | Store a markdown file / PDF / reasoning | `ingest` kind=md\|pdf\|thoughts |
+| List image assets on one concept | `list_images` |
+| Fetch one image asset (metadata + base64 bytes) | `get_image` |
+| Export one concept to a .md file | `export_concept` |
 
 ## Conventions
 
@@ -79,6 +84,9 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
   chunked, embedded (Jina v5), and linked into the graph.
 - Image search (`search` target=images) matches text queries against image assets
   in the shared vector space.
-- If a tool errors with "Search is unavailable", the vector/FTS
-  extensions failed to load — ingestion and graph reads still work.
+- If a tool fails with `SEARCH_UNAVAILABLE`, the vector/FTS extensions
+  failed to load — ingestion and graph reads still work.
+- Every tool returns the result envelope (`{ok, op, data, warnings}`);
+  failures surface as `isError: true` with the error envelope
+  (`code/message/fields/remedy`) as text.
 - To persist knowledge (not just find it), follow the okfgraph-ingest skill.

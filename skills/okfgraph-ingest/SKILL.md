@@ -19,7 +19,7 @@ early, feed it structured.
 |---|---|---|
 | Decision, insight, or reasoning from this session | `thoughts` | Cheapest, highest value. Always set `topic`. |
 | Existing markdown (docs, notes, ADRs) | `md` | One file per call; bulk dirs via `okf import`. |
-| Papers, reports, scans | `pdf` (`--pdf-file` also takes Office: docx/xlsx/pptx, legacy doc/xls/ppt — bobine dispatches on extension) | See converter modes below. |
+| Papers, reports, scans | `pdf` (`--pdf-path` also takes Office: docx/xlsx/pptx, legacy doc/xls/ppt — bobine dispatches on extension) | See converter modes below. |
 | Whole bundle directory changed | `okf import` (CLI) | Delta-aware: only changed files re-embed. |
 
 Rule of thumb: thoughts > md > pdf. Reasoning you already hold beats
@@ -39,9 +39,11 @@ re-extracting it from files.
 ## CLI: `okf ingest`
 
 - `--kind thoughts --thoughts TEXT --topic TOPIC [--tags a,b]`
-- `--kind md --md-file F [--concept-id ID] [--title T] [--tags a,b]`
-- `--kind pdf --pdf-file F [--auto-import] [--routing-mode ...]`
-  Bulk: `okf import --all --bundle DIR` (`--purge` drops deleted concepts).
+- `--kind md --md-path F [--concept-id ID] [--title T] [--tags a,b]`
+- `--kind pdf --pdf-path F [--routing-mode ...]` — auto-imports by default;
+  `--no-auto-import` converts only (`--output-dir DIR` chooses where).
+  Bulk: `okf import --all --bundle-path DIR` (`--prune-missing` drops
+  concepts whose files vanished from disk).
 
 ## Namespaced IDs (multi-root graphs)
 

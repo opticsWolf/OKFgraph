@@ -100,7 +100,7 @@ class TestObsidianVaultLive:
         assert not any(s == "ambig-ref" and d.startswith("dupe") for s, d in edges)
 
     def test_repair_never_guesses_ambiguous(self, router):
-        assert router.repair_links() == 0
+        assert router.repair_links()["repaired"] == 0
         broken = {(b["source"], b["target"]) for b in router.list_broken_links()}
         assert ("ambig-ref", "Duplicated Name") in broken
 
@@ -108,14 +108,14 @@ class TestObsidianVaultLive:
         (tmp_path / "late.md").write_text(
             "---\ntitle: Early Bird\ntype: note\n---\n\nSee [[Late Arrival]].\n"
         )
-        cid = router.import_from_okf(tmp_path / "late.md")
+        cid = router.import_file(tmp_path / "late.md")["concept_id"]
         assert any(t == "Late Arrival" for _, t in
                    ((b["source"], b["target"]) for b in router.list_broken_links()))
         (tmp_path / "arrival.md").write_text(
             "---\ntitle: Late Arrival\ntype: note\n---\n\nHello.\n"
         )
-        router.import_from_okf(tmp_path / "arrival.md")
-        assert router.repair_links() == 1
+        router.import_file(tmp_path / "arrival.md")["concept_id"]
+        assert router.repair_links()["repaired"] == 1
         assert (cid, "arrival") in _edges(router)
 
     def test_obsidian_export_round_trip(self, router, tmp_path):
@@ -150,7 +150,7 @@ class TestObsidianVaultLive:
         (tmp_path / "keyed.md").write_text(
             "---\ntitle: Keyed Concept\ntype: note\nid: stable-key-123\n---\n\nBody.\n"
         )
-        cid = router.import_from_okf(tmp_path / "keyed.md")
+        cid = router.import_file(tmp_path / "keyed.md")["concept_id"]
         single = tmp_path / "single"
         single.mkdir()
         router.export_mgr.export_to_okf(cid, single / "keyed.md", flavor="obsidian")

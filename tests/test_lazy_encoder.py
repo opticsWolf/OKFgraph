@@ -195,7 +195,7 @@ def test_router_construction_stays_cold(tmp_path, monkeypatch):
     )
     try:
         assert router.encoder.is_loaded is False
-        report = router.diagnose()
+        report = router.doctor(stale_days=365)["report"]
         assert isinstance(report, dict)
         assert router.encoder.is_loaded is False
     finally:

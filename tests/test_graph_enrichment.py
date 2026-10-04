@@ -61,14 +61,14 @@ class TestGraphEnrichment:
         # hub_doc is linked by many others (high hub score)
         body_hub = "## Hub Document\n\nThis is the central hub concept. " * 20
         p_hub = _write_okf(tmp_dir, "hub.md", "Hub Doc", body_hub, tags=["hub"])
-        id_hub = router.import_from_okf(p_hub)
+        id_hub = router.import_file(p_hub)["concept_id"]
 
         # Several docs that link to hub
         ids = [id_hub]
         for i in range(3):
             body = f"## Spoke {i}\n\nContent linked to hub. " * 20 + "\n\n[[hub]]"
             p = _write_okf(tmp_dir, f"spoke_{i}.md", f"Spoke {i}", body, tags=["spoke"])
-            cid = router.import_from_okf(p)
+            cid = router.import_file(p)["concept_id"]
             ids.append(cid)
 
         cls._linked_docs = (id_hub, ids[1:])

@@ -67,7 +67,7 @@ class TestReconstruction:
             "Content of the third section wrapping up the document. " * 10,
         ])
         p = _write_okf(tmp_dir, "reconstruct.md", "Reconstruct Me", body)
-        cid = router.import_from_okf(p)
+        cid = router.import_file(p)["concept_id"]
         cls._multi_section_doc = (cid, body)
         return cls._multi_section_doc
 

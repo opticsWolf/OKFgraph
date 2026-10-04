@@ -178,7 +178,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
                 ``BobineConverter()`` built lazily — any object with a
                 ``convert(pdf_path, output_dir, *, on_page=None)`` method
                 returning a ``ConvertedDocument`` works. Per-call override
-                via ``ingest_mgr.ingest_pdf(..., converter=...)``.
+                via ``ingest_mgr.ingest("pdf", ...`` converter=...).
         """
         from okfgraph.components.embedding import resolve_ort_dylib
         # Resolve first: the native module loads ORT dynamically, so the

@@ -417,10 +417,10 @@ Static method — no chunker instance needed.
 
 ## 5. Ingestion Pipeline
 
-### 5.1 Updated `import_from_okf()`
+### 5.1 Single-file import (`import_file`)
 
 ```python
-def import_from_okf(
+def import_file(
     self,
     file_path: Path,
     mode: "str | IngestMode" = IngestMode.TEXT,
@@ -1295,7 +1295,7 @@ class TestChunkSearch:
         )
 
         with self.router:
-            self.router.import_from_okf(Path(self.tmpdir / "ml.md"))
+            self.router.import_file(Path(self.tmpdir) / "ml.md")["concept_id"]
             self.router.import_from_okf(Path(self.tmpdir / "dl.md"))
 
     def teardown_method(self):

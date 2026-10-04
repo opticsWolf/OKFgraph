@@ -602,10 +602,10 @@ Each image asset stores a `content_hash` (SHA-256 of route + payload). On re-imp
 
 ---
 
-## 4.5. Import from OKF
+## 4.5. Import a file
 
 ```python
-def import_from_okf(self, file_path: Path, mode: str | IngestMode = IngestMode.TEXT) -> str:
+def import_file(self, file_path: Path, mode: str | IngestMode = IngestMode.TEXT) -> dict:
     """Parse OKF .md file and create/update concept in the graph.
 
     Args:

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from okfgraph.components.converters import BobineConverter
+from okfgraph.errors import OKFError
 from okfgraph.router import OKFRouter
 
 
@@ -73,11 +74,7 @@ class TestEndToEndPDFIngestion:
         router = OKFRouter(db_path=str(db_path), bundle_root=str(tmp_path))
 
         try:
-            result = router.ingest_mgr.ingest_pdf(
-                synthetic_pdf,
-                auto_import=True,
-                converter=BobineConverter(extract_images=False),
-            )
+            result = router.ingest_mgr.ingest("pdf", pdf_path=synthetic_pdf, auto_import=True, converter=BobineConverter(extract_images=False))
 
             # Verify result structure
             assert "md_path" in result
@@ -94,12 +91,7 @@ class TestEndToEndPDFIngestion:
         router = OKFRouter(db_path=str(db_path), bundle_root=str(tmp_path))
 
         try:
-            result = router.ingest_mgr.ingest_pdf(
-                synthetic_pdf,
-                auto_import=False,
-                output_dir=tmp_path,
-                converter=BobineConverter(extract_images=False),
-            )
+            result = router.ingest_mgr.ingest("pdf", pdf_path=synthetic_pdf, auto_import=False, output_dir=tmp_path, converter=BobineConverter(extract_images=False))
 
             # Verify output files exist
             assert Path(result["md_path"]).exists()
@@ -113,8 +105,9 @@ class TestEndToEndPDFIngestion:
         router = OKFRouter(db_path=str(db_path), bundle_root=str(tmp_path))
 
         try:
-            with pytest.raises(FileNotFoundError):
-                router.ingest_mgr.ingest_pdf("/nonexistent/file.pdf")
+            with pytest.raises(OKFError) as err:  # FILE_NOT_FOUND (was FileNotFoundError)
+                router.ingest_mgr.ingest("pdf", pdf_path="/nonexistent/file.pdf")
+            assert err.value.code == "FILE_NOT_FOUND"
 
         finally:
             router.close()
@@ -129,13 +122,7 @@ class TestEndToEndPDFIngestion:
             pages_seen.append((idx, total))
 
         try:
-            result = router.ingest_mgr.ingest_pdf(
-                synthetic_pdf,
-                auto_import=False,
-                output_dir=tmp_path,
-                on_page=on_page,
-                converter=BobineConverter(extract_images=False),
-            )
+            result = router.ingest_mgr.ingest("pdf", pdf_path=synthetic_pdf, auto_import=False, output_dir=tmp_path, on_page=on_page, converter=BobineConverter(extract_images=False))
 
             # Verify callback was invoked
             assert len(pages_seen) >= 0  # May be 0 for synthetic PDF
@@ -173,10 +160,7 @@ class TestPDFPipelineConsistency:
         try:
             # Staging now lives in bobine's ingest_document: the result
             # carries the image dir and any staged data files.
-            result = router.ingest_mgr.ingest_pdf(
-                synthetic_pdf, auto_import=False,
-                converter=BobineConverter(routing_mode="never"),
-            )
+            result = router.ingest_mgr.ingest("pdf", pdf_path=synthetic_pdf, auto_import=False, converter=BobineConverter(routing_mode="never"))
             assert Path(result["image_dir"]).exists()
             assert isinstance(result["concept_ids"], list)
         finally:

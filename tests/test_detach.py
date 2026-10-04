@@ -300,9 +300,9 @@ class TestRefusalAndReattach:
         outside.write_text("---\ntitle: Outside\n---\nOutside bundle body text here.\n",
                            encoding="utf-8")
         with pytest.raises(RuntimeError, match="detached"):
-            router.ingest_mgr.ingest_md(md_path=outside)
+            router.ingest_mgr.ingest("md", md_path=outside)
         with pytest.raises(RuntimeError, match="detached"):
-            router.ingest_mgr.ingest_thoughts("some reasoning", topic="t")
+            router.ingest_mgr.ingest("thoughts", thoughts="some reasoning", topic="t")
         with pytest.raises(RuntimeError, match="detached"):
             router.import_mgr.import_from_okf(outside)
 
@@ -313,7 +313,7 @@ class TestRefusalAndReattach:
         outside = tmp_path / "outside.md"
         outside.write_text("---\ntitle: Outside\n---\nOutside bundle body text here.\n",
                            encoding="utf-8")
-        result = router.ingest_mgr.ingest_md(md_path=outside, force=True)
+        result = router.ingest_mgr.ingest("md", md_path=outside, force=True)
         assert result["concept_id"] == "outside"
         # Addressed write allowed; mirror still detached.
         assert router.import_mgr.delta_mgr.is_detached()

@@ -250,7 +250,7 @@ class TestTools:
 
 
 class TestIngestMd:
-    """Tests for OKFRouter.ingest_md()."""
+    """Tests for OKFRouter..ingest("md")."""
 
     def test_import_existing_file(self, tmp_path):
         """Import a valid markdown file."""
@@ -267,7 +267,7 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_md(md_path)
+        result = r.ingest_mgr.ingest("md", md_path=md_path)
 
         assert "concept_id" in result
         assert result["title"] == "Test"
@@ -289,13 +289,14 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_md(md_path)
+        result = r.ingest_mgr.ingest("md", md_path=md_path)
 
         assert result["lint_issues"]["fixed_count"] > 0
         r.close()
 
     def test_import_nonexistent_file(self, tmp_path):
-        """Importing a non-existent file raises FileNotFoundError."""
+        """Importing a non-existent file raises OKFError(FILE_NOT_FOUND)."""
+        from okfgraph.errors import OKFError
         from okfgraph.router import OKFRouter
 
         r = OKFRouter(
@@ -303,8 +304,9 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        with pytest.raises(FileNotFoundError):
-            r.ingest_mgr.ingest_md("/nonexistent/path.md")
+        with pytest.raises(OKFError) as err:
+            r.ingest_mgr.ingest("md", md_path="/nonexistent/path.md")
+        assert err.value.code == "FILE_NOT_FOUND"
         r.close()
 
     def test_import_with_explicit_metadata(self, tmp_path):
@@ -322,11 +324,9 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_md(
-            md_path,
+        result = r.ingest_mgr.ingest("md", md_path=md_path,
             title="Override",
-            tags=["custom", "test"],
-        )
+            tags=["custom", "test"],)
 
         assert result["title"] == "Override"
         assert "custom" in result["tags"]
@@ -335,7 +335,7 @@ class TestIngestMd:
 
 
 class TestIngestThoughts:
-    """Tests for OKFRouter.ingest_thoughts()."""
+    """Tests for OKFRouter..ingest("thoughts")."""
 
     def test_store_reasoning(self, tmp_path):
         """Store reasoning as a searchable concept."""
@@ -346,10 +346,8 @@ class TestIngestThoughts:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_thoughts(
-            thoughts="I think we should use X because Y and Z.",
-            topic="architecture",
-        )
+        result = r.ingest_mgr.ingest("thoughts", thoughts="I think we should use X because Y and Z.",
+            topic="architecture",)
 
         assert "concept_id" in result
         assert result["topic"] == "architecture"
@@ -371,10 +369,8 @@ class TestIngestThoughts:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_thoughts(
-            thoughts="The best approach is to use a graph database.",
-            topic="database",
-        )
+        result = r.ingest_mgr.ingest("thoughts", thoughts="The best approach is to use a graph database.",
+            topic="database",)
 
         # Search should find it
         results = r.search("graph database")
@@ -391,11 +387,9 @@ class TestIngestThoughts:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_thoughts(
-            thoughts="Test reasoning.",
+        result = r.ingest_mgr.ingest("thoughts", thoughts="Test reasoning.",
             topic="test",
-            concept_id="my_custom_id",
-        )
+            concept_id="my_custom_id",)
 
         assert result["concept_id"] == "my_custom_id"
 
@@ -410,10 +404,8 @@ class TestIngestThoughts:
         )
         # Thoughts with trailing whitespace and extra blank lines
         bad_thoughts = "   This has trailing spaces.   \n\n\n\n\nParagraph two.   "
-        result = r.ingest_mgr.ingest_thoughts(
-            thoughts=bad_thoughts,
-            topic="linting_test",
-        )
+        result = r.ingest_mgr.ingest("thoughts", thoughts=bad_thoughts,
+            topic="linting_test",)
         assert result["concept_id"].startswith("thoughts/linting_test/")
         # Lint result should be present
         assert "lint_issues" in result

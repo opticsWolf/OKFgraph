@@ -8,7 +8,7 @@ import pytest
 
 from okfgraph.errors import OKFError
 from okfgraph.mcp_server import create_mcp_server
-from okfgraph.ops import QueryOps
+from okfgraph.ops import IngestOps, QueryOps
 from okfgraph.settings import Settings
 
 
@@ -268,20 +268,34 @@ class _StubIngestMgr:
     def __init__(self, calls):
         self.calls = calls
 
-    def ingest_md(self, **kwargs):
-        self.calls.append(("ingest_md", kwargs))
-        return {"concept_id": "c-md"}
+    def ingest(self, kind, **kwargs):
+        """Merged dispatch; records the per-kind label the old API used."""
+        label = {"md": "ingest_md", "pdf": "ingest_pdf",
+                 "thoughts": "ingest_thoughts"}.get(kind, kind)
+        if kind == "md":
+            if not kwargs.get("md_path"):
+                raise OKFError("MISSING_PARAM", "kind='md' requires md_path",
+                               fields={"kind": kind})
+            self.calls.append((label, kwargs))
+            return {"concept_id": "c-md"}
+        if kind == "pdf":
+            if not kwargs.get("pdf_path"):
+                raise OKFError("MISSING_PARAM", "kind='pdf' requires pdf_path",
+                               fields={"kind": kind})
+            self.calls.append((label, kwargs.get("pdf_path")))
+            return {"concept_ids": ["c-pdf"], "md_path": "x.md",
+                    "image_dir": "img", "page_count": 3}
+        if kind == "thoughts":
+            if not kwargs.get("thoughts") or not kwargs.get("topic"):
+                raise OKFError("MISSING_PARAM", "kind='thoughts' requires thoughts and topic",
+                               fields={"kind": kind})
+            self.calls.append((label, kwargs.get("thoughts"), kwargs.get("topic")))
+            return {"concept_id": "c-t"}
+        raise OKFError("BAD_VALUE", f"kind must be 'md', 'pdf' or 'thoughts', got '{kind}'",
+                       fields={"kind": kind})
 
-    def ingest_pdf(self, **kwargs):
-        self.calls.append(("ingest_pdf", kwargs))
-        return {"concept_ids": ["c-pdf"]}
 
-    def ingest_thoughts(self, thoughts, topic=None, concept_id=None, tags=None):
-        self.calls.append(("ingest_thoughts", thoughts, topic))
-        return {"concept_id": "c-t"}
-
-
-class _StubRouter(QueryOps):
+class _StubRouter(IngestOps, QueryOps):
     """Plain router double that inherits the canonical ops.
 
     The MCP adapters route through the ops, so the stub supplies the

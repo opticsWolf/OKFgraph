@@ -1,4 +1,4 @@
-"""Tests for IngestManager.ingest_pdf() (bobine engine).
+"""Tests for IngestManager.ingest_pdf (bobine engine).
 
 Legacy okfgraph.ingest unit tests were removed with the engine
 (PDF conversion now lives in the bobine wheel).
@@ -19,7 +19,7 @@ def _never(**kwargs):
 
 
 class TestIngestPdfMethod:
-    """Gap #5b — Router method ingest_pdf() for programmatic use."""
+    """Gap #5b — Router method ingest_pdf for programmatic use."""
 
     @pytest.fixture(scope="function")
     def test_router(self, tmp_path):
@@ -37,9 +37,9 @@ class TestIngestPdfMethod:
         router.close()
 
     def test_ingest_pdf_method_exists(self, test_router):
-        """OKFRouter has an ingest_pdf() method."""
-        assert hasattr(test_router.ingest_mgr, "ingest_pdf")
-        assert callable(test_router.ingest_mgr.ingest_pdf)
+        """OKFRouter has an ingest_pdf method."""
+        assert hasattr(test_router.ingest_mgr, "ingest")  # merged dispatch
+        assert callable(test_router.ingest_mgr.ingest)
 
     def test_ingest_pdf_returns_result_dict(self, test_router, tmp_path):
         """ingest_pdf returns a dict with expected keys."""
@@ -63,11 +63,7 @@ startxref
 """
         pdf_path.write_bytes(pdf_content)
 
-        result = test_router.ingest_mgr.ingest_pdf(
-            pdf_path,
-            auto_import=False,
-            converter=_never(),
-        )
+        result = test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False, converter=_never())
 
         assert isinstance(result, dict)
         assert "md_path" in result
@@ -100,12 +96,7 @@ startxref
         output_dir = tmp_path / "output"
         output_dir.mkdir()
 
-        result = test_router.ingest_mgr.ingest_pdf(
-            pdf_path,
-            auto_import=False,
-            output_dir=str(output_dir),
-            converter=_never(),
-        )
+        result = test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False, output_dir=str(output_dir), converter=_never())
 
         assert Path(result["md_path"]).exists()
         md_content = Path(result["md_path"]).read_text(encoding="utf-8")
@@ -132,11 +123,7 @@ startxref
 """
         pdf_path.write_bytes(pdf_content)
 
-        result = test_router.ingest_mgr.ingest_pdf(
-            pdf_path,
-            auto_import=False,
-            converter=_never(),
-        )
+        result = test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False, converter=_never())
 
         assert result["page_count"] >= 1
 
@@ -207,7 +194,7 @@ class TestIngestPdfBobinePaths:
         monkeypatch.setitem(sys.modules, "bobine", None)
         pdf_path = self._pdf(tmp_path)
         with pytest.raises(RuntimeError, match="bobine is required"):
-            test_router.ingest_mgr.ingest_pdf(pdf_path, auto_import=False)
+            test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False)
 
     def test_invalid_routing_mode_rejected_at_construction(self, tmp_path):
         """Bad routing_mode → ValueError before any work is done."""
@@ -219,9 +206,7 @@ class TestIngestPdfBobinePaths:
         """auto_import=False + output_dir → <stem>.md + assets under output_dir."""
         pdf_path = self._pdf(tmp_path)
         out = tmp_path / "custom_out"
-        result = test_router.ingest_mgr.ingest_pdf(
-            pdf_path, auto_import=False, output_dir=out, converter=_never(),
-        )
+        result = test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False, output_dir=out, converter=_never())
         assert Path(result["md_path"]) == out / "doc.md"
         assert Path(result["md_path"]).exists()
         assert Path(result["image_dir"]).parent == out
@@ -232,9 +217,7 @@ class TestIngestPdfBobinePaths:
     def test_default_output_dir_is_pdf_parent(self, test_router, tmp_path):
         """No output_dir → markdown lands next to the PDF."""
         pdf_path = self._pdf(tmp_path)
-        result = test_router.ingest_mgr.ingest_pdf(
-            pdf_path, auto_import=False, converter=_never(),
-        )
+        result = test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False, converter=_never())
         assert Path(result["md_path"]).parent == tmp_path
         assert Path(result["md_path"]).exists()
 
@@ -242,18 +225,13 @@ class TestIngestPdfBobinePaths:
         """Progress callback receives 0-based (page_index, page_total)."""
         pdf_path = self._pdf(tmp_path)
         calls = []
-        test_router.ingest_mgr.ingest_pdf(
-            pdf_path, auto_import=False, converter=_never(),
-            on_page=lambda idx, total: calls.append((idx, total)),
-        )
+        test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False, converter=_never(), on_page=lambda idx, total: calls.append((idx, total)))
         assert calls == [(0, 1)]
 
     def test_extract_images_false_returns_full_dict(self, test_router, tmp_path):
         """extract_images=False still honors the result contract."""
         pdf_path = self._pdf(tmp_path)
-        result = test_router.ingest_mgr.ingest_pdf(
-            pdf_path, auto_import=False, converter=_never(extract_images=False),
-        )
+        result = test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False, converter=_never(extract_images=False))
         assert set(result) == {"md_path", "concept_ids", "image_dir", "page_count"}
         assert result["page_count"] == 1
 
@@ -269,9 +247,7 @@ class TestIngestPdfBobinePaths:
             test_router.ingest_mgr.import_mgr, "import_bundle", _boom,
         )
         with pytest.raises(RuntimeError, match="simulated import failure"):
-            test_router.ingest_mgr.ingest_pdf(
-                pdf_path, auto_import=True, converter=_never(),
-            )
+            test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=True, converter=_never())
         mgr = test_router.ingest_mgr
         assert mgr.bundle_root == before
         assert mgr.import_mgr.bundle_root == before
@@ -280,9 +256,7 @@ class TestIngestPdfBobinePaths:
     def test_auto_import_returns_transient_md_path(self, test_router, tmp_path):
         """auto_import=True: content lands in the graph; md_path was temp-only."""
         pdf_path = self._pdf(tmp_path)
-        result = test_router.ingest_mgr.ingest_pdf(
-            pdf_path, auto_import=True, converter=_never(),
-        )
+        result = test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=True, converter=_never())
         assert len(result["concept_ids"]) >= 1
         # Conversion ran in a TemporaryDirectory — the returned md_path
         # documents *what* was imported, not a durable file.
@@ -336,9 +310,7 @@ class TestCustomConverter:
         stub = self._stub_converter()
         pdf_path = tmp_path / "doc.pdf"
         pdf_path.write_bytes(MINIMAL_PDF)
-        result = test_router.ingest_mgr.ingest_pdf(
-            pdf_path, auto_import=False, converter=stub,
-        )
+        result = test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False, converter=stub)
         assert result["page_count"] == 7
         assert Path(result["md_path"]).read_text(encoding="utf-8").startswith("# Stub pipeline")
         assert len(stub.calls) == 1
@@ -347,9 +319,7 @@ class TestCustomConverter:
         stub = self._stub_converter()
         pdf_path = tmp_path / "doc.pdf"
         pdf_path.write_bytes(MINIMAL_PDF)
-        result = test_router.ingest_mgr.ingest_pdf(
-            pdf_path, auto_import=True, converter=stub,
-        )
+        result = test_router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=True, converter=stub)
         assert len(result["concept_ids"]) >= 1
         assert result["page_count"] == 7
 
@@ -368,7 +338,7 @@ class TestCustomConverter:
         try:
             pdf_path = tmp_path / "doc.pdf"
             pdf_path.write_bytes(MINIMAL_PDF)
-            result = router.ingest_mgr.ingest_pdf(pdf_path, auto_import=False)
+            result = router.ingest_mgr.ingest("pdf", pdf_path=pdf_path, auto_import=False)
             assert result["page_count"] == 7
             assert len(stub.calls) == 1
         finally:

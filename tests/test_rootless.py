@@ -20,8 +20,7 @@ class TestFileFreeLoop:
     def test_thoughts_search_read_traverse_doctor_export(self, tmp_path):
         r = _rootless(tmp_path)
         try:
-            cid = r.ingest_mgr.ingest_thoughts(
-                thoughts="the falcon cannot hear the falconer",
+            cid = r.ingest_mgr.ingest("thoughts", thoughts="the falcon cannot hear the falconer",
                 topic="Rootless Loop")["concept_id"]
             assert cid.startswith("thoughts/rootless_loop/")
             # read
@@ -108,7 +107,7 @@ class TestExplicitPaths:
         md.write_text("---\ntitle: Doc\n---\n\nContent.\n", encoding="utf-8")
         r = _rootless(tmp_path)
         try:
-            out = r.ingest_mgr.ingest_md(md_path=str(md))
+            out = r.ingest_mgr.ingest("md", md_path=str(md))
             assert out["concept_id"] == "doc"
         finally:
             r.close()

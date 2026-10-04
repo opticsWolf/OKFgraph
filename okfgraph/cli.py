@@ -230,7 +230,7 @@ def _import(args):
     logger = logging.getLogger("cli")
     router = _router(args)
     mode = getattr(args, "mode", "text")
-    purge = getattr(args, "purge", False)
+    purge = getattr(args, "prune_missing", False)
     try:
         return _import_inner(args, router, mode, purge)
     except RuntimeError as e:
@@ -764,87 +764,54 @@ def _reindex(args):
 def _ingest(args):
     """Unified ingest: markdown file, PDF (default), or raw thoughts.
 
-    Delegates to IngestManager.ingest_md / ingest_pdf / ingest_thoughts.
-    PDF conversion uses the configured DocumentConverter (bobine default).
+    The canonical op owns dispatch, file/param validation and converter
+    construction; the CLI renders and keeps its page progress printer.
     """
     logger = logging.getLogger("cli")
     router = _router(args)
     kind = getattr(args, "kind", None)
-    if kind not in ("md", "pdf", "thoughts"):
-        print("[ERROR] --kind is required: md|pdf|thoughts")
-        return
+
     tags = args.tags.split(",") if getattr(args, "tags", None) else None
+    auto_import = getattr(args, "auto_import", True)
+    output_dir = getattr(args, "output_dir", None)
+    on_page = None
+    if kind == "pdf":
+        def on_page(idx, total):
+            print(f"  page {idx + 1}/{total}", end="\r")
+
+    try:
+        result = router.ingest(
+            kind,
+            md_path=getattr(args, "md_path", None),
+            pdf_path=getattr(args, "pdf_path", None),
+            thoughts=getattr(args, "thoughts", None),
+            topic=getattr(args, "topic", None),
+            concept_id=getattr(args, "concept_id", None),
+            title=getattr(args, "title", None),
+            description=getattr(args, "description", None),
+            tags=tags,
+            mode=getattr(args, "mode", "text") or "text",
+            routing_mode=getattr(args, "routing_mode", "auto") or "auto",
+            extract_images=not getattr(args, "no_extract_images", False),
+            auto_import=auto_import,
+            output_dir=output_dir,
+            batch_size=getattr(args, "batch_size", 32) or 32,
+            prune_missing=getattr(args, "prune_missing", False),
+            force=getattr(args, "force", False),
+            on_page=on_page,
+        )
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
+    if kind == "pdf":
+        print()  # newline after PDF progress (harmless for md/thoughts)
+
     if kind == "md":
-        md_file = getattr(args, "md_file", None)
-        if not md_file:
-            print("[ERROR] --md-file is required for --kind md")
-            return
-        try:
-            result = router.ingest_mgr.ingest_md(
-                md_path=md_file,
-                concept_id=getattr(args, "concept_id", None),
-                title=getattr(args, "title", None),
-                description=getattr(args, "description", None),
-                tags=tags,
-                mode=getattr(args, "mode", "text") or "text",
-                force=getattr(args, "force", False),
-            )
-        except RuntimeError as e:
-            print(f"[ERROR] {e}")
-            return 1
         print(f"[OK] Imported {result['concept_id']} ({result['chunk_count']} chunks)")
         return
     if kind == "thoughts":
-        if not getattr(args, "thoughts", None) or not getattr(args, "topic", None):
-            print("[ERROR] --thoughts and --topic are required for --kind thoughts")
-            return
-        try:
-            result = router.ingest_mgr.ingest_thoughts(
-                args.thoughts,
-                topic=args.topic,
-                concept_id=getattr(args, "concept_id", None),
-                tags=tags,
-                force=getattr(args, "force", False),
-            )
-        except RuntimeError as e:
-            print(f"[ERROR] {e}")
-            return 1
         print(f"[OK] Stored thought {result['concept_id']}")
         return
-    pdf_path = Path(getattr(args, "pdf_file", None) or "")
-    if not pdf_path.name or not pdf_path.exists():
-        print(f"[ERROR] File not found: {pdf_path}")
-        return
-
-    auto_import = getattr(args, "auto_import", False)
-    output_dir = getattr(args, "output", None)
-    if not auto_import and not output_dir:
-        output_dir = Path(".")
-
-    def on_page(idx, total):
-        print(f"  page {idx + 1}/{total}", end="\r")
-
-    try:
-        from okfgraph.components.converters import BobineConverter
-        converter = BobineConverter(
-            routing_mode=getattr(args, "routing_mode", "auto") or "auto",
-            extract_images=not getattr(args, "no_extract_images", False),
-        )
-        result = router.ingest_mgr.ingest_pdf(
-            pdf_path,
-            auto_import=auto_import,
-            output_dir=output_dir,
-            mode=getattr(args, "mode", "text") or "text",
-            batch_size=getattr(args, "batch_size", 32) or 32,
-            purge_deleted=getattr(args, "purge", False),
-            on_page=on_page,
-            converter=converter,
-            force=getattr(args, "force", False),
-        )
-    except RuntimeError as e:
-        print(f"[ERROR] {e}")
-        return 1
-    print()  # newline after progress
 
     logger.info("written %s", result["md_path"])
     logger.info("assets in %s", result["image_dir"])
@@ -854,7 +821,7 @@ def _ingest(args):
             suffix = f"  [{n} image(s)]" if n else ""
             logger.info("  %s%s", cid, suffix)
     else:
-        logger.info("run 'okf import --all --bundle %s' to import.", output_dir)
+        logger.info("run 'okf import --all --bundle-root %s' to import.", output_dir)
 
 
 def _deleted_list(args):
@@ -1138,8 +1105,8 @@ Commands:
             is_md = src_path.lower().endswith(".md")
             shell_args = SimpleNamespace(
                 kind="md" if is_md else "pdf",
-                md_file=src_path if is_md else None,
-                pdf_file=None if is_md else src_path,
+                md_path=src_path if is_md else None,
+                pdf_path=None if is_md else src_path,
                 thoughts=None,
                 topic=None,
                 concept_id=None,
@@ -1147,11 +1114,11 @@ Commands:
                 description=None,
                 tags=None,
                 auto_import=False,
-                output=None,
+                output_dir=None,
                 routing_mode="auto",
                 mode="text",
                 batch_size=32,
-                purge=False,
+                prune_missing=False,
                 no_extract_images=False,
                 db_path=getattr(args, "db_path", None),
                 bundle_root=getattr(args, "bundle_root", None),
@@ -1227,8 +1194,8 @@ def build_parser():
              "images lacking alt-text), omni (vision for every image).",
     )
     p.add_argument(
-        "--purge", action="store_true", default=False,
-        help="Also purge concepts whose source files were deleted from disk "
+        "--prune-missing", dest="prune_missing", action="store_true", default=False,
+        help="Also drop concepts whose source files were deleted from disk "
              "(removes concept, chunks, links, and orphaned image assets)",
     )
     p.add_argument(
@@ -1289,8 +1256,8 @@ def build_parser():
     _add_logging_flags(p)
     p.add_argument("--kind", required=True, choices=["md", "pdf", "thoughts"],
                    help="What to ingest")
-    p.add_argument("--md-file", default=None, help="Markdown file (--kind md)")
-    p.add_argument("--pdf-file", default=None, help="File to convert (--kind pdf): PDF or Office (docx/xlsx/pptx, legacy doc/xls/ppt)")
+    p.add_argument("--md-path", dest="md_path", default=None, help="Markdown file (--kind md)")
+    p.add_argument("--pdf-path", dest="pdf_path", default=None, help="File to convert (--kind pdf): PDF or Office (docx/xlsx/pptx, legacy doc/xls/ppt)")
     p.add_argument("--thoughts", default=None, help="Raw reasoning text (--kind thoughts)")
     p.add_argument("--topic", default=None, help="Topic (--kind thoughts)")
     p.add_argument("--concept-id", default=None, help="Explicit concept ID (--kind md/thoughts; slashes are namespaces; thoughts default to thoughts/<topic>/<ts>_<id>)")
@@ -1298,12 +1265,12 @@ def build_parser():
     p.add_argument("--description", default=None, help="Description override (--kind md)")
     p.add_argument("--tags", default=None, help="Comma-separated tags (--kind md/thoughts)")
     p.add_argument(
-        "--auto-import", action="store_true",
-        help="Auto-import converted markdown into the graph (--kind pdf)",
+        "--no-auto-import", action="store_false", dest="auto_import",
+        help="Convert only (kind=pdf): write markdown, skip the import",
     )
     p.add_argument(
-        "--output", default=None,
-        help="Output directory for converted markdown (default: current dir)",
+        "--output-dir", dest="output_dir", default=None,
+        help="Output directory for converted markdown (kind=pdf, convert-only; default: current dir)",
     )
     p.add_argument(
         "--routing-mode", default="auto",
@@ -1319,8 +1286,8 @@ def build_parser():
         help="Batch size for encoding during auto-import (default: 32)",
     )
     p.add_argument(
-        "--purge", action="store_true", default=False,
-        help="Purge deleted concepts during auto-import",
+        "--prune-missing", dest="prune_missing", action="store_true", default=False,
+        help="Drop concepts whose source files vanished during auto-import",
     )
     p.add_argument(
         "--force", action="store_true", default=False,

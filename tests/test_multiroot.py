@@ -494,9 +494,9 @@ class TestSurfaces:
         outside.write_text(_doc("Lone"), encoding="utf-8")
         r = _mrouter(tmp_path, prim, {"aa": str(a)})
         try:
-            got_in = r.ingest_mgr.ingest_md(a / "inside.md")
+            got_in = r.ingest_mgr.ingest("md", md_path=a / "inside.md")
             assert got_in["concept_id"] == "@aa/inside"
-            got_out = r.ingest_mgr.ingest_md(outside)
+            got_out = r.ingest_mgr.ingest("md", md_path=outside)
             assert got_out["concept_id"] == "lone"
         finally:
             r.close()

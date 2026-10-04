@@ -289,36 +289,25 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         Routing: kind='md' imports a markdown file; 'pdf' converts a PDF
         ('never' routing = fast, no ONNX); 'thoughts' persists reasoning.
         Markdown is mordant-linted before import."""
-        from okfgraph.components.converters import BobineConverter
         router = _get_router(ctx)
-        if kind == "md":
-            if not md_path:
-                return "error: md_path is required for kind='md'"
-            kwargs: dict = {"md_path": md_path, "mode": mode}
-            if concept_id is not None:
-                kwargs["concept_id"] = concept_id
-            if title is not None:
-                kwargs["title"] = title
-            if description is not None:
-                kwargs["description"] = description
-            if tags is not None:
-                kwargs["tags"] = tags
-            result = router.ingest_mgr.ingest_md(**kwargs)
-        elif kind == "pdf":
-            if not pdf_path:
-                return "error: pdf_path is required for kind='pdf'"
-            result = router.ingest_mgr.ingest_pdf(
-                pdf_path=pdf_path, auto_import=True, mode=mode,
-                converter=BobineConverter(routing_mode=routing_mode, extract_images=extract_images),
+        try:
+            result = router.ingest(
+                kind,
+                md_path=md_path,
+                pdf_path=pdf_path,
+                thoughts=thoughts,
+                topic=topic,
+                concept_id=concept_id,
+                title=title,
+                description=description,
+                tags=tags,
+                mode=mode,
+                routing_mode=routing_mode,
+                extract_images=extract_images,
+                auto_import=True,
             )
-        elif kind == "thoughts":
-            if not thoughts or not topic:
-                return "error: thoughts and topic are required for kind='thoughts'"
-            result = router.ingest_mgr.ingest_thoughts(
-                thoughts, topic=topic, concept_id=concept_id, tags=tags,
-            )
-        else:  # pragma: no cover - Literal constrains this
-            return f"error: unknown kind '{kind}'"
+        except OKFError as err:
+            return f"error: {err.code}: {err.message}"
         return json.dumps(result, default=str, indent=2)
 
     @mcp.tool(annotations=_WR)

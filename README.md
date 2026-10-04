@@ -107,7 +107,7 @@ router = OKFRouter(db_path="kb.db", bundle_root="kb/", embedding_dim=512)
 # OKFError(code) with a stable exit plan, and returns dict/list data.
 
 # Import: whole bundle (delta-aware), one file, or raw reasoning
-result = router.import_bundle(None)            # every configured root
+result = router.import_bundle(None)   # every configured root -> {"concept_ids", "images"}
 cid = router.import_file("kb/auth.md", mode="text")["concept_id"]
 th = router.ingest("thoughts", thoughts="Session decided X because Y",
                    topic="auth-refactor")["concept_id"]
@@ -126,10 +126,10 @@ imgs = router.list_images(cid)
 row = router.get_image(imgs[0]["id"])
 
 # Maintain: drift, health, links
-print(router.diff(Path("kb/"))["identical"])   # True when in sync
+print(router.diff(Path("kb/"))["identical"])   # in sync; differs -> DIFF_DIFFERENT
 print(router.doctor()["report"]["score"])      # 0-100
-print(router.doctor(stale_days=365, fix=True))         # safe repairs pass
-print(router.repair_links())                           # re-point broken links
+print(router.doctor(stale_days=365, fix=True))  # repair pass, then re-score
+print(router.repair_links())                    # re-point broken links -> {"repaired": n}
 
 # Export: OKF bundle or Obsidian vault
 router.export_bundle(Path("out-okf/"))

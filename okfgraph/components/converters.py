@@ -19,7 +19,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Protocol
+from typing import Callable, Protocol
+
+from okfgraph.errors import OKFError
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +86,8 @@ class BobineConverter:
 
     def __init__(self, routing_mode: str = "auto", extract_images: bool = True):
         if routing_mode not in _BOBINE_ROUTING:
-            raise ValueError(
+            raise OKFError(
+                "BAD_VALUE",
                 f"routing_mode must be one of {sorted(_BOBINE_ROUTING)}, "
                 f"got '{routing_mode}'"
             )

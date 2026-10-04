@@ -100,7 +100,7 @@ def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
             if target not in known_ids:
                 errors.append(_err(
                     rel, "dangling_link",
-                    f"would import as BrokenLink (target has no concept)",
+                    "would import as BrokenLink (target has no concept)",
                     link=raw, target=target or "(empty)"))
         for raw in extract_wikilinks(body):
             if not raw or is_external(raw):

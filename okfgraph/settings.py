@@ -37,7 +37,7 @@ DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v5-text-small-retrieval"
 
 #: Full Matryoshka ladder, mirroring OKFRouter.ALLOWED_DIMS — the router
 #: warns (not errors) off-ladder, so the settings layer warns the same way.
-_HEIGHT_LADDER = (32, 64, 128, 256, 512, 768, 1024)
+_DIM_LADDER = (32, 64, 128, 256, 512, 768, 1024)
 
 _TRUE_WORDS = ("1", "true", "yes", "on")
 _FALSE_WORDS = ("0", "false", "no", "off")
@@ -74,7 +74,8 @@ class Setting:
     cli/mcp: include as a CLI global flag / MCP boot flag.
     flag/dest: override the derived flag spelling / argparse dest.
     invert: store-true flag whose *presence* flips a True default.
-    required_mcp: the MCP boot parser requires it.
+    required_mcp: the MCP server refuses to boot unless some layer (flag,
+        env or TOML) sets it — the default is never good enough there.
     """
 
     name: str
@@ -135,7 +136,7 @@ SETTINGS = [
             "Chunk documents during ingestion",
             flag="--no-chunking", dest="no_chunking", invert=True),
     Setting("chunk_size", "int", 512, "import",
-            "Chunk size in words for overlap"),
+            "Chunk token budget: larger blocks are split to fit"),
     Setting("chunk_overlap", "int", 40, "import",
             "Overlap in words between chunks (must be < chunk_size)"),
     Setting("allow_remote_images", "bool", False, "import",
@@ -252,6 +253,7 @@ class Settings:
         cli_args: Optional[Dict[str, object]] = None,
         *,
         environ: Optional[Dict[str, str]] = None,
+        require: Tuple[str, ...] = (),
     ) -> "Settings":
         """Merge TOML, environment and CLI onto defaults.
 
@@ -261,10 +263,13 @@ class Settings:
                 ``ALIAS=PATH`` list or a dict; ``enable_chunking`` may ride as
                 the inverted ``no_chunking`` bool — see ``cli_signal``).
             environ: env mapping (defaults to ``os.environ``; tests inject).
+            require: field names some layer must set explicitly (the MCP
+                server requires ``db_path``: its CWD is the client's).
 
         Raises:
-            ValueError: retired spellings, garbage values, invalid TOML or
-                failed validation. Invalid configuration is refused.
+            ValueError: retired spellings, garbage values, invalid TOML,
+                a missing required field or failed validation. Invalid
+                configuration is refused.
         """
         env = os.environ if environ is None else environ
         for legacy, message in _LEGACY_ENV.items():
@@ -289,6 +294,14 @@ class Settings:
                 else:
                     from_cli[key] = _parse(row.kind, value, flag_name(row.name))
             _merge_layer(taken, from_cli)
+
+        for name in require:
+            if name not in taken:
+                row = _row_by_name[name]
+                where = f"[{row.section}] {name}" if row.section else name
+                raise ValueError(
+                    f"{name} must be set: {flag_name(name)}, "
+                    f"{env_name(name)} or okfgraph.toml {where}")
 
         settings = cls()
         for setting_row in SETTINGS:
@@ -323,7 +336,7 @@ class Settings:
         if not 32 <= self.embedding_dim <= 1024:
             errors.append(
                 "embedding.embedding_dim must be between 32 and 1024")
-        elif self.embedding_dim not in _HEIGHT_LADDER:
+        elif self.embedding_dim not in _DIM_LADDER:
             warnings.append(
                 f"embedding.embedding_dim={self.embedding_dim} is not a "
                 f"recommended Matryoshka dimension; consider 256 or 512")
@@ -337,19 +350,12 @@ class Settings:
                 f"embedding.model_id must not contain quotes/semicolons, "
                 f"got '{self.model_id}'")
 
-        if self.device not in self._choices_of("device"):
-            errors.append(
-                f"embedding.device must be one of "
-                f"{self._choices_of('device')}, got '{self.device}'")
-        if self.precision not in self._choices_of("precision"):
-            errors.append(
-                f"embedding.precision must be one of "
-                f"{self._choices_of('precision')}, got '{self.precision}'")
-        if self.image_precision not in self._choices_of("image_precision"):
-            errors.append(
-                f"embedding.image_precision must be one of "
-                f"{self._choices_of('image_precision')}, got "
-                f"'{self.image_precision}'")
+        for row in SETTINGS:
+            value = getattr(self, row.name)
+            if row.choices and value not in row.choices:
+                errors.append(
+                    f"{row.section}.{row.name} must be one of "
+                    f"{row.choices}, got '{value}'")
         if self.max_length is not None and not 1 <= self.max_length <= 32768:
             errors.append(
                 f"embedding.max_length must be within 1..=32768, got "
@@ -357,10 +363,6 @@ class Settings:
         if self.cache_dir and not Path(self.cache_dir).is_absolute():
             errors.append("embedding.cache_dir must be an absolute path")
 
-        if self.mode not in self._choices_of("mode"):
-            errors.append(
-                f"import.mode must be one of {self._choices_of('mode')}, got "
-                f"'{self.mode}'")
         if not 1 <= self.batch_size <= 256:
             errors.append("import.batch_size must be between 1 and 256")
         if not 64 <= self.chunk_size <= 8192:
@@ -371,13 +373,6 @@ class Settings:
             errors.append("allowed_image_domains contains empty entries")
 
         return errors, warnings
-
-    @staticmethod
-    def _choices_of(name: str) -> Tuple[str, ...]:
-        for row in SETTINGS:
-            if row.name == name:
-                return row.choices
-        raise KeyError(name)  # pragma: no cover - table is fixed
 
     # ------------------------------------------------------------ outputs --
     def router_kwargs(self) -> Dict[str, Any]:
@@ -406,6 +401,9 @@ class Settings:
 
 _row_by_name = {row.name: row for row in SETTINGS}
 
+#: Fields the MCP server needs set explicitly (``Settings.load(require=…)``).
+MCP_REQUIRED = tuple(row.name for row in SETTINGS if row.required_mcp)
+
 
 def _merge_layer(target: Dict[str, Any], layer: Dict[str, Any]) -> None:
     """Later layers overwrite earlier ones, key by key."""
@@ -419,10 +417,7 @@ def _from_env(env: Dict[str, str]) -> Dict[str, Any]:
         key = env_name(row.name)
         if key not in env or env[key] == "":
             continue
-        try:
-            out[row.name] = _parse(row.kind, env[key], key)
-        except ValueError as e:
-            raise ValueError(str(e)) from None
+        out[row.name] = _parse(row.kind, env[key], key)
     return out
 
 
@@ -527,9 +522,10 @@ def set_cli_flags(parser: Any, *, hidden: bool = False, mcp: bool = False) -> No
 
     ``hidden=True`` marks the flags with ``_okf_global`` so the CLI's slim
     per-command help formatter hides them (they show once in top-level help,
-    ``hidden=False`` there). ``mcp=True`` builds the MCP boot parser: no
-    custom flag spellings, ``db_path`` required. All defaults are
-    ``argparse.SUPPRESS`` — see ``cli_signal``.
+    ``hidden=False`` there). ``mcp=True`` builds the MCP boot parser
+    (rows with ``mcp=False`` skipped; ``required_mcp`` is enforced by
+    ``Settings.load(require=…)`` so env/TOML can satisfy it). All
+    defaults are ``argparse.SUPPRESS`` — see ``cli_signal``.
     """
 
     def _add(*a: Any, **k: Any) -> Any:
@@ -558,8 +554,6 @@ def set_cli_flags(parser: Any, *, hidden: bool = False, mcp: bool = False) -> No
                 opts["type"] = int
             if row.choices:
                 opts["choices"] = row.choices
-            if mcp and row.required_mcp:
-                opts["required"] = True
             _add(flag, **opts)
     _add("--root", action="append", default=argparse.SUPPRESS, dest="roots",
          metavar="ALIAS=PATH",

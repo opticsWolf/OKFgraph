@@ -977,7 +977,7 @@ class EmbeddingEngine:
 
         Returns a dict with cache location, snapshot path, and disk usage.
         """
-        from huggingface_hub import list_repo_files, snapshot_download
+        from huggingface_hub import snapshot_download
 
         effective_cache = cache_dir or cls.default_cache_dir()
         info: Dict[str, Any] = {

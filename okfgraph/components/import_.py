@@ -1,27 +1,16 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import heapq
 import json
 import logging
-import math
-import os
 import re
 import time
-import uuid
-from contextlib import contextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Set
-from urllib.parse import urlparse
+from typing import Any, Dict, List, Optional, Tuple, Set
 
-import mordant
-import numpy as np
-import yaml
 import frontmatter
 from okfgraph.errors import OKFError
-from okfgraph.models import ChunkModel, ConceptModel
+from okfgraph.models import ConceptModel
 from okfgraph.images import IngestMode
 from okfgraph.components.roots import (
     namespaced_id,
@@ -110,13 +99,16 @@ def _require_root(root: Optional[Path], op: str) -> Path:
     File-free routers (``bundle_root=None``) serve thoughts/search/read/
     traverse/doctor/export from the graph alone. Anything that needs a
     tree — default bundle import, drift diff, detach — raises a clear
-    ``ValueError`` naming the missing root instead of crashing on None.
+    ``MISSING_PARAM`` (a ``ValueError``) naming the missing root instead
+    of crashing on None.
     """
     if root is None:
-        raise ValueError(
+        raise OKFError(
+            "MISSING_PARAM",
             f"{op} needs a bundle root: this router was opened without "
             "bundle_root (file-free mode). Pass an explicit path, or open "
-            "the router with bundle_root set."
+            "the router with bundle_root set.",
+            op=op,
         )
     return root
 
@@ -1461,13 +1453,15 @@ class ImportManager:
                     f"{m['path']} [{', '.join(m['fields'])}]"
                     for m in report["mismatched"][:5]
                 )
-                raise RuntimeError(
+                raise OKFError(
+                    "DETACH_REFUSED",
                     f"detach refused: {summary}. Re-import first so the graph "
                     "matches the files, or pass --force to declare the "
                     f"database the artifact anyway. e.g. {sample}"
                 )
             if (report["untracked"] or report["non_source_files"]) and not force:
-                raise RuntimeError(
+                raise OKFError(
+                    "DETACH_REFUSED",
                     f"detach refused: {summary} - these files have no counterpart "
                     "in the graph and would not survive source deletion "
                     "(WILL-NOT-SURVIVE). Pass --force to acknowledge."
@@ -1510,7 +1504,8 @@ class ImportManager:
             for alias, root in targets:
                 name = alias or "<primary>"
                 if not root.is_dir():
-                    raise RuntimeError(
+                    raise OKFError(
+                        "DETACH_REFUSED",
                         f"root {name} ({root}) not found - nothing to verify "
                         "against. Remount it, or pass --no-verify to detach "
                         "without verification."
@@ -1528,13 +1523,15 @@ class ImportManager:
                 f"{len(report['non_source_files'])} source-only"
             )
             if report["mismatched"] and not force:
-                raise RuntimeError(
+                raise OKFError(
+                    "DETACH_REFUSED",
                     f"detach refused: {summary}. Re-import first so the graph "
                     "matches the files, or pass --force to declare the "
                     "database the artifact anyway."
                 )
             if (report["untracked"] or report["non_source_files"]) and not force:
-                raise RuntimeError(
+                raise OKFError(
+                    "DETACH_REFUSED",
                     f"detach refused: {summary} - these files have no counterpart "
                     "in the graph and would not survive source deletion "
                     "(WILL-NOT-SURVIVE). Pass --force to acknowledge."

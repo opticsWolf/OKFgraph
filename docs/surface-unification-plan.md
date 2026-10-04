@@ -1,6 +1,6 @@
 # Surface unification plan: CLI, MCP, Python API
 
-**Status:** draft v3 (2026-10-04). v1 was the user's draft; v2 checks it against `dev` @ `7e88eab` (okfgraph 0.9.0), corrects it, and expands it. v3 records the §11 decisions (Q1–Q5 answered) and adds the Q6 impact appendix (§11.1); Q6 itself is still open.
+**Status:** implemented in okfgraph 0.10.0 (2026-10-04); the error-code table in §4 is the shipped set. Plan history: draft v3 (2026-10-04). v1 was the user's draft; v2 checks it against `dev` @ `7e88eab` (okfgraph 0.9.0), corrects it, and expands it. v3 records the §11 decisions (Q1–Q5 answered) and adds the Q6 impact appendix (§11.1); Q6 itself is still open.
 **Goal:** one vocabulary and one implementation per operation, reached the same way from all three surfaces. One release cut.
 
 ## Ground rules
@@ -267,13 +267,14 @@ One envelope on the wire for CLI `--json` and MCP:
 | `UNKNOWN_ASSET` | state | get_image / list_images (unknown asset or concept id) |
 | `NOT_RECOVERABLE` | state | recover past its window |
 | `DETACHED` | state | imports/ingest on a detached graph without `force` |
+| `DETACH_REFUSED` | state | `detach` with mismatches / untracked / source-only files and no `force`, or an absent root to verify against (without `no_verify`) |
 | `PURGE_REFUSED_ABSENT_ROOT` | state | `prune_missing` with an unmounted root |
 | `MODEL_PIN_MISMATCH` / `PRECISION_PIN_MISMATCH` / `DIM_MISMATCH` | state | embedding pins |
 | `IMAGE_PIN_MISMATCH` / `VISION_INCOMPATIBLE` | state | vision pins / text-small graph |
 | `NO_ORT_RUNTIME` | state | the router's pre-open check (today a `RuntimeError` with the hint) |
 | `WRITE_LOCK_TIMEOUT` | state | `_write_lock_ctx` |
 | `SEARCH_UNAVAILABLE` | state | index missing / dirty when the search engine refuses |
-| `DOCTOR_FINDINGS` / `LINT_ERRORS` / `DIFF_DIFFERENT` | outcome | exit 1 with the full report in `data`, not `error` |
+| `DOCTOR_FINDINGS` / `LINT_ERRORS` / `DIFF_DIFFERENT` | outcome | exit 1 with the full report in `data`, not `error` (Python: `err.data`) |
 | `INTERNAL` | state | anything unconverted (each one found is a bug to convert) |
 
 Finalise the list in Phase 2 by converting every `raise RuntimeError/ValueError/KeyError` reachable from an op (`grep -n "raise " okfgraph/components okfgraph/router.py`) and every `[ERROR]` in `cli.py`. **A code ships only with: code + failing op + offending value(s) in `fields` + a remedy sentence.** `tests/test_error_paths.py` asserts codes, not message text.

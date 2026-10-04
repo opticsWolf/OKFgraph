@@ -16,7 +16,7 @@ Determinism rules (all load-bearing for the golden fixtures):
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, List, Mapping, Optional, Sequence, Set, Tuple
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 

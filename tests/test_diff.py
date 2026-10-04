@@ -85,10 +85,10 @@ class TestDiffDrift:
         assert report["identical"] is True
 
     def test_drift_detects_bundle_changes(self, router):
-        # Drift raises DIFF_DIFFERENT with the report in fields (§4).
+        # Drift raises DIFF_DIFFERENT with the report on err.data (§4).
         with pytest.raises(OutcomeError) as exc:
             router.diff(new=FIX / "diff_b")
-        report = exc.value.fields["report"]
+        report = exc.value.data
         assert report["identical"] is False
         assert report["added"] == ["gamma"]
         assert report["changed"] == ["beta"]

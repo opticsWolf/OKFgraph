@@ -14,33 +14,14 @@ Design choices:
       stored vectors.
 """
 
-import hashlib
-import json
 import logging
-import math
-import os
-import re
-import time
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-import frontmatter
 import ladybug as lb
 from fasteners import InterProcessLock
-import numpy as np
-import yaml
 
-from okfgraph.images import (
-    EmbedRoute,
-    IngestMode,
-    build_extracted_images,
-    plan_embedding,
-)
-import mordant
-
-from okfgraph.models import ChunkModel, ConceptModel
 from okfgraph.components import (
     DeltaDetector,
     DiffManager,
@@ -55,6 +36,7 @@ from okfgraph.components import (
     SearchEngine,
 )
 
+from okfgraph.errors import OKFError
 from okfgraph.ops import AdminOps, ExportOps, IngestOps, QueryOps
 
 logger = logging.getLogger(__name__)
@@ -76,10 +58,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
     # Valid Matryoshka truncation levels for jina-embeddings-v5-text.
     ALLOWED_DIMS = (32, 64, 128, 256, 512, 768, 1024)
 
-    # ── Component-backed classmethods (Phase 1 refactor) ──────────
-    # These are owned by EmbeddingEngine; aliases keep the public API
-    # (e.g. OKFRouter.model_info(...)) stable.
-    model_info = EmbeddingEngine.model_info
+    # Owned by EmbeddingEngine; model_info is the AdminOps op.
     default_cache_dir = EmbeddingEngine.default_cache_dir
 
     # Schema constants/registry live on SchemaManager (Phase 1 refactor).
@@ -609,107 +588,10 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         return self.search_engine.list_directory(directory_id)
 
     # ------------------------------------------------------------------
-    # Schema
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Search index (re)build
-    # ------------------------------------------------------------------
-
-    # (table, index_name, create-statement) for every vector/FTS index.
-    # ------------------------------------------------------------------
-    # Index dirty-tracking (Meta key/value markers)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Delta detection (file-level hash skip)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Purge (safe deletion of a concept and all its dependents)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Soft-Delete with Recovery (Gap #1d)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Embedding
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Omni (multimodal) embedding — lazy-loaded
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Cache helpers
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
     # Import / Export
     # ------------------------------------------------------------------
 
     # Source files the ingestion pipeline understands. Frontmatter is honoured
     # when present (Markdown); plain .txt is treated as body-only.
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
-
-    # ------------------------------------------------------------------
-    # Image ingestion (caption-based text embeddings since 0.7.0)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Broken Links
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Graph-Aware Retrieval
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Traversal
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Chunk Query
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Directory
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Lookup
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Markdown Linting (Gap #5c)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Single-File Import Helpers (Gap #5c)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # PDF Ingestion (Gap #5b)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Markdown Ingestion (Gap #5c)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Thought Ingestion (Gap #5c)
-    # ------------------------------------------------------------------
 

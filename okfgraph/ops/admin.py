@@ -4,24 +4,50 @@ One implementation per op here — import, health, hygiene. Return shapes:
 
 * ``import_bundle`` → ``{"concept_ids", "images": {id: count}}``
 * ``import_file`` → ``{"concept_id", "images": count}``
-* ``doctor`` → ``{"report", "fixed"?}`` (``strict`` raises
-  ``DOCTOR_FINDINGS`` with the report still available in ``fields``)
-* ``diff`` → the report dict; different-graph/dirs raises ``DIFF_DIFFERENT``
-* ``lint`` → the lint report; errors raise ``LINT_ERRORS``
+* ``doctor`` → ``{"report", "fixed"}`` (``strict`` raises
+  ``DOCTOR_FINDINGS`` with that result on ``err.data``)
+* ``diff`` / ``diff_dirs`` → the report dict; differences raise
+  ``DIFF_DIFFERENT`` with the report on ``err.data``
+* ``lint`` → the lint report; errors raise ``LINT_ERRORS`` (report on
+  ``err.data``)
 * ``produce`` → ``{"producer", "files", "root", "prefix", "lint"}``
 * ``reindex`` → ``{"rebuilt": bool}``
-* ``list_deleted`` → rows; ``recover_deleted`` → row; ``purge_deleted`` →
-  ``{"purged": n}``
+* ``list_deleted`` → rows; ``recover_deleted`` → ``{"concept_id",
+  "recovered"}``; ``purge_deleted`` → ``{"purged": n}``
 * ``detach`` → the detach report (verbatim)
-* ``repair_links`` → ``{"repaired": n}``
+* ``list_broken_links`` → rows; ``repair_links`` → ``{"repaired": n}``
+* ``list_images`` → rows; ``get_image`` → row with base64 ``data``
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from okfgraph.errors import OKFError, UsageError
+from okfgraph.errors import OKFError
 
 __all__ = ["AdminOps"]
+
+
+def _require_dir(path, *, op: str, name: str) -> Path:
+    path = Path(path)
+    if not path.is_dir():
+        raise OKFError(
+            "FILE_NOT_FOUND",
+            f"not a bundle directory: {path}",
+            op=op,
+            fields={name: str(path)},
+        )
+    return path
+
+
+def _diff_outcome(result: dict) -> dict:
+    if not result["identical"]:
+        raise OKFError(
+            "DIFF_DIFFERENT",
+            "structures differ (report in data)",
+            op="diff",
+            data=result,
+        )
+    return result
 
 
 class AdminOps:
@@ -32,13 +58,19 @@ class AdminOps:
     # ------------------------------------------------------------------
 
     def init(self) -> dict:
-        """Construct (and close) the router; returns the adopted pins."""
-        self.close()
-        return {
+        """Report the adopted pins, then close the router.
+
+        CLI ``okf init`` semantics: constructing the router created the
+        schema; this checkpoints and releases the file lock. The router is
+        unusable afterwards — Python callers rarely need this op.
+        """
+        pins = {
             "db_path": str(self.db_path),
             "embedding_dim": self.embedding_dim,
             "model_id": self.model_id,
         }
+        self.close()
+        return pins
 
     @staticmethod
     def model_info(model_id=None, cache_dir=None) -> dict:
@@ -53,11 +85,14 @@ class AdminOps:
     def import_bundle(self, bundle_path=None, *, batch_size: int = 32,
                       mode: str = "text", prune_missing: bool = False,
                       force: bool = False, alias=None) -> dict:
-        """Import an entire bundle directory (default: the mirrored root).
+        """Import an entire bundle directory (default: every configured root).
 
         ``alias`` stays Python-only (PDF work-dir namespaces). Returns
         ``{"concept_ids", "images": {id: count}}``.
         """
+        if bundle_path is not None:
+            bundle_path = _require_dir(bundle_path, op="import_bundle",
+                                       name="bundle_path")
         ids = self.import_mgr.import_bundle(
             bundle_path,
             batch_size=batch_size,
@@ -70,10 +105,9 @@ class AdminOps:
         return {"concept_ids": ids, "images": images}
 
     def import_file(self, file_path, *, mode: str = "text", force: bool = False) -> dict:
-        """Import a single OKF file. Missing files raise ``FILE_NOT_FOUND``
-        (today: a logged warning and exit 0)."""
+        """Import a single OKF file. Missing files raise ``FILE_NOT_FOUND``."""
         file_path = Path(file_path)
-        if not file_path.exists():
+        if not file_path.is_file():
             raise OKFError(
                 "FILE_NOT_FOUND",
                 f"file not found: {file_path}",
@@ -91,59 +125,46 @@ class AdminOps:
                strict: bool = False) -> dict:
         """Scored health scan; ``fix`` applies safe repairs first.
 
-        Returns ``{"report", "fixed"?}``. With ``strict``, findings raise
-        ``DOCTOR_FINDINGS`` (exit 1) with the report in ``fields``.
+        Returns ``{"report", "fixed"}`` (``fixed`` is None without
+        ``fix``). With ``strict``, findings raise ``DOCTOR_FINDINGS``
+        (exit 1) with that same result on ``err.data``.
         """
-        result: dict = {}
-        if fix:
-            result["fixed"] = self.doctor_mgr.fix()
+        fixed = self.doctor_mgr.fix() if fix else None
         report = self.doctor_mgr.diagnose(stale_days=stale_days)
-        result["report"] = report
+        result = {"report": report, "fixed": fixed}
         if strict and report["findings"]:
             raise OKFError(
                 "DOCTOR_FINDINGS",
                 f"doctor found {len(report['findings'])} finding(s)",
                 op="doctor",
-                fields={"report": report, "fixed": result.get("fixed")},
+                fields={"findings": len(report["findings"]),
+                        "score": report["score"]},
+                data=result,
             )
         return result
+
+    @staticmethod
+    def diff_dirs(old, new) -> dict:
+        """Snapshot diff of two bundle directories (router-free, static)."""
+        from okfgraph.components.diff import DiffManager
+        old = _require_dir(old, op="diff", name="old")
+        new = _require_dir(new, op="diff", name="new")
+        return _diff_outcome(DiffManager(None).diff_dirs(old, new))
 
     def diff(self, old=None, new=None) -> dict:
-        """Structural diff; snapshot (two dirs, router-free) or drift."""
-        from okfgraph.components.diff import DiffManager
-
-        if old and new and Path(old).is_dir() and Path(new).is_dir():
-            result = DiffManager(None).diff_dirs(Path(old), Path(new))
-        elif old and new:
-            raise UsageError(
-                "BAD_VALUE",
-                "diff needs two bundle directories (or one side + --db/--bundle-root)",
-                op="diff",
-                fields={"old": str(old), "new": str(new)},
-            )
-        else:
-            side = Path(old or new) if (old or new) else None
-            if side is not None and not side.is_dir():
-                raise UsageError(
-                    "BAD_VALUE",
-                    f"not a bundle directory: {side}",
-                    op="diff",
-                    fields={"side": str(side)},
-                )
-            try:
-                result = self.diff_mgr.diff_db_dir(side)
-            except ValueError as exc:
-                # File-free router with no explicit side: same refusal,
-                # typed (§4).
-                raise UsageError("BAD_VALUE", str(exc), op="diff") from exc
-        if not result["identical"]:
-            raise OKFError(
-                "DIFF_DIFFERENT",
-                "structures differ (see fields.report)",
-                op="diff",
-                fields={"report": result},
-            )
-        return result
+        """Structural diff: snapshot (two dirs) or drift (graph vs one dir,
+        or vs the configured roots when no side is given)."""
+        if old and new:
+            return self.diff_dirs(old, new)
+        side = old or new
+        if side:
+            side = _require_dir(side, op="diff", name="old" if old else "new")
+        try:
+            result = self.diff_mgr.diff_db_dir(side)
+        except ValueError as exc:
+            # File-free router with no explicit side: same refusal, typed.
+            raise OKFError("BAD_VALUE", str(exc), op="diff") from exc
+        return _diff_outcome(result)
 
     # ------------------------------------------------------------------
     # hygiene
@@ -152,15 +173,17 @@ class AdminOps:
     @staticmethod
     def lint(bundle_dir=".") -> dict:
         """Pre-import bundle gate; router-free. Errors → ``LINT_ERRORS``
-        with the full report in ``fields`` (doctor-style outcome)."""
+        with the full report on ``err.data`` (doctor-style outcome)."""
         from okfgraph.components.lint import lint_bundle
-        report = lint_bundle(Path(bundle_dir))
+        bundle_dir = _require_dir(bundle_dir, op="lint", name="bundle_dir")
+        report = lint_bundle(bundle_dir)
         if report["errors"]:
             raise OKFError(
                 "LINT_ERRORS",
                 f"{len(report['errors'])} lint error(s)",
                 op="lint",
-                fields={"errors": report["errors"], "report": report},
+                fields={"errors": len(report["errors"])},
+                data=report,
             )
         return report
 
@@ -169,14 +192,15 @@ class AdminOps:
                 *, prefix=None, overwrite: bool = False) -> dict:
         """Generate a bundle from a data source, then lint it.
 
-        Returns ``{"producer", "files", "root", "prefix", "lint"}``.
-        Unknown producers raise ``BAD_VALUE``; unreadable sources raise
-        ``FILE_NOT_FOUND``.
+        Returns ``{"producer", "files", "root", "prefix", "lint"}``; lint
+        errors in the produced bundle are reported, not raised (inspect
+        ``lint["clean"]``). Unknown producers raise ``BAD_VALUE``;
+        unreadable sources raise ``FILE_NOT_FOUND``.
         """
         from okfgraph.components.lint import lint_bundle
         from okfgraph.components.producers import PRODUCERS, producer_for
         if source_type not in PRODUCERS:
-            raise UsageError(
+            raise OKFError(
                 "BAD_VALUE",
                 f"unknown producer {source_type!r}",
                 op="produce",
@@ -188,6 +212,8 @@ class AdminOps:
             bundle = producer_for(source_type).produce(
                 source_path, out, prefix=prefix, overwrite=overwrite,
             )
+        except OKFError:
+            raise
         except FileNotFoundError as exc:
             raise OKFError(
                 "FILE_NOT_FOUND",
@@ -195,13 +221,21 @@ class AdminOps:
                 op="produce",
                 fields={"source_path": str(source_path)},
             ) from exc
-        report = lint_bundle(out)
+        except ValueError as exc:
+            # Unreadable/empty source or a bad prefix: the producer's
+            # refusals are caller-facing, not bugs.
+            raise OKFError(
+                "BAD_VALUE",
+                str(exc),
+                op="produce",
+                fields={"source_path": str(source_path), "prefix": prefix},
+            ) from exc
         return {
             "producer": bundle.producer,
             "files": bundle.files,
             "root": str(bundle.root / bundle.prefix),
             "prefix": bundle.prefix,
-            "lint": report,
+            "lint": lint_bundle(out),
         }
 
     def reindex(self, *, if_dirty: bool = False) -> dict:
@@ -214,7 +248,7 @@ class AdminOps:
         return self.purge_mgr.list_deleted_concepts()
 
     def recover_deleted(self, concept_id: str) -> dict:
-        """Recover a soft-deleted concept; failure → ``NOT_RECOVERABLE``"""
+        """Recover a soft-deleted concept; failure → ``NOT_RECOVERABLE``."""
         if not self.purge_mgr.recover_deleted(concept_id):
             raise OKFError(
                 "NOT_RECOVERABLE",
@@ -243,9 +277,11 @@ class AdminOps:
     # ------------------------------------------------------------------
 
     def list_broken_links(self) -> list:
+        """Links whose target concept does not exist: ``[{source, target}]``."""
         return self.import_mgr.list_broken_links()
 
     def repair_links(self) -> dict:
+        """Re-resolve broken links against current concepts."""
         return {"repaired": self.import_mgr.repair_links()}
 
     # ------------------------------------------------------------------
@@ -260,11 +296,13 @@ class AdminOps:
                 f"concept '{concept_id}' does not exist",
                 op="list_images",
                 fields={"concept_id": concept_id},
+                remedy="search first to find IDs",
             )
         return self.image_mgr.list_images(concept_id)
 
     def get_image(self, asset_id: str) -> dict:
-        """Fetch one image: metadata rows + base64 ``data`` (MCP shape)."""
+        """Fetch one image: metadata plus base64 ``data`` (None when the
+        asset has no stored bytes)."""
         import base64
         row = self.image_mgr.get_image_data(asset_id)
         if row is None:
@@ -273,8 +311,9 @@ class AdminOps:
                 f"image asset '{asset_id}' does not exist",
                 op="get_image",
                 fields={"asset_id": asset_id},
+                remedy="list_images(concept_id) names the asset ids",
             )
         data = row.pop("data", None)
-        if data is not None:
-            row["data"] = base64.b64encode(bytes(data)).decode("ascii")
+        row["data"] = (base64.b64encode(bytes(data)).decode("ascii")
+                       if data is not None else None)
         return row

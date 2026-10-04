@@ -1,29 +1,28 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import heapq
-import json
 import logging
-import math
-import os
 import re
-import time
 import uuid
-from contextlib import contextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Set
-from urllib.parse import urlparse
+from typing import Any, Callable, Dict
 
 import mordant
-import numpy as np
-import yaml
 import frontmatter
-from okfgraph.models import ChunkModel, ConceptModel, normalize_tags
+from okfgraph.models import ConceptModel, normalize_tags
 from okfgraph.errors import OKFError
 
 logger = logging.getLogger(__name__)
+
+#: Optional (None-default) ingest params each kind honours; passing any
+#: other one is refused rather than silently dropped.
+_INGEST_HONOURS = {
+    "md": frozenset({"md_path", "concept_id", "title", "description", "tags"}),
+    "thoughts": frozenset({"thoughts", "topic", "concept_id", "tags"}),
+    "pdf": frozenset({"pdf_path", "output_dir"}),
+}
+
 
 def _slugify_topic(topic: str) -> str:
     """Map a thought topic to a single safe namespace level.
@@ -382,9 +381,31 @@ class IngestManager:
         kind='thoughts': persist LLM reasoning (thoughts + topic required).
 
         File paths that don't exist raise ``FILE_NOT_FOUND``; missing
-        required params raise ``MISSING_PARAM``. ``on_page``/``converter``
+        required params raise ``MISSING_PARAM``; a passed param the kind
+        ignores raises ``BAD_VALUE`` naming it. ``on_page``/``converter``
         are Python-only advanced params.
         """
+        passed = {
+            "md_path": md_path, "pdf_path": pdf_path, "thoughts": thoughts,
+            "topic": topic, "concept_id": concept_id, "title": title,
+            "description": description, "tags": tags,
+            "output_dir": output_dir,
+        }
+        honours = _INGEST_HONOURS.get(kind)
+        if honours is not None:
+            if kind == "pdf" and auto_import:
+                honours = honours - {"output_dir"}
+            ignored = [k for k, v in passed.items()
+                       if v is not None and k not in honours]
+            if ignored:
+                raise OKFError(
+                    "BAD_VALUE",
+                    f"kind='{kind}' ignores: {', '.join(ignored)}",
+                    fields={"kind": kind, "ignored": ignored},
+                    remedy=("output_dir needs auto_import=False"
+                            if ignored == ["output_dir"] and kind == "pdf"
+                            else "drop the params of other kinds"),
+                )
         if kind == "md":
             if not md_path:
                 raise OKFError(

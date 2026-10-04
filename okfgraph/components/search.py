@@ -5,17 +5,10 @@ Query-vector encoding delegates to the injected EmbeddingEngine.
 """
 
 from __future__ import annotations
-import heapq
 import json
 import logging
-import math
-import re
-from collections import Counter, defaultdict, deque
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 from okfgraph.errors import OKFError
 from okfgraph.models import ChunkModel, ConceptModel
 
@@ -462,7 +455,6 @@ class SearchEngine:
         """, {"ids": chunk_ids})
         parent_rows = parents.rows_as_dict().get_all()
         parent_ids = [row["id"] for row in parent_rows]
-        parent_meta = {row["id"]: row for row in parent_rows}
 
         if not parent_ids:
             return []

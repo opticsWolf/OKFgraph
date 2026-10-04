@@ -57,8 +57,9 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
   `traverse` start lists the root.
 - **CLI flags (§3.6/§3.7):** `--db` → `--db-path`; `--bundle` →
   `--bundle-root` (single value) or `--bundle-path` (one-call pin);
-  `--primary` collapsed into `--bundle-root`; append roots via
-  `okf init --root ALIAS=PATH`; `--dim` → `--embedding-dim`; `--model`
+  `--primary` collapsed into `--bundle-root`; extra roots via the
+  global `--root ALIAS=PATH` (per call) or TOML `[[roots]]` (persisted);
+  `--dim` → `--embedding-dim`; `--model`
   → `--model-id`; `--image-model` → `--image-model-id`; ingest
   `--md-file/--pdf-file/--output` → `--md-path/--pdf-path/--output-dir`;
   `--purge` → `--prune-missing` (also on `import`); export/produce
@@ -75,6 +76,31 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
 - **Exit codes (§4):** CLI exits `0` ok, `1` state/outcome (diff
   different 0.9's exit 2 → 1, doctor `--strict`=1, lint errors),
   `2` usage (refusals that 0.9 reported as 0-nowarn), `130` interrupt.
+- **Contract hardening (review pass):**
+  - Outcome errors carry their result on `err.data` (lint report, diff
+    report, doctor `{report, fixed}`); envelopes put it in `data`
+    automatically. The error class always follows the code, whichever
+    subclass is constructed; errors pickle.
+  - New state code `DETACH_REFUSED`; remaining untyped `ValueError`s
+    on caller paths (`_require_root`, converter `routing_mode`, produce,
+    drift diff without a root, router construction) are typed instead of
+    surfacing as `INTERNAL`.
+  - More refusals (X3): search `context_hops` without `expand`,
+    `max_chunks_per_doc` off the plain chunk path, `hub_weight` without
+    `rank='hub'`/`hub_rerank`, bad `limit`/`target`/`rank`; traverse
+    params the chosen mode ignores (incl. `max_path_length` on a walk);
+    ingest params belonging to another kind; `read max_tokens < 1`.
+  - `read(include="chunks")` returns plain dicts (no embeddings) —
+    `--json`/MCP no longer emit model reprs.
+  - MCP: `db_path` may come from `OKFGRAPH_DB_PATH` or TOML (was an
+    argparse-required flag); a missing/invalid config exits 2 with
+    `[ERROR] CONFIG_INVALID`. `ingest` `mode`/`batch_size` follow
+    `[import]` settings, as do CLI `import`/`ingest`.
+  - CLI: every command takes `--json`; results print to stdout (`-q`
+    silences logs only); `import F...` refuses missing files up front
+    (`FILE_NOT_FOUND`) instead of skipping them; `export` requires
+    exactly one of `--all`/`--concept-id`; `search --max-chunks-per-doc`
+    added; the shell's `ingest` auto-imports like the CLI.
 
 ### Removed
 - `okfgraph/config.py`, `okfgraph/tools.py`, the legacy tool list, all

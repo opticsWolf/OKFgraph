@@ -8,17 +8,67 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from okfgraph.errors import UsageError
+from okfgraph.errors import OKFError
 from okfgraph.models import ConceptModel
 
 __all__ = ["QueryOps"]
 
-_WALK_DEFAULTS = {
-    "relationship": "CONTAINS",
-    "direction": "OUTGOING",
-    "depth": 1,
-    "node_type": None,
+_TARGETS = ("concepts", "chunks", "images")
+_RANKS = ("none", "hub", "ppr")
+_INCLUDES = ("body", "chunks", "document", "context")
+_RELATIONSHIPS = ("CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET")
+_DIRECTIONS = ("OUTGOING", "INCOMING", "BOTH")
+
+#: Optional search params and their defaults. A param counts as passed
+#: when it differs from its default; a passed param the chosen path does
+#: not honour is refused (X3) instead of silently dropped.
+_SEARCH_DEFAULTS: Dict[str, Any] = {
+    "concept_type": None,
+    "tags": None,
+    "parent_id": None,
+    "include_chunks": False,
+    "max_chunks_per_doc": 3,
+    "expand": False,
+    "context_hops": 1,
+    "hub_rerank": False,
+    "hub_weight": 0.3,
+    "rank": "none",
 }
+_FILTERS = frozenset({"concept_type", "tags", "parent_id"})
+
+#: What each search path honours. Chunk precedence is hub_rerank > expand
+#: > plain; when hub_rerank wins, expand (and its context_hops) are
+#: superseded rather than refused.
+_HONOURS = {
+    "images": frozenset(),
+    "concepts:none": _FILTERS | {"include_chunks", "rank"},
+    "concepts:hub": _FILTERS | {"include_chunks", "rank", "hub_weight"},
+    "concepts:ppr": _FILTERS | {"rank"},
+    "chunks:hub": frozenset({"hub_rerank", "hub_weight", "expand", "context_hops"}),
+    "chunks:expand": frozenset({"expand", "context_hops"}),
+    "chunks:plain": _FILTERS | {"max_chunks_per_doc"},
+}
+
+
+def _bad_value(op: str, message: str, **fields) -> OKFError:
+    return OKFError("BAD_VALUE", message, op=op, fields=fields or None)
+
+
+def _check_choice(op: str, name: str, value: Any, choices) -> None:
+    if value not in choices:
+        allowed = ", ".join(f"'{c}'" for c in choices)
+        raise _bad_value(op, f"{name} must be one of {allowed}, got '{value}'",
+                         **{name: value})
+
+
+def _unknown_concept(op: str, field: str, concept_id: str) -> OKFError:
+    return OKFError(
+        "UNKNOWN_CONCEPT",
+        f"{field} '{concept_id}' does not exist",
+        op=op,
+        fields={field: concept_id},
+        remedy="search first to find IDs",
+    )
 
 
 class QueryOps:
@@ -47,113 +97,78 @@ class QueryOps:
     ) -> List[Dict[str, Any]]:
         """Unified search. ``target`` picks the path:
 
-        * ``concepts`` (default) — hybrid vector+FTS on concepts via
-          ``search_engine.search_hybrid``; ``include_chunks`` adds
-          ``matched_chunks`` to each hit; ``rank`` = none|hub|ppr.
-        * ``chunks`` — chunk-level RRF search, ``hub_rerank > expand >
-          plain``; the plain path honours ``concept_type``/``tags``/
-          ``parent_id`` and ``max_chunks_per_doc``.
-        * ``images`` — text-query search over image assets.
+        * ``concepts`` (default) — hybrid vector+FTS via
+          ``search_engine.search_hybrid``. Honours the filters
+          (``concept_type``/``tags``/``parent_id``) and ``rank``
+          (none|hub|ppr); ``include_chunks`` adds ``matched_chunks`` (not
+          with ``ppr``); ``hub_weight`` only with ``rank='hub'``.
+        * ``chunks`` — chunk-level RRF, path precedence ``hub_rerank`` >
+          ``expand`` > plain. ``hub_rerank`` honours ``hub_weight``;
+          ``expand`` honours ``context_hops``; plain honours the filters
+          and ``max_chunks_per_doc``.
+        * ``images`` — text query over image assets (``query``/``limit``
+          only).
 
-        Params a chosen path ignores are refused (X3, rule): a filter
-        with ``hub_rerank``/``expand``/``target='images'``, ``rank`` with
-        ``target='chunks'``, ``include_chunks`` on a chunk path,
-        ``max_chunks_per_doc``/``expand``/``context_hops``/``hub_rerank``
-        on the concepts path, or both ``hub_rerank`` and ``expand``.
-        Defaults count as not-passed.
+        A passed param (non-default) the chosen path ignores is refused
+        with ``BAD_VALUE`` naming it — never silently dropped.
         """
-        if target not in ("concepts", "chunks", "images"):
-            raise UsageError(
-                "BAD_VALUE",
-                f"target must be 'concepts', 'chunks' or 'images', got '{target}'",
-                op="search",
-                fields={"target": target},
-            )
-        if rank not in ("none", "hub", "ppr"):
-            raise UsageError(
-                "BAD_VALUE",
-                f"rank must be 'none', 'hub' or 'ppr', got '{rank}'",
-                op="search",
-                fields={"rank": rank},
-            )
+        _check_choice("search", "target", target, _TARGETS)
+        _check_choice("search", "rank", rank, _RANKS)
+        if not isinstance(limit, int) or limit < 1:
+            raise _bad_value("search", f"limit must be >= 1, got {limit!r}",
+                             limit=limit)
 
-        filt = {
-            "concept_type": concept_type,
-            "tags": tags,
-            "parent_id": parent_id,
+        params = {
+            "concept_type": concept_type, "tags": tags, "parent_id": parent_id,
+            "include_chunks": include_chunks,
+            "max_chunks_per_doc": max_chunks_per_doc, "expand": expand,
+            "context_hops": context_hops, "hub_rerank": hub_rerank,
+            "hub_weight": hub_weight, "rank": rank,
         }
-        filt = {k: v for k, v in filt.items() if v is not None}
+        passed = [k for k, v in params.items() if v != _SEARCH_DEFAULTS[k]]
 
-        ignored: List[str] = []
-        if target == "images":
-            # Everything except query/limit is out of scope for images.
-            ignored += [*filt]
-            for name, passed in (
-                ("include_chunks", include_chunks),
-                ("max_chunks_per_doc", max_chunks_per_doc != 3),
-                ("expand", expand),
-                ("context_hops", context_hops != 1),
-                ("hub_rerank", hub_rerank),
-                ("hub_weight", hub_weight != 0.3),
-                ("rank", rank != "none"),
-            ):
-                if passed:
-                    ignored.append(name)
-        elif target == "chunks":
+        if target == "chunks":
             if rank != "none":
                 # Most specific refusal first: the historical message.
-                raise UsageError(
-                    "BAD_VALUE",
+                raise _bad_value(
+                    "search",
                     "rank is concepts-only; target='chunks' uses hub_rerank/expand",
-                    op="search",
-                    fields={"rank": rank, "target": "chunks"},
+                    rank=rank, target="chunks",
                 )
-            # Documented path precedence: hub_rerank > expand > plain.
-            # When hub_rerank wins, expand is superseded, not ignored.
-            if include_chunks:
-                ignored.append("include_chunks")
-            if hub_rerank:
-                ignored += [*filt]
-            elif expand:
-                ignored += [*filt]
-                if hub_weight != 0.3:
-                    ignored.append("hub_weight")
-            else:
-                if hub_weight != 0.3:
-                    ignored.append("hub_weight")
-        else:  # concepts
-            if max_chunks_per_doc != 3:
-                ignored.append("max_chunks_per_doc")
-            if expand:
-                ignored.append("expand")
-            if context_hops != 1:
-                ignored.append("context_hops")
-            if hub_rerank:
-                ignored.append("hub_rerank")
+            path = ("chunks:hub" if hub_rerank
+                    else "chunks:expand" if expand else "chunks:plain")
+        elif target == "concepts":
+            path = f"concepts:{rank}"
+        else:
+            path = "images"
+
+        ignored = [k for k in passed if k not in _HONOURS[path]]
         if ignored:
-            raise UsageError(
+            raise OKFError(
                 "BAD_VALUE",
-                f"target='{target}' ignores: {', '.join(dict.fromkeys(ignored))}",
+                f"target='{target}' ({path.partition(':')[2] or 'default'} path) "
+                f"ignores: {', '.join(ignored)}",
                 op="search",
-                fields={"target": target, "ignored": sorted(dict.fromkeys(ignored))},
+                fields={"target": target, "path": path, "ignored": ignored},
                 remedy="drop the ignored params or use a path that honours them",
             )
 
-        if target == "images":
+        filt = {k: params[k] for k in _FILTERS if params[k] is not None}
+        if path == "images":
             return self.image_mgr.search_images_with_text(
                 text_query=query, limit=limit,
             )
-        if target == "chunks":
-            if hub_rerank:
-                return self.search_engine.search_chunks_with_hub_score(
-                    query=query, limit=limit, hub_weight=hub_weight,
-                )
-            if expand:
-                return self.search_engine.search_with_context(
-                    query=query,
-                    limit=min(limit, 20),
-                    context_hops=context_hops,
-                )
+        if path == "chunks:hub":
+            return self.search_engine.search_chunks_with_hub_score(
+                query=query, limit=limit, hub_weight=hub_weight,
+            )
+        if path == "chunks:expand":
+            return self.search_engine.search_with_context(
+                query=query,
+                limit=min(limit, 20),
+                context_hops=context_hops,
+            )
+        if path == "chunks:plain":
             return self.search_engine.search_chunks(
                 query=query, limit=limit,
                 max_chunks_per_doc=max_chunks_per_doc, **filt,
@@ -177,44 +192,40 @@ class QueryOps:
         """Read a known concept. ``include`` picks the shape:
 
         * ``body`` (default) — full concept dict, body markdown included.
-        * ``chunks`` — stored chunks ordered by index.
+        * ``chunks`` — stored chunks (dicts) ordered by index.
         * ``document`` — ``{"concept_id", "markdown"}`` rebuilt from chunks.
         * ``context`` — ``{incoming_links, outgoing_links, ancestry,
-          siblings}``, capped at 10 entries per group. The op owns this
-          assembler (the CLI/MCP copies are deleted).
+          siblings}``, capped at 10 entries per group.
         * ``max_tokens`` — budgeted reading across concept + link
-          neighbours; overrides the plain shapes above.
+          neighbours: ``{sections, used, budget, truncated}``; overrides
+          the plain shapes above.
         """
-        if include not in ("body", "chunks", "document", "context"):
-            raise UsageError(
-                "BAD_VALUE",
-                f"include must be 'body', 'chunks', 'document' or 'context', "
-                f"got '{include}'",
-                op="read",
-                fields={"include": include},
-            )
+        _check_choice("read", "include", include, _INCLUDES)
+        if max_tokens is not None and max_tokens < 1:
+            raise _bad_value("read", f"max_tokens must be >= 1, got {max_tokens}",
+                             max_tokens=max_tokens)
         concept = self.get_by_id(concept_id)
         if concept is None:
-            raise UsageError(
-                "UNKNOWN_CONCEPT",
-                f"concept '{concept_id}' does not exist",
-                op="read",
-                fields={"concept_id": concept_id},
-            )
+            raise _unknown_concept("read", "concept", concept_id)
         if max_tokens is not None:
             return self.search_engine.read_with_budget(
                 concept_id, include=include, max_tokens=max_tokens,
             )
         if include == "chunks":
-            return self.search_engine.get_chunks(concept_id)
+            return [
+                chunk.model_dump(exclude={"embedding"})
+                if hasattr(chunk, "model_dump") else dict(chunk)
+                for chunk in self.search_engine.get_chunks(concept_id)
+            ]
         if include == "document":
             markdown = self.embed_engine.reconstruct_document(concept_id)
             if not markdown:
-                raise UsageError(
+                raise OKFError(
                     "UNKNOWN_CONCEPT",
                     f"concept '{concept_id}' has no chunks to rebuild",
                     op="read",
                     fields={"concept_id": concept_id},
+                    remedy="use include='body' for unchunked concepts",
                 )
             return {"concept_id": concept_id, "markdown": markdown}
         if include == "context":
@@ -252,59 +263,62 @@ class QueryOps:
     ) -> List[Dict[str, Any]]:
         """Three modes, dispatched once here:
 
-        * empty ``start_id`` — root directory listing (walk params must
-          be default, else ``BAD_VALUE``);
+        * empty ``start_id`` — root directory listing;
         * ``target`` set — shortest path from ``start_id`` to ``target``
-          (walk params must be default, else ``BAD_VALUE``);
-        * otherwise — relationship walk from ``start_id``; unknown
-          ``start_id`` raises ``UNKNOWN_CONCEPT`` (was: silent empty).
+          (honours ``max_path_length``);
+        * otherwise — relationship walk from ``start_id`` (honours
+          ``relationship``/``direction``/``depth``/``node_type``); an
+          unknown ``start_id`` raises ``UNKNOWN_CONCEPT``.
+
+        Params the chosen mode ignores are refused with ``BAD_VALUE``.
         """
-        walk_non_default = [
-            k for k, v in (("relationship", relationship),
-                           ("direction", direction), ("depth", depth),
-                           ("node_type", node_type))
-            if v != _WALK_DEFAULTS[k]
+        _check_choice("traverse", "relationship", relationship, _RELATIONSHIPS)
+        _check_choice("traverse", "direction", direction, _DIRECTIONS)
+        if not isinstance(depth, int) or depth < 1:
+            raise _bad_value("traverse", f"depth must be >= 1, got {depth!r}",
+                             depth=depth)
+        walk_passed = [
+            k for k, v, d in (("relationship", relationship, "CONTAINS"),
+                              ("direction", direction, "OUTGOING"),
+                              ("depth", depth, 1),
+                              ("node_type", node_type, None))
+            if v != d
         ]
+        path_passed = ["max_path_length"] if max_path_length != 6 else []
 
         if not start_id:
             if target is not None:
-                raise UsageError(
-                    "BAD_VALUE",
+                raise _bad_value(
+                    "traverse",
                     "target needs a non-empty start_id to build a path from",
-                    op="traverse",
-                    fields={"target": target},
+                    target=target,
                 )
-            if walk_non_default:
-                raise UsageError(
-                    "BAD_VALUE",
-                    f"empty start_id lists the root directory; ignores: "
-                    f"{', '.join(sorted(walk_non_default))}",
-                    op="traverse",
-                    fields={"ignored": sorted(walk_non_default)},
-                    remedy="drop the walk params to list the root directory",
-                )
-            return self.list_directory("")
+            ignored = walk_passed + path_passed
+            mode = "root listing"
+        elif target is not None:
+            ignored = walk_passed
+            mode = "path"
+        else:
+            ignored = path_passed
+            mode = "walk"
+        if ignored:
+            raise OKFError(
+                "BAD_VALUE",
+                f"traverse {mode} mode ignores: {', '.join(ignored)}",
+                op="traverse",
+                fields={"mode": mode, "ignored": ignored},
+                remedy="drop the ignored params",
+            )
 
+        if not start_id:
+            return self.list_directory("")
         if target is not None:
-            if walk_non_default:
-                raise UsageError(
-                    "BAD_VALUE",
-                    f"target mode ignores: {', '.join(sorted(walk_non_default))}",
-                    op="traverse",
-                    fields={"ignored": sorted(walk_non_default)},
-                )
             return self.search_engine.find_path(
                 start_id=start_id, target=target,
                 max_path_length=max_path_length,
             )
-
         if not self.search_engine.node_exists(start_id):
-            raise UsageError(
-                "UNKNOWN_CONCEPT",
-                f"start_id '{start_id}' does not exist",
-                op="traverse",
-                fields={"start_id": start_id},
-            )
+            raise _unknown_concept("traverse", "start_id", start_id)
         return self.search_engine.traverse(
             start_id, relationship=relationship, direction=direction,
             depth=depth, node_type=node_type,

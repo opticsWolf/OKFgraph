@@ -35,20 +35,27 @@ re-extracting it from files.
 - `kind="md"`: `md_path` (+ optional `concept_id`, `title`, `description`,
   `tags`, `mode`).
 - `kind="pdf"`: `pdf_path` (+ `routing_mode`, `extract_images`, `mode`).
+- Omitted `mode` follows the configured `[import] mode` (default `text`).
+- `data` per kind: md → `{concept_id, title, chunk_count, image_count,
+  lint_issues, ...}`; thoughts → `{concept_id, topic, chunk_count, ...}`;
+  pdf → `{concept_ids, page_count, md_path, image_dir}`. Params that
+  belong to another kind are refused, not ignored.
 
 ## CLI: `okf ingest`
 
 - `--kind thoughts --thoughts TEXT --topic TOPIC [--tags a,b]`
 - `--kind md --md-path F [--concept-id ID] [--title T] [--tags a,b]`
 - `--kind pdf --pdf-path F [--routing-mode ...]` — auto-imports by default;
-  `--no-auto-import` converts only (`--output-dir DIR` chooses where).
-  Bulk: `okf import --all --bundle-path DIR` (`--prune-missing` drops
+  `--no-auto-import` converts only (next to the source, or
+  `--output-dir DIR`), then `okf import --all --bundle-path DIR`.
+  Bulk: `okf import --all [--bundle-path DIR]` (`--prune-missing` drops
   concepts whose files vanished from disk).
+- `--json` prints the same `data` as the MCP tool inside the envelope.
 
 ## Namespaced IDs (multi-root graphs)
 
-- A file inside a named root (`okf init --root ALIAS=PATH`, repeatable —
-  the primary root is `--bundle-root PATH`) mints
+- A file inside a named root (TOML `[[roots]]` or `--root ALIAS=PATH`,
+  repeatable — the primary root is `bundle_root`) mints
   `@alias/rel` instead of the bare id — same stem in two roots no longer
   collides. Omit `--concept-id` to get the resolved id; an explicit
   `--concept-id` always wins.

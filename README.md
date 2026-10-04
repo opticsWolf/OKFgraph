@@ -126,7 +126,7 @@ imgs = router.list_images(cid)
 row = router.get_image(imgs[0]["id"])
 
 # Maintain: drift, health, links
-print(router.diff(Path("kb/"))["identical"])   # in sync; differs -> DIFF_DIFFERENT
+print(router.diff(Path("kb/"))["identical"])   # in sync; differs -> DIFF_DIFFERENT (report on err.data)
 print(router.doctor()["report"]["score"])      # 0-100
 print(router.doctor(stale_days=365, fix=True))  # repair pass, then re-score
 print(router.repair_links())                    # re-point broken links -> {"repaired": n}
@@ -142,9 +142,12 @@ router.close()
 
 | Kind | Entry point | Notes |
 |---|---|---|
-| `md` | `router.ingest("md", md_path=…, concept_id?, title?, tags?, mode?)` | mordant-linted; frontmatter wins over overrides |
-| `pdf` | `router.ingest("pdf", pdf_path=…, routing_mode?…) -> {"concept_ids","images"}` | bobine converter; auto-imports by default (`--no-auto-import` converts only) |
-| `thoughts` | `router.ingest("thoughts", thoughts=…, topic=…) -> {"concept_id"}` | cheapest, highest value: persist session reasoning with a stable topic scheme (`auth-refactor`, `api-design`) |
+| `md` | `router.ingest("md", md_path=…, concept_id?, title?, description?, tags?, mode?) -> {"concept_id","chunk_count","image_count",…}` | mordant-linted; frontmatter wins over overrides |
+| `pdf` | `router.ingest("pdf", pdf_path=…, routing_mode?, extract_images?, auto_import?, output_dir?) -> {"concept_ids","page_count","md_path","image_dir"}` | bobine converter; auto-imports by default (`auto_import=False` / `--no-auto-import` converts only, into `output_dir` or next to the source) |
+| `thoughts` | `router.ingest("thoughts", thoughts=…, topic=…, concept_id?, tags?) -> {"concept_id","topic","chunk_count",…}` | cheapest, highest value: persist session reasoning with a stable topic scheme (`auth-refactor`, `api-design`) |
+
+Params that belong to another kind are refused (`BAD_VALUE` naming them),
+not silently dropped.
 
 Frontmatter that matters: `title`, `type`, `tags`, `aliases: [...]` (wikilink
 names), `id:` (stable identity, preserved as `uid`, written back on export),
@@ -162,9 +165,12 @@ flags (`--db-path`, `--bundle-root`, `--embedding-dim`, `--model-id`,
 `--max-length`, …) are documented once in `okf --help`, accepted everywhere,
 and usually live in `okfgraph.toml`. Every command accepts `--json` (D5):
 human renderer by default, the result envelope
-(`{ok, op, data, warnings, error}`) on stdout with `--json`; errors print a
-human line on stderr with the envelope carrying the exit plan
-(0 ok / 1 state·outcome / 2 usage).
+(`{ok, op, data, warnings, error}`) on stdout with `--json`. Results always
+go to stdout and logs to stderr (`-q` silences logs, never results).
+Failures print `[ERROR] CODE: message (remedy)` on stderr (plus the error
+envelope on stdout under `--json`) and exit 0 ok / 1 state·outcome / 2
+usage. Outcomes (`lint` errors, `diff` differences, `doctor --strict`
+findings) still render their report before exiting 1.
 
 | Command | Description |
 |---|---|
@@ -177,14 +183,16 @@ human line on stderr with the envelope carrying the exit plan
 | `okf diff [OLD] [NEW] [--json]` | Snapshot (two dirs, no model) or drift (graph vs dir); exit 0 identical / 1 different |
 | `okf lint [DIR] [--json]` | Pre-import gate (no DB, no model); exit 0 clean / 1 errors / 2 bad dir |
 | `okf doctor [--fix] [--strict] [--stale-days N] [--json]` | Score + findings; `--fix` repairs safely, `--strict` exits 1 on any finding |
-| `okf import [FILE...] [--all] [--prune-missing] [--mode text] [--force]` | Single files / bulk import, delta-aware (`--force` re-attaches a detached graph); `okf init --root ALIAS=PATH` / TOML `[[roots]]` add named roots (`@alias/` IDs, unmounted ≠ deleted, `--prune-missing` skips while any root is absent); `--bundle-path DIR` pins one tree for this call |
+| `okf import [FILE...] [--all] [--prune-missing] [--mode text] [--force]` | Single files / bulk import, delta-aware (`--force` re-attaches a detached graph); TOML `[[roots]]` (or per-call `--root ALIAS=PATH`) add named roots (`@alias/` IDs, unmounted ≠ deleted, `--prune-missing` skips while any root is absent); `--bundle-path DIR` pins one tree for this call |
 | `okf produce --from sqlite --source DB --output-dir DIR` | Generate a bundle from a data source (one concept per table, FK links, `## Observations` notes, `log.md` changelog); lint pre-flighted, CLI-only |
 | `okf detach [--bundle-path DIR] [--no-verify] [--force]` | End the mirror: the DB becomes the artifact (verify-first; imports refuse without `--force`) |
 | `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf deleted-*` | Setup, cache inspection, REPL, index rebuild, link + soft-delete maintenance |
 
-Every CLI call cold-boots the router (model load ~30s when the embedder is
-needed) — batch reads, and reach for `--rank ppr` for topic queries in cold
-sessions. Omit `--bundle-root` entirely for file-free mode: thoughts ingest,
+Only commands that embed text (`search` except `--rank ppr`, `import`,
+`ingest`) load the model (~30s cold per process); `read`, `traverse`,
+`lint`, `diff`, `doctor` and `export` never do — batch searches, use
+`okf shell` for a warm session, and reach for `--rank ppr` for topic
+queries in cold sessions. Omit `--bundle-root` entirely for file-free mode: thoughts ingest,
 search, read, traverse, doctor, and export work from the DB alone (file-side
 ops fail fast naming the missing root). Thought IDs are namespaced
 (`thoughts/<topic>/<ts>_<id>`), so a fileless graph exports into a tidy tree.
@@ -194,7 +202,10 @@ ops fail fast naming the missing root). Thought IDs are namespaced
 ## MCP server
 
 8 tools, MCP ≥ 2.0, stdio transport. Wire once per project with a **stable**
-`--db-path` + `--bundle-root` (a temp dir means amnesia every session); first
+database — `--db-path`, `OKFGRAPH_DB_PATH` or `[database] db_path` in
+`okfgraph.toml`; the server refuses to boot without one (`CONFIG_INVALID`,
+exit 2) since a temp dir means amnesia every session. `--bundle-root`
+defaults to the database's parent directory. First
 boot creates the schema; pre-approve the `ingest` / `export_bundle` /
 `export_concept` write tools for knowledge workflows. `.mcp.json` ships a
 ready config (`uv run --project . okf-mcp`). Every tool returns the result
@@ -298,21 +309,25 @@ Key design decisions:
 One vocabulary of 23 operations on the facade (mixins `QueryOps`,
 `IngestOps`, `ExportOps`, `AdminOps`); every failure raises
 `OKFError(code, message, fields?, remedy?)` — `UsageError` (exit 2) for
-caller mistakes, `StateError`/`OutcomeError` (exit 1) for graph state.
+caller mistakes, `StateError`/`OutcomeError` (exit 1) for graph state and
+domain outcomes (the class always follows the code). Outcome errors
+(`DIFF_DIFFERENT`, `DOCTOR_FINDINGS`, `LINT_ERRORS`) carry the full result
+on `err.data`. A passed param the chosen path ignores is refused with
+`BAD_VALUE` naming it in `fields["ignored"]`.
 
 | Op | Description |
 |---|---|
-| `search(query, target="concepts", limit?, concept_type?, tags?, parent_id?, include_chunks?, expand?, hub_rerank?, rank="none"\|"hub"\|"ppr")` | RRF hybrid; `hub` blends authority, `ppr` is model-free |
-| `read(concept_id, include="body"\|"chunks"\|"document"\|"context", max_tokens?)` | Full shapes or budgeted section list |
+| `search(query, target="concepts", limit?, concept_type?, tags?, parent_id?, include_chunks?, max_chunks_per_doc?, expand?, context_hops?, hub_rerank?, hub_weight?, rank="none"\|"hub"\|"ppr")` | RRF hybrid; `hub` blends authority, `ppr` is model-free; chunk paths: `hub_rerank` > `expand` > plain |
+| `read(concept_id, include="body"\|"chunks"\|"document"\|"context", max_tokens?)` | Concept dict / chunk dicts (no embeddings) / `{"concept_id","markdown"}` / `{incoming_links, outgoing_links, ancestry, siblings}`; or a budgeted `{sections, used, budget, truncated}` |
 | `traverse(start_id, relationship?, direction?, depth?, node_type?, target?, max_path_length?)` | Walk, list (empty id = root), connect |
 | `ingest(kind, …)` | `md` / `pdf` / `thoughts`, per-kind params, lint + chunk + embed + link |
 | `import_file(path, mode?) {"concept_id","images"}` / `import_bundle(path?, …, prune_missing?) {"concept_ids","images"}` | Single / whole-bundle delta import |
 | `export_bundle(output_dir, directory_id?, concept_type?, tags?, flavor?) {"concept_ids",…}` / `export_concept(concept_id, output_dir, flavor?) {"path"}` | Both flavors |
 | `list_images(concept_id)` / `get_image(asset_id)` | Image ops (metadata; bytes + base64) |
 | `init() {"db_path","embedding_dim","model_id"}` / `model_info(…)` (static) / `reindex(if_dirty?)` | Schema, cache inspection, index rebuild |
-| `doctor(stale_days?, fix?, strict?)` / `lint(dir)` (static) / `produce(kind, source?, …)` (static) / `diff(old?, new?)` | Health, pre-import gate, bundles from sources, structural diff (differs → `DIFF_DIFFERENT`, report in `fields`) |
+| `doctor(stale_days?, fix?, strict?) {"report","fixed"}` / `lint(dir)` (static) / `produce(source_type, source_path?, output_dir?, prefix?, overwrite?)` (static) / `diff(old?, new?)` / `diff_dirs(old, new)` (static) | Health, pre-import gate, bundles from sources, structural diff; `strict` findings, lint errors and differences raise outcome errors with the result on `err.data` |
 | `list_deleted()` / `recover_deleted(id)` / `purge_deleted(older_than?)` / `detach(bundle_path?, verify?, force?)` | Soft-delete + mirror lifecycle |
-| `list_broken_links()` / `repair_links(skip_sources?)` | Unresolved refs; exact-id + unique-name repair |
+| `list_broken_links() [{source, target}]` / `repair_links() {"repaired"}` | Unresolved refs; exact-id + unique-name repair |
 
 Components remain reachable for advanced use (`search_engine.search_hybrid`,
 `embed_engine.count_tokens`, `export_mgr`, `diff_mgr`, …); the ops are the

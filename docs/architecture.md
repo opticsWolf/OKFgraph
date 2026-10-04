@@ -1,7 +1,7 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.5 (as-built for okfgraph 0.8.x–0.9.0 — ONNX vision restored per `docs/plan-onnx-only-followup.md` Phase 6 (`JinaV5Vision` via embroider 0.3); §10d producers + observations, file-free `bundle_root=None`, namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)  
-**Based on**: Architecture v6.4 (0.7.x tree)  
+**Version**: 6.6 (as-built for okfgraph 0.10.0 — surface unification per `docs/surface-unification-plan.md`: one 23-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)  
+**Based on**: Architecture v6.5 (0.8.x–0.9.0 tree)  
 **Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.3.x`, `bobine 0.5.12`, `onnxruntime==1.29.0`
 
 > **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
@@ -23,6 +23,20 @@
 **Search Modes**: Hybrid (RRF fusion, vector + FTS, `rank=none|hub|ppr`), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
 
 ---
+
+## Summary of Changes (v6.5 → v6.6)
+
+As-built for okfgraph 0.10.0 (`docs/surface-unification-plan.md`; full
+rename list in `CHANGELOG.md`):
+
+| Area | v6.5 (0.9.0) | v6.6 (0.10.0) | Reason |
+|---|---|---|---|
+| **Operations** | Per-surface spellings, `*args/**kwargs` proxies | **23 ops on the `OKFRouter` facade** (`okfgraph/ops/`), CLI/MCP are thin adapters | One vocabulary |
+| **Results** | Mixed strings / models / dicts | **Envelope `{ok, op, data, warnings, error}`** on CLI `--json` and MCP; ops return JSON-able data | D2/D5/D7 |
+| **Errors** | `ValueError`/`RuntimeError`, silent skips | **Typed `OKFError` codes** (usage → exit 2, state/outcome → exit 1); outcome reports on `err.data`; MCP `isError` | §4 |
+| **Refusals** | Ignored params silently dropped | **`BAD_VALUE` naming the ignored params** (search, traverse, ingest) | X3 |
+| **Settings** | `config.py` + hand-written flags | **`settings.py` table** generates CLI/MCP flags, env names, TOML keys; CLI > env > TOML > defaults | §3.1 |
+| **MCP** | 5 tools | **8 tools** (+ `export_concept`, `list_images`, `get_image`); `db_path` from flag, env or TOML | Q5 |
 
 ## Summary of Changes (v6.4 → v6.5)
 
@@ -1074,12 +1088,18 @@ map 1:1 onto `search`, `read`, `traverse`, `ingest`, `export_bundle`,
 `export_concept`, `list_images`, `get_image`; everything else is
 library/maintenance surface. Every command accepts `--json` for the D5
 envelope and exits by the §4 exit plan (0 ok / 1 state+outcome / 2 usage).
+Handlers are parse → op → render: the op owns validation and refusals,
+`_out` prints the envelope (`--json`) or the command's human renderer, and
+one catch-all (`_main_catchall`) turns any `OKFError` into `[ERROR] CODE:
+message (remedy)` on stderr (plus the error envelope on stdout under
+`--json`). Outcome errors (lint / diff / doctor) render their report from
+`err.data` first. Results go to stdout, logs to stderr (D6).
 
 | Command | Description |
 |---|---|
 | `okf init` | Initialize database and schema |
 | `okf model-info` | Show model cache status (location, size, cached/missing) |
-| `okf import <files>` | Import one or more OKF files |
+| `okf import <files>` | Import one or more OKF files (all paths checked first: `FILE_NOT_FOUND`) |
 | `okf import --all [--prune-missing]` | Import every configured root (or a `--bundle-path` pin) and prune concepts whose source files vanished |
 | `okf search <query>` | Hybrid search over concepts (type/tags/parent/limit filters) |
 | `okf search <query> --target chunks\|images` | Chunk-level RRF search, or image search via the unified index |
@@ -1087,8 +1107,8 @@ envelope and exits by the §4 exit plan (0 ok / 1 state+outcome / 2 usage).
 | `okf read <id> [--include body\|chunks\|document\|context]` | Fetch a concept, its chunks, the reconstructed document, or graph context |
 | `okf traverse <id>` | Graph traversal (relationship/direction/depth); no id = root listing; two ids = shortest path |
 | `okf ingest --kind md\|pdf\|thoughts <path>` | Add one piece of content (PDF/Office through bobine, §10; thoughts mint `thoughts/<topic>/<ts>_<id>` namespaces) |
-| `okf produce --from sqlite --source DB --output DIR` | Generate a bundle from a data source (§10d; lint pre-flight included) |
-| `okf export --all --output-dir <dir>` | Export entire bundle (OKF or Obsidian flavor) |
+| `okf produce --from sqlite --source DB --output-dir DIR` | Generate a bundle from a data source (§10d; lint pre-flight included) |
+| `okf export --all\|--concept-id ID --output-dir <dir>` | Export entire bundle (filters: `--concept-type`, `--tags`, `--directory-id`) or one concept; OKF or Obsidian flavor |
 | `okf images <id>` / `okf image <asset-id> [--output-path F]` | List a concept's image assets; dump one asset's bytes |
 | `okf diff` | Structural diff: concepts/edges/broken-link deltas |
 | `okf doctor` | Health scan: score, findings, safe `--fix` |
@@ -1108,24 +1128,33 @@ envelope and exits by the §4 exit plan (0 ok / 1 state+outcome / 2 usage).
 | `--embedding-dim <int>` | `512` | Embedding dimension (Matryoshka ladder) |
 | `--model-id <id>` / `--image-model-id <id>` | registry | Text / vision model ids (switching forces fresh reimport) |
 | `--precision auto\|fp32\|fp16\|int8` | `auto` | Weight precision, fail-closed pin per graph |
-| `--json` | — | Print the result envelope on stdout instead of the human render (D5) |
-| `--cache-dir` | `~/.cache/huggingface` | HuggingFace model cache directory |
 | `--cache-dir <path>` | `~/.cache/huggingface` | HuggingFace model cache directory |
-| `--device cpu\|cuda` | `cpu` | Inference device (or from okfgraph.toml) |
+| `--device auto\|cpu\|cuda` | `auto` | Inference device (`auto` = CUDA when present) |
+| `--allow-remote-images` | off | Fetch `http(s)://` image URLs during ingestion |
+| `--json` | — | Print the result envelope on stdout instead of the human render (D5) |
+| `-v` / `-q` / `--log-file F` | — | Debug logs / errors only / rotating log file (logs only; results are unaffected) |
+| `--profile` | — | cProfile the invocation, stats on stderr |
+
+Every settings flag is generated from the table in `okfgraph/settings.py`
+and has an `OKFGRAPH_*` env var and an `okfgraph.toml` key; precedence is
+CLI > env > TOML > defaults, per key. Invalid configuration is
+`CONFIG_INVALID` (exit 2).
 
 ### 5.4. Import Options
 
 | Option | Default | Description |
 |---|---|---|
-| `--mode <mode>` | `text` | Image ingestion mode: `text` (captions), `optional`/`omni` (ONNX vision, text-nano graphs only) |
-| `--allow-remote-images` | — | Fetch `http(s)://` image URLs during ingestion (off by default) |
-| `--batch-size <int>` | `32` | Batch size for encoding |
+| `--mode <mode>` | `[import] mode` (`text`) | Image ingestion mode: `text` (captions), `optional`/`omni` (ONNX vision, text-nano graphs only) |
+| `--batch-size <int>` | `[import] batch_size` (`32`) | Batch size for encoding |
 | `--prune-missing` | — | With `--all`: remove concepts whose source files were deleted from disk (prunes concept, chunks, links, and orphaned image assets) |
 
 ### 5.5. Interactive Shell
 
-The `okf shell` command opens a REPL with its **own inline grammar** (not
-the `okf <verb>` syntax) — `help` inside the shell lists it:
+The `okf shell` command opens a REPL with an inline shorthand that
+`_shell_argv` translates into ordinary `okf <verb>` argv, parsed by the
+same `build_parser()` and rendered by the same handlers (one router for the
+whole session, so the model loads once). Any CLI flag works after the
+verb; `help` inside the shell lists the shorthand:
 
 ```
 > search chunks:transformer efficiency
@@ -1133,7 +1162,8 @@ the `okf <verb>` syntax) — `help` inside the shell lists it:
 > search <query> hub         # chunk hits reranked by hub score
 > read <id> [chunks|document|context]
 > traverse <id1> <id2>       # shortest path
-> ingest notes.md --auto-import
+> ingest paper.pdf          # converts + imports; --no-auto-import converts only
+> search auth --rank ppr --limit 5
 > model-info
 ```
 
@@ -1269,7 +1299,7 @@ mcp.run(transport="stdio")
 
 | Parameter | Default | Description |
 |---|---|---|
-| `--db-path` | **(required)** | Path to the Ladybug database file |
+| `--db-path` | **(required)** | Path to the Ladybug database file — flag, `OKFGRAPH_DB_PATH` or `[database] db_path` in `okfgraph.toml`; none set → `[ERROR] CONFIG_INVALID`, exit 2 |
 | `--bundle-root` | db parent | Root directory for the OKF bundle |
 | `--device` | `auto` | Device for ONNX inference (`auto` = CUDA when present, else CPU; `cpu`/`cuda` pin it) |
 | `--precision` | `auto` | Weight precision: `auto` follows the resolved device (CUDA→FP16 mirror, CPU→FP32); `fp32`/`fp16` pin it; pinned per graph in Meta (fail-closed) |

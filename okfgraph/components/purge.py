@@ -8,10 +8,9 @@ import json
 import logging
 import time
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional
 
-from okfgraph.models import ChunkModel, ConceptModel
 
 logger = logging.getLogger(__name__)
 

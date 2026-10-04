@@ -8,7 +8,7 @@ import logging
 
 import pytest
 
-from okfgraph.errors import OutcomeError
+from okfgraph.errors import OKFError, OutcomeError
 from okfgraph.components.import_ import parse_source_file
 from okfgraph.components.roots import (
     namespaced_id,
@@ -440,10 +440,10 @@ class TestSurfaces:
 
         args = build_parser().parse_args(
             ["doctor", "--root", "no-equals-here"])
-        with pytest.raises(SystemExit) as e:
+        with pytest.raises(OKFError) as e:
             _router(args)
-        assert e.value.code == 2
-        assert "ALIAS=PATH" in capsys.readouterr().out
+        assert e.value.code == "CONFIG_INVALID" and e.value.exit_code == 2
+        assert "ALIAS=PATH" in e.value.message
 
     def test_cli_bundle_root_alias_path_refused(self, tmp_path, capsys):
         # Retired spelling: --bundle-root ALIAS=PATH now points at --root.
@@ -452,11 +452,10 @@ class TestSurfaces:
 
         args = build_parser().parse_args(
             ["doctor", "--bundle-root", "aa=/definitely-not-here"])
-        with pytest.raises(SystemExit) as e:
+        with pytest.raises(OKFError) as e:
             _router(args)
-        assert e.value.code == 2
-        out = capsys.readouterr().out
-        assert "--root" in out and "ALIAS=PATH" in out
+        assert e.value.code == "CONFIG_INVALID" and e.value.exit_code == 2
+        assert "--root" in e.value.message and "ALIAS=PATH" in e.value.message
 
     def test_toml_roots_relative_to_toml(self, tmp_path):
         from okfgraph.settings import Settings
@@ -548,10 +547,10 @@ class TestSurfaces:
             r.import_mgr.import_bundle()
             assert r.diff()["identical"] is True
             (a / "q.md").write_text(_doc("Q v2"), encoding="utf-8")
-            # Drift raises DIFF_DIFFERENT with the report in fields (§4).
+            # Drift raises DIFF_DIFFERENT with the report on err.data (§4).
             with pytest.raises(OutcomeError) as exc:
                 r.diff()
-            assert exc.value.fields["report"]["changed"] == ["@aa/q"]
+            assert exc.value.data["changed"] == ["@aa/q"]
         finally:
             r.close()
 

@@ -10,6 +10,11 @@ uv run --project . okf-mcp --db-path ./kb.db --bundle-root .
 ```
 
 - Transport: stdio (default). Entry point: `okf-mcp` (`okfgraph.mcp_server:main`).
+- The database must be set explicitly: `--db-path`, `OKFGRAPH_DB_PATH`, or
+  `[database] db_path` in an `okfgraph.toml` in the server's CWD (or its
+  `--bundle-root`). Without one the server exits 2 with
+  `[ERROR] CONFIG_INVALID` on stderr instead of silently opening a fresh
+  graph. Boot flags are the CLI's global flags (same table, same env names).
 - Dependencies resolve from `pyproject.toml` (`uv sync`); the embedding
   engine is the external `embroider` package (PyPI wheels, also used by
   bobine — no Rust toolchain needed to run okfgraph).
@@ -73,9 +78,12 @@ maintenance commands (`init`, `model-info`, `import`, `diff`, `doctor`, `lint`,
 `produce`, `shell`, `reindex`, `broken-links`, `repair-links`, `deleted-*`,
 `detach`). Useful when MCP is unavailable or for shell scripting. Every
 command takes `--json`: the human renderer by default, the result envelope
-(`{ok, op, data, warnings, error}`) on stdout under `--json`; failure paths
-print `[ERROR] code: message` on stderr and exit 2 (usage) / 1 (state,
-diff/doctor/lint outcomes).
+(`{ok, op, data, warnings, error}`) on stdout under `--json`; results go to
+stdout and logs to stderr (`-q` silences logs only). Failure paths print
+`[ERROR] CODE: message (remedy)` on stderr and exit 2 (usage) / 1 (state,
+diff/doctor/lint outcomes — those still print their report first). Only
+commands that embed text (`search` except `--rank ppr`, `import`,
+`ingest`) load the model, so `read`/`traverse`/`doctor` stay fast.
 
 ## Cold search (no model load)
 
@@ -99,5 +107,9 @@ budgeted section list (self first, then PPR-ranked neighbours).
   carries `isError: true` and the text is the error envelope — typed code,
   message, fields, remedy; untyped component exceptions arrive wrapped as
   `INTERNAL` with the type name (no bare tracebacks).
+- Params a tool path ignores are refused with `BAD_VALUE` naming them in
+  `fields.ignored` (e.g. `context_hops` without `expand`, filters on
+  `target="images"`, `title` on `kind="thoughts"`), so an agent learns the
+  contract from the first mistake instead of getting silently wrong results.
 All tools carry descriptions, JSON schemas, and read-only/destructive
 annotations — harnesses can gate writes on those.

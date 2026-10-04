@@ -194,9 +194,9 @@ def _init(args):
     logger = logging.getLogger("cli")
     logger.info("initializing database at %s (dim=%d)",
                 settings.db_path, settings.embedding_dim)
-    _router(args)
+    pins = _router(args).init()
     logger.info("database initialized (embedding_dim=%d)",
-                settings.embedding_dim)
+                pins["embedding_dim"])
 
 
 def _model_info(args):
@@ -233,6 +233,9 @@ def _import(args):
     purge = getattr(args, "prune_missing", False)
     try:
         return _import_inner(args, router, mode, purge)
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
     except RuntimeError as e:
         print(f"[ERROR] {e}")
         return 1
@@ -245,16 +248,18 @@ def _import_inner(args, router, mode, purge):
         # --bundle-root never pins. No scope clash exists any more.
         pinned = getattr(args, "bundle_path", None)
         bundle_path = Path(pinned) if pinned else None
-        ids = router.import_mgr.import_bundle(
+        result = router.import_bundle(
             bundle_path,
             batch_size=getattr(args, "batch_size", 32) or 32,
             mode=mode,
-            purge_deleted=purge,
+            prune_missing=purge,
             force=getattr(args, "force", False),
         )
+        ids = result["concept_ids"]
+        images = result["images"]
         logger.info("imported %d concept(s) (mode: %s)", len(ids), mode)
         for cid in ids:
-            n = len(router.image_mgr.list_images(cid))
+            n = images.get(cid, 0)
             suffix = f"  [{n} image(s)]" if n else ""
             logger.info("  %s%s", cid, suffix)
     else:
@@ -263,11 +268,16 @@ def _import_inner(args, router, mode, purge):
             if not path.exists():
                 logger.warning("skipping %s: file not found", fp)
                 continue
-            cid = router.import_from_okf(
-                path, mode=mode, force=getattr(args, "force", False)
-            )
-            imgs = router.image_mgr.list_images(cid)
-            suffix = f" ({len(imgs)} image(s), mode: {mode})" if imgs else ""
+            try:
+                result = router.import_file(
+                    path, mode=mode, force=getattr(args, "force", False)
+                )
+            except OKFError as err:
+                logger.error("%s: %s", err.code, err.message)
+                return err.exit_code
+            cid = result["concept_id"]
+            n = result["images"]
+            suffix = f" ({n} image(s), mode: {mode})" if n else ""
             logger.info("imported: %s%s", cid, suffix)
 
 
@@ -543,8 +553,8 @@ def _broken_links(args):
 def _repair_links(args):
     logger = logging.getLogger("cli")
     router = _router(args)
-    count = router.repair_links()
-    logger.info("repaired %d link(s)", count)
+    result = router.repair_links()
+    logger.info("repaired %d link(s)", result["repaired"])
 
 
 def _lint(args):
@@ -554,14 +564,23 @@ def _lint(args):
     "is this bundle well-formed?" before an import cycle is spent.
     Exit 0 = clean (warnings ok), 1 = errors, 2 = usage (bad dir).
     """
-    from okfgraph.components.lint import lint_bundle
-
     given = getattr(args, "dir", None) or "."
     target = Path(given)
     if not target.is_dir():
-        print(f"[ERROR] not a bundle directory: {target}")
+        print(f"[ERROR] not a bundle directory: {target}", file=sys.stderr)
         return 2
-    report = lint_bundle(target)
+    try:
+        report = OKFRouter.lint(target)
+    except OKFError as err:
+        if getattr(args, "json", False):
+            print(json.dumps({"files": 0, "errors": err.fields["errors"],
+                              "warnings": [], "clean": False},
+                             indent=2, default=str))
+        else:
+            print("[ERROR] LINT_ERRORS", file=sys.stderr)
+            for e in err.fields["errors"]:
+                print(f"  [ERROR] {e['file']} {e['rule']}: {e['message']}")
+        return 1
     if getattr(args, "json", False):
         print(json.dumps(report, indent=2, default=str))
     else:
@@ -587,32 +606,21 @@ def _produce(args):
     Exit 0 = produced + lint-clean, 1 = produced but lint errors (or the
     source is unreadable), 2 = usage (unknown producer, missing file).
     """
-    from okfgraph.components.lint import lint_bundle
-    from okfgraph.components.producers import PRODUCERS, producer_for
-
     which = getattr(args, "from_", None)
-    if which not in PRODUCERS:
-        print(f"[ERROR] unknown producer {which!r} "
-              f"(available: {sorted(PRODUCERS)})")
-        return 2
     source = getattr(args, "source", None)
     out = Path(str(getattr(args, "output", None) or "."))
     try:
-        bundle = producer_for(which).produce(
-            source,
-            out,
+        result = OKFRouter.produce(
+            which, source, out,
             prefix=getattr(args, "prefix", None) or None,
             overwrite=bool(getattr(args, "overwrite", False)),
         )
-    except FileNotFoundError as exc:
-        print(f"[ERROR] {exc}")
-        return 2
-    except (ValueError, FileExistsError) as exc:
-        print(f"[ERROR] {exc}")
-        return 1
-    print(f"[OK] {bundle.producer}: {bundle.files} file(s) "
-          f"from {bundle.source} → {bundle.root / bundle.prefix}/")
-    report = lint_bundle(out)
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
+    report = result["lint"]
+    print(f"[OK] {result['producer']}: {result['files']} file(s) "
+          f"from {result['root']}/")
     n_err, n_warn = len(report["errors"]), len(report["warnings"])
     print(f"lint: {report['files']} file(s): {n_err} error(s), {n_warn} warning(s)")
     for e in report["errors"]:
@@ -625,32 +633,43 @@ def _produce(args):
     return 1
 
 
+def _no_db_diff(old, new):
+    """Snapshot diff without a router (the op class lives on the router;
+    the static path is expressed via a throwaway instance-free call)."""
+    from okfgraph.components.diff import DiffManager
+    if old and new and Path(old).is_dir() and Path(new).is_dir():
+        return DiffManager(None).diff_dirs(Path(old), Path(new))
+    from okfgraph.errors import OKFError
+    raise OKFError("BAD_VALUE", "diff needs two bundle directories (or one side + --db/--bundle-root)",
+                   fields={"old": str(old), "new": str(new)})
+
+
 def _diff(args):
     """Structural diff: snapshot (dir vs dir) or drift (graph vs dir).
 
     Returns an exit code (0 = identical, 1 = different) for CI gating;
     main() propagates int returns to sys.exit.
     """
-    from okfgraph.components.diff import DiffManager
-
     old = getattr(args, "old", None)
     new = getattr(args, "new", None)
     as_json = getattr(args, "json", False)
-    if old and new and Path(old).is_dir() and Path(new).is_dir():
-        # Snapshot mode needs no database (and no model load).
-        result = DiffManager(None).diff_dirs(Path(old), Path(new))
-    elif old and new:
-        print("[ERROR] diff needs two bundle directories (or one + --db/--bundle)")
-        return 2
-    else:
-        router = _router(args)
-        # No explicit side: drift against every configured tree (None =
-        # primary alone in single-root, all roots in multi-root, §2.8).
-        side = Path(old or new) if (old or new) else None
-        if side is not None and not side.is_dir():
-            print(f"[ERROR] not a bundle directory: {side}")
-            return 2
-        result = router.diff_db_dir(side)
+    try:
+        # The op refuses BAD_VALUE for malformed sides and raises
+        # DIFF_DIFFERENT (report inside error.fields) when they differ.
+        # A router is only needed for drift; snapshot mode is router-free.
+        needs_db = not (old and new)
+        router = _router(args) if needs_db else None
+        result = router.diff(old, new) if router else _no_db_diff(old, new)
+    except OKFError as err:
+        if err.code == "DIFF_DIFFERENT":
+            report = err.fields["report"]
+            if as_json:
+                print(json.dumps(report, indent=2, default=str))
+            else:
+                _print_diff(report)
+            return 1
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
     if as_json:
         print(json.dumps(result, indent=2, default=str))
     else:
@@ -689,11 +708,14 @@ def _detach(args):
     router = _router(args)
     bundle = getattr(args, "bundle_path", None)
     try:
-        report = router.import_mgr.detach(
+        report = router.detach(
             bundle_path=Path(bundle) if bundle else None,
             verify=not getattr(args, "no_verify", False),
             force=getattr(args, "force", False),
         )
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
     except RuntimeError as e:
         print(f"[ERROR] {e}")
         return 1
@@ -726,16 +748,28 @@ def _doctor(args):
     Returns an exit code with --strict (1 when any finding exists).
     """
     router = _router(args)
-    if getattr(args, "fix", False):
-        fixed = router.doctor_fix()
+    try:
+        result = router.doctor(
+            stale_days=getattr(args, "stale_days", 365) or 365,
+            fix=getattr(args, "fix", False),
+            strict=getattr(args, "strict", False),
+        )
+    except OKFError as err:
+        # DOCTOR_FINDINGS keeps the report in fields; render it, then exit 1.
+        result = {"report": err.fields["report"]}
+        if "fixed" in err.fields:
+            result["fixed"] = err.fields["fixed"]
+        strict_cause = True
+    else:
+        strict_cause = False
+    if "fixed" in result:
+        fixed = result["fixed"]
         print(f"[OK] repaired {fixed['repaired_links']} link(s), "
               f"normalized {fixed['normalized_timestamps']} timestamp(s), "
               f"cleared {fixed.get('cleared_orphan_hashes', 0)} orphan hash row(s)")
         if fixed["skipped_reviewed"]:
             print(f"  skipped reviewed: {', '.join(fixed['skipped_reviewed'])}")
-    report = router.diagnose(
-        stale_days=getattr(args, "stale_days", 365) or 365,
-    )
+    report = result["report"]
     if getattr(args, "json", False):
         print(json.dumps(report, indent=2, default=str))
     else:
@@ -754,7 +788,7 @@ def _doctor(args):
         print(f"  [root {rt['alias']}] {state} {rt['path']} "
               f"({rt['tracked_files']} tracked file(s), "
               f"{rt['concepts']} concept(s))")
-    if getattr(args, "strict", False) and report["findings"]:
+    if strict_cause:
         return 1
     return 0
 
@@ -762,7 +796,7 @@ def _doctor(args):
 def _reindex(args):
     logger = logging.getLogger("cli")
     router = _router(args)
-    ran = router.schema_mgr.reindex(force=not getattr(args, "if_dirty", False))
+    ran = router.reindex(if_dirty=bool(getattr(args, "if_dirty", False)))["rebuilt"]
     if ran:
         logger.info("search indexes rebuilt")
     else:
@@ -832,10 +866,47 @@ def _ingest(args):
         logger.info("run 'okf import --all --bundle-root %s' to import.", output_dir)
 
 
+def _images(args):
+    """List image assets attached to a concept (UNKNOWN_CONCEPT -> exit 1)."""
+    router = _router(args)
+    try:
+        imgs = router.list_images(args.concept_id)
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
+    if not imgs:
+        print("No images attached.")
+        return
+    print(f"Images for '{args.concept_id}' ({len(imgs)} total)")
+    for im in imgs:
+        alt = im.get("alt_text") or "(no alt-text)"
+        print(f"  [{im.get('embed_route')}] {im.get('file_name')} — {alt}")
+        print(f"     id: {im.get('id')}")
+
+
+def _image(args):
+    """Fetch one image asset: metadata + optional bytes (--output-path)."""
+    import base64
+    router = _router(args)
+    try:
+        row = router.get_image(args.asset_id)
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
+    if getattr(args, "output_path", None):
+        Path(args.output_path).write_bytes(
+            base64.b64decode(row["data"]))
+        print(f"[OK] Image bytes written to {args.output_path}")
+    alt = row.get("alt_text") or "(no alt-text)"
+    print(f"[{row.get('embed_route')}] {row.get('file_name')} — {alt}")
+    print(f"   id: {row.get('id')}")
+    print(f"   mime: {row.get('mime_type')}")
+
+
 def _deleted_list(args):
     """List soft-deleted concepts with recovery status."""
     router = _router(args)
-    deleted = router.purge_mgr.list_deleted_concepts()
+    deleted = router.list_deleted()
     if not deleted:
         print("No soft-deleted concepts found.")
         return
@@ -850,21 +921,22 @@ def _deleted_list(args):
 
 
 def _deleted_recover(args):
-    """Recover a soft-deleted concept."""
+    """Recover a soft-deleted concept (NOT_RECOVERABLE -> exit 1)."""
     router = _router(args)
-    success = router.purge_mgr._recover_concept(args.concept_id)
-    if success:
-        print(f"[OK] Recovered concept '{args.concept_id}'.")
-    else:
-        print(f"[ERROR] Concept '{args.concept_id}' not found or past recovery window.")
+    try:
+        router.recover_deleted(args.concept_id)
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
+    print(f"[OK] Recovered concept '{args.concept_id}'.")
 
 
 def _deleted_purge(args):
     """Permanently delete expired soft-deleted concepts."""
     router = _router(args)
     older_than = getattr(args, "older_than", None)
-    count = router.purge_mgr.purge_deleted_concepts(older_than=older_than)
-    print(f"[OK] Permanently deleted {count} expired concept(s).")
+    result = router.purge_deleted(older_than=older_than)
+    print(f"[OK] Permanently deleted {result['purged']} expired concept(s).")
 
 
 def _shell(args):
@@ -921,8 +993,8 @@ Commands:
             if not fp.exists():
                 print(f"Error: {fp} not found")
                 continue
-            cid = router.import_from_okf(fp, mode=mode)
-            imgs = router.image_mgr.list_images(cid)
+            cid = router.import_file(fp, mode=mode)["concept_id"]
+            imgs = router.list_images(cid)
             suffix = f" ({len(imgs)} image(s), mode: {mode})" if imgs else ""
             print(f"[OK] Imported: {cid}{suffix}")
 
@@ -1059,7 +1131,7 @@ Commands:
                     print(f"  {r['id']} ({r['type']}) — {r.get('title', '')}")
 
         elif cmd == "images" and rest:
-            imgs = router.image_mgr.list_images(rest.strip())
+            imgs = router.list_images(rest.strip())
             if not imgs:
                 print("No images attached.")
             for im in imgs:
@@ -1106,8 +1178,8 @@ Commands:
                     print(f"  {link['source']} → {link['target']}")
 
         elif cmd == "repair-links":
-            count = router.repair_links()
-            print(f"[OK] Repaired {count} link(s)")
+            result = router.repair_links()
+            print(f"[OK] Repaired {result['repaired']} link(s)")
 
         elif cmd == "ingest" and rest:
             # Minimal shell dispatch for ingest — delegates to the CLI handler.
@@ -1420,6 +1492,20 @@ def build_parser():
                    help="Acknowledge mismatches / untracked files / source-only "
                    "artifacts (WILL-NOT-SURVIVE) and detach anyway")
 
+    # images (Q5 -> B: image ops on all surfaces)
+    p = sub.add_parser("images", help="List image assets attached to a concept")
+    _add_global(p)
+    _add_logging_flags(p)
+    p.add_argument("concept_id", help="Concept ID")
+
+    # image
+    p = sub.add_parser("image", help="Fetch one image asset (metadata; --output-path writes bytes)")
+    _add_global(p)
+    _add_logging_flags(p)
+    p.add_argument("asset_id", help="Image asset ID")
+    p.add_argument("--output-path", dest="output_path", default=None,
+                   help="Write the image bytes here (default: metadata only)")
+
     return parser
 
 
@@ -1455,6 +1541,8 @@ def main():
         "read": _read,
         "traverse": _traverse,
         "export": _export,
+        "images": _images,
+        "image": _image,
         "shell": _shell,
         "broken-links": _broken_links,
         "repair-links": _repair_links,

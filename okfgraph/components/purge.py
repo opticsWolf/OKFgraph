@@ -289,7 +289,7 @@ class PurgeManager:
         return True
 
 
-    def _recover_concept(self, concept_id: str) -> bool:
+    def recover_deleted(self, concept_id: str) -> bool:
         """Recover a soft-deleted concept from the DeletedConcept table.
 
         Args:

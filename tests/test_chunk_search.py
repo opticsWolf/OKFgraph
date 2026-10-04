@@ -62,7 +62,7 @@ class TestChunkSearch:
         for i, tag in enumerate(["alpha", "beta", "gamma"]):
             body = f"## Section {i}\n\nTopic {tag} content with shared query words. " * 20
             p = _write_okf(tmp_dir, f"search_{i}.md", f"Search Doc {i}", body, tags=[tag])
-            cid = router.import_from_okf(p)
+            cid = router.import_file(p)["concept_id"]
             ids.append(cid)
         cls._seeded_docs = ids
         return cls._seeded_docs

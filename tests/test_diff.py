@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from okfgraph.components.diff import DiffManager, content_hash, state_of_dir
+from okfgraph.errors import OutcomeError
 from okfgraph.router import OKFRouter
 
 FIX = Path(__file__).parent / "fixtures"
@@ -79,12 +80,15 @@ class TestDiffDrift:
         cls._router.close()
 
     def test_no_drift_after_import(self, router):
-        report = router.diff_db_dir(FIX / "diff_a")
+        report = router.diff(new=FIX / "diff_a")
         assert report == json.loads(json.dumps(report))  # JSON-serializable
         assert report["identical"] is True
 
     def test_drift_detects_bundle_changes(self, router):
-        report = router.diff_db_dir(FIX / "diff_b")
+        # Drift raises DIFF_DIFFERENT with the report in fields (§4).
+        with pytest.raises(OutcomeError) as exc:
+            router.diff(new=FIX / "diff_b")
+        report = exc.value.fields["report"]
         assert report["identical"] is False
         assert report["added"] == ["gamma"]
         assert report["changed"] == ["beta"]

@@ -55,12 +55,12 @@ from okfgraph.components import (
     SearchEngine,
 )
 
-from okfgraph.ops import ExportOps, IngestOps, QueryOps
+from okfgraph.ops import AdminOps, ExportOps, IngestOps, QueryOps
 
 logger = logging.getLogger(__name__)
 
 
-class OKFRouter(ExportOps, IngestOps, QueryOps):
+class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
     """Routes OKF concepts through a Ladybug graph + vector + FTS database.
 
     Canonical operations (``okfgraph.ops`` mixins) are part of the facade:
@@ -214,6 +214,7 @@ class OKFRouter(ExportOps, IngestOps, QueryOps):
 
         self.db = lb.Database(db_path)
         self.conn = lb.Connection(self.db)
+        self.db_path = db_path
 
         # WAL mode (Gap #7a) — enables concurrent reads during writes.
         if wal_mode:
@@ -603,27 +604,6 @@ class OKFRouter(ExportOps, IngestOps, QueryOps):
 
     def list_directory(self, directory_id: str):
         return self.search_engine.list_directory(directory_id)
-
-    def import_from_okf(self, *args, **kwargs):
-        return self.import_mgr.import_from_okf(*args, **kwargs)
-
-    def list_broken_links(self, *args, **kwargs):
-        return self.import_mgr.list_broken_links(*args, **kwargs)
-
-    def repair_links(self, *args, **kwargs):
-        return self.import_mgr.repair_links(*args, **kwargs)
-
-    def diagnose(self, *args, **kwargs):
-        return self.doctor_mgr.diagnose(*args, **kwargs)
-
-    def doctor_fix(self, *args, **kwargs):
-        return self.doctor_mgr.fix(*args, **kwargs)
-
-    def diff_dirs(self, *args, **kwargs):
-        return self.diff_mgr.diff_dirs(*args, **kwargs)
-
-    def diff_db_dir(self, *args, **kwargs):
-        return self.diff_mgr.diff_db_dir(*args, **kwargs)
 
     # ------------------------------------------------------------------
     # Schema

@@ -8,6 +8,7 @@ import logging
 
 import pytest
 
+from okfgraph.errors import OutcomeError
 from okfgraph.components.import_ import parse_source_file
 from okfgraph.components.roots import (
     namespaced_id,
@@ -148,7 +149,7 @@ class TestMultiRootImport:
             assert r.import_mgr.import_bundle() == ["@aa/one"]
             # Delete from the other root + purge → only it goes.
             (b / "two.md").unlink()
-            assert r.import_mgr.import_bundle(purge_deleted=True) == []
+            assert r.import_mgr.import_bundle(prune_missing=True) == []
             remaining = r.conn.execute(
                 "MATCH (c:Concept) RETURN c.id AS id"
             ).rows_as_dict().get_all()
@@ -205,7 +206,7 @@ class TestLiveness:
         try:
             r.import_mgr.import_bundle()
             with pytest.raises(RuntimeError, match="purge refused"):
-                r.import_mgr.import_bundle(purge_deleted=True)
+                r.import_mgr.import_bundle(prune_missing=True)
             # Refusal happens before any consumption: concept intact.
             assert [x["id"] for x in r.conn.execute(
                 "MATCH (c:Concept) RETURN c.id AS id"
@@ -271,7 +272,7 @@ class TestLiveness:
         r = _mrouter(tmp_path, prim, {"aa": str(a), "bb": str(tmp_path / "gone")})
         try:
             r.import_mgr.import_bundle()
-            roots = {x["alias"]: x for x in r.diagnose()["roots"]}
+            roots = {x["alias"]: x for x in r.doctor(stale_days=365)["report"]["roots"]}
             assert roots["aa"]["present"] is True
             assert roots["aa"]["concepts"] == 1
             assert roots["aa"]["tracked_files"] == 1
@@ -545,11 +546,12 @@ class TestSurfaces:
         r = _mrouter(tmp_path, prim, {"aa": str(a)})
         try:
             r.import_mgr.import_bundle()
-            assert r.diff_db_dir(None)["identical"] is True
+            assert r.diff()["identical"] is True
             (a / "q.md").write_text(_doc("Q v2"), encoding="utf-8")
-            result = r.diff_db_dir(None)
-            assert result["identical"] is False
-            assert result["changed"] == ["@aa/q"]
+            # Drift raises DIFF_DIFFERENT with the report in fields (§4).
+            with pytest.raises(OutcomeError) as exc:
+                r.diff()
+            assert exc.value.fields["report"]["changed"] == ["@aa/q"]
         finally:
             r.close()
 

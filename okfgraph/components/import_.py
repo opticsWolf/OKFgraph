@@ -601,7 +601,7 @@ class ImportManager:
         bundle_path: Optional[Path],
         batch_size: int,
         mode: "str | IngestMode",
-        purge_deleted: bool,
+        prune_missing: bool,
         alias: Optional[str] = None,
     ) -> List[str]:
         """Inner implementation of import_bundle (called under write lock)."""
@@ -622,7 +622,7 @@ class ImportManager:
         # Suspended work-dir imports never purge (existing guard below),
         # so the gate skips them too — PDF auto-import must not refuse
         # over an unrelated unmounted root.
-        if purge_deleted and self.roots and not det._suspended:
+        if prune_missing and self.roots and not det._suspended:
             absent = self._absent_roots()
             if absent:
                 names = [a or "<primary>" for a in absent]
@@ -692,7 +692,7 @@ class ImportManager:
         # detections plus tombstones left by earlier no-purge runs.
         # Skipped for suspended (work-dir) imports: a temp import must
         # never tombstone real concepts.
-        if purge_deleted and not det._suspended:
+        if prune_missing and not det._suspended:
             pending = det._load_pending_deletions()
             if pending:
                 purged = 0
@@ -1222,7 +1222,7 @@ class ImportManager:
         bundle_path: Optional[Path] = None,
         batch_size: int = 32,
         mode: "str | IngestMode" = IngestMode.TEXT,
-        purge_deleted: bool = False,
+        prune_missing: bool = False,
         force: bool = False,
         alias: Optional[str] = None,
     ) -> List[str]:
@@ -1235,7 +1235,7 @@ class ImportManager:
             bundle_path: Root directory of the OKF bundle (defaults to constructor bundle_root).
             batch_size: Number of texts per ONNX forward pass.
             mode: Image ingestion mode (``text`` | ``optional`` | ``omni``).
-            purge_deleted: If True, concepts whose source files were deleted
+            prune_missing: If True, concepts whose source files were deleted
                 from disk are removed from the graph (including chunks,
                 links, and orphaned image assets).
             force: Bypass the detached-graph refusal (0.2.16). The root must
@@ -1260,7 +1260,7 @@ class ImportManager:
                     force, bundle_path or self.bundle_root
                 )
                 _one = self._import_bundle_inner(
-                    bundle_path, batch_size, mode, purge_deleted,
+                    bundle_path, batch_size, mode, prune_missing,
                     alias=alias,
                 )
                 if self.roots:
@@ -1321,7 +1321,7 @@ class ImportManager:
                     continue
                 reattach = self._require_attached(force, _root)
                 _ids = self._import_bundle_inner(
-                    _root, batch_size, mode, purge_deleted, alias=_alias
+                    _root, batch_size, mode, prune_missing, alias=_alias
                 )
                 logger.info(
                     "import: root %s: %d concept(s)",

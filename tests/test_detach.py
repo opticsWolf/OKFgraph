@@ -210,7 +210,8 @@ class TestDetachClean:
         assert before_search and before_search[0] == "a"
 
         router.import_mgr.detach()
-        assert router.diagnose()["detached"] is not None
+        report = router.doctor(stale_days=365)["report"]
+        assert report["detached"] is not None
         # Delete every source file; the DB is the artifact now.
         for p in Path(tmp).rglob("*.md"):
             p.unlink()
@@ -290,7 +291,7 @@ class TestRefusalAndReattach:
         with pytest.raises(RuntimeError, match="detached"):
             router.import_mgr.import_bundle()
         with pytest.raises(RuntimeError, match="detached"):
-            router.import_mgr.import_bundle(purge_deleted=True)
+            router.import_mgr.import_bundle(prune_missing=True)
 
     def test_rootless_writes_refuse_without_force(self, env, tmp_path):
         tmp, router = env["tmp"], env["router"]
@@ -328,7 +329,7 @@ class TestRefusalAndReattach:
         assert router.schema_mgr._get_meta("detached", 0) == 0
         assert _hash_counts(router.conn)["FileHash"] == 2
         assert router.import_mgr.import_bundle() == []
-        assert router.diagnose()["detached"] is None
+        assert router.doctor(stale_days=365)["report"]["detached"] is None
 
     def test_force_reattach_mismatched_root(self, env, tmp_path):
         tmp, router = env["tmp"], env["router"]
@@ -349,7 +350,7 @@ class TestRefusalAndReattach:
         assert router.purge_mgr._soft_delete_concept("a") is True
         listed = router.purge_mgr.list_deleted_concepts()
         assert any(r["concept_id"] == "a" for r in listed)
-        assert router.purge_mgr._recover_concept("a") is True
+        assert router.purge_mgr.recover_deleted("a") is True
         assert "a" in _concepts(router.conn)
 
 

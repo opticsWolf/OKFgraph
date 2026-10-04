@@ -358,6 +358,34 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         return json.dumps(result, default=str, indent=2)
 
 
+    @mcp.tool(annotations=_RO)
+    def list_images(
+        concept_id: Annotated[str, Field(description="ID of the concept whose images to list.")],
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """List image assets attached to a concept (metadata, no bytes).
+
+        Unknown concepts raise UNKNOWN_CONCEPT — search first."""
+        router = _get_router(ctx)
+        try:
+            return json.dumps(router.list_images(concept_id), default=str, indent=2)
+        except OKFError as err:
+            return f"error: {err.code}: {err.message}"
+
+    @mcp.tool(annotations=_RO)
+    def get_image(
+        asset_id: Annotated[str, Field(description="ID of the image asset (from list_images).")],
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """Fetch one image asset: metadata plus base64-encoded ``data``.
+
+        Unknown assets raise UNKNOWN_ASSET."""
+        router = _get_router(ctx)
+        try:
+            return json.dumps(router.get_image(asset_id), default=str, indent=2)
+        except OKFError as err:
+            return f"error: {err.code}: {err.message}"
+
     return mcp
 
 

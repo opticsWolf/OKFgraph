@@ -106,7 +106,7 @@ class TestSchemaErrors:
         monkeypatch.setattr(r.embed_engine, "_encode_batch", lambda texts, task="Document": [[0.0] * 512 for _ in texts])
         r.import_mgr.import_bundle(tmp_path)
         assert r.purge_mgr._soft_delete_concept("m") is True
-        assert r.purge_mgr._recover_concept("m") is True
+        assert r.purge_mgr.recover_deleted("m") is True
         r.close()
 
     def test_v5_table_gains_snapshot_column(self, tmp_path, monkeypatch):
@@ -137,7 +137,7 @@ class TestSchemaErrors:
         monkeypatch.setattr(r.embed_engine, "_encode_batch", lambda texts, task="Document": [[0.0] * 512 for _ in texts])
         r.import_mgr.import_bundle(tmp_path)
         assert r.purge_mgr._soft_delete_concept("m") is True
-        assert r.purge_mgr._recover_concept("m") is True
+        assert r.purge_mgr.recover_deleted("m") is True
         assert r.get_by_id("m").model_dump()["body"].strip() == "# M\n\nBody."
         r.close()
 
@@ -180,9 +180,9 @@ class TestPurgeErrors:
         assert r.purge_mgr._soft_delete_concept("one") is True
         assert {d["concept_id"] for d in r.purge_mgr.list_deleted_concepts()} == {"one"}
         # Active or missing ids cannot be recovered.
-        assert r.purge_mgr._recover_concept("two") is False
-        assert r.purge_mgr._recover_concept("no-such-id") is False
-        assert r.purge_mgr._recover_concept("one") is True
+        assert r.purge_mgr.recover_deleted("two") is False
+        assert r.purge_mgr.recover_deleted("no-such-id") is False
+        assert r.purge_mgr.recover_deleted("one") is True
         assert r.purge_mgr.list_deleted_concepts() == []
         # Full fidelity: body, tags, and the vector survive the round-trip.
         after = r.get_by_id("one").model_dump()

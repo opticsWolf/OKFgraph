@@ -484,7 +484,7 @@ class IngestManager:
             self._converter = BobineConverter()
         return self._converter
 
-    def _import_work_dir(self, work_dir, batch_size, mode, purge_deleted, pdf_path, force=False):
+    def _import_work_dir(self, work_dir, batch_size, mode, prune_missing, pdf_path, force=False):
         """Import a converted-PDF work dir, keeping bundle_root overrides in sync."""
         from okfgraph.components.delta import DeltaDetector as _DD
         old_bundle_root = self.bundle_root
@@ -515,7 +515,7 @@ class IngestManager:
                     work_dir,
                     batch_size=batch_size,
                     mode=mode,
-                    purge_deleted=purge_deleted,
+                    prune_missing=prune_missing,
                     alias=_ns,
                     force=force,
                 )

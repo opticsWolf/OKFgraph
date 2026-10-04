@@ -140,7 +140,7 @@ class TestDirectoryHash:
         shutil.rmtree(Path(tmp_path) / "dir_b")
 
         # Import with purge — dir_b concepts should be purged
-        ids = router.import_mgr.import_bundle(purge_deleted=True)
+        ids = router.import_mgr.import_bundle(prune_missing=True)
         assert ids == [], f"Expected empty list (dir_b deleted, dir_a unchanged), got {ids}"
 
         # Verify dir_b concepts are purged (1 concept remains: dir_a/a1)

@@ -9,6 +9,7 @@ bundle dir → adopted by the primary detector).
 
 import pytest
 
+from okfgraph.errors import UsageError
 from okfgraph.router import OKFRouter
 
 
@@ -54,8 +55,9 @@ class TestFailClosed:
     def test_diff_no_side_refused(self, tmp_path):
         r = _rootless(tmp_path)
         try:
-            with pytest.raises(ValueError, match="bundle_root"):
-                r.diff_db_dir()
+            # The op refuses any side-less diff without a bundle root.
+            with pytest.raises(UsageError, match="bundle"):
+                r.diff()
         finally:
             r.close()
 
@@ -98,7 +100,7 @@ class TestExplicitPaths:
             # second run is delta-clean (detector tracks the adopted tree)
             assert r.import_mgr.import_bundle(bundle) == []
             # drift diff against the adopted tree is identical
-            assert r.diff_db_dir(bundle)["identical"] is True
+            assert r.diff(new=bundle)["identical"] is True
         finally:
             r.close()
 

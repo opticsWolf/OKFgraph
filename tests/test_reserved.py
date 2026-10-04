@@ -91,7 +91,7 @@ class TestReservedLive:
     def test_explicit_single_import_still_works(self):
         bundle = Path(self.tmp_dir) / "t2"
         fp = _write(bundle, "index.md", "T2 Index", "Hand-written, explicitly imported.")
-        cid = self.router.import_from_okf(fp)
+        cid = self.router.import_file(fp)["concept_id"]
         assert cid == "t2/index"
         assert "t2/index" in self._ids()
 
@@ -121,7 +121,7 @@ class TestReservedLive:
                 after = set(fresh.import_mgr.import_bundle(out))
                 assert before <= after
                 assert not {i for i in after if i.split("/")[-1] == "index"}
-                assert fresh.diff_db_dir(out)["identical"] is True
+                assert fresh.diff(new=out)["identical"] is True
             finally:
                 fresh.close()
         finally:

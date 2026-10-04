@@ -30,7 +30,8 @@ class TestMCPServer:
             tools = mcp._tool_manager.list_tools()
             names = [t.name for t in tools]
 
-            assert names == ["search", "read", "traverse", "ingest", "export_bundle", "export_concept"]
+            assert names == ["search", "read", "traverse", "ingest", "export_bundle",
+                            "export_concept", "list_images", "get_image"]
 
     def test_read_tools_have_read_only_hint(self):
         """Read-only tools have read_only_hint=True."""
@@ -418,6 +419,17 @@ class _StubImageMgr:
     def search_images_with_text(self, text_query, use_text_model=True, limit=10):
         self.calls.append(("search_images_with_text", text_query, limit))
         return []
+
+    def list_images(self, concept_id):
+        self.calls.append(("list_images", concept_id))
+        return [{"id": "i1", "file_name": "x.png", "embed_route": "text"}]
+
+    def get_image_data(self, asset_id):
+        self.calls.append(("get_image", asset_id))
+        if asset_id == "missing":
+            return None
+        return {"id": asset_id, "file_name": "x.png", "mime_type": "image/png",
+                "alt_text": None, "embed_route": "text", "data": b"PNGDATA"}
 
 
 class TestRoundupDispatch:

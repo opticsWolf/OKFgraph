@@ -54,17 +54,38 @@ OUTCOME_CODES = {
     "DIFF_DIFFERENT",
 }
 
-#: Outcome codes that signal a usage-mapping exit code 2 (diff):
-#: everything else in OUTCOME_CODES exits 1 while still carrying its body.
-_UNUSUAL_OUTCOME_EXITS = {"DIFF_DIFFERENT"}
+#: Outcome codes map to exit 1 (diff is a *domain outcome*, not usage).
+#: Everything else in OUTCOME_CODES also exits 1.
+_OKSF_ERROR_EXIT_USAGE = True
 
 _VALID_CODES = USAGE_CODES | STATE_CODES | OUTCOME_CODES | {"INTERNAL"}
 
+#: Usage-class codes exit 2, everything else 1 (§4 table).
+_USAGE_CODES = USAGE_CODES
+
 
 class OKFError(Exception):
-    """A failed operation with a stable, documented error code."""
+    """A failed operation with a stable, documented error code.
+
+    The subclass is picked by code (rule §4): usage codes yield a
+    ValueError-compatible exception, state/outcome codes a
+    RuntimeError-compatible one — so legacy ``except ValueError``/
+    ``except RuntimeError`` sites keep working while conversion proceeds.
+    """
 
     kind = "state"
+
+    def __new__(cls, code, message, **kw):
+        if code not in _VALID_CODES:
+            raise ValueError(f"unknown error code: {code}")
+        if cls is OKFError:
+            if code in USAGE_CODES:
+                cls = UsageError
+            elif code in OUTCOME_CODES:
+                cls = OutcomeError
+            else:
+                cls = StateError
+        return super().__new__(cls)
 
     def __init__(
         self,
@@ -86,11 +107,8 @@ class OKFError(Exception):
 
     @property
     def exit_code(self) -> int:
-        if self.kind == "usage":
-            return 2
-        if self.kind == "outcome":
-            return 2 if self.code in _UNUSUAL_OUTCOME_EXITS else 1
-        return 1
+        # §4: usage -> 2, state/outcome -> 1 (diff is a domain outcome).
+        return 2 if self.code in USAGE_CODES else 1
 
     def titles(self) -> str:
         """Adapter-facing one-liner: ``CODE: message``."""
@@ -107,23 +125,23 @@ class OKFError(Exception):
         }
 
 
-class UsageError(OKFError):
+class UsageError(OKFError, ValueError):
     """Caller passed something there is no sensible interpretation of."""
 
     kind = "usage"
 
 
-class StateError(OKFError):
+class StateError(OKFError, RuntimeError):
     """The request was reasonable; the current state cannot serve it."""
 
     kind = "state"
 
 
-class OutcomeError(OKFError):
+class OutcomeError(OKFError, RuntimeError):
     """A command ran fine and the outcome itself is the notable result.
 
-    The envelope still carries the findings as ``data`` (or the exit code
-    maps them), so this reads as 'finished, with an outcome'.
+    The envelope still carries the findings as ``data`` (the adapter's
+    human renderer shows them), with exit code 1 signalling the outcome.
     """
 
     kind = "outcome"

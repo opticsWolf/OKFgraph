@@ -19,7 +19,7 @@ class TestCLIHelp:
         assert result.returncode == 0
         assert "OKF Knowledge Graph CLI" in result.stdout
         # Global flags documented once, top-level (hidden in subcommand helps)
-        assert "--db" in result.stdout
+        assert "--db-path" in result.stdout
 
     def test_init_help(self):
         result = subprocess.run(
@@ -28,7 +28,7 @@ class TestCLIHelp:
         )
         assert result.returncode == 0
         # Globals hidden per-command; pointer present instead
-        assert "--db" not in result.stdout
+        assert "--db-path" not in result.stdout
         assert "okf --help" in result.stdout
 
     def test_import_help(self):
@@ -104,7 +104,7 @@ class TestCLIHelp:
             capture_output=True, text=True,
         )
         assert result.returncode == 0
-        assert "--model-id" in result.stdout
+        assert "--model-id" not in result.stdout  # private flag removed; model_id reads settings
 
 
 class TestCLIFullWorkflow:
@@ -124,19 +124,19 @@ class TestCLIFullWorkflow:
         fp.write_text(f"---\n{yaml_str}---\n\n# Hello World\n\nThis is a test concept.\n")
 
         # Init
-        cls._run(["init", "--db", cls.db_path, "--bundle", cls.bundle])
+        cls._run(["init", "--db-path", cls.db_path, "--bundle-root", cls.bundle])
         assert Path(cls.db_path).exists()
 
         # Import
-        cls._run(["import", "--db", cls.db_path, "--bundle", cls.bundle, str(fp)])
+        cls._run(["import", "--db-path", cls.db_path, "--bundle-root", cls.bundle, str(fp)])
 
         # Export single
         cls.export_dir = f"{cls.tmpdir}/exported"
-        cls._run(["export", "--db", cls.db_path, "--bundle", cls.bundle, "--output", cls.export_dir, "--concept-id", "hello"])
+        cls._run(["export", "--db-path", cls.db_path, "--bundle-root", cls.bundle, "--output", cls.export_dir, "--concept-id", "hello"])
 
         # Export bundle
         cls.export_bundle_dir = f"{cls.tmpdir}/exported_bundle"
-        cls._run(["export", "--db", cls.db_path, "--bundle", cls.bundle, "--all", "--output", cls.export_bundle_dir])
+        cls._run(["export", "--db-path", cls.db_path, "--bundle-root", cls.bundle, "--all", "--output", cls.export_bundle_dir])
 
     @classmethod
     def _run(cls, args):
@@ -153,20 +153,20 @@ class TestCLIFullWorkflow:
         assert Path(self.db_path).exists()
 
     def test_search_finds_result(self):
-        result = self._run(["search", "--db", self.db_path, "--bundle", self.bundle, "greeting"])
+        result = self._run(["search", "--db-path", self.db_path, "--bundle-root", self.bundle, "greeting"])
         assert "Hello World" in result.stdout
 
     def test_list_shows_root(self):
-        result = self._run(["traverse", "--db", self.db_path, "--bundle", self.bundle])
+        result = self._run(["traverse", "--db-path", self.db_path, "--bundle-root", self.bundle])
         assert "Hello World" in result.stdout
 
     def test_get_returns_json(self):
-        result = self._run(["read", "--db", self.db_path, "--bundle", self.bundle, "hello"])
+        result = self._run(["read", "--db-path", self.db_path, "--bundle-root", self.bundle, "hello"])
         assert '"title"' in result.stdout
         assert "Hello World" in result.stdout
 
     def test_read_chunks_runs(self):
-        result = self._run(["read", "--db", self.db_path, "--bundle", self.bundle, "hello", "--include", "context"])
+        result = self._run(["read", "--db-path", self.db_path, "--bundle-root", self.bundle, "hello", "--include", "context"])
         assert result.returncode == 0
 
     def test_export_single_creates_file(self):
@@ -180,7 +180,7 @@ class TestCLIFullWorkflow:
         assert len(files) >= 1
 
     def test_traverse_runs(self):
-        result = self._run(["traverse", "--db", self.db_path, "--bundle", self.bundle, "hello"])
+        result = self._run(["traverse", "--db-path", self.db_path, "--bundle-root", self.bundle, "hello"])
         assert result.returncode == 0
 
     def test_broken_links_help(self):

@@ -31,6 +31,7 @@ from pydantic import Field
 
 from okfgraph.models import ConceptModel
 from okfgraph.router import OKFRouter
+from okfgraph.settings import Settings, cli_signal, set_cli_flags
 
 logger = logging.getLogger(__name__)
 
@@ -41,42 +42,26 @@ class GraphContext:
     router: OKFRouter
 
 
-def make_lifespan(
-    db_path: str,
-    bundle_root: Optional[str],
-    device: str,
-    embedding_dim: int,
-    enable_chunking: bool,
-    max_length: Optional[int] = None,
-    roots: Optional[Dict[str, str]] = None,
-    precision: str = "auto",
-    cpu_arena: bool = False,
-    model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
-):
+def make_lifespan(settings: "Settings"):
     """Factory that returns a lifespan async-context-manager for MCPServer."""
 
     @asynccontextmanager
     async def _lifespan(mcp: MCPServer):
-        root = bundle_root if bundle_root is not None else str(Path(db_path).parent)
+        db_path = settings.db_path
+        # Default bundle root: the database's parent directory.
+        root = settings.bundle_root or str(Path(db_path).parent)
 
         router = OKFRouter(
             db_path=db_path,
             bundle_root=root,
-            model_id=model_id,
-            device=device,
-            embedding_dim=embedding_dim,
-            max_length=max_length,
-            enable_chunking=enable_chunking,
-            roots=roots,
-            precision=precision,
-            cpu_arena=cpu_arena,
+            **settings.router_kwargs(),
         )
         logger.info(
             "OKFgraph MCP server started: db=%s model=%s device=%s precision=%s",
             db_path,
-            model_id,
-            device,
-            precision,
+            settings.model_id,
+            settings.device,
+            settings.precision,
         )
 
         try:
@@ -99,47 +84,17 @@ def _get_router(ctx: Context) -> OKFRouter:
     raise RuntimeError("No OKFRouter found in lifespan context")
 
 
-def create_mcp_server(
-    db_path: str,
-    bundle_root: Optional[str] = None,
-    device: str = "auto",
-    embedding_dim: int = 512,
-    enable_chunking: bool = True,
-    max_length: Optional[int] = None,
-    roots: Optional[Dict[str, str]] = None,
-    precision: str = "auto",
-    cpu_arena: bool = False,
-    model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
-) -> MCPServer:
+def create_mcp_server(settings: Settings) -> MCPServer:
     """Create an MCP server instance connected to an OKFgraph database.
 
     Args:
-        db_path: Path to the Ladybug database file.
-        bundle_root: Optional root directory for the OKF bundle.
-        device: Device for ONNX inference ("auto", "cpu" or "cuda").
-        embedding_dim: Dimension of the embedding vectors.
-        enable_chunking: Whether to enable document chunking.
-        max_length: Token truncation ceiling 1..=32768 (default: 8192).
-        roots: Optional additional {alias: path} bundle roots (§2.6).
-        precision: Weight precision ("auto" follows device).
-        cpu_arena: Enable the CPU arena allocator (default off).
-        model_id: Text embedding model id (registry; switch forces reimport).
+        settings: Merged canonical settings (``Settings.load`` or direct
+            construction in tests; ``db_path`` required).
 
     Returns:
         Configured MCPServer server instance.
     """
-    lifespan_fn = make_lifespan(
-        db_path=db_path,
-        bundle_root=bundle_root,
-        device=device,
-        embedding_dim=embedding_dim,
-        enable_chunking=enable_chunking,
-        max_length=max_length,
-        roots=roots,
-        precision=precision,
-        cpu_arena=cpu_arena,
-        model_id=model_id,
-    )
+    lifespan_fn = make_lifespan(settings)
 
     mcp = MCPServer(
         name="OKFgraph MCP Server",
@@ -419,68 +374,10 @@ def main():
             "via Model Context Protocol"
         ),
     )
-    parser.add_argument(
-        "--db-path",
-        type=str,
-        required=True,
-        help="Path to the Ladybug database file.",
-    )
-    parser.add_argument(
-        "--bundle-root",
-        type=str,
-        default=None,
-        help="Root directory for the OKF bundle (defaults to db parent).",
-    )
-    parser.add_argument(
-        "--root",
-        action="append",
-        default=None,
-        metavar="ALIAS=PATH",
-        help="Additional named bundle root (repeatable; named roots mint "
-        "@alias/rel IDs).",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "cuda"],
-        help="Device for ONNX inference (default: auto).",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="jinaai/jina-embeddings-v5-text-small-retrieval",
-        help="Text embedding model id (registry: text-small default, text-nano). Switching models forces a fresh reimport.",
-    )
-    parser.add_argument(
-        "--precision",
-        type=str,
-        default="auto",
-        choices=["auto", "fp32", "fp16", "int8"],
-        help="Weight precision: auto follows device (default: auto; int8 explicit only).",
-    )
-    parser.add_argument(
-        "--cpu-arena",
-        action="store_true",
-        help="Enable the CPU arena allocator (default off).",
-    )
-    parser.add_argument(
-        "--embedding-dim",
-        type=int,
-        default=512,
-        help="Dimension of the embedding vectors (default: 512; Matryoshka ladder: 32, 64, 128, 256, 512, 768, 1024).",
-    )
-    parser.add_argument(
-        "--max-length",
-        type=int,
-        default=None,
-        help="Token truncation ceiling 1..=32768 (default: 8192).",
-    )
-    parser.add_argument(
-        "--no-chunking",
-        action="store_true",
-        help="Disable document chunking.",
-    )
+    # Boot flags derive from the same settings table as the CLI's globals;
+    # db_path is required here. The server reads okfgraph.toml and
+    # OKFGRAPH_* exactly like the CLI does.
+    set_cli_flags(parser, mcp=True)
     parser.add_argument(
         "--log-level",
         type=str,
@@ -498,35 +395,27 @@ def main():
         stream=sys.stderr,
     )
 
+    try:
+        signal = cli_signal(args)
+        settings = Settings.load(cli_args=signal)
+        if settings.bundle_root:
+            # Second pass: a --bundle-root'd okfgraph.toml is a lookup
+            # candidate too (the CWD candidate already had its chance).
+            settings = Settings.load(
+                bundle_root=settings.bundle_root, cli_args=signal)
+    except ValueError as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        raise SystemExit(2)
+
     logger.info(
         "starting OKFgraph MCP server: db=%s model=%s device=%s precision=%s",
-        args.db_path,
-        args.model,
-        args.device,
-        args.precision,
+        settings.db_path,
+        settings.model_id,
+        settings.device,
+        settings.precision,
     )
 
-    roots: Optional[Dict[str, str]] = None
-    if args.root:
-        roots = {}
-        for item in args.root:
-            alias, sep, path = str(item).partition("=")
-            if not sep or not alias or not path:
-                parser.error(f"--root must be ALIAS=PATH, got {item!r}")
-            roots[alias] = path
-
-    mcp = create_mcp_server(
-        db_path=args.db_path,
-        bundle_root=args.bundle_root,
-        device=args.device,
-        embedding_dim=args.embedding_dim,
-        enable_chunking=not args.no_chunking,
-        max_length=args.max_length,
-        roots=roots,
-        precision=args.precision,
-        cpu_arena=args.cpu_arena,
-        model_id=args.model,
-    )
+    mcp = create_mcp_server(settings)
 
     # Run with stdio transport (default for MCP servers)
     mcp.run(transport="stdio")

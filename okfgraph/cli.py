@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from okfgraph.router import OKFRouter
-from okfgraph.config import OKFConfig
+from okfgraph.settings import Settings, cli_signal, set_cli_flags
 from okfgraph.components.converters import BobineConverter
 
 # ── Logging setup ──────────────────────────────────────────────────────────
@@ -117,37 +117,15 @@ class _SubParser(argparse.ArgumentParser):
 
 
 def _add_global(parser, mark=True):
-    """Add --db / --bundle / --dim / --cache-dir / --device to any subparser.
+    """Add the generated global settings flags to any subparser.
 
     With mark=True (subcommands) the flags are tagged so _SlimHelpFormatter
     hides them from per-command help; they stay functional and are shown
-    once in top-level help (mark=False there).
+    once in top-level help (mark=False there). The flags, their defaults
+    (all argparse.SUPPRESS) and their help text derive from the settings
+    table in okfgraph.settings — the CLI hand-maintains none of them.
     """
-    def _add(*a, **k):
-        act = parser.add_argument(*a, **k)
-        if mark:
-            act._okf_global = True  # noqa: SLF001 — our own marker
-        return act
-
-    _add("--db", default=None, help="Database path (default: okfgraph.db, or from okfgraph.toml)")
-    _add("--bundle", default=None, help="Bundle root directory (default: ., or from okfgraph.toml). Pins single-tree import; use --primary to set the primary without pinning.")
-    _add("--model", default=None, help="Text embedding model id (registry: text-small default, text-nano; default: text-small, or from okfgraph.toml). Switching models forces a fresh reimport (fail-closed model pin).")
-    _add("--primary", default=None, help="Primary root for multi-root scope (bare IDs) without pinning: 'import --all' imports every configured root. Overlaps with --bundle (error under import --all); TOML 'bundle' equivalent.")
-    _add("--bundle-root", action="append", default=None, metavar="ALIAS=PATH", help="Additional named bundle root (repeatable; combines with --bundle). Named roots mint @alias/rel IDs.")
-    _add("--dim", type=int, default=None, help="Embedding dimension (Matryoshka ladder 32/64/128/256/512/768/1024; default: 512, or from okfgraph.toml)")
-    _add("--max-length", type=int, default=None, help="Token truncation ceiling 1..=32768 (default: 8192, or from okfgraph.toml). Raising it changes long-doc vectors — reimport fully after changing.")
-    _add("--cache-dir", default=None, help="HuggingFace model cache directory (default: ~/.cache/huggingface, or from okfgraph.toml)")
-    _add("--device", default=None, choices=["auto", "cpu", "cuda"], help="Inference device: auto (CUDA when present) / cpu / cuda (default: auto, or from okfgraph.toml)")
-    _add("--precision", default=None, choices=["auto", "fp32", "fp16", "int8"], help="Weight precision: auto follows device (CUDA->FP16, CPU->FP32); fp16 on CPU is >40x slower; int8 explicit only, needs a measured artifact (default: auto, or from okfgraph.toml)")
-    _add("--image-model", default=None, help="Vision model id for image-content search (default: embroider vision contract; needs a text-nano graph, or from okfgraph.toml). Switching forces a fresh reimport (fail-closed image pin).")
-    _add("--image-precision", default=None, choices=["auto", "fp32", "fp16"], help="Vision weight precision: auto follows device (CUDA->FP16, CPU->FP32); explicit fp16 on CPU fails fast (default: auto, or from okfgraph.toml)")
-    _add("--cpu-arena", action="store_true", help="Enable the CPU arena allocator (default off: ~8x lower peak RSS for ~1.4x encode time)")
-    _add("--chunk-size", type=int, default=None, help="Chunk size in words for overlap (default: 512, or from okfgraph.toml)")
-    _add("--chunk-overlap", type=int, default=None, help="Overlap in words between chunks (default: 40, or from okfgraph.toml)")
-    _add("--no-chunking", action="store_true", help="Disable chunking during ingestion")
-    _add("--wal-mode", action="store_true", help="Enable SQLite WAL mode for concurrent reads (Gap #7a)")
-    _add("--allow-remote-images", action="store_true", help="Allow fetching remote images (SSRF risk — use with caution)")
-    _add("--allowed-image-domains", default=None, help="Comma-separated list of allowed domains for remote images (Gap #9a)")
+    set_cli_flags(parser, hidden=mark)
 
 
 def _add_logging_flags(parser, mark=True):
@@ -171,61 +149,22 @@ _OPEN_ROUTERS = []
 def _router(args):
     """Build an OKFRouter from parsed args (registered for cleanup on exit).
 
-    Uses the config module to merge CLI args with TOML file and env vars.
-    Precedence: CLI > env > file > defaults.
+    Signals only what argparse actually set (generated flags default to
+    SUPPRESS) into the one settings table; precedence stays
+    CLI > env > TOML > defaults, per key. Bad values are a clean usage
+    error, not a traceback.
     """
-    # Build CLI args dict (only non-None values override config)
-    cli_dict = {}
-    for attr in ("db", "bundle", "primary", "model", "dim", "max_length", "cache_dir", "device",
-                 "precision", "cpu_arena", "image_model", "image_precision",
-                 "chunk_size", "chunk_overlap",
-                 "no_chunking", "mode", "batch_size",
-                 "allow_remote_images", "wal_mode", "allowed_image_domains"):
-        val = getattr(args, attr, None)
-        if val is not None:
-            cli_dict[attr] = val
-    # Repeatable --bundle-root ALIAS=PATH entries (parsed by the config
-    # layer; bad format is a clean usage error, not a traceback).
-    bundle_roots = getattr(args, "bundle_root", None)
-    if bundle_roots:
-        tmp = OKFConfig()
-        try:
-            OKFConfig._apply_cli(tmp, {"roots": bundle_roots})
-        except ValueError as e:
-            print(f"[ERROR] {e}")
-            raise SystemExit(2)
-        cli_dict["roots"] = tmp.roots
-
-    # Resolve bundle root for TOML lookup
-    bundle_root = cli_dict.get("bundle") or "."
-
-    # Load merged config
-    config = OKFConfig.load(bundle_root=bundle_root, cli_args=cli_dict)
-
-    # Build allowed_image_domains list
-    allowed_domains = config.import_config.allowed_image_domains
-    if getattr(args, "allowed_image_domains", None):
-        allowed_domains = [d.strip() for d in args.allowed_image_domains.split(",") if d.strip()]
-
+    try:
+        signal = cli_signal(args)
+        settings = Settings.load(
+            bundle_root=signal.get("bundle_root") or ".", cli_args=signal)
+    except ValueError as e:
+        print(f"[ERROR] {e}")
+        raise SystemExit(2)
     router = OKFRouter(
-        db_path=config.database.path,
-        bundle_root=str(config.bundle),
-        roots=config.roots or None,
-        embedding_dim=config.database.dim,
-        max_length=config.embedding.max_length,
-        model_id=config.embedding.model_id,
-        cache_dir=config.embedding.cache_dir,
-        device=config.embedding.device,
-        precision=config.embedding.precision,
-        cpu_arena=config.embedding.cpu_arena,
-        image_model_id=config.embedding.image_model_id,
-        image_precision=config.embedding.image_precision,
-        allow_remote_images=config.import_config.allow_remote_images,
-        allowed_image_domains=allowed_domains,
-        chunk_size=config.import_config.chunk_size,
-        chunk_overlap=config.import_config.chunk_overlap,
-        enable_chunking=not config.import_config.no_chunking,
-        wal_mode=config.database.wal_mode,
+        db_path=settings.db_path,
+        bundle_root=settings.bundle_root or ".",
+        **settings.router_kwargs(),
     )
     _OPEN_ROUTERS.append(router)
     return router
@@ -244,19 +183,34 @@ def _close_routers():
 # ── command handlers ───────────────────────────────────────────────────────
 
 def _init(args):
-    db_path = str(args.db)
+    try:
+        signal = cli_signal(args)
+        settings = Settings.load(
+            bundle_root=signal.get("bundle_root") or ".", cli_args=signal)
+    except ValueError as e:
+        print(f"[ERROR] {e}")
+        raise SystemExit(2)
     logger = logging.getLogger("cli")
-    logger.info("initializing database at %s (dim=%d)", db_path, args.dim)
+    logger.info("initializing database at %s (dim=%d)",
+                settings.db_path, settings.embedding_dim)
     _router(args)
-    logger.info("database initialized (embedding_dim=%d)", args.dim)
+    logger.info("database initialized (embedding_dim=%d)",
+                settings.embedding_dim)
 
 
 def _model_info(args):
     """Show model cache status without loading the model."""
     logger = logging.getLogger("cli")
+    try:
+        signal = cli_signal(args)
+        settings = Settings.load(
+            bundle_root=signal.get("bundle_root") or ".", cli_args=signal)
+    except ValueError as e:
+        print(f"[ERROR] {e}")
+        raise SystemExit(2)
     info = OKFRouter.model_info(
-        model_id=getattr(args, "model_id", "jinaai/jina-embeddings-v5-text-small-retrieval"),
-        cache_dir=getattr(args, "cache_dir", None),
+        model_id=settings.model_id,
+        cache_dir=settings.cache_dir,
     )
     logger.info("model: %s", info['model_id'])
     logger.info("cache: %s", info['cache_dir'])
@@ -286,12 +240,10 @@ def _import(args):
 def _import_inner(args, router, mode, purge):
     logger = logging.getLogger("cli")
     if getattr(args, "import_all", False):
-        if getattr(args, "bundle", None) and getattr(args, "primary", None):
-            print("[ERROR] --bundle pins one tree but --primary asks for "
-                  "multi-root scope: pass one, not both. (--bundle alone "
-                  "= that tree; --primary (+ --bundle-root) = all roots.)")
-            return 2
-        bundle_path = Path(args.bundle) if args.bundle else None
+        # --bundle-path pins the single-tree import for this call only;
+        # --bundle-root never pins. No scope clash exists any more.
+        pinned = getattr(args, "bundle_path", None)
+        bundle_path = Path(pinned) if pinned else None
         ids = router.import_mgr.import_bundle(
             bundle_path,
             batch_size=getattr(args, "batch_size", 32) or 32,
@@ -608,13 +560,9 @@ def _lint(args):
     Exit 0 = clean (warnings ok), 1 = errors, 2 = usage (bad dir).
     """
     from okfgraph.components.lint import lint_bundle
-    from okfgraph.config import OKFConfig
 
-    given = getattr(args, "dir", None) or getattr(args, "bundle", None) or "."
-    # bundle_root is only the TOML lookup location; the value itself rides
-    # in cli_args (same split as _router's cli_dict).
-    config = OKFConfig.load(bundle_root=given, cli_args={"bundle": given})
-    target = Path(str(config.bundle))
+    given = getattr(args, "dir", None) or "."
+    target = Path(given)
     if not target.is_dir():
         print(f"[ERROR] not a bundle directory: {target}")
         return 2
@@ -744,7 +692,7 @@ def _detach(args):
     """End the mirror relationship: the DB becomes the artifact."""
     logger = logging.getLogger("cli")
     router = _router(args)
-    bundle = getattr(args, "bundle", None)
+    bundle = getattr(args, "bundle_path", None)
     try:
         report = router.import_mgr.detach(
             bundle_path=Path(bundle) if bundle else None,
@@ -1197,9 +1145,9 @@ Commands:
                 batch_size=32,
                 purge=False,
                 no_extract_images=False,
-                db=args.db,
-                bundle=args.bundle,
-                dim=args.dim,
+                db_path=getattr(args, "db_path", None),
+                bundle_root=getattr(args, "bundle_root", None),
+                embedding_dim=getattr(args, "embedding_dim", None),
                 cache_dir=getattr(args, "cache_dir", None),
                 device=getattr(args, "device", "auto") or "auto",
                 precision=getattr(args, "precision", "auto") or "auto",
@@ -1252,7 +1200,6 @@ def build_parser():
     p = sub.add_parser("model-info", help="Show model cache status")
     _add_global(p)
     _add_logging_flags(p)
-    p.add_argument("--model-id", default="jinaai/jina-embeddings-v5-text-small-retrieval", help="Model ID to inspect")
 
     # import
     p = sub.add_parser("import", help="Import OKF files")
@@ -1260,8 +1207,11 @@ def build_parser():
     _add_logging_flags(p)
     p.add_argument("files", nargs="*", help="Files to import")
     p.add_argument("--all", action="store_true", dest="import_all",
-                     help="Import entire bundle (omit --bundle to import every "
-                     "configured root; with --bundle, only that tree)")
+                     help="Import entire bundle (omit --bundle-path to import every "
+                     "configured root; with --bundle-path, only that tree)")
+    p.add_argument("--bundle-path", default=None,
+                   help="Pin a single tree for this import (with --all); "
+                        "the primary root still comes from --bundle-root/TOML")
     p.add_argument("--batch-size", type=int, default=32, help="Batch size for encoding (default: 32)")
     p.add_argument(
         "--mode", default="text", choices=["text", "optional", "omni"],
@@ -1475,6 +1425,8 @@ def build_parser():
     p = sub.add_parser("detach", help="End the mirror relationship: the DB becomes the artifact")
     _add_global(p)
     _add_logging_flags(p)
+    p.add_argument("--bundle-path", default=None,
+                   help="Bundle tree to detach (default: the primary root)")
     p.add_argument("--no-verify", action="store_true", default=False,
                    help="Skip the sources-vs-graph fidelity check (for already-removed trees)")
     p.add_argument("--force", action="store_true", default=False,

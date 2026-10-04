@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from okfgraph.mcp_server import create_mcp_server
+from okfgraph.settings import Settings
 
 
 class TestMCPServer:
@@ -16,14 +17,14 @@ class TestMCPServer:
         """Server creates without error."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             assert mcp is not None
 
     def test_all_tools_registered(self):
         """The five consolidated tools are registered."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
             names = [t.name for t in tools]
 
@@ -33,7 +34,7 @@ class TestMCPServer:
         """Read-only tools have read_only_hint=True."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             read_tools = ["search", "read", "traverse"]
@@ -48,7 +49,7 @@ class TestMCPServer:
         """Write tools have read_only_hint=False."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             write_tools = ["export_bundle", "ingest"]
@@ -63,7 +64,7 @@ class TestMCPServer:
         """All tools have a non-empty description."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             for tool in tools:
@@ -75,7 +76,7 @@ class TestMCPServer:
         """All tools have parameter definitions."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             for tool in tools:
@@ -90,7 +91,7 @@ class TestMCPServer:
         """search exposes target/expand/hub_rerank routing."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             search = next(t for t in tools if t.name == "search")
@@ -105,7 +106,7 @@ class TestMCPServer:
         """read exposes the include selector."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             read = next(t for t in tools if t.name == "read")
@@ -118,7 +119,7 @@ class TestMCPServer:
         """traverse exposes path mode via target."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             traverse = next(t for t in tools if t.name == "traverse")
@@ -131,7 +132,7 @@ class TestMCPServer:
         """ingest exposes the kind discriminator."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             ingest = next(t for t in tools if t.name == "ingest")
@@ -145,7 +146,7 @@ class TestMCPServer:
         """Server has correct name and instructions."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             assert mcp.name == "OKFgraph MCP Server"
             assert "ONNX" in mcp.instructions
             assert "Jina v5" in mcp.instructions
@@ -171,9 +172,9 @@ class TestMCPServer:
                 closed.append(True)
 
         monkeypatch.setattr(ms, "OKFRouter", StubRouter)
-        mcp = create_mcp_server(
+        mcp = create_mcp_server(Settings(
             db_path=str(tmp_path / "t.db"), bundle_root=str(tmp_path),
-        )
+        ))
         async with mcp.settings.lifespan(mcp) as gctx:
             assert isinstance(gctx, ms.GraphContext)
             assert isinstance(gctx.router, StubRouter)
@@ -287,7 +288,7 @@ class TestToolDispatch:
 
     @staticmethod
     def _fn(name):
-        mcp = create_mcp_server(db_path=":memory:")
+        mcp = create_mcp_server(Settings(db_path=":memory:"))
         return mcp._tool_manager.get_tool(name).fn
 
     @staticmethod
@@ -386,7 +387,7 @@ class TestRoundupDispatch:
     """rank / max_tokens / flavor params route correctly (Phases 1, 2, 5)."""
 
     def test_search_schema_has_rank(self):
-        mcp = create_mcp_server(db_path=":memory:")
+        mcp = create_mcp_server(Settings(db_path=":memory:"))
         search = next(t for t in mcp._tool_manager.list_tools() if t.name == "search")
         props = search.parameters["properties"]
         assert props["rank"]["default"] == "none"
@@ -408,7 +409,7 @@ class TestRoundupDispatch:
         assert calls == []
 
     def test_read_schema_has_max_tokens(self):
-        mcp = create_mcp_server(db_path=":memory:")
+        mcp = create_mcp_server(Settings(db_path=":memory:"))
         read = next(t for t in mcp._tool_manager.list_tools() if t.name == "read")
         assert "max_tokens" in read.parameters["properties"]
 
@@ -436,7 +437,7 @@ class TestRoundupDispatch:
         assert "not found" in out
 
     def test_export_schema_has_flavor(self):
-        mcp = create_mcp_server(db_path=":memory:")
+        mcp = create_mcp_server(Settings(db_path=":memory:"))
         export = next(t for t in mcp._tool_manager.list_tools() if t.name == "export_bundle")
         props = export.parameters["properties"]
         assert props["flavor"]["default"] == "okf"

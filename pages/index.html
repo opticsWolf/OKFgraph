@@ -105,13 +105,13 @@ Refresh flow: <span class="syntax-link">[[token-refresh]]</span></code></pre>
     <div><h3>Install and configure</h3><p>Use the CPU extra for local embeddings. Add <code>pdf</code> only when you need PDF or Office conversion; use the GPU extra instead of CPU for a CUDA setup, not alongside it.</p><pre tabindex="0" aria-label="Installation commands"><code>pip install "okfgraph[cpu]"
 # Optional document conversion:
 # pip install "okfgraph[cpu,pdf]"</code></pre></div>
-    <div><h3>Save as <code>okfgraph.toml</code></h3><pre tabindex="0" aria-label="Project configuration"><code>bundle = "kb"
+    <div><h3>Save as <code>okfgraph.toml</code></h3><pre tabindex="0" aria-label="Project configuration"><code>bundle_root = "kb"
 
 [database]
-path = "kb.db"
-dim = 512
+db_path = "kb.db"
 
 [embedding]
+embedding_dim = 512
 device = "cpu"</code></pre><p class="small-copy"><code>init</code> initializes the database; it does not write this configuration for you.</p></div>
   </div>
   <div class="timeline">

@@ -8,7 +8,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from okfgraph.cli import build_parser
-from okfgraph.config import OKFConfig
 
 PAGES = Path(__file__).resolve().parents[1] / "pages"
 
@@ -86,12 +85,12 @@ def test_pages_cli_examples_parse():
 
 
 def test_pages_config_points_to_example_corpus():
-    config = next(b for b in page().blocks if b.startswith("bundle ="))
-    parsed = OKFConfig._parse_toml(tomllib.loads(config))
-    assert parsed.bundle == "kb"
-    assert parsed.database.path == "kb.db"
-    assert parsed.database.dim == 512
-    assert parsed.embedding.device == "cpu"
+    config = next(b for b in page().blocks if b.startswith("bundle_root ="))
+    parsed = tomllib.loads(config)
+    assert parsed["bundle_root"] == "kb"
+    assert parsed["database"]["db_path"] == "kb.db"
+    assert parsed["embedding"]["embedding_dim"] == 512
+    assert parsed["embedding"]["device"] == "cpu"
 
 
 def test_pages_mcp_config_is_valid_json():

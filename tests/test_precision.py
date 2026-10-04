@@ -13,26 +13,25 @@ from okfgraph.components.embedding import (
     PRECISION_META_KEY,
     enforce_precision_pin,
 )
-from okfgraph.config import EmbeddingConfig, OKFConfig
+from okfgraph.settings import Settings
 
 
 # ---- config ---------------------------------------------------------------
 
 def test_embedding_defaults_follow_device():
-    cfg = EmbeddingConfig()
-    assert cfg.device == "auto"
-    assert cfg.precision == "auto"
-    assert cfg.cpu_arena is False
-    assert cfg.validate() == []
+    s = Settings()
+    assert s.device == "auto"
+    assert s.precision == "auto"
+    assert s.cpu_arena is False
+    assert s.checks() == ([], [])
 
 
 def test_embedding_rejects_bad_precision():
     # int8 graduated to explicit opt-in with the 0.6.0 model registry
     # (nano probe: rank kept); int4 stays rejected.
-    cfg = EmbeddingConfig(precision="int4")
-    errors = cfg.validate()
+    errors, _ = Settings(precision="int4").checks()
     assert any("embedding.precision" in e for e in errors)
-    assert EmbeddingConfig(precision="int8").validate() == []
+    assert Settings(precision="int8").checks() == ([], [])
 
 
 def test_toml_parses_precision_and_arena(tmp_path):
@@ -41,24 +40,23 @@ def test_toml_parses_precision_and_arena(tmp_path):
         "[embedding]\nprecision = \"fp16\"\ncpu_arena = true\n",
         encoding="utf-8",
     )
-    cfg = OKFConfig.load(bundle_root=str(tmp_path))
-    assert cfg.embedding.precision == "fp16"
-    assert cfg.embedding.cpu_arena is True
+    s = Settings.load(bundle_root=str(tmp_path))
+    assert s.precision == "fp16"
+    assert s.cpu_arena is True
 
 
 def test_env_overrides_precision_and_arena(monkeypatch):
     monkeypatch.setenv("OKFGRAPH_PRECISION", "fp32")
     monkeypatch.setenv("OKFGRAPH_CPU_ARENA", "yes")
-    cfg = OKFConfig.load()
-    assert cfg.embedding.precision == "fp32"
-    assert cfg.embedding.cpu_arena is True
+    s = Settings.load()
+    assert s.precision == "fp32"
+    assert s.cpu_arena is True
 
 
 def test_cli_overrides_precision_and_arena():
-    cfg = OKFConfig()
-    OKFConfig._apply_cli(cfg, {"precision": "fp16", "cpu_arena": True})
-    assert cfg.embedding.precision == "fp16"
-    assert cfg.embedding.cpu_arena is True
+    s = Settings.load(cli_args={"precision": "fp16", "cpu_arena": True})
+    assert s.precision == "fp16"
+    assert s.cpu_arena is True
 
 
 # ---- router (cold) ---------------------------------------------------------

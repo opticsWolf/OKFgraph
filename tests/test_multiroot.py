@@ -352,12 +352,19 @@ class TestSurfaces:
     def test_cli_bundle_root_flag(self):
         from okfgraph.cli import build_parser
 
+        # --root is the repeatable ALIAS=PATH flag; --bundle-root is the
+        # single primary root.
         args = build_parser().parse_args(
-            ["import", "--all", "--bundle-root", "aa=/tmp/a",
-             "--bundle-root", "bb=/tmp/b"])
-        assert args.bundle_root == ["aa=/tmp/a", "bb=/tmp/b"]
+            ["import", "--all", "--root", "aa=/tmp/a",
+             "--root", "bb=/tmp/b"])
+        assert args.roots == ["aa=/tmp/a", "bb=/tmp/b"]
         args = build_parser().parse_args(["import", "--all"])
-        assert args.bundle_root is None
+        assert getattr(args, "roots", None) is None
+        args = build_parser().parse_args(
+            ["import", "--all", "--bundle-root", "/tmp/prim"])
+        assert args.bundle_root == "/tmp/prim"
+        args = build_parser().parse_args(["import", "--all"])
+        assert getattr(args, "bundle_root", None) is None
 
     def test_single_tree_pin_warns_all_roots_stays_quiet(
             self, tmp_path, caplog):
@@ -392,8 +399,8 @@ class TestSurfaces:
         prim = _mkroot(tmp_path, "prim", {})
         a = _mkroot(tmp_path, "a", {})
         args = build_parser().parse_args(
-            ["doctor", "--db", str(tmp_path / "m.db"),
-             "--primary", str(prim), "--bundle-root", f"aa={a}"])
+            ["doctor", "--db-path", str(tmp_path / "m.db"),
+             "--bundle-root", str(prim), "--root", f"aa={a}"])
         router = _router(args)
         try:
             assert router.bundle_root == prim.resolve()
@@ -401,24 +408,14 @@ class TestSurfaces:
         finally:
             router.close()
 
-    def test_cli_primary_overrides_bundle_value(self):
-        from okfgraph.config import OKFConfig
+    def test_cli_bundle_root_overrides_toml(self, tmp_path):
+        from okfgraph.settings import Settings
 
-        cfg = OKFConfig()
-        OKFConfig._apply_cli(
-            cfg, {"bundle": "/tmp/b", "primary": "/tmp/p"})
-        assert cfg.bundle == "/tmp/p"
-
-    def test_cli_bundle_plus_primary_refused(self, capsys):
-        from types import SimpleNamespace
-
-        from okfgraph.cli import _import_inner
-
-        args = SimpleNamespace(import_all=True, bundle="/tmp/b",
-                               primary="/tmp/p", batch_size=32,
-                               mode="text", purge=False, force=False)
-        assert _import_inner(args, None, "text", False) == 2
-        assert "not both" in capsys.readouterr().out
+        (tmp_path / "okfgraph.toml").write_text(
+            'bundle_root = "/tmp/b"\n', encoding="utf-8")
+        s = Settings.load(
+            bundle_root=str(tmp_path), cli_args={"bundle_root": "/tmp/p"})
+        assert s.bundle_root == "/tmp/p"
 
     def test_cli_roots_reach_router(self, tmp_path):
         from okfgraph.cli import _router
@@ -427,8 +424,8 @@ class TestSurfaces:
         prim = _mkroot(tmp_path, "prim", {})
         a = _mkroot(tmp_path, "a", {})
         args = build_parser().parse_args(
-            ["doctor", "--db", str(tmp_path / "m.db"),
-             "--bundle", str(prim), "--bundle-root", f"aa={a}"])
+            ["doctor", "--db-path", str(tmp_path / "m.db"),
+             "--bundle-root", str(prim), "--root", f"aa={a}"])
         router = _router(args)
         try:
             assert sorted(router.roots) == ["aa"]
@@ -436,44 +433,58 @@ class TestSurfaces:
         finally:
             router.close()
 
-    def test_cli_bad_bundle_root_is_clean_error(self, tmp_path, capsys):
+    def test_cli_bad_root_is_clean_error(self, tmp_path, capsys):
         from okfgraph.cli import _router
         from okfgraph.cli import build_parser
 
         args = build_parser().parse_args(
-            ["doctor", "--bundle-root", "no-equals-here"])
+            ["doctor", "--root", "no-equals-here"])
         with pytest.raises(SystemExit) as e:
             _router(args)
         assert e.value.code == 2
         assert "ALIAS=PATH" in capsys.readouterr().out
 
+    def test_cli_bundle_root_alias_path_refused(self, tmp_path, capsys):
+        # Retired spelling: --bundle-root ALIAS=PATH now points at --root.
+        from okfgraph.cli import _router
+        from okfgraph.cli import build_parser
+
+        args = build_parser().parse_args(
+            ["doctor", "--bundle-root", "aa=/definitely-not-here"])
+        with pytest.raises(SystemExit) as e:
+            _router(args)
+        assert e.value.code == 2
+        out = capsys.readouterr().out
+        assert "--root" in out and "ALIAS=PATH" in out
+
     def test_toml_roots_relative_to_toml(self, tmp_path):
-        from okfgraph.config import OKFConfig
+        from okfgraph.settings import Settings
 
         docs = tmp_path / "docs"
         docs.mkdir()
         (tmp_path / "okfgraph.toml").write_text(
             '[[roots]]\nalias = "aa"\npath = "docs"\n',
             encoding="utf-8")
-        cfg = OKFConfig.load(bundle_root=tmp_path)
+        cfg = Settings.load(bundle_root=str(tmp_path))
         assert cfg.roots == {"aa": str(docs)}
         # CLI list replaces TOML wholesale.
-        cfg2 = OKFConfig.load(
-            bundle_root=tmp_path, cli_args={"roots": ["bb=/x"]})
+        cfg2 = Settings.load(
+            bundle_root=str(tmp_path), cli_args={"roots": ["bb=/x"]})
         assert cfg2.roots == {"bb": "/x"}
         with pytest.raises(ValueError, match="ALIAS=PATH"):
-            OKFConfig.load(bundle_root=tmp_path,
-                           cli_args={"roots": ["broken"]})
+            Settings.load(bundle_root=str(tmp_path),
+                          cli_args={"roots": ["broken"]})
 
     def test_mcp_roots_plumbing(self, tmp_path):
         from okfgraph.mcp_server import create_mcp_server
+        from okfgraph.settings import Settings
 
         a = _mkroot(tmp_path, "a", {})
-        mcp = create_mcp_server(
+        mcp = create_mcp_server(Settings(
             db_path=str(tmp_path / "m.db"),
             bundle_root=str(tmp_path),
             roots={"aa": str(a)},
-        )
+        ))
         assert mcp is not None
 
     def test_ingest_md_namespaced(self, tmp_path):

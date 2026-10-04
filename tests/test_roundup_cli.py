@@ -50,9 +50,9 @@ class TestRoundupWorkflow:
         cls.db_path = f"{cls.tmpdir}/test.db"
         cls.bundle = f"{cls.tmpdir}/bundle"
         shutil.copytree(FIX / "doctor_bundle", cls.bundle)
-        cls._run(["init", "--db", cls.db_path, "--bundle", cls.bundle])
+        cls._run(["init", "--db-path", cls.db_path, "--bundle-root", cls.bundle])
         assert Path(cls.db_path).exists()
-        cls._run(["import", "--db", cls.db_path, "--bundle", cls.bundle, "--all"])
+        cls._run(["import", "--db-path", cls.db_path, "--bundle-root", cls.bundle, "--all"])
 
     @classmethod
     def teardown_class(cls):
@@ -67,7 +67,7 @@ class TestRoundupWorkflow:
         return result
 
     def _base(self):
-        return ["--db", self.db_path, "--bundle", self.bundle]
+        return ["--db-path", self.db_path, "--bundle-root", self.bundle]
 
     def test_search_rank_ppr(self):
         result = self._run(["search", *self._base(), "--rank", "ppr", "hub spokes"])

@@ -9,7 +9,7 @@ import pytest
 
 from okfgraph.cli import build_parser
 from okfgraph.components.import_ import _length_bucketed_encode
-from okfgraph.config import OKFConfig
+from okfgraph.settings import Settings
 
 
 def _recording_fake(counts):
@@ -28,28 +28,29 @@ def _recording_fake(counts):
 
 class TestConfig:
     def test_default_is_none(self):
-        assert OKFConfig().embedding.max_length is None
+        assert Settings().max_length is None
 
     def test_validate_range(self):
-        c = OKFConfig()
-        assert c.validate() == []
-        c.embedding.max_length = 0
-        with pytest.raises(ValueError, match="max_length"):
-            c.validate()
-        c.embedding.max_length = 32769
-        with pytest.raises(ValueError, match="max_length"):
-            c.validate()
-        c.embedding.max_length = 32768
-        assert c.validate() == []
+        s = Settings()
+        errors, _ = s.checks()
+        assert errors == []
+        s.max_length = 0
+        errors, _ = s.checks()
+        assert any("max_length" in e for e in errors)
+        s.max_length = 32769
+        errors, _ = s.checks()
+        assert any("max_length" in e for e in errors)
+        s.max_length = 32768
+        assert s.checks()[0] == []
 
     def test_toml_and_env_and_cli(self, tmp_path, monkeypatch):
         (tmp_path / "okfgraph.toml").write_text(
             '[embedding]\nmax_length = 16384\n', encoding="utf-8")
-        assert OKFConfig.load(bundle_root=tmp_path).embedding.max_length == 16384
+        assert Settings.load(bundle_root=str(tmp_path)).max_length == 16384
         monkeypatch.setenv("OKFGRAPH_MAX_LENGTH", "4096")
-        assert OKFConfig.load(bundle_root=tmp_path).embedding.max_length == 4096
-        cfg = OKFConfig.load(bundle_root=tmp_path, cli_args={"max_length": 2048})
-        assert cfg.embedding.max_length == 2048
+        assert Settings.load(bundle_root=str(tmp_path)).max_length == 4096
+        cfg = Settings.load(bundle_root=str(tmp_path), cli_args={"max_length": 2048})
+        assert cfg.max_length == 2048
 
 
 class TestCLI:
@@ -59,7 +60,7 @@ class TestCLI:
 
     def test_max_length_default_none(self):
         args = build_parser().parse_args(["import", "--all"])
-        assert args.max_length is None
+        assert getattr(args, "max_length", None) is None
 
 
 class TestTokenBudget:

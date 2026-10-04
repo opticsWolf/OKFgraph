@@ -149,7 +149,8 @@ def enforce_precision_pin(conn, precision: str) -> str:
             logger.info(
                 "empty graph re-pinned to precision=%s", precision)
             return precision
-        raise RuntimeError(
+        raise OKFError(
+            "PRECISION_PIN_MISMATCH",
             f"graph is pinned to precision={pinned} but the session opened "
             f"with precision={precision}: FP16 and FP32 vectors share the "
             f"dimension but live in different spaces and must never mix. "
@@ -201,7 +202,8 @@ def enforce_model_pin(conn, model_id: str) -> str:
             )
             logger.info("empty graph re-pinned to model=%s", model_id)
             return model_id
-        raise RuntimeError(
+        raise OKFError(
+            "MODEL_PIN_MISMATCH",
             f"graph is pinned to model={pinned} but the session opened "
             f"with model={model_id}: different weights live in different "
             f"vector spaces and must never mix. Reimport into a fresh "
@@ -260,7 +262,8 @@ def enforce_image_model_pin(conn, image_model_id: str) -> str:
             )
             logger.info("empty graph re-pinned to image model=%s", image_model_id)
             return image_model_id
-        raise RuntimeError(
+        raise OKFError(
+            "IMAGE_PIN_MISMATCH",
             f"graph is pinned to image model={pinned} but the vision session opened "
             f"with image model={image_model_id}: image vectors only compare "
             f"within one (model, precision, contract) triple. Reimport into a "
@@ -306,7 +309,8 @@ def enforce_image_precision_pin(conn, precision: str) -> str:
             )
             logger.info("empty graph re-pinned to image precision=%s", precision)
             return precision
-        raise RuntimeError(
+        raise OKFError(
+            "IMAGE_PIN_MISMATCH",
             f"graph is pinned to image precision={pinned} but the vision session "
             f"opened with precision={precision}: FP16 and FP32 vision vectors "
             f"live in different spaces and must never mix. Reimport into a fresh "
@@ -330,22 +334,27 @@ def vision_text_partner(image_model_id: str) -> str:
     try:
         import embroider
     except ImportError:
-        raise RuntimeError(
+        raise OKFError(
+            "NO_ORT_RUNTIME",
             "the embroider wheel is required for image embeddings: "
-            "pip install 'embroider>=0.3,<0.4'"
+            "pip install 'embroider>=0.3,<0.4'",
         ) from None
     for m in embroider.available_models():
         if m.get("id") == image_model_id:
             partner = m.get("text_partner") or ""
             if not partner:
-                raise RuntimeError(
+                raise OKFError(
+                    "IMAGE_PIN_MISMATCH",
                     f"image model {image_model_id!r} names no text partner — "
-                    "image vectors would compare against nothing"
+                    "image vectors would compare against nothing",
+                    fields={"image_model": image_model_id},
                 )
             return partner
-    raise RuntimeError(
+    raise OKFError(
+        "IMAGE_PIN_MISMATCH",
         f"unknown image model {image_model_id!r} (needs embroider>=0.3, "
-        "which registers the vision contract)"
+        "which registers the vision contract)",
+        fields={"image_model": image_model_id},
     )
 
 
@@ -364,7 +373,8 @@ def enforce_vision_compat(conn, *, text_model_id: str, embedding_dim: int,
     """
     partner = vision_text_partner(image_model_id)
     if embedding_dim > 768:
-        raise RuntimeError(
+        raise OKFError(
+            "VISION_INCOMPATIBLE",
             f"image-content search needs embedding_dim<=768 (vision native "
             f"width; this graph uses dim={embedding_dim}): reimport with a "
             "smaller dim, or use mode=text (captions)"
@@ -378,9 +388,12 @@ def enforce_vision_compat(conn, *, text_model_id: str, embedding_dim: int,
     pinned = rows[0]["v"] if rows else None
     effective = pinned or text_model_id
     if effective != partner:
-        raise RuntimeError(
+        raise OKFError(
+            "VISION_INCOMPATIBLE",
             f"image-content search needs a {partner} graph; this graph uses "
-            f"{effective} — use mode=text (captions)"
+            f"{effective} — use mode=text (captions)",
+            fields={"need": partner, "have": effective},
+            remedy="use mode=text (captions)",
         )
     return partner
 
@@ -480,6 +493,8 @@ class LazyVisionEncoder:
             f"LazyVisionEncoder({self._image_model_id}, "
             f"dim={self._truncate_dim}, {state})"
         )
+from okfgraph.errors import OKFError
+
 logger = logging.getLogger(__name__)
 
 # `onnxruntime-gpu` installs the same `onnxruntime` module name — one entry suffices.

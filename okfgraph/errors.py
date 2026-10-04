@@ -15,27 +15,30 @@ exception.
 """
 from __future__ import annotations
 
+import json
+import warnings as _warnings_module
+import builtins as _builtins
+
 from typing import Any, Dict, Optional
+
+# `UserWarning` is a builtin; this env's `warnings` module does not re-export
+# it reliably, so take it from builtins (present in every CPython).
+_UserWarning: type = __import__("builtins").UserWarning
 
 __all__ = [
     "OKFError",
     "UsageError",
     "StateError",
     "OutcomeError",
+    "OKFWarning",
     "envelope",
+    "internal_error",
 ]
 
 USAGE_CODES = {
     "BAD_VALUE",
     "MISSING_PARAM",
     "FILE_NOT_FOUND",
-    "WRITE_LOCK_TIMEOUT",
-    "DIM_MISMATCH",
-    "MODEL_PIN_MISMATCH",
-    "PRECISION_PIN_MISMATCH",
-    "IMAGE_PIN_MISMATCH",
-    "VISION_INCOMPATIBLE",
-    "NO_ORT_RUNTIME",
     "CONFIG_INVALID",
 }
 
@@ -46,6 +49,13 @@ STATE_CODES = {
     "DETACHED",
     "PURGE_REFUSED_ABSENT_ROOT",
     "SEARCH_UNAVAILABLE",
+    "WRITE_LOCK_TIMEOUT",
+    "DIM_MISMATCH",
+    "MODEL_PIN_MISMATCH",
+    "PRECISION_PIN_MISMATCH",
+    "IMAGE_PIN_MISMATCH",
+    "VISION_INCOMPATIBLE",
+    "NO_ORT_RUNTIME",
 }
 
 OUTCOME_CODES = {
@@ -54,14 +64,7 @@ OUTCOME_CODES = {
     "DIFF_DIFFERENT",
 }
 
-#: Outcome codes map to exit 1 (diff is a *domain outcome*, not usage).
-#: Everything else in OUTCOME_CODES also exits 1.
-_OKSF_ERROR_EXIT_USAGE = True
-
 _VALID_CODES = USAGE_CODES | STATE_CODES | OUTCOME_CODES | {"INTERNAL"}
-
-#: Usage-class codes exit 2, everything else 1 (§4 table).
-_USAGE_CODES = USAGE_CODES
 
 
 class OKFError(Exception):
@@ -157,3 +160,38 @@ def envelope(op: str, data: Any = None, *, warnings=(), error=None) -> Dict[str,
         "warnings": [str(w) for w in warnings],
         "error": err,
     }
+
+class OKFWarning(_UserWarning):
+    """A non-fatal anomaly; adapters surface it on ``envelope()["warnings"]``."""
+
+    def __init__(self, message: str, *, code: Optional[str] = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def internal_error(exc: BaseException, *, op: Optional[str] = None,
+                   remedy: Optional[str] = None) -> "OKFError":
+    """Wrap an unclassified exception as ``INTERNAL`` (code table §4).
+
+    Adapters use this as the catch-all so no bare traceback ever crosses
+    the CLI/MCP boundary; the exception type rides in ``fields["type"]``.
+    """
+    return OKFError(
+        "INTERNAL",
+        f"{type(exc).__name__}: {exc}".strip(),
+        op=op,
+        fields={"type": type(exc).__name__},
+        remedy=remedy,
+    )
+
+
+def envelope_of_error(err: BaseException, *, op: str, warnings=()) -> Dict[str, Any]:
+    """Build the error envelope for *any* exception (typed or not)."""
+    typed = err if isinstance(err, OKFError) else internal_error(err, op=op)
+    return envelope(op, error=typed, warnings=warnings)
+
+
+def dumps_envelope(payload: Dict[str, Any]) -> str:
+    """Canonical JSON frame for the MCP/CLI ``--json`` transport."""
+    return json.dumps(payload, default=str, indent=2)

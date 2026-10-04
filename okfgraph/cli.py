@@ -8,7 +8,8 @@ import logging
 import sys
 from pathlib import Path
 
-from okfgraph.errors import OKFError
+from okfgraph.errors import (OKFError, envelope, internal_error, UsageError,
+                             OUTCOME_CODES)
 from okfgraph.router import OKFRouter
 from okfgraph.settings import Settings, cli_signal, set_cli_flags
 from okfgraph.components.converters import BobineConverter
@@ -136,10 +137,54 @@ def _add_logging_flags(parser, mark=True):
         (("--quiet", "-q"), {"action": "store_true", "help": "Suppress all logging except errors"}),
         (("--log-file",), {"default": "", "help": "Write logs to file (with 5MB rotation)"}),
         (("--profile",), {"action": "store_true", "help": "Enable cProfile for the current invocation (outputs to stdout)"}),
+        (("--json",), {"action": "store_true", "help": "Print the result envelope on stdout instead of the human renderer (D5)"}),
     ]:
         act = parser.add_argument(*args, **kwargs)
         if mark:
             act._okf_global = True  # noqa: SLF001 — our own marker
+
+
+def _emit(args, op, payload):
+    """``--json`` path: print the success envelope on stdout (returns True)."""
+    if getattr(args, "json", False):
+        print(json.dumps(envelope(op, data=payload), default=str, indent=2))
+        return True
+    return False
+
+
+def _emit_cli_error(args, err):
+    """Error adapter (§4/D6): envelope on stdout under --json, human line
+    on stderr anyway. Returns the error's exit code."""
+    if getattr(args, "json", False):
+        env = envelope(args.command, error=err)
+        if err.code in OUTCOME_CODES and err.fields and "report" in err.fields:
+            # Outcome reports ride in data, never inside the error (§4).
+            env["data"] = err.fields.pop("report")
+        print(json.dumps(env, default=str, indent=2))
+    print(f"[ERROR] {err.titles()}", file=sys.stderr)
+    return err.exit_code
+
+
+def _main_catchall(args):
+    """Dispatch one command with the §4 catch-all: OKFError → its exit code,
+    KeyboardInterrupt → 130, everything else → INTERNAL (never a bare
+    traceback). Returns the process exit code."""
+    command = _COMMANDS[args.command]
+    try:
+        return command(args)
+    except OKFError as err:
+        # Handlers catch their own op failures; this backstop makes the
+        # contract hold even where a render path let one through.
+        return _emit_cli_error(args, err)
+    except KeyboardInterrupt:
+        print("[ERROR] interrupted (130)", file=sys.stderr)
+        return 130
+    except Exception as exc:  # noqa: BLE001 — the §4 catch-all *is* the contract
+        err = internal_error(exc, op=args.command,
+                             remedy="this is a bug — report it with the message above")
+        logging.getLogger("cli").exception("INTERNAL in %s", args.command)
+        return _emit_cli_error(args, err)
+
 
 
 # Routers opened during a CLI invocation, closed (checkpointed) on exit so a
@@ -213,6 +258,8 @@ def _model_info(args):
         model_id=settings.model_id,
         cache_dir=settings.cache_dir,
     )
+    if _emit(args, "model_info", info):
+        return
     logger.info("model: %s", info['model_id'])
     logger.info("cache: %s", info['cache_dir'])
     if info["cached"]:
@@ -306,8 +353,9 @@ def _search(args):
             rank=getattr(args, "rank", "none") or "none",
         )
     except OKFError as err:
-        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-        return err.exit_code
+        return _emit_cli_error(args, err)
+    if _emit(args, "search", results):
+        return
     if target == "images":
         if not results:
             print("No image results found.")
@@ -403,8 +451,9 @@ def _traverse(args):
             max_path_length=getattr(args, "max_path_length", 6),
         )
     except OKFError as err:
-        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-        return err.exit_code
+        return _emit_cli_error(args, err)
+    if _emit(args, "traverse", results):
+        return
     if not start:
         items = results
         if not items:
@@ -447,6 +496,8 @@ def _read(args):
             reading = router.read(
                 cid, include=include, max_tokens=max_tokens,
             )
+            if _emit(args, "read", reading):
+                return
             flag = " (truncated)" if reading["truncated"] else ""
             print(f"[{reading['used']}/{reading['budget']} tokens{flag}] {cid}\n")
             for sec in reading["sections"]:
@@ -456,6 +507,8 @@ def _read(args):
             return
         if include == "chunks":
             chunks = router.read(cid, include="chunks")
+            if _emit(args, "read", chunks):
+                return
             if not chunks:
                 print("No chunks found for this concept.")
                 return
@@ -466,6 +519,8 @@ def _read(args):
             return
         if include == "document":
             payload = router.read(cid, include="document")
+            if _emit(args, "read", payload):
+                return
             markdown = payload["markdown"]
             if not markdown:
                 print("No chunks found for this concept.")
@@ -478,6 +533,8 @@ def _read(args):
             return
         if include == "context":
             ctx = router.read(cid, include="context")
+            if _emit(args, "read", ctx):
+                return
             incoming = ctx["incoming_links"]
             outgoing = ctx["outgoing_links"]
             ancestry = ctx["ancestry"]
@@ -502,8 +559,9 @@ def _read(args):
             return
         data = router.read(cid, include="body")
     except OKFError as err:
-        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-        return err.exit_code
+        return _emit_cli_error(args, err)
+    if _emit(args, "read", data):
+        return
     body = data.pop("body", "")
     print(json.dumps(data, indent=2, default=str))
     if body:
@@ -524,6 +582,8 @@ def _export(args):
                 tags=tags,
                 flavor=flavor,
             )
+            if _emit(args, "export_bundle", result):
+                return
             print(f"[OK] Exported {len(result['concept_ids'])} concepts to "
                   f"{result['output_dir']} (flavor: {result['flavor']})")
         else:
@@ -532,10 +592,11 @@ def _export(args):
                 output_dir=Path(args.output_dir),
                 flavor=flavor,
             )
+            if _emit(args, "export_concept", result):
+                return
             print(f"[OK] Exported {result['concept_id']} → {result['path']} (flavor: {flavor})")
     except OKFError as err:
-        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-        return err.exit_code
+        return _emit_cli_error(args, err)
 
 
 def _broken_links(args):
@@ -567,32 +628,41 @@ def _lint(args):
     given = getattr(args, "dir", None) or "."
     target = Path(given)
     if not target.is_dir():
-        print(f"[ERROR] not a bundle directory: {target}", file=sys.stderr)
-        return 2
+        return _emit_cli_error(args, UsageError(
+            "FILE_NOT_FOUND", f"not a bundle directory: {target}",
+            fields={"dir": str(target)},
+            remedy="pass a bundle directory produced by export/produce"))
     try:
         report = OKFRouter.lint(target)
     except OKFError as err:
         if getattr(args, "json", False):
-            print(json.dumps({"files": 0, "errors": err.fields["errors"],
-                              "warnings": [], "clean": False},
-                             indent=2, default=str))
+            env = envelope("lint", data={"errors": err.fields["errors"]})
+            env["ok"] = False
+            env["error"] = {"code": err.code, "message": err.message}
+            print(json.dumps(env, default=str, indent=2))
         else:
-            print("[ERROR] LINT_ERRORS", file=sys.stderr)
+            print(f"[ERROR] {err.titles()}", file=sys.stderr)
             for e in err.fields["errors"]:
                 print(f"  [ERROR] {e['file']} {e['rule']}: {e['message']}")
         return 1
     if getattr(args, "json", False):
-        print(json.dumps(report, indent=2, default=str))
-    else:
-        print(f"{report['files']} file(s): "
-              f"{len(report['errors'])} error(s), "
-              f"{len(report['warnings'])} warning(s)")
-        for e in report["errors"]:
-            print(f"  [ERROR] {e['file']} {e['rule']}: {e['message']}")
-        for w in report["warnings"]:
-            print(f"  [warn] {w['file']} {w['rule']}: {w['message']}")
-        if report["clean"]:
-            print("Bundle is lint-clean (safe to import).")
+        env = envelope("lint", data=report)
+        if not report["clean"]:
+            # Outcome envelope: errors ride in data (§4); exit 1.
+            env["ok"] = False
+            env["error"] = {"code": "LINT_ERRORS",
+                            "message": f"{len(report['errors'])} lint error(s)"}
+        print(json.dumps(env, default=str, indent=2))
+        return 0 if report["clean"] else 1
+    print(f"{report['files']} file(s): "
+          f"{len(report['errors'])} error(s), "
+          f"{len(report['warnings'])} warning(s)")
+    for e in report["errors"]:
+        print(f"  [ERROR] {e['file']} {e['rule']}: {e['message']}")
+    for w in report["warnings"]:
+        print(f"  [warn] {w['file']} {w['rule']}: {w['message']}")
+    if report["clean"]:
+        print("Bundle is lint-clean (safe to import).")
     return 0 if report["clean"] else 1
 
 
@@ -639,7 +709,6 @@ def _no_db_diff(old, new):
     from okfgraph.components.diff import DiffManager
     if old and new and Path(old).is_dir() and Path(new).is_dir():
         return DiffManager(None).diff_dirs(Path(old), Path(new))
-    from okfgraph.errors import OKFError
     raise OKFError("BAD_VALUE", "diff needs two bundle directories (or one side + --db/--bundle-root)",
                    fields={"old": str(old), "new": str(new)})
 
@@ -664,14 +733,21 @@ def _diff(args):
         if err.code == "DIFF_DIFFERENT":
             report = err.fields["report"]
             if as_json:
-                print(json.dumps(report, indent=2, default=str))
+                # Outcome envelope: the report rides in data (§4).
+                env = envelope("diff", data=report)
+                env["error"] = {"code": err.code, "message": err.message}
+                print(json.dumps(env, default=str, indent=2))
             else:
                 _print_diff(report)
             return 1
-        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-        return err.exit_code
+        return _emit_cli_error(args, err)
     if as_json:
-        print(json.dumps(result, indent=2, default=str))
+        env = envelope("diff", data=result)
+        env["ok"] = bool(result["identical"])
+        if not result["identical"]:
+            env["error"] = {"code": "DIFF_DIFFERENT",
+                            "message": "structures differ"}
+        print(json.dumps(env, default=str, indent=2))
     else:
         _print_diff(result)
     return 0 if result["identical"] else 1
@@ -762,6 +838,16 @@ def _doctor(args):
         strict_cause = True
     else:
         strict_cause = False
+    report = result["report"]
+    if getattr(args, "json", False):
+        env = envelope("doctor", data={"report": report, "fixed": result.get("fixed")})
+        if strict_cause:
+            env["ok"] = False
+            env["error"] = {"code": "DOCTOR_FINDINGS",
+                            "message": f"doctor found "
+                                       f"{len(report['findings'])} finding(s)"}
+        print(json.dumps(env, default=str, indent=2))
+        return 1 if strict_cause else 0
     if "fixed" in result:
         fixed = result["fixed"]
         print(f"[OK] repaired {fixed['repaired_links']} link(s), "
@@ -769,15 +855,11 @@ def _doctor(args):
               f"cleared {fixed.get('cleared_orphan_hashes', 0)} orphan hash row(s)")
         if fixed["skipped_reviewed"]:
             print(f"  skipped reviewed: {', '.join(fixed['skipped_reviewed'])}")
-    report = result["report"]
-    if getattr(args, "json", False):
-        print(json.dumps(report, indent=2, default=str))
-    else:
-        print(f"Health score: {report['score']}/100 ({report['concepts']} concepts)")
-        for f in report["findings"]:
-            print(f"  [{f['severity']}] {f['rule']} {f['path']}: {f['message']}")
-        for i in report["info"]:
-            print(f"  (info) {i['rule']}: {i['message']}")
+    print(f"Health score: {report['score']}/100 ({report['concepts']} concepts)")
+    for f in report["findings"]:
+        print(f"  [{f['severity']}] {f['rule']} {f['path']}: {f['message']}")
+    for i in report["info"]:
+        print(f"  (info) {i['rule']}: {i['message']}")
     if report.get("detached"):
         d = report["detached"]
         roots = ", ".join(r["path"] for r in d.get("roots", [])) or "<none>"
@@ -872,8 +954,9 @@ def _images(args):
     try:
         imgs = router.list_images(args.concept_id)
     except OKFError as err:
-        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-        return err.exit_code
+        return _emit_cli_error(args, err)
+    if _emit(args, "list_images", imgs):
+        return
     if not imgs:
         print("No images attached.")
         return
@@ -891,8 +974,9 @@ def _image(args):
     try:
         row = router.get_image(args.asset_id)
     except OKFError as err:
-        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
-        return err.exit_code
+        return _emit_cli_error(args, err)
+    if _emit(args, "get_image", row):
+        return
     if getattr(args, "output_path", None):
         Path(args.output_path).write_bytes(
             base64.b64decode(row["data"]))
@@ -907,6 +991,8 @@ def _deleted_list(args):
     """List soft-deleted concepts with recovery status."""
     router = _router(args)
     deleted = router.list_deleted()
+    if _emit(args, "list_deleted", deleted):
+        return
     if not deleted:
         print("No soft-deleted concepts found.")
         return
@@ -1405,7 +1491,6 @@ def build_parser():
     p.add_argument("old", nargs="?", default=None,
                    help="Old side: bundle dir (with NEW: snapshot; alone: drift vs graph)")
     p.add_argument("new", nargs="?", default=None, help="New side: bundle dir (snapshot mode)")
-    p.add_argument("--json", action="store_true", help="Machine-readable report")
 
     # doctor (scored health + safe repairs)
     p = sub.add_parser("doctor", help="Health scan: score, findings, safe --fix")
@@ -1418,7 +1503,6 @@ def build_parser():
                    "never touches reviewed:true concepts)")
     p.add_argument("--stale-days", type=int, default=365,
                    help="Age threshold for 'stale' findings (default: 365)")
-    p.add_argument("--json", action="store_true", help="Machine-readable report")
 
     # lint (pre-import bundle gate: no DB, no model load)
     p = sub.add_parser("lint", help="Validate bundle frontmatter + links before import")
@@ -1426,7 +1510,6 @@ def build_parser():
     _add_logging_flags(p)
     p.add_argument("dir", nargs="?", default=None,
                    help="Bundle directory (default: --bundle, okfgraph.toml, or .)")
-    p.add_argument("--json", action="store_true", help="Machine-readable report")
 
     # produce
     p = sub.add_parser("produce", help="Generate a bundle from a data source")
@@ -1509,6 +1592,32 @@ def build_parser():
     return parser
 
 
+_COMMANDS = {
+    "init": _init,
+    "model-info": _model_info,
+    "import": _import,
+    "ingest": _ingest,
+    "search": _search,
+    "read": _read,
+    "traverse": _traverse,
+    "export": _export,
+    "images": _images,
+    "image": _image,
+    "shell": _shell,
+    "broken-links": _broken_links,
+    "repair-links": _repair_links,
+    "diff": _diff,
+    "doctor": _doctor,
+    "lint": _lint,
+    "produce": _produce,
+    "reindex": _reindex,
+    "deleted-list": _deleted_list,
+    "deleted-recover": _deleted_recover,
+    "deleted-purge": _deleted_purge,
+    "detach": _detach,
+}
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -1532,33 +1641,10 @@ def main():
         profiler = cProfile.Profile()
         profiler.enable()
 
-    commands = {
-        "init": _init,
-        "model-info": _model_info,
-        "import": _import,
-        "ingest": _ingest,
-        "search": _search,
-        "read": _read,
-        "traverse": _traverse,
-        "export": _export,
-        "images": _images,
-        "image": _image,
-        "shell": _shell,
-        "broken-links": _broken_links,
-        "repair-links": _repair_links,
-        "diff": _diff,
-        "doctor": _doctor,
-        "lint": _lint,
-        "produce": _produce,
-        "reindex": _reindex,
-        "deleted-list": _deleted_list,
-        "deleted-recover": _deleted_recover,
-        "deleted-purge": _deleted_purge,
-        "detach": _detach,
-    }
+    commands = _COMMANDS
 
     try:
-        ret = commands[args.command](args)
+        ret = _main_catchall(args)
     finally:
         _close_routers()
         _teardown_logging()

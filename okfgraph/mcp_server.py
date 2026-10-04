@@ -26,10 +26,13 @@ from pathlib import Path
 from typing import Annotated, Any, Dict, Literal, Optional
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from okfgraph.errors import OKFError
+import warnings
+
+from okfgraph.errors import OKFError, envelope, internal_error
 from okfgraph.router import OKFRouter
 from okfgraph.settings import Settings, cli_signal, set_cli_flags
 
@@ -82,6 +85,36 @@ def _get_router(ctx: Context) -> OKFRouter:
     if isinstance(gc, dict):
         return gc["router"]
     raise RuntimeError("No OKFRouter found in lifespan context")
+
+
+class _ToolFailure(ToolError):
+    """Raised by a tool so the wire result carries ``isError: true`` (D7)
+    with the full error envelope as the result text (after the SDK's
+    ``Error executing tool <name>:`` prefix)."""
+
+    def __init__(self, payload):
+        super().__init__(json.dumps(payload, default=str, indent=2))
+        self.payload = payload
+
+
+def _tool_result(op: str, produce):
+    """Envelope adapter (§4): success → success envelope; failure → raise.
+
+    Unsupported component exceptions never cross as bare tracebacks:
+    ``except Exception`` wraps them as ``INTERNAL`` with the type name.
+    Warnings recorded during the call ride on the envelope.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            data = produce()
+        except OKFError as exc:
+            raise _ToolFailure(envelope(op, error=exc)) from None
+        except Exception as exc:  # noqa: BLE001 — catch-all is the point (§4)
+            raise _ToolFailure(envelope(op, error=internal_error(exc, op=op))) from None
+    return json.dumps(
+        envelope(op, data=data, warnings=caught), default=str, indent=2,
+    )
 
 
 def create_mcp_server(settings: Settings) -> MCPServer:
@@ -154,8 +187,9 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         already have a concept ID, use read instead of searching. If you want
         related concepts, use traverse. To add content, use ingest."""
         router = _get_router(ctx)
-        try:
-            results = router.search(
+
+        def _run():
+            return router.search(
                 query,
                 target=target,
                 limit=limit,
@@ -170,9 +204,8 @@ def create_mcp_server(settings: Settings) -> MCPServer:
                 hub_weight=hub_weight,
                 rank=rank,
             )
-        except OKFError as err:
-            return f"error: {err.code}: {err.message}"
-        return json.dumps(results, default=str, indent=2)
+
+        return _tool_result("search", _run)
 
     @mcp.tool(annotations=_RO)
     def read(
@@ -209,13 +242,9 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         section list. For open questions use search; to walk
         relationships use traverse."""
         router = _get_router(ctx)
-        try:
-            return json.dumps(
-                router.read(concept_id, include=include, max_tokens=max_tokens),
-                default=str, indent=2,
-            )
-        except OKFError as err:
-            return f"error: {err.code}: {err.message}"
+        return _tool_result(
+            "read", lambda: router.read(concept_id, include=include, max_tokens=max_tokens),
+        )
 
     @mcp.tool(annotations=_RO)
     def traverse(
@@ -246,21 +275,15 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         LINKS_TO follows references; target=<id> finds the shortest path
         instead. Search first to find IDs. To add content use ingest."""
         router = _get_router(ctx)
-        try:
-            return json.dumps(
-                router.traverse(
-                    start_id,
-                    relationship=relationship,
-                    direction=direction,
-                    depth=depth,
-                    node_type=node_type,
-                    target=target,
-                    max_path_length=max_path_length,
-                ),
-                default=str, indent=2,
-            )
-        except OKFError as err:
-            return f"error: {err.code}: {err.message}"
+        return _tool_result("traverse", lambda: router.traverse(
+            start_id,
+            relationship=relationship,
+            direction=direction,
+            depth=depth,
+            node_type=node_type,
+            target=target,
+            max_path_length=max_path_length,
+        ))
 
     @mcp.tool(annotations=_WR)
     def ingest(
@@ -290,8 +313,9 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         ('never' routing = fast, no ONNX); 'thoughts' persists reasoning.
         Markdown is mordant-linted before import."""
         router = _get_router(ctx)
-        try:
-            result = router.ingest(
+
+        def _run():
+            return router.ingest(
                 kind,
                 md_path=md_path,
                 pdf_path=pdf_path,
@@ -306,9 +330,8 @@ def create_mcp_server(settings: Settings) -> MCPServer:
                 extract_images=extract_images,
                 auto_import=True,
             )
-        except OKFError as err:
-            return f"error: {err.code}: {err.message}"
-        return json.dumps(result, default=str, indent=2)
+
+        return _tool_result("ingest", _run)
 
     @mcp.tool(annotations=_WR)
     def export_bundle(
@@ -324,17 +347,13 @@ def create_mcp_server(settings: Settings) -> MCPServer:
     ) -> str:
         """Export concepts from the graph to an OKF-compliant bundle directory. To add content back to the graph, use ingest."""
         router = _get_router(ctx)
-        try:
-            result = router.export_bundle(
-                output_dir,
-                directory_id=directory_id,
-                concept_type=concept_type,
-                tags=tags,
-                flavor=flavor,
-            )
-        except OKFError as err:
-            return f"error: {err.code}: {err.message}"
-        return json.dumps(result, default=str, indent=2)
+        return _tool_result("export_bundle", lambda: router.export_bundle(
+            output_dir,
+            directory_id=directory_id,
+            concept_type=concept_type,
+            tags=tags,
+            flavor=flavor,
+        ))
 
     @mcp.tool(annotations=_WR)
     def export_concept(
@@ -351,11 +370,9 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         Unknown IDs raise UNKNOWN_CONCEPT (search first). For a whole
         bundle use export_bundle."""
         router = _get_router(ctx)
-        try:
-            result = router.export_concept(concept_id, output_dir=output_dir, flavor=flavor)
-        except OKFError as err:
-            return f"error: {err.code}: {err.message}"
-        return json.dumps(result, default=str, indent=2)
+        return _tool_result("export_concept", lambda: router.export_concept(
+            concept_id, output_dir=output_dir, flavor=flavor,
+        ))
 
 
     @mcp.tool(annotations=_RO)
@@ -367,10 +384,7 @@ def create_mcp_server(settings: Settings) -> MCPServer:
 
         Unknown concepts raise UNKNOWN_CONCEPT — search first."""
         router = _get_router(ctx)
-        try:
-            return json.dumps(router.list_images(concept_id), default=str, indent=2)
-        except OKFError as err:
-            return f"error: {err.code}: {err.message}"
+        return _tool_result("list_images", lambda: router.list_images(concept_id))
 
     @mcp.tool(annotations=_RO)
     def get_image(
@@ -381,10 +395,7 @@ def create_mcp_server(settings: Settings) -> MCPServer:
 
         Unknown assets raise UNKNOWN_ASSET."""
         router = _get_router(ctx)
-        try:
-            return json.dumps(router.get_image(asset_id), default=str, indent=2)
-        except OKFError as err:
-            return f"error: {err.code}: {err.message}"
+        return _tool_result("get_image", lambda: router.get_image(asset_id))
 
     return mcp
 

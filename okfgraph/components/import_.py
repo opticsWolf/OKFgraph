@@ -20,6 +20,7 @@ import mordant
 import numpy as np
 import yaml
 import frontmatter
+from okfgraph.errors import OKFError
 from okfgraph.models import ChunkModel, ConceptModel
 from okfgraph.images import IngestMode
 from okfgraph.components.roots import (
@@ -626,9 +627,12 @@ class ImportManager:
             absent = self._absent_roots()
             if absent:
                 names = [a or "<primary>" for a in absent]
-                raise RuntimeError(
+                raise OKFError(
+                    "PURGE_REFUSED_ABSENT_ROOT",
                     f"purge refused: root(s) {names} not present — "
-                    "remount them so every tree's state is known, then retry."
+                    "remount them so every tree's state is known, then retry.",
+                    fields={"roots": names},
+                    remedy="remount the absent roots, then retry",
                 )
         # Single walk, partitioned: reserved names (index.md, ...) are graph
         # noise, never knowledge — but counted in the log so silent loss is
@@ -1283,9 +1287,12 @@ class ImportManager:
                 absent = self._absent_roots()
                 if absent:
                     names = [a or "<primary>" for a in absent]
-                    raise RuntimeError(
+                    raise OKFError(
+                        "DETACHED",
                         f"re-attach refused: root(s) {names} not present — "
-                        "remount the full recorded source tree, then retry."
+                        "remount the full recorded source tree, then retry.",
+                        fields={"roots": names},
+                        remedy="remount the recorded source tree, then re-import",
                     )
                 recorded = {
                     r.get("alias", ""): r.get("path")
@@ -1298,10 +1305,13 @@ class ImportManager:
                 configured.update({a: str(Path(p).resolve())
                                    for a, p in self.roots.items()})
                 if recorded != configured:
-                    raise RuntimeError(
+                    raise OKFError(
+                        "DETACHED",
                         "re-attach refused: configured roots differ from the "
                         f"recorded source tree ({recorded}). Create a new "
-                        "database for a different tree."
+                        "database for a different tree.",
+                        fields={"recorded": recorded},
+                        remedy="match the recorded roots, or create a new database",
                     )
             all_ids: List[str] = []
             _targets = (
@@ -1348,10 +1358,12 @@ class ImportManager:
         if not self.delta_mgr.is_detached():
             return False
         if not force:
-            raise RuntimeError(
+            raise OKFError(
+                "DETACHED",
                 "graph is detached from its bundle (see `okf detach`): mirror "
                 "writes are refused. Re-attach with --force (the bundle root "
-                "must match the recorded source tree)."
+                "must match the recorded source tree).",
+                remedy="re-attach with --force, or pass --force to import",
             )
         if root is None:
             return False
@@ -1359,10 +1371,13 @@ class ImportManager:
         roots = (self.delta_mgr.get_detached_state() or {}).get("roots", [])
         if not any(r.get("path") == want for r in roots):
             known = roots[0]["path"] if roots else "<unknown>"
-            raise RuntimeError(
+            raise OKFError(
+                "DETACHED",
                 f"graph was detached from a different source tree ({known}); "
                 f"refusing --force import from {want}. Create a new database "
-                "for a different tree."
+                "for a different tree.",
+                fields={"detached_from": known, "want": str(want)},
+                remedy="create a new database for a different tree",
             )
         return True
 
@@ -1395,10 +1410,12 @@ class ImportManager:
         if self.delta_mgr.is_detached():
             state = self.delta_mgr.get_detached_state() or {}
             since = state.get("detached_at")
-            raise RuntimeError(
+            raise OKFError(
+                "DETACHED",
                 "graph is already detached"
                 + (f" (since epoch {since})" if since else "")
-                + "."
+                + ".",
+                fields={"since": since},
             )
         # Multi-root whole-graph detach (§2.5): every configured tree is
         # verified (with its alias) and recorded as its own SourceRoot row.
@@ -1426,10 +1443,12 @@ class ImportManager:
         baseline_count = baseline_rows[0]["n"] if baseline_rows else 0
         if verify:
             if not root.is_dir():
-                raise RuntimeError(
-                    f"bundle '{root}' not found - nothing to verify against. "
-                    "Pass --bundle pointing at the source tree, or --no-verify "
-                    "to detach an already-removed tree without verification."
+                raise OKFError(
+                    "FILE_NOT_FOUND",
+                    f"bundle '{root}' not found - nothing to verify against.",
+                    fields={"bundle": str(root)},
+                    remedy="pass the source tree, or --no-verify to detach an "
+                           "already-removed tree",
                 )
             self._verify_detach_fidelity(root, report)
             summary = (

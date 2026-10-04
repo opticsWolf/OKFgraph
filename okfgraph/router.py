@@ -569,12 +569,15 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         try:
             acquired = self._write_lock.acquire(timeout=timeout)
         except Exception as e:
-            raise RuntimeError(f"Failed to acquire write lock: {e}") from e
+            raise OKFError("WRITE_LOCK_TIMEOUT",
+                           f"Failed to acquire write lock: {e}") from e
 
         if not acquired:
-            raise RuntimeError(
+            raise OKFError(
+                "WRITE_LOCK_TIMEOUT",
                 "Write lock acquisition timed out (another process is writing). "
-                "Wait for the other writer to finish or increase the timeout."
+                "Wait for the other writer to finish or increase the timeout.",
+                remedy="close concurrent writers or raise the lock timeout",
             )
 
         try:

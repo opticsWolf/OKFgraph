@@ -145,7 +145,8 @@ def wire(tmp_path_factory):
 def test_wire_lists_five_tools(wire):
     result = wire.call("tools/list")
     names = [t["name"] for t in result["tools"]]
-    assert names == ["search", "read", "traverse", "ingest", "export_bundle"]
+    assert names == ["search", "read", "traverse", "ingest", "export_bundle",
+                     "export_concept", "list_images", "get_image"]
 
 
 def test_wire_traverse_root_listing(wire):
@@ -153,7 +154,24 @@ def test_wire_traverse_root_listing(wire):
     result = wire.call("tools/call", {"name": "traverse", "arguments": {"start_id": ""}})
     assert not result.get("isError", False), result
     payload = json.loads(result["content"][0]["text"])
-    assert isinstance(payload, list)
+    assert payload["ok"] is True and payload["op"] == "traverse"
+    assert isinstance(payload["data"], list)
+
+
+def test_wire_typed_error_carries_envelope_and_is_error(wire):
+    """D7: a typed failure surfaces isError=true with the error envelope."""
+    result = wire.call(
+        "tools/call",
+        {"name": "read", "arguments": {"concept_id": "does-not-exist"}},
+    )
+    assert result.get("isError", False) is True, result
+    text = result["content"][0]["text"]
+    # The SDK prefixes deliberate ToolErrors with 'Error executing tool <name>: '.
+    prefix = "Error executing tool read: "
+    assert text.startswith(prefix), text
+    payload = json.loads(text[len(prefix):])
+    assert payload["ok"] is False and payload["op"] == "read"
+    assert payload["error"]["code"] == "UNKNOWN_CONCEPT"
 
 
 def test_wire_unknown_tool_errors_cleanly(wire):

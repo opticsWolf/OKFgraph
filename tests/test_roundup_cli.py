@@ -99,8 +99,10 @@ class TestRoundupWorkflow:
         import json
         result = self._run(["diff", str(FIX / "diff_a"), str(FIX / "diff_b"), "--json"])
         assert result.returncode == 1
-        report = json.loads(result.stdout)
-        assert report["added"] == ["gamma"]
+        env = json.loads(result.stdout)
+        assert env["ok"] is False and env["op"] == "diff"
+        assert env["error"]["code"] == "DIFF_DIFFERENT"
+        assert env["data"]["added"] == ["gamma"]
 
     def test_diff_drift_clean(self):
         result = self._run(["diff", *self._base()])

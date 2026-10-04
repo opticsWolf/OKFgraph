@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+from okfgraph.errors import OKFError
 from okfgraph.models import ChunkModel, ConceptModel
 
 logger = logging.getLogger(__name__)
@@ -73,11 +74,13 @@ class SearchEngine:
         document appear in results.
         """
         if not getattr(self, "_search_available", False):
-            raise RuntimeError(
+            raise OKFError(
+                "SEARCH_UNAVAILABLE",
                 "Search is unavailable: the 'vector'/'fts' extensions could not "
                 "be loaded. Ensure the Ladybug extension repository is reachable, "
                 "then reopen the router (ingestion and graph queries do not need "
-                "these extensions)."
+                "these extensions).",
+                remedy="reopen the router so the vector/fts extensions load",
             )
         query_vec = self.embed_engine._encode(query, task="Query")
 
@@ -559,11 +562,13 @@ class SearchEngine:
                 tags=tags, parent_id=parent_id,
             )
         if not getattr(self, "_search_available", False):
-            raise RuntimeError(
+            raise OKFError(
+                "SEARCH_UNAVAILABLE",
                 "Search is unavailable: the 'vector'/'fts' extensions could not "
                 "be loaded. Ensure the Ladybug extension repository is reachable, "
                 "then reopen the router (ingestion and graph queries do not need "
-                "these extensions)."
+                "these extensions).",
+                remedy="reopen the router so the vector/fts extensions load",
             )
         query_vec = self.embed_engine._encode(query, task="Query")
 

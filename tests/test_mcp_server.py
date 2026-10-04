@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from okfgraph.errors import OKFError
-from okfgraph.mcp_server import create_mcp_server
+from okfgraph.mcp_server import _ToolFailure, create_mcp_server
 from okfgraph.ops import ExportOps, IngestOps, QueryOps
 from okfgraph.settings import Settings
 
@@ -343,7 +343,9 @@ class TestToolDispatch:
         calls = []
         out = self._fn("search")("q", ctx=self._ctx(_StubRouter(calls)))
         assert calls[0][0] == "search_hybrid"
-        assert '"c1"' in out
+        env = json.loads(out)
+        assert env["ok"] is True and env["op"] == "search"
+        assert env["data"] == [{"id": "c1", "type": "note"}]
 
     def test_search_chunks_plain_and_filtered(self):
         calls = []
@@ -373,8 +375,9 @@ class TestToolDispatch:
         calls = []
         out = self._fn("read")("c1", ctx=self._ctx(_StubRouter(calls)))
         assert calls[0][0] == "get_by_id"
-        out = self._fn("read")("missing", ctx=self._ctx(_StubRouter(calls)))
-        assert out.startswith("error: UNKNOWN_CONCEPT")
+        with pytest.raises(_ToolFailure) as exc:
+            self._fn("read")("missing", ctx=self._ctx(_StubRouter(calls)))
+        assert exc.value.payload["error"]["code"] == "UNKNOWN_CONCEPT"
 
     def test_read_variants(self):
         for include, expect in [("chunks", "get_chunks"), ("document", "reconstruct"), ("context", "traverse")]:
@@ -406,10 +409,14 @@ class TestToolDispatch:
 
     def test_ingest_validates_required(self):
         calls = []
-        out = self._fn("ingest")(kind="md", ctx=self._ctx(_StubRouter(calls)))
-        assert out.startswith("error:") and calls == []
-        out = self._fn("ingest")(kind="thoughts", thoughts="t", ctx=self._ctx(_StubRouter(calls)))
-        assert out.startswith("error:") and calls == []
+        with pytest.raises(_ToolFailure) as exc:
+            self._fn("ingest")(kind="md", ctx=self._ctx(_StubRouter(calls)))
+        assert exc.value.payload["error"]["code"] == "MISSING_PARAM"
+        assert calls == []
+        with pytest.raises(_ToolFailure) as exc:
+            self._fn("ingest")(kind="thoughts", thoughts="t", ctx=self._ctx(_StubRouter(calls)))
+        assert exc.value.payload["error"]["code"] == "MISSING_PARAM"
+        assert calls == []
 
 
 class _StubImageMgr:
@@ -452,9 +459,10 @@ class TestRoundupDispatch:
     def test_search_rank_rejected_for_chunks(self):
         calls = []
         fn = TestToolDispatch._fn("search")
-        out = fn("honey", target="chunks", rank="ppr",
-                 ctx=TestToolDispatch._ctx(_StubRouter(calls)))
-        assert out.startswith("error:")
+        with pytest.raises(_ToolFailure) as exc:
+            fn("honey", target="chunks", rank="ppr",
+               ctx=TestToolDispatch._ctx(_StubRouter(calls)))
+        assert exc.value.payload["error"]["code"] == "BAD_VALUE"
         assert calls == []
 
     def test_read_schema_has_max_tokens(self):
@@ -468,7 +476,9 @@ class TestRoundupDispatch:
         stub = _StubRouter(calls)
         fn = TestToolDispatch._fn("read")
         out = fn("c1", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
-        assert json.loads(out)["concept_id"] == "c1"
+        env = json.loads(out)
+        assert env["ok"] is True and env["op"] == "read"
+        assert env["data"]["concept_id"] == "c1"
         # The op verifies the concept's existence first, then budgets.
         assert any(c[0] == "read_with_budget" for c in calls)
 
@@ -476,8 +486,9 @@ class TestRoundupDispatch:
         calls = []
         stub = _StubRouter(calls)
         fn = TestToolDispatch._fn("read")
-        out = fn("missing", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
-        assert out.startswith("error: UNKNOWN_CONCEPT")
+        with pytest.raises(_ToolFailure) as exc:
+            fn("missing", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
+        assert exc.value.payload["error"]["code"] == "UNKNOWN_CONCEPT"
 
     def test_export_schema_has_flavor(self):
         mcp = create_mcp_server(Settings(db_path=":memory:"))
@@ -498,7 +509,7 @@ class TestRoundupDispatch:
         stub.export_mgr = _ExportMgr()
         fn = TestToolDispatch._fn("export_bundle")
         out = fn("/tmp/x", flavor="obsidian", ctx=TestToolDispatch._ctx(stub))
-        payload = json.loads(out)
+        payload = json.loads(out)["data"]
         assert payload["flavor"] == "obsidian"
         assert payload["concept_ids"] == ["a"]
         assert payload["output_dir"].replace("\\", "/").endswith("/tmp/x")

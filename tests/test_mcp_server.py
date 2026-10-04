@@ -8,7 +8,7 @@ import pytest
 
 from okfgraph.errors import OKFError
 from okfgraph.mcp_server import create_mcp_server
-from okfgraph.ops import IngestOps, QueryOps
+from okfgraph.ops import ExportOps, IngestOps, QueryOps
 from okfgraph.settings import Settings
 
 
@@ -30,7 +30,7 @@ class TestMCPServer:
             tools = mcp._tool_manager.list_tools()
             names = [t.name for t in tools]
 
-            assert names == ["search", "read", "traverse", "ingest", "export_bundle"]
+            assert names == ["search", "read", "traverse", "ingest", "export_bundle", "export_concept"]
 
     def test_read_tools_have_read_only_hint(self):
         """Read-only tools have read_only_hint=True."""
@@ -54,7 +54,7 @@ class TestMCPServer:
             mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
-            write_tools = ["export_bundle", "ingest"]
+            write_tools = ["export_bundle", "export_concept", "ingest"]
 
             for tool in tools:
                 if tool.name in write_tools:
@@ -295,7 +295,7 @@ class _StubIngestMgr:
                        fields={"kind": kind})
 
 
-class _StubRouter(IngestOps, QueryOps):
+class _StubRouter(ExportOps, IngestOps, QueryOps):
     """Plain router double that inherits the canonical ops.
 
     The MCP adapters route through the ops, so the stub supplies the
@@ -486,5 +486,7 @@ class TestRoundupDispatch:
         stub.export_mgr = _ExportMgr()
         fn = TestToolDispatch._fn("export_bundle")
         out = fn("/tmp/x", flavor="obsidian", ctx=TestToolDispatch._ctx(stub))
-        assert json.loads(out) == ["a"]
-        assert calls[0]["flavor"] == "obsidian"
+        payload = json.loads(out)
+        assert payload["flavor"] == "obsidian"
+        assert payload["concept_ids"] == ["a"]
+        assert payload["output_dir"].replace("\\", "/").endswith("/tmp/x")

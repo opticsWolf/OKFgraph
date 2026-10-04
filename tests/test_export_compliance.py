@@ -130,7 +130,8 @@ class TestOKFExportCompliance:
     def test_export_single_concept(self):
         """Export a single concept by ID."""
         out = Path(self.tmp_dir) / "export"
-        self.router.export_to_okf("doc_a", out / "doc_a.md")
+        result = self.router.export_concept("doc_a", output_dir=out)
+        assert result["path"] == str(out / "doc_a.md")
         assert (out / "doc_a.md").exists()
         body = (out / "doc_a.md").read_text()
         assert "## See Also" in body

@@ -5,7 +5,8 @@ Python surfaces adapt to it (see ``docs/surface-unification-plan.md``).
 """
 from __future__ import annotations
 
+from .export import ExportOps
 from .ingest import IngestOps
 from .query import QueryOps
 
-__all__ = ["IngestOps", "QueryOps"]
+__all__ = ["ExportOps", "IngestOps", "QueryOps"]

@@ -132,11 +132,11 @@ class TestCLIFullWorkflow:
 
         # Export single
         cls.export_dir = f"{cls.tmpdir}/exported"
-        cls._run(["export", "--db-path", cls.db_path, "--bundle-root", cls.bundle, "--output", cls.export_dir, "--concept-id", "hello"])
+        cls._run(["export", "--db-path", cls.db_path, "--bundle-root", cls.bundle, "--output-dir", cls.export_dir, "--concept-id", "hello"])
 
         # Export bundle
         cls.export_bundle_dir = f"{cls.tmpdir}/exported_bundle"
-        cls._run(["export", "--db-path", cls.db_path, "--bundle-root", cls.bundle, "--all", "--output", cls.export_bundle_dir])
+        cls._run(["export", "--db-path", cls.db_path, "--bundle-root", cls.bundle, "--all", "--output-dir", cls.export_bundle_dir])
 
     @classmethod
     def _run(cls, args):

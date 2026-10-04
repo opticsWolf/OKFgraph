@@ -55,12 +55,12 @@ from okfgraph.components import (
     SearchEngine,
 )
 
-from okfgraph.ops import IngestOps, QueryOps
+from okfgraph.ops import ExportOps, IngestOps, QueryOps
 
 logger = logging.getLogger(__name__)
 
 
-class OKFRouter(IngestOps, QueryOps):
+class OKFRouter(ExportOps, IngestOps, QueryOps):
     """Routes OKF concepts through a Ladybug graph + vector + FTS database.
 
     Canonical operations (``okfgraph.ops`` mixins) are part of the facade:
@@ -606,9 +606,6 @@ class OKFRouter(IngestOps, QueryOps):
 
     def import_from_okf(self, *args, **kwargs):
         return self.import_mgr.import_from_okf(*args, **kwargs)
-
-    def export_to_okf(self, *args, **kwargs):
-        return self.export_mgr.export_to_okf(*args, **kwargs)
 
     def list_broken_links(self, *args, **kwargs):
         return self.import_mgr.list_broken_links(*args, **kwargs)

@@ -133,7 +133,7 @@ class TestRoundupWorkflow:
         # (obsidian omits it: backlinks re-imported as [[..]] would flip).
         out_okf = f"{self.tmpdir}/okfbundle"
         result = self._run(["export", *self._base(), "--all",
-                            "--output", out_okf])
+                            "--output-dir", out_okf])
         assert result.returncode == 0
         hub = (Path(out_okf) / "hub.md").read_text(encoding="utf-8")
         assert "## Cited By" in hub

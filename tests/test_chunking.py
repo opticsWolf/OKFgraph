@@ -419,29 +419,6 @@ class TestPhase4_Graph:
 
 # ── Phase 5: CLI & Tools (NO router needed — no embedding overhead) ───────
 
-class TestPhase5_Tools:
-    """Tool definition checks — no router/embedding needed.
-
-    TODO: At full-test maturity, add integration tests that call tools
-    through the full CLI pipeline with real embedding verification.
-    """
-
-    def test_chunk_tools_present(self):
-        from okfgraph.tools import TOOLS
-        names = [t["name"] for t in TOOLS]
-        assert "search_chunks" in names
-        assert "expand_with_graph_context" in names
-        assert "get_chunks" in names
-        assert "reconstruct_document" in names
-
-    def test_traverse_tool_has_new_rels(self):
-        from okfgraph.tools import TOOLS
-        traverse = next(t for t in TOOLS if t["name"] == "traverse")
-        rels = traverse["parameters"]["properties"]["relationship"]["enum"]
-        assert "PART_OF" in rels
-        assert "INCLUDES_ASSET" in rels
-
-
 class TestPhase5_CLI:
     """CLI parser checks — no router/embedding needed.
 

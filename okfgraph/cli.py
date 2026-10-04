@@ -501,23 +501,31 @@ def _read(args):
 
 
 def _export(args):
+    """Export the whole bundle (--all) or a single concept."""
     router = _router(args)
     flavor = getattr(args, "flavor", "okf") or "okf"
-    if getattr(args, "export_all", False):
-        tags = args.tags.split(",") if args.tags else None
-        ids = router.export_mgr.export_bundle(
-            output_dir=Path(args.output),
-            directory_id=args.parent,
-            concept_type=args.type,
-            tags=tags,
-            flavor=flavor,
-        )
-        print(f"[OK] Exported {len(ids)} concepts to {args.output} (flavor: {flavor})")
-    else:
-        cid = args.concept_id
-        output_path = Path(args.output) / f"{cid}.md"
-        router.export_mgr.export_to_okf(cid, output_path, flavor=flavor)
-        print(f"[OK] Exported {cid} → {output_path} (flavor: {flavor})")
+    try:
+        if getattr(args, "export_all", False):
+            tags = args.tags.split(",") if args.tags else None
+            result = router.export_bundle(
+                output_dir=Path(args.output_dir),
+                directory_id=getattr(args, "directory_id", None),
+                concept_type=getattr(args, "concept_type", None),
+                tags=tags,
+                flavor=flavor,
+            )
+            print(f"[OK] Exported {len(result['concept_ids'])} concepts to "
+                  f"{result['output_dir']} (flavor: {result['flavor']})")
+        else:
+            result = router.export_concept(
+                args.concept_id,
+                output_dir=Path(args.output_dir),
+                flavor=flavor,
+            )
+            print(f"[OK] Exported {result['concept_id']} → {result['path']} (flavor: {flavor})")
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
 
 
 def _broken_links(args):
@@ -1060,16 +1068,20 @@ Commands:
                 print(f"     id: {im.get('id')}")
 
         elif cmd == "export-bundle" and rest:
-            ids = router.export_mgr.export_bundle(Path(rest.strip()))
-            print(f"[OK] Exported {len(ids)} concepts to {rest.strip()}")
+            result = router.export_bundle(Path(rest.strip()))
+            print(f"[OK] Exported {len(result['concept_ids'])} concepts to "
+                  f"{result['output_dir']} (flavor: {result['flavor']})")
 
         elif cmd == "export" and rest:
             tokens = rest.strip().split(None, 1)
             if len(tokens) == 2:
                 cid, out_dir = tokens
-                output_path = Path(out_dir) / f"{cid}.md"
-                router.export_to_okf(cid, output_path)
-                print(f"[OK] Exported {cid} → {output_path}")
+                try:
+                    result = router.export_concept(cid, output_dir=Path(out_dir))
+                except OKFError as err:
+                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+                    continue
+                print(f"[OK] Exported {result['concept_id']} → {result['path']}")
             else:
                 print("Usage: export <concept_id> <output_dir>")
 
@@ -1305,11 +1317,11 @@ def build_parser():
     _add_global(p)
     _add_logging_flags(p)
     p.add_argument("--all", action="store_true", dest="export_all", help="Export entire bundle")
-    p.add_argument("--output", required=True, help="Output directory")
+    p.add_argument("--output-dir", dest="output_dir", required=True, help="Output directory")
     p.add_argument("--concept-id", help="Concept ID (for single export)")
-    p.add_argument("--type", help="Concept type filter")
+    p.add_argument("--concept-type", dest="concept_type", help="Concept type filter")
     p.add_argument("--tags", help="Comma-separated tag filters")
-    p.add_argument("--parent", help="Parent directory ID")
+    p.add_argument("--directory-id", dest="directory_id", help="Parent directory ID")
     p.add_argument("--flavor", default="okf", choices=["okf", "obsidian"],
                    help="Link flavor: okf ([t](id.md) + index files) or obsidian "
                    "([[Title]] wikilinks, no index files). Default: okf")

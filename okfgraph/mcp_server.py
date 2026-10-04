@@ -324,14 +324,37 @@ def create_mcp_server(settings: Settings) -> MCPServer:
     ) -> str:
         """Export concepts from the graph to an OKF-compliant bundle directory. To add content back to the graph, use ingest."""
         router = _get_router(ctx)
-        kwargs: dict = {"output_dir": output_dir, "flavor": flavor}
-        if directory_id is not None:
-            kwargs["directory_id"] = directory_id
-        if concept_type is not None:
-            kwargs["concept_type"] = concept_type
-        if tags is not None:
-            kwargs["tags"] = tags
-        result = router.export_mgr.export_bundle(**kwargs)
+        try:
+            result = router.export_bundle(
+                output_dir,
+                directory_id=directory_id,
+                concept_type=concept_type,
+                tags=tags,
+                flavor=flavor,
+            )
+        except OKFError as err:
+            return f"error: {err.code}: {err.message}"
+        return json.dumps(result, default=str, indent=2)
+
+    @mcp.tool(annotations=_WR)
+    def export_concept(
+        concept_id: Annotated[str, Field(description="ID of the concept to export.")],
+        output_dir: Annotated[str, Field(description="Output directory; writes <output_dir>/<concept_id>.md.")],
+        flavor: Annotated[
+            Literal["okf", "obsidian"],
+            Field(description="'okf' = [t](id.md) links. 'obsidian' = [[Title]] wikilinks."),
+        ] = "okf",
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """Export a single concept to a .md file. Returns {concept_id, path}.
+
+        Unknown IDs raise UNKNOWN_CONCEPT (search first). For a whole
+        bundle use export_bundle."""
+        router = _get_router(ctx)
+        try:
+            result = router.export_concept(concept_id, output_dir=output_dir, flavor=flavor)
+        except OKFError as err:
+            return f"error: {err.code}: {err.message}"
         return json.dumps(result, default=str, indent=2)
 
 

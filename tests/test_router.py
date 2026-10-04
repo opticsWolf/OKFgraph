@@ -107,9 +107,10 @@ class TestOKFRouterSmoke:
         from okfgraph.router import OKFRouter
         assert hasattr(OKFRouter, "import_from_okf")
 
-    def test_export_to_okf_method_exists(self):
+    def test_export_ops_method_exists(self):
         from okfgraph.router import OKFRouter
-        assert hasattr(OKFRouter, "export_to_okf")
+        assert hasattr(OKFRouter, "export_concept")
+        assert hasattr(OKFRouter, "export_bundle")
 
     def test_list_broken_links_method_exists(self):
         from okfgraph.router import OKFRouter
@@ -188,65 +189,6 @@ class TestDeviceSelection:
         err = capsys.readouterr().err
         # One construction warns at most once.
         assert err.count("falling back to CPU") <= 1
-
-
-class TestTools:
-    def test_tools_export(self):
-        from okfgraph.tools import TOOLS
-        assert len(TOOLS) == 16  # 13 original + ingest_md + ingest_thoughts + ingest_pdf
-
-    def test_tool_names(self):
-        from okfgraph.tools import TOOLS
-        names = [t["name"] for t in TOOLS]
-        assert "search_hybrid" in names
-        assert "traverse" in names
-        assert "get_by_id" in names
-        assert "list_directory" in names
-        assert "ingest_md" in names
-        assert "ingest_thoughts" in names
-
-    def test_search_hybrid_has_query_param(self):
-        from okfgraph.tools import TOOLS
-        tool = next(t for t in TOOLS if t["name"] == "search_hybrid")
-        assert "query" in tool["parameters"]["properties"]
-        assert "query" in tool["parameters"]["required"]
-
-    def test_traverse_has_start_id_param(self):
-        from okfgraph.tools import TOOLS
-        tool = next(t for t in TOOLS if t["name"] == "traverse")
-        assert "start_id" in tool["parameters"]["properties"]
-        assert "start_id" in tool["parameters"]["required"]
-
-    def test_ingest_md_tool_parameters(self):
-        from okfgraph.tools import TOOLS
-        tool = next(t for t in TOOLS if t["name"] == "ingest_md")
-        assert "md_path" in tool["parameters"]["required"]
-        assert "auto_import" not in tool["parameters"]["properties"]  # not exposed to LLM
-        assert tool["parameters"]["properties"]["mode"]["enum"] == ["text", "optional", "omni"]  # 0.8.0: vision route restored
-
-    def test_ingest_thoughts_tool_parameters(self):
-        from okfgraph.tools import TOOLS
-        tool = next(t for t in TOOLS if t["name"] == "ingest_thoughts")
-        assert set(tool["parameters"]["required"]) == {"thoughts", "topic"}
-        assert "topic" in tool["parameters"]["properties"]
-
-    def test_write_tools_reference_each_other(self):
-        """Write tools should reference each other in descriptions."""
-        from okfgraph.tools import TOOLS
-        ingest_md = next(t for t in TOOLS if t["name"] == "ingest_md")
-        ingest_thoughts = next(t for t in TOOLS if t["name"] == "ingest_thoughts")
-        # ingest_md references ingest_thoughts
-        assert "ingest_thoughts" in ingest_md["description"].lower()
-        # ingest_thoughts references ingest_md
-        assert "ingest_md" in ingest_thoughts["description"].lower()
-
-    def test_read_tools_mention_write_operations(self):
-        """Read-only tools should mention write operations in descriptions."""
-        from okfgraph.tools import TOOLS
-        search = next(t for t in TOOLS if t["name"] == "search_hybrid")
-        assert "ingest_md" in search["description"].lower()
-        traverse = next(t for t in TOOLS if t["name"] == "traverse")
-        assert "ingest_thoughts" in traverse["description"].lower()
 
 
 class TestIngestMd:

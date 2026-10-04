@@ -31,13 +31,14 @@ class MyPipeline:
         return ConvertedDocument(md_path=..., image_dir=..., page_count=...)
 
 router = OKFRouter(db_path="kb.db", bundle_root="bundle", converter=MyPipeline())
-# or per call:
-router.ingest_mgr.ingest_pdf("doc.pdf", converter=MyPipeline())
+# or per call (0.10: one ingest dispatch):
+router.ingest("pdf", pdf_path="doc.pdf", converter=MyPipeline())
 ```
 
 Bobine-specific knobs (`routing_mode`, `extract_images`) live on
-`BobineConverter(...)`, not on `ingest_pdf` — each provider owns its options.
-Device selection for ONNX-backed converters is ORT-level (`ORT_DYLIB_PATH`).
+`BobineConverter(...)`, not on `ingest(kind, …)` — each provider owns its
+options. `converter`/`on_page` are Python-only advanced params. Device
+selection for ONNX-backed converters is ORT-level (`ORT_DYLIB_PATH`).
 
 ## Tests
 

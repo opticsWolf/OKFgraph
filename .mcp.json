@@ -9,7 +9,7 @@
         "okf-mcp",
         "--db-path",
         "./kb.db",
-        "--bundle",
+        "--bundle-root",
         "."
       ],
       "env": {}

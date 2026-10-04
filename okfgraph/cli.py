@@ -115,6 +115,9 @@ class _SubParser(argparse.ArgumentParser):
             "epilog",
             "Global options hidden; see 'okf --help' (or okfgraph.toml).",
         )
+        # One spelling alive: no prefix-abbreviation aliases (e.g. a bare
+        # `--output` must not silently resolve to `--output-dir`).
+        kwargs.setdefault("allow_abbrev", False)
         super().__init__(*args, **kwargs)
 
 
@@ -694,7 +697,7 @@ def _produce(args):
     """
     which = getattr(args, "from_", None)
     source = getattr(args, "source", None)
-    out = Path(str(getattr(args, "output", None) or "."))
+    out = Path(str(getattr(args, "output_dir", None) or "."))
     try:
         result = OKFRouter.produce(
             which, source, out,
@@ -1243,6 +1246,7 @@ def build_parser():
         prog="okf",
         description="OKF Knowledge Graph CLI — LadybugDB + Jina v5 embeddings",
         epilog=_global_options_epilog(),
+        allow_abbrev=False,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", help="Command to run", parser_class=_SubParser)
@@ -1430,9 +1434,9 @@ def build_parser():
                    help="Producer name (today: sqlite)")
     p.add_argument("--source", required=True,
                    help="Source to read (sqlite: path to the .db file)")
-    p.add_argument("--output", default=None,
+    p.add_argument("--output-dir", dest="output_dir", default=None,
                    help="Bundle root to write under (default: .); files go "
-                   "to <output>/<prefix>/ so lint + import agree on ids")
+                   "to <output-dir>/<prefix>/ so lint + import agree on ids")
     p.add_argument("--prefix", default=None,
                    help="Namespace directory (default: the producer's own)")
     p.add_argument("--overwrite", action="store_true",

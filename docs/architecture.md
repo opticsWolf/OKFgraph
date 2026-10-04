@@ -10,8 +10,8 @@
 > they describe an optimum/transformers embedding stack and an in-tree
 > RapidAI ingest engine that no longer exist. This document describes the
 > shipped system: external `embroider` embedding crate, bobine converter
-> seam, MCP ≥ 2.0 with 5 tools, consolidated CLI, model-free PPR
-> retrieval. Sections kept verbatim from v5.9 are those whose claims
+> seam, MCP ≥ 2.0 with 8 tools over one 23-op vocabulary, consolidated
+> CLI, model-free PPR retrieval. Sections kept verbatim from v5.9 are those whose claims
 > still hold against the 0.2.12 tree; every changed claim below was
 > re-verified against code.
 
@@ -62,7 +62,7 @@ Added `InterProcessLock` from `fasteners` library for multi-process write safety
 
 - Lock file created alongside the DB (`okfgraph.db.lock`)
 - 5-minute timeout for lock acquisition
-- All write operations wrapped: `import_bundle`, `ingest_md`, `ingest_thoughts`, `reindex`, soft-delete methods
+- All write operations wrapped: `import_file` / `import_bundle`, `ingest(kind, …)`, `reindex`, the soft-delete ops; a lock wait exceeding the timeout raises typed `WRITE_LOCK_TIMEOUT`
 - Lock released on router `close()`
 
 ### Gap #9b: Path Traversal Sandboxing
@@ -661,7 +661,7 @@ On each `import_bundle()` call, file-level SHA-256 hashes are compared against t
 | `_changed_files(source_files)` | Return `(changed_paths, deleted_paths)` tuple |
 
 - **Unchanged files** are skipped entirely (no parsing, encoding, or DB writes).
-- **Deleted files** appear in the `deleted_paths` list. If `purge_deleted=True`, their concepts are removed via `_purge_concept()`.
+- **Deleted files** appear in the `deleted_paths` list. With `prune_missing=True` (op kwarg; the component's `purge_deleted`), their concepts are removed via `_purge_concept()`.
 - **`concept_id` column** in `FileHash` enables mapping deleted file paths back to the concepts to purge.
 
 ### Purge (v5.1)
@@ -679,28 +679,26 @@ Returns `True` if a concept was found and purged, `False` if not found. All oper
 
 ---
 
-## 4.6. Export to OKF (v5.0 — Graph-Enriched)
+## 4.6. Export (`export_concept` / `export_bundle`)
 
 ```python
-def export_to_okf(self, concept_id: str, output_path: Path) -> None:
-    """Export a concept back to an OKF .md file.
-    
-    Body is enriched with graph-derived LINKS_TO links:
-    - "See Also" section for outgoing links not already in body
-    - "Cited By" section for incoming links
-    """
-    concept = self.get_by_id(concept_id)
-    self._write_okf(concept, output_path)
+def export_concept(self, concept_id: str, *, output_dir, flavor: str = "okf") -> dict:
+    """Export one concept to the flavor's file layout.
 
-def export_bundle(self, output_dir: Path,
-                  directory_id: Optional[str] = None,
-                  concept_type: Optional[str] = None,
-                  tags: Optional[List[str]] = None) -> List[str]:
-    """Export concepts from graph to OKF markdown files.
+    Returns {"concept_id", "path"}. Enrichment lives in the component
+    (export_mgr.export_to_okf): body gains graph-derived LINKS_TO links,
+    "See Also" for outgoing links not already in body, "Cited By" for
+    incoming links.
+    """
+
+def export_bundle(self, output_dir, *, directory_id=None, concept_type=None,
+                  tags=None, flavor: str = "okf") -> dict:
+    """Export concepts from graph to markdown files.
 
     Filters: directory_id (subtree), concept_type, tags (AND logic).
-    Reconstructs directory hierarchy from concept IDs.
-    Generates index.md files for progressive disclosure.
+    Reconstructs directory hierarchy from concept IDs; generates
+    index.md files for progressive disclosure.
+    Returns {"output_dir", "concept_ids", "flavor"}.
     """
 ```
 
@@ -722,6 +720,9 @@ This ensures exported bundles are **graphs** (linked documents), not just **tree
 ---
 
 ## 4.7. Hybrid Search (RRF Fusion)
+
+Component method (`SearchEngine.search_hybrid`) behind the `router.search`
+op — filters and `rank=` modes map onto these flags:
 
 ```python
 def search_hybrid(
@@ -786,13 +787,21 @@ def get_image_data(self, asset_id: str) -> Optional[Dict[str, Any]]:
 ```python
 def traverse(
     self,
-    start_id: str,
+    start_id: str = "",
+    *,
     relationship: str = "CONTAINS",
     direction: str = "OUTGOING",
     depth: int = 1,
     node_type: Optional[str] = None,
+    target: Optional[str] = None,
+    max_path_length: int = 6,
 ) -> List[Dict[str, Any]]:
-    """Navigate graph relationships with whitelisted edges and depth cap."""
+    """Navigate graph relationships with whitelisted edges and depth cap.
+
+    Three modes on one op: empty ``start_id`` lists the root;
+    ``target`` set finds the shortest path (``max_path_length``);
+    otherwise a walk from ``start_id`` (unknown id = ``UNKNOWN_CONCEPT``).
+    """
 ```
 
 ---
@@ -821,10 +830,10 @@ def get_by_id(self, concept_id: str) -> Optional[ConceptModel]:
 def list_broken_links(self) -> List[Dict[str, Any]]:
     """List all tracked broken links (references to concepts not yet imported)."""
 
-def repair_links(self) -> int:
+def repair_links(self, skip_sources: Optional[List[str]] = None) -> dict:
     """Attempt to repair broken links by re-checking if targets now exist.
 
-    Returns: Number of links successfully repaired.
+    Returns: {"repaired": n} (n links successfully repaired).
     """
 ```
 
@@ -1060,16 +1069,18 @@ okf = "okfgraph.cli:main"
 
 ### 5.2. Commands
 
-The CLI is a strict superset of the MCP surface (§6a): the five MCP tools
-map 1:1 onto `search`, `read`, `traverse`, `ingest`, `export`, everything
-else is library/maintenance surface.
+The CLI is a strict superset of the MCP surface (§6a): the eight MCP tools
+map 1:1 onto `search`, `read`, `traverse`, `ingest`, `export_bundle`,
+`export_concept`, `list_images`, `get_image`; everything else is
+library/maintenance surface. Every command accepts `--json` for the D5
+envelope and exits by the §4 exit plan (0 ok / 1 state+outcome / 2 usage).
 
 | Command | Description |
 |---|---|
 | `okf init` | Initialize database and schema |
 | `okf model-info` | Show model cache status (location, size, cached/missing) |
 | `okf import <files>` | Import one or more OKF files |
-| `okf import --all [--purge]` | Import entire bundle recursively, optionally purging deleted concepts |
+| `okf import --all [--prune-missing]` | Import every configured root (or a `--bundle-path` pin) and prune concepts whose source files vanished |
 | `okf search <query>` | Hybrid search over concepts (type/tags/parent/limit filters) |
 | `okf search <query> --target chunks\|images` | Chunk-level RRF search, or image search via the unified index |
 | `okf search <query> --rank hub\|ppr` | Rerank by hub score, or model-free PPR (§4.7) |
@@ -1077,7 +1088,8 @@ else is library/maintenance surface.
 | `okf traverse <id>` | Graph traversal (relationship/direction/depth); no id = root listing; two ids = shortest path |
 | `okf ingest --kind md\|pdf\|thoughts <path>` | Add one piece of content (PDF/Office through bobine, §10; thoughts mint `thoughts/<topic>/<ts>_<id>` namespaces) |
 | `okf produce --from sqlite --source DB --output DIR` | Generate a bundle from a data source (§10d; lint pre-flight included) |
-| `okf export --all --output <dir>` | Export entire bundle (OKF or Obsidian flavor) |
+| `okf export --all --output-dir <dir>` | Export entire bundle (OKF or Obsidian flavor) |
+| `okf images <id>` / `okf image <asset-id> [--output-path F]` | List a concept's image assets; dump one asset's bytes |
 | `okf diff` | Structural diff: concepts/edges/broken-link deltas |
 | `okf doctor` | Health scan: score, findings, safe `--fix` |
 | `okf lint` | Validate bundle frontmatter + links before import |
@@ -1090,9 +1102,14 @@ else is library/maintenance surface.
 
 | Option | Default | Description |
 |---|---|---|
-| `--db <path>` | `okfgraph.db` | Database file path |
-| `--bundle <path>` | `.` | Bundle root directory |
-| `--dim <int>` | `512` | Embedding dimension (32-1024, official Matryoshka) |
+| `--db-path <path>` | `okfgraph.db` | Database file path |
+| `--bundle-root <path>` | `.` | Primary bundle root directory (single value) |
+| `--root ALIAS=PATH` | — | Additional named bundle root (repeatable; `@alias/rel` IDs) |
+| `--embedding-dim <int>` | `512` | Embedding dimension (Matryoshka ladder) |
+| `--model-id <id>` / `--image-model-id <id>` | registry | Text / vision model ids (switching forces fresh reimport) |
+| `--precision auto\|fp32\|fp16\|int8` | `auto` | Weight precision, fail-closed pin per graph |
+| `--json` | — | Print the result envelope on stdout instead of the human render (D5) |
+| `--cache-dir` | `~/.cache/huggingface` | HuggingFace model cache directory |
 | `--cache-dir <path>` | `~/.cache/huggingface` | HuggingFace model cache directory |
 | `--device cpu\|cuda` | `cpu` | Inference device (or from okfgraph.toml) |
 
@@ -1103,7 +1120,7 @@ else is library/maintenance surface.
 | `--mode <mode>` | `text` | Image ingestion mode: `text` (captions), `optional`/`omni` (ONNX vision, text-nano graphs only) |
 | `--allow-remote-images` | — | Fetch `http(s)://` image URLs during ingestion (off by default) |
 | `--batch-size <int>` | `32` | Batch size for encoding |
-| `--purge` | — | Also purge concepts whose source files were deleted from disk (removes concept, chunks, links, and orphaned image assets) |
+| `--prune-missing` | — | With `--all`: remove concepts whose source files were deleted from disk (prunes concept, chunks, links, and orphaned image assets) |
 
 ### 5.5. Interactive Shell
 
@@ -1123,7 +1140,7 @@ the `okf <verb>` syntax) — `help` inside the shell lists it:
 ### 5.6. Design Decisions
 
 - **Per-invocation router**: Each CLI command creates a fresh `OKFRouter` — schema must be idempotent.
-- **`--all` vs `--bundle`**: Boolean flag for "import/export all" renamed from `--bundle` to avoid collision with global `--bundle <path>`.
+- **`--all` vs `--bundle-path`**: Boolean flag for "import/export all"; the one-call directory pin is `--bundle-path PATH` while the session-wide primary root is `--bundle-root PATH` (X1 merge).
 - **ASCII icons**: `[D]`/`[F]` instead of emoji for Windows cp1252 compatibility.
 
 ---
@@ -1131,9 +1148,10 @@ the `okf <verb>` syntax) — `help` inside the shell lists it:
 ## 6. LLM Tool Definitions (superseded)
 
 The 16-tool surface this section used to specify (`tools.py`) is
-superseded since the MCP migration: the agent surface is the 5-tool
+superseded since the MCP migration: the agent surface is the 8-tool
 registry in §6a (`search`, `read`, `traverse`, `ingest`,
-`export_bundle`), and the CLI in §5 is its strict superset. The old
+`export_bundle`, `export_concept`, `list_images`, `get_image`), and the
+CLI in §5 is its strict superset. The old
 definitions were removed rather than kept as a second contract to
 maintain — history lives in git.
 
@@ -1165,12 +1183,13 @@ The MCP server exposes all OKFgraph tools via the [Model Context Protocol](https
 │  └──────────────────────────────────────────────────┘   │
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │              Tool Registry (5 tools)              │   │
+│  │           Tool Registry (8 tools)                 │   │
 │  │                                                   │   │
-│  │  Read (3):  search, read, traverse               │   │
+│  │  Read (5):  search, read, traverse,              │   │
+│  │             list_images, get_image                │   │
 │  │                                                   │   │
-│  │  Write (2): ingest (md|pdf|thoughts),            │   │
-│  │              export_bundle                        │   │
+│  │  Write (3): ingest (md|pdf|thoughts),            │   │
+│  │             export_bundle, export_concept         │   │
 │  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -1192,12 +1211,17 @@ all non-destructive, idempotent):
 
 Each tool function receives the `OKFRouter` instance via the MCP `Context` parameter:
 
+Tool functions call the router op and wrap the result through
+`_tool_result(op, produce)`, which renders the §4 result envelope
+`{ok, op, data, warnings, error}` on success and raises `_ToolFailure`
+(so the wire result carries `isError: true` with an error envelope —
+never a bare traceback):
+
 ```python
-@mcp.tool()
-def search(query: str, ctx: Context) -> str:
+def _search(query: str, ctx: Context) -> str:
     router = _get_router(ctx)  # extracts OKFRouter from lifespan context
-    results = router.search_hybrid(query)
-    return json.dumps(results, default=str, indent=2)
+    with op_envelope("search") as produce:
+        produce(0, router.search(query))
 ```
 
 The `_get_router()` helper extracts the `GraphContext` from `ctx.request_context.lifespan_context`.
@@ -1228,14 +1252,16 @@ okf-mcp --db-path ./my_graph.db --no-chunking
 
 ```python
 from okfgraph.mcp_server import create_mcp_server
+from okfgraph.settings import Settings
 
-mcp = create_mcp_server(
+settings = Settings(
     db_path="./my_graph.db",
     bundle_root="./my-knowledge-base",
-    device="auto",  # CUDA when present, else CPU (precision follows)
+    device="auto",      # CUDA when present, else CPU (precision follows)
     embedding_dim=512,  # default on every surface
     enable_chunking=True,
 )
+mcp = create_mcp_server(settings)
 mcp.run(transport="stdio")
 ```
 
@@ -1496,15 +1522,15 @@ tools, no new required deps, deterministic outputs:
 | **Path finding** | Not specified | **`find_path()`** | BFS shortest path between concepts |
 | **Hybrid search with chunks** | `include_chunks` absent | **`include_chunks=True`** | Attaches matched chunks to concept results |
 | **Numpy-only post-processing** | `torch` dependency | **`numpy` exclusively** | Removes heavy torch dependency |
-| **CLI chunking commands** | Not specified | **search-chunks, context, hub-search, path, siblings, ancestry, chunks, reconstruct** | Full CLI coverage |
-| **LLM tools** | 5 tools | **13 tools** | Agent-accessible chunking, graph enrichment, and export |
+| **CLI chunking commands** | Not specified | **search-chunks, context, hub-search, … (v0.5 era)** | Since 0.10: `search --target chunks [--expand --hub-rerank --context-hops]`, `read --include document`, `traverse A B` cover the same needs |
+| **LLM tools** | 5 tools | **13 tools** (v0.5 era) | Chunking/graph-enrichment/export access; consolidated to the 8-tool MCP registry in 0.10 |
 | **Export graph enrichment** | Body written verbatim | **See Also + Cited By sections** | Exported bundles reflect LINKS_TO graph |
 | **Index file generation** | Not specified | **Auto-generated index.md files** | Progressive disclosure for OKF consumers |
-| **ONNX/Rapid ingestion engine** | PaddleOCR/PaddlePaddle stack | **`okfgraph.ingest` sub-module** | Paddle-free PDF→Markdown via RapidAI ONNX models |
+| **PDF→Markdown engine** | PaddleOCR/PaddlePaddle stack | **Bobine (Rust, default) via the `components/converters.py` seam** | Paddle-free PDF→Markdown; pluggable `DocumentConverter` |
 | **Surgical formula pass (ONNX)** | PP-FormulaNet (Paddle) | **RapidLaTeXOCR (ONNX)** | Formula recognition without CUDA-version coupling |
 | **Scanned-page fallback (ONNX)** | PP-StructureV3 (Paddle) | **RapidLayout + RapidOCR + RapidTable** | Full layout-driven ONNX assembler for scanned PDFs |
-| **HTML → GFM table converter** | Not in core | **`okfgraph.ingest.tables`** | Dependency-free pipe-table converter with rowspan/colspan bail |
-| **okf-asset:// staging (ingest)** | Scattered across examples | **`okfgraph.ingest.assets`** | Deterministic asset ids, centralized staging logic |
+| **HTML → GFM table converter** | Not in core | **handled inside Bobine** | Pipe-table output; HTML tables fold to best-effort GFM |
+| **okf-asset:// staging (ingest)** | Scattered across examples | **`okfgraph/images.py` (`asset_id_for`)** | Deterministic asset ids, centralized staging logic |
 
 ### Verified Corrections
 
@@ -1717,9 +1743,10 @@ hierarchy builder (IDs split on `/`). Legacy trees with top-level `@*`
   (`roots.py:prefix_key`), concept IDs derive prefix-safe. Emptied-but-present
   roots fall through detection (absent trees return early — see liveness).
 - **Liveness** (the phase invariant): import skips absent roots with a loud
-  warning and never tombstones them; `--purge-deleted` refuses unless **all**
-  roots are present (unknown must never read as deleted); reads/exports are
-  unaffected; doctor reports per-root presence + counts (informational).
+  warning and never tombstones them; `purge_deleted` raises typed
+  `PURGE_REFUSED_ABSENT_ROOT` unless **all** roots are present (unknown must
+  never read as deleted); reads/exports are unaffected; doctor reports
+  per-root presence + counts (informational).
 - **Links**: `[[@alias/rel]]` resolves via the exact-id probe for free;
   `[[alias/rel]]` rewrites through `roots.qualify_alias_link` (alias folds
   case, rest stays exact). Unqualified names keep uid→alias→title→stem order;

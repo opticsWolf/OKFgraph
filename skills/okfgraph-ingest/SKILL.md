@@ -47,7 +47,8 @@ re-extracting it from files.
 
 ## Namespaced IDs (multi-root graphs)
 
-- A file inside a named root (`--bundle-root ALIAS=PATH`) mints
+- A file inside a named root (`okf init --root ALIAS=PATH`, repeatable —
+  the primary root is `--bundle-root PATH`) mints
   `@alias/rel` instead of the bare id — same stem in two roots no longer
   collides. Omit `--concept-id` to get the resolved id; an explicit
   `--concept-id` always wins.

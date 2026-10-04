@@ -125,7 +125,7 @@ class TestRoundupWorkflow:
 
     def test_export_obsidian_flavor(self):
         out = f"{self.tmpdir}/vault"
-        result = self._run(["export", *self._base(), "--all", "--output", out,
+        result = self._run(["export", *self._base(), "--all", "--output-dir", out,
                             "--flavor", "obsidian"])
         assert result.returncode == 0
         exported = list(Path(out).rglob("*.md"))

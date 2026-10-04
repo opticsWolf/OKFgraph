@@ -61,7 +61,7 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
   `okf init --root ALIAS=PATH`; `--dim` → `--embedding-dim`; `--model`
   → `--model-id`; `--image-model` → `--image-model-id`; ingest
   `--md-file/--pdf-file/--output` → `--md-path/--pdf-path/--output-dir`;
-  `--purge` → `--prune-missing` (also on `import`); export
+  `--purge` → `--prune-missing` (also on `import`); export/produce
   `--output` → `--output-dir`, `--type` → `--concept-type`,
   `--parent` → `--directory-id`; `no_chunking` → `enable_chunking`
   (`--no-chunking` flips); `import_from_okf` → `import_file`;
@@ -80,7 +80,9 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
 - `okfgraph/config.py`, `okfgraph/tools.py`, the legacy tool list, all
   facade `*args/**kwargs` proxies; 0.9's per-surface flag spellings
   (`--db`, `--bundle`, `--dim`, `--model`, `--md-file`, `--pdf-file`,
-  `--purge`, `no_chunking`, …). No aliases: old spellings raise.
+  `--purge`, `no_chunking`, …). No aliases: old spellings raise — CLI
+  parsers run with `allow_abbrev=False`, so prefix shortcuts like
+  `okf export --output` (argparse prefix matching) refuse too.
 
 ## [0.9.0] — 2026-10-03
 

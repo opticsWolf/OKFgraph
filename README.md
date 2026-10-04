@@ -40,7 +40,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 | **Export** | OKF round-trip with See Also / Cited By enrichment + index files, or `--flavor obsidian` (`[[Title]]` wikilinks, no index files, edge-lossless re-import) |
 | **Images** | Caption-based (`mode=text`) or image-content (`mode=optional`/`omni` via the ONNX vision model, needs a text-nano graph; 0.8.0+) content-hash dedup, `okf-asset://` protocol |
 | **MCP** | 8 tools (`search`, `read`, `traverse`, `ingest`, `export_bundle`, `export_concept`, `list_images`, `get_image`), MCP ≥ 2.0 (`MCPServer` + `ToolAnnotations`), stdio transport; success result = envelope, failures = `isError: true` + error envelope (D7) |
-| **CLI** | Same 5 verbs plus maintenance (`init`, `import`, `diff`, `doctor`, `shell`, `reindex`, `broken-links`, `deleted-*`, …), slim per-command help, `okfgraph.toml` config |
+| **CLI** | Same 8 core verbs (`search`, `read`, `traverse`, `ingest`, `import`, `export`, `diff`, `doctor`) plus maintenance (`shell`, `lint`, `produce`, `reindex`, `broken-links`, `deleted-*`, `images`, `image`, …), global `--json` (D5), slim per-command help, `okfgraph.toml` config |
 | **Skills** | 3 harness-neutral skills (`okfgraph-mcp`, `okfgraph-cli`, `okfgraph-ingest`), `.mcp.json` wiring included |
 
 ---
@@ -345,13 +345,14 @@ okfgraph/
 ├── okfgraph/
 │   ├── __init__.py        # ConceptModel, OKFRouter, cli_main
 │   ├── models.py          # ConceptModel / ChunkModel / ImageAssetModel (extra frontmatter allowed)
-│   ├── router.py          # OKFRouter facade (owns resources, thin proxies)
-│   ├── cli.py             # okf: 5 verbs + maintenance, slim help, okfgraph.toml
-│   ├── mcp_server.py      # okf-mcp: 8 tools, MCP ≥ 2.0, lifespan-managed router
-│   ├── config.py          # okfgraph.toml + env + CLI merge
+│   ├── settings.py        # okfgraph.toml + env + CLI merge (per-key precedence, config spellings raise)
+│   ├── errors.py          # OKFError(code, fields, remedy) + UsageError / StateError / OutcomeError
+│   ├── router.py          # OKFRouter facade = OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps)
+│   ├── ops/               # the 23-op vocabulary: query.py, ingest.py, export.py, admin.py
+│   ├── cli.py             # okf: 8 core verbs + maintenance + images/image, --json (D5/D6)
+│   ├── mcp_server.py      # okf-mcp: 8 tools, MCP ≥ 2.0, lifespan-managed router, envelope/_ToolFailure
 │   ├── images.py          # IngestMode (text + vision-onnx since 0.8.0), planning helpers
 │   ├── security.py        # SSRF/domain guards for remote images
-│   ├── tools.py           # legacy tool definitions (superseded by mcp_server)
 │   └── components/        # ranking, links, search, lint, import_, export, diff, doctor,
 │                          # embedding, converters, image_assets, delta, purge, schema, ingest
 ├── skills/                # okfgraph-mcp, okfgraph-cli, okfgraph-ingest (harness-neutral source)

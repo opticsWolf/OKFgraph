@@ -19,6 +19,7 @@ Same graph as the MCP skill, through `okf` shell commands. Core verbs:
 - `okf read [--include body|chunks|document|context] [--max-tokens N] CONCEPT_ID`
 - `okf traverse [START_ID] [--relationship ...] [--target ID]`
 - `okf ingest --kind md|pdf|thoughts ...`
+- `okf import [--all] FILES [--bundle-path DIR] [--prune-missing]` — delta-aware file import
 - `okf export --all|--concept-id ID --output-dir DIR [--flavor okf|obsidian]`
 - `okf images CONCEPT_ID` / `okf image ASSET_ID [--output-path F]` — image assets
 - `okf diff [OLD_DIR] [NEW_DIR]` — structural drift (exit 1 when different)

@@ -55,11 +55,19 @@ from okfgraph.components import (
     SearchEngine,
 )
 
+from okfgraph.ops import QueryOps
+
 logger = logging.getLogger(__name__)
 
 
-class OKFRouter:
-    """Routes OKF concepts through a Ladybug graph + vector + FTS database."""
+class OKFRouter(QueryOps):
+    """Routes OKF concepts through a Ladybug graph + vector + FTS database.
+
+    Canonical operations (``okfgraph.ops`` mixins) are part of the facade:
+    ``search``, ``read``, ``traverse`` (QueryOps) and the ingest/export/admin
+    ops as they land. Component-backed helpers stay reachable but should
+    not be used by surface adapters.
+    """
 
     # ------------------------------------------------------------------
     # Construction
@@ -595,12 +603,6 @@ class OKFRouter:
 
     def list_directory(self, directory_id: str):
         return self.search_engine.list_directory(directory_id)
-
-    def search_hybrid(self, *args, **kwargs):
-        return self.search_engine.search_hybrid(*args, **kwargs)
-
-    def traverse(self, *args, **kwargs):
-        return self.search_engine.traverse(*args, **kwargs)
 
     def import_from_okf(self, *args, **kwargs):
         return self.import_mgr.import_from_okf(*args, **kwargs)

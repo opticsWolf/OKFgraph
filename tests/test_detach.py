@@ -206,7 +206,7 @@ class TestDetachClean:
         assert len(router.import_mgr.import_bundle()) == 2
 
         before_tree = _export_tree(router, tmp_path / "before")
-        before_search = [r["id"] for r in router.search_hybrid("Alpha", limit=5)]
+        before_search = [r["id"] for r in router.search("Alpha", limit=5)]
         assert before_search and before_search[0] == "a"
 
         router.import_mgr.detach()
@@ -217,7 +217,7 @@ class TestDetachClean:
 
         after_tree = _export_tree(router, tmp_path / "after")
         assert after_tree == before_tree
-        after_search = [r["id"] for r in router.search_hybrid("Alpha", limit=5)]
+        after_search = [r["id"] for r in router.search("Alpha", limit=5)]
         assert after_search == before_search
         assert _concepts(router.conn) == {"a", "b"}
 

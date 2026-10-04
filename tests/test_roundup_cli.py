@@ -77,7 +77,9 @@ class TestRoundupWorkflow:
     def test_search_rank_rejected_for_chunks(self):
         result = self._run(
             ["search", *self._base(), "--target", "chunks", "--rank", "ppr", "hub"])
-        assert "concepts-only" in result.stdout
+        # BAD_VALUE refusal: usage-class error, exit code 2, on stderr.
+        assert result.returncode == 2
+        assert "concepts-only" in result.stderr
 
     def test_read_max_tokens(self):
         result = self._run(["read", *self._base(), "hub", "--max-tokens", "40"])

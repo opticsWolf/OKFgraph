@@ -29,7 +29,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from okfgraph.models import ConceptModel
+from okfgraph.errors import OKFError
 from okfgraph.router import OKFRouter
 from okfgraph.settings import Settings, cli_signal, set_cli_flags
 
@@ -123,9 +123,11 @@ def create_mcp_server(settings: Settings) -> MCPServer:
             ),
         ] = "concepts",
         limit: Annotated[int, Field(ge=1, le=50, description="Maximum results.")] = 10,
-        type_filter: Annotated[Optional[str], Field(description="Concept type filter (concepts/chunks only).")] = None,
+        concept_type: Annotated[Optional[str], Field(description="Concept type filter (concepts/chunks only; plain chunks path).")] = None,
         tags: Annotated[Optional[list[str]], Field(description="Tag filter, ALL must match (concepts/chunks only).")] = None,
         parent_id: Annotated[Optional[str], Field(description="Directory ID to constrain search (concepts/chunks only).")] = None,
+        include_chunks: Annotated[bool, Field(description="Concepts only: attach matched chunks per concept result. For chunk-level hits, use target='chunks' instead.")] = False,
+        max_chunks_per_doc: Annotated[int, Field(ge=1, le=10, description="Chunks only: cap results per source document. Must stay default on other paths.")] = 3,
         expand: Annotated[bool, Field(description="Chunks only: attach graph neighborhood (incoming/outgoing links, ancestry, siblings) to each hit.")] = False,
         context_hops: Annotated[int, Field(ge=1, le=3, description="Expansion depth when expand=True.")] = 1,
         hub_rerank: Annotated[bool, Field(description="Chunks only: rerank by graph hub score (incoming link count). Wins over expand.")] = False,
@@ -152,33 +154,24 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         already have a concept ID, use read instead of searching. If you want
         related concepts, use traverse. To add content, use ingest."""
         router = _get_router(ctx)
-        if target == "images":
-            return json.dumps(
-                router.image_mgr.search_images_with_text(text_query=query, limit=limit),
-                default=str, indent=2,
+        try:
+            results = router.search(
+                query,
+                target=target,
+                limit=limit,
+                concept_type=concept_type,
+                tags=tags,
+                parent_id=parent_id,
+                include_chunks=include_chunks,
+                max_chunks_per_doc=max_chunks_per_doc,
+                expand=expand,
+                context_hops=context_hops,
+                hub_rerank=hub_rerank,
+                hub_weight=hub_weight,
+                rank=rank,
             )
-        filt: dict = {}
-        if type_filter is not None:
-            filt["concept_type"] = type_filter
-        if tags is not None:
-            filt["tags"] = tags
-        if parent_id is not None:
-            filt["parent_id"] = parent_id
-        if target == "chunks":
-            if rank != "none":
-                return "error: rank is concepts-only; use hub_rerank/expand for chunks"
-            if hub_rerank:
-                results = router.search_engine.search_chunks_with_hub_score(
-                    query, limit=limit, hub_weight=hub_weight
-                )
-            elif expand:
-                results = router.search_engine.search_with_context(
-                    query, limit=min(limit, 20), context_hops=context_hops
-                )
-            else:
-                results = router.search_engine.search_chunks(query, limit=limit, **filt)
-            return json.dumps(results, default=str, indent=2)
-        results = router.search_hybrid(query, limit=limit, rank=rank, hub_weight=hub_weight, **filt)
+        except OKFError as err:
+            return f"error: {err.code}: {err.message}"
         return json.dumps(results, default=str, indent=2)
 
     @mcp.tool(annotations=_RO)
@@ -216,32 +209,13 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         section list. For open questions use search; to walk
         relationships use traverse."""
         router = _get_router(ctx)
-        if max_tokens is not None:
-            try:
-                reading = router.search_engine.read_with_budget(
-                    concept_id, include=include, max_tokens=max_tokens,
-                )
-            except KeyError:
-                return f"Concept not found: {concept_id}"
-            return json.dumps(reading, default=str, indent=2)
-        if include == "chunks":
-            return json.dumps(router.search_engine.get_chunks(concept_id), default=str, indent=2)
-        if include == "document":
-            return json.dumps(router.embed_engine.reconstruct_document(concept_id), default=str, indent=2)
-        if include == "context":
-            return json.dumps({
-                "incoming_links": router.traverse(concept_id, "LINKS_TO", "INCOMING", 1)[:10],
-                "outgoing_links": router.traverse(concept_id, "LINKS_TO", "OUTGOING", 1)[:10],
-                "ancestry": router.search_engine._get_ancestry(concept_id),
-                "siblings": router.search_engine._get_siblings(concept_id)[:10],
-            }, default=str, indent=2)
-        concept = router.get_by_id(concept_id)
-        if concept is None:
-            return f"Concept not found: {concept_id}"
-        # Coercion boundary: validate whatever arrives (model or plain
-        # mapping) so the serialize surface below is always a ConceptModel.
-        concept = ConceptModel.model_validate(concept)
-        return json.dumps(concept.public_dict(), default=str, indent=2)
+        try:
+            return json.dumps(
+                router.read(concept_id, include=include, max_tokens=max_tokens),
+                default=str, indent=2,
+            )
+        except OKFError as err:
+            return f"error: {err.code}: {err.message}"
 
     @mcp.tool(annotations=_RO)
     def traverse(
@@ -255,6 +229,10 @@ def create_mcp_server(settings: Settings) -> MCPServer:
             Field(description="Traversal direction."),
         ] = "OUTGOING",
         depth: Annotated[int, Field(ge=1, le=5, description="Maximum traversal depth.")] = 1,
+        node_type: Annotated[
+            Optional[str],
+            Field(description="Filter walk results by node type (e.g. 'Concept', 'Directory'). Walk mode only."),
+        ] = None,
         target: Annotated[
             Optional[str],
             Field(description="If set, find the shortest path from start_id to this concept ID instead of traversing (uses max_path_length)."),
@@ -268,14 +246,21 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         LINKS_TO follows references; target=<id> finds the shortest path
         instead. Search first to find IDs. To add content use ingest."""
         router = _get_router(ctx)
-        if not start_id:
-            return json.dumps(router.list_directory(""), default=str, indent=2)
-        if target is not None:
+        try:
             return json.dumps(
-                router.search_engine.find_path(start_id, target, max_length=max_path_length),
+                router.traverse(
+                    start_id,
+                    relationship=relationship,
+                    direction=direction,
+                    depth=depth,
+                    node_type=node_type,
+                    target=target,
+                    max_path_length=max_path_length,
+                ),
                 default=str, indent=2,
             )
-        return json.dumps(router.traverse(start_id, relationship, direction, depth), default=str, indent=2)
+        except OKFError as err:
+            return f"error: {err.code}: {err.message}"
 
     @mcp.tool(annotations=_WR)
     def ingest(

@@ -97,14 +97,16 @@ class TestGraphEnrichment:
 
     def test_get_ancestry(self, router, linked_docs):
         hub_id, _ = linked_docs
-        path = router.search_engine._get_ancestry(hub_id)
+        ctx = router.search_engine.get_context(hub_id)
+        path = ctx["ancestry"]
         # Returns list of ancestors (may be empty if at root)
         assert isinstance(path, list)
 
     def test_get_siblings(self, router, linked_docs):
         hub_id, spoke_ids = linked_docs
         # Hub and spokes share the root directory, so siblings exist
-        siblings = router.search_engine._get_siblings(hub_id)
+        ctx = router.search_engine.get_context(hub_id)
+        siblings = ctx["siblings"]
         assert isinstance(siblings, list)
 
     def test_search_chunks_with_hub_score(self, router, linked_docs):

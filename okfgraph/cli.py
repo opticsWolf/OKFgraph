@@ -8,6 +8,7 @@ import logging
 import sys
 from pathlib import Path
 
+from okfgraph.errors import OKFError
 from okfgraph.router import OKFRouter
 from okfgraph.settings import Settings, cli_signal, set_cli_flags
 from okfgraph.components.converters import BobineConverter
@@ -271,15 +272,33 @@ def _import_inner(args, router, mode, purge):
 
 
 def _search(args):
-    """Unified search: concepts (default), chunks, or images."""
+    """Unified search: concepts (default), chunks, or images.
+
+    The canonical op (:mod:`okfgraph.ops`) owns routing, filters and
+    refusal rules; the CLI renders and reports refusal errors.
+    """
     router = _router(args)
     target = getattr(args, "target", "concepts") or "concepts"
     limit = getattr(args, "limit", 10) or 10
-    if target == "images":
-        results = router.image_mgr.search_images_with_text(
-            text_query=args.query,
+    try:
+        results = router.search(
+            query=args.query,
+            target=target,
             limit=limit,
+            concept_type=getattr(args, "concept_type", None),
+            tags=args.tags.split(",") if getattr(args, "tags", None) else None,
+            parent_id=getattr(args, "parent_id", None),
+            include_chunks=bool(getattr(args, "include_chunks", False)),
+            expand=bool(getattr(args, "expand", False)),
+            context_hops=getattr(args, "context_hops", 1),
+            hub_rerank=bool(getattr(args, "hub_rerank", False)),
+            hub_weight=getattr(args, "hub_weight", 0.3),
+            rank=getattr(args, "rank", "none") or "none",
         )
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
+    if target == "images":
         if not results:
             print("No image results found.")
             return
@@ -291,24 +310,8 @@ def _search(args):
             print(f"     id: {r['id']}")
             print()
         return
-    tags = args.tags.split(",") if getattr(args, "tags", None) else None
-    filt = {
-        "concept_type": getattr(args, "type", None),
-        "tags": tags,
-        "parent_id": getattr(args, "parent", None),
-    }
-    filt = {k: v for k, v in filt.items() if v is not None}
-    rank = getattr(args, "rank", "none") or "none"
     if target == "chunks":
-        if rank != "none":
-            print("[ERROR] --rank is concepts-only; for chunks use --hub-rerank/--expand")
-            return
         if getattr(args, "hub_rerank", False):
-            results = router.search_engine.search_chunks_with_hub_score(
-                query=args.query,
-                limit=limit,
-                hub_weight=getattr(args, "hub_weight", 0.3),
-            )
             if not results:
                 print("No results found.")
                 return
@@ -320,11 +323,6 @@ def _search(args):
                 print()
             return
         if getattr(args, "expand", False):
-            results = router.search_engine.search_with_context(
-                query=args.query,
-                limit=min(limit, 20),
-                context_hops=getattr(args, "context_hops", 1),
-            )
             if not results:
                 print("No results found.")
                 return
@@ -345,11 +343,6 @@ def _search(args):
                     print(f"     siblings: {', '.join(s['title'] for s in r['siblings'][:3])}")
                 print()
             return
-        results = router.search_engine.search_chunks(
-            query=args.query,
-            limit=limit,
-            **filt,
-        )
         if not results:
             print("No chunk results found.")
             return
@@ -363,14 +356,6 @@ def _search(args):
             print(f"     id: {r['chunk_id']}")
             print()
         return
-    results = router.search_hybrid(
-        query=args.query,
-        limit=limit,
-        include_chunks=getattr(args, "chunks", False),
-        rank=rank,
-        hub_weight=getattr(args, "hub_weight", 0.3) or 0.3,
-        **filt,
-    )
     if not results:
         print("No results found.")
         return
@@ -397,8 +382,21 @@ def _traverse(args):
     router = _router(args)
     target = getattr(args, "target", None)
     start = getattr(args, "start_id", "") or ""
+    try:
+        results = router.traverse(
+            start,
+            relationship=args.relationship,
+            direction=args.direction,
+            depth=args.depth,
+            node_type=getattr(args, "node_type", None),
+            target=target,
+            max_path_length=getattr(args, "max_path_length", 6),
+        )
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
     if not start:
-        items = router.list_directory("")
+        items = results
         if not items:
             print("Directory is empty.")
             return
@@ -409,9 +407,7 @@ def _traverse(args):
             print(f"     id: {item['id']}")
         return
     if target:
-        nodes = router.search_engine.find_path(
-            start, target, max_length=getattr(args, "max_path_length", 6)
-        )
+        nodes = results
         if not nodes:
             print(f"No path found between '{start}' and '{target}'.")
             return
@@ -420,13 +416,6 @@ def _traverse(args):
             print(f"  {i}. {n.get('title', '?')} ({n.get('type', '?')})")
             print(f"     id: {n['id']}")
         return
-    results = router.traverse(
-        start_id=start,
-        relationship=args.relationship,
-        direction=args.direction,
-        depth=args.depth,
-        node_type=getattr(args, "type", None),
-    )
     if not results:
         print("No results found.")
         return
@@ -443,70 +432,68 @@ def _read(args):
     include = getattr(args, "include", "body") or "body"
     cid = args.concept_id
     max_tokens = getattr(args, "max_tokens", None)
-    if max_tokens:
-        try:
-            reading = router.search_engine.read_with_budget(
+    try:
+        if max_tokens:
+            reading = router.read(
                 cid, include=include, max_tokens=max_tokens,
             )
-        except KeyError:
-            print(f"Concept '{cid}' not found.")
+            flag = " (truncated)" if reading["truncated"] else ""
+            print(f"[{reading['used']}/{reading['budget']} tokens{flag}] {cid}\n")
+            for sec in reading["sections"]:
+                print(f"## {sec['title'] or sec['id']} [{sec['kind']} | {sec['id']}]")
+                print(sec["text"])
+                print()
             return
-        flag = " (truncated)" if reading["truncated"] else ""
-        print(f"[{reading['used']}/{reading['budget']} tokens{flag}] {cid}\n")
-        for sec in reading["sections"]:
-            print(f"## {sec['title'] or sec['id']} [{sec['kind']} | {sec['id']}]")
-            print(sec["text"])
-            print()
-        return
-    if include == "chunks":
-        chunks = router.search_engine.get_chunks(cid)
-        if not chunks:
-            print("No chunks found for this concept.")
+        if include == "chunks":
+            chunks = router.read(cid, include="chunks")
+            if not chunks:
+                print("No chunks found for this concept.")
+                return
+            print(f"Chunks for '{cid}' ({len(chunks)} total):\n")
+            for c in chunks:
+                text = c.chunk_text[:120]
+                print(f"  #{c.chunk_index} [{c.block_type}] {text}")
             return
-        print(f"Chunks for '{cid}' ({len(chunks)} total):\n")
-        for c in chunks:
-            text = c.chunk_text[:120]
-            print(f"  #{c.chunk_index} [{c.block_type}] {text}")
-        return
-    if include == "document":
-        text = router.embed_engine.reconstruct_document(cid)
-        if not text:
-            print("No chunks found for this concept.")
+        if include == "document":
+            payload = router.read(cid, include="document")
+            markdown = payload["markdown"]
+            if not markdown:
+                print("No chunks found for this concept.")
+                return
+            if getattr(args, "output_path", None):
+                Path(args.output_path).write_text(markdown, encoding="utf-8")
+                print(f"[OK] Reconstructed document written to {args.output_path}")
+            else:
+                print(markdown)
             return
-        if getattr(args, "output", None):
-            Path(args.output).write_text(text, encoding="utf-8")
-            print(f"[OK] Reconstructed document written to {args.output}")
-        else:
-            print(text)
-        return
-    if include == "context":
-        incoming = router.traverse(cid, "LINKS_TO", "INCOMING", 1)[:10]
-        outgoing = router.traverse(cid, "LINKS_TO", "OUTGOING", 1)[:10]
-        ancestry = router.search_engine._get_ancestry(cid)
-        siblings = router.search_engine._get_siblings(cid)[:10]
-        if incoming:
-            print("Linked by:")
-            for l in incoming:
-                print(f"  {l.get('title', l.get('id', '?'))} (id: {l['id']})")
-        if outgoing:
-            print("Links to:")
-            for l in outgoing:
-                print(f"  {l.get('title', l.get('id', '?'))} (id: {l['id']})")
-        if ancestry:
-            print(f"Path: {' → '.join(a['title'] for a in ancestry)}")
-        if siblings:
-            print("Siblings:")
-            for s in siblings:
-                print(f"  {s['title']} ({s['type']})")
-                print(f"     id: {s['id']}")
-        if not (incoming or outgoing or ancestry or siblings):
-            print(f"No context found for '{cid}'.")
-        return
-    concept = router.get_by_id(cid)
-    if not concept:
-        print(f"Concept '{cid}' not found.")
-        return
-    data = concept.public_dict()
+        if include == "context":
+            ctx = router.read(cid, include="context")
+            incoming = ctx["incoming_links"]
+            outgoing = ctx["outgoing_links"]
+            ancestry = ctx["ancestry"]
+            siblings = ctx["siblings"]
+            if incoming:
+                print("Linked by:")
+                for l in incoming:
+                    print(f"  {l.get('title', l.get('id', '?'))} (id: {l['id']})")
+            if outgoing:
+                print("Links to:")
+                for l in outgoing:
+                    print(f"  {l.get('title', l.get('id', '?'))} (id: {l['id']})")
+            if ancestry:
+                print(f"Path: {' → '.join((a.get('title') or a['id']) for a in ancestry)}")
+            if siblings:
+                print("Siblings:")
+                for s in siblings:
+                    print(f"  {s['title']} ({s['type']})")
+                    print(f"     id: {s['id']}")
+            if not (incoming or outgoing or ancestry or siblings):
+                print(f"No context found for '{cid}'.")
+            return
+        data = router.read(cid, include="body")
+    except OKFError as err:
+        print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+        return err.exit_code
     body = data.pop("body", "")
     print(json.dumps(data, indent=2, default=str))
     if body:
@@ -992,28 +979,40 @@ Commands:
                 elif t.startswith("parent:"):
                     parent_filter = t[7:]
             if target == "images":
-                results = router.image_mgr.search_images_with_text(query)
+                try:
+                    results = router.search(query, target="images")
+                except OKFError as err:
+                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+                    continue
                 for i, r in enumerate(results, 1):
                     label = r.get("alt_text") or r.get("file_name") or r.get("id")
                     print(f"  {i}. [{r['relevance_score']:.4f}] {label} ({r.get('embed_route')})")
                     print(f"     id: {r['id']}")
             elif target == "chunks":
-                if hub:
-                    results = router.search_engine.search_chunks_with_hub_score(query)
-                elif expand:
-                    results = router.search_engine.search_with_context(query)
-                else:
-                    results = router.search_engine.search_chunks(query)
+                try:
+                    results = router.search(
+                        query, target="chunks",
+                        concept_type=type_filter, tags=tags_filter,
+                        parent_id=parent_filter,
+                        hub_rerank=hub, expand=expand,
+                    )
+                except OKFError as err:
+                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+                    continue
                 for i, r in enumerate(results, 1):
                     chunk = r.get("chunk", r)
                     score = r.get("final_score", chunk.get("rrf_score", 0))
                     print(f"  {i}. [{score:.4f}] {chunk.get('parent_title', '?')} §{chunk.get('chunk_index', '?')}")
                     print(f"     {chunk.get('chunk_text', '')[:150]}")
             else:
-                results = router.search_hybrid(
-                    query=query, concept_type=type_filter,
-                    tags=tags_filter, parent_id=parent_filter,
-                )
+                try:
+                    results = router.search(
+                        query=query, concept_type=type_filter,
+                        tags=tags_filter, parent_id=parent_filter,
+                    )
+                except OKFError as err:
+                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+                    continue
                 for i, r in enumerate(results, 1):
                     print(f"  {i}. [{r['relevance_score']:.4f}] {r['title']} ({r['type']})")
                     desc = r.get("description") or ""
@@ -1025,31 +1024,31 @@ Commands:
             cid = tokens[0]
             include = tokens[1] if len(tokens) > 1 else "body"
             if include == "chunks":
-                chunks = router.search_engine.get_chunks(cid)
+                chunks = router.read(cid, include="chunks")
                 if not chunks:
                     print("No chunks found.")
                 for c in chunks:
                     print(f"  #{c.chunk_index} [{c.block_type}] {c.chunk_text[:120]}")
             elif include == "document":
-                text = router.embed_engine.reconstruct_document(cid)
+                payload = router.read(cid, include="document")
+                text = payload["markdown"]
                 print(text if text else "No chunks found for this concept.")
             elif include == "context":
-                for l in router.traverse(cid, "LINKS_TO", "INCOMING", 1)[:10]:
-                    print(f"  ← {l.get('title', l.get('id', '?'))}")
-                for l in router.traverse(cid, "LINKS_TO", "OUTGOING", 1)[:10]:
-                    print(f"  → {l.get('title', l.get('id', '?'))}")
-                for a in router.search_engine._get_ancestry(cid):
-                    print(f"  ↑ {a['title']}")
+                ctx = router.read(cid, include="context")
+                for l in ctx["incoming_links"]:
+                    print(f"  ← {l.get('title', l.get('id', '?'))} (id: {l['id']})")
+                for l in ctx["outgoing_links"]:
+                    print(f"  → {l.get('title', l.get('id', '?'))} (id: {l['id']})")
+                for a in ctx["ancestry"]:
+                    print(f"  ↑ {a.get('title') or a['id']}")
+                for s in ctx["siblings"]:
+                    print(f"  · {s['title']} ({s['type']}) (id: {s['id']})")
             else:
-                concept = router.get_by_id(cid)
-                if concept:
-                    data = concept.public_dict()
-                    body = data.pop("body", "")
-                    print(json.dumps(data, indent=2, default=str))
-                    if body:
-                        print(f"\n--- BODY ---\n{body}")
-                else:
-                    print(f"Concept '{cid}' not found")
+                try:
+                    data = router.read(cid, include="body")
+                except OKFError as err:
+                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+                    continue
 
         elif cmd == "traverse":
             tokens = rest.strip().split()
@@ -1058,7 +1057,11 @@ Commands:
                     icon = "[D]" if item["type"] == "Directory" else "[F]"
                     print(f"  {icon} {item['title']} ({item['type']})")
             elif len(tokens) == 2 and tokens[1] not in ("CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET"):
-                nodes = router.search_engine.find_path(tokens[0], tokens[1])
+                try:
+                    nodes = router.traverse(tokens[0], target=tokens[1])
+                except OKFError as err:
+                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+                    continue
                 if not nodes:
                     print(f"No path found between '{tokens[0]}' and '{tokens[1]}'.")
                 else:
@@ -1071,7 +1074,12 @@ Commands:
                 rel = tokens[1] if len(tokens) > 1 else "CONTAINS"
                 direction = tokens[2] if len(tokens) > 2 else "OUTGOING"
                 depth = int(tokens[3]) if len(tokens) > 3 else 1
-                results = router.traverse(start_id, rel, direction, depth)
+                try:
+                    results = router.traverse(
+                        start_id, relationship=rel, direction=direction, depth=depth)
+                except OKFError as err:
+                    print(f"[ERROR] {err.code}: {err.message}", file=sys.stderr)
+                    continue
                 for r in results:
                     print(f"  {r['id']} ({r['type']}) — {r.get('title', '')}")
 
@@ -1238,10 +1246,10 @@ def build_parser():
     p.add_argument("--target", default="concepts", choices=["concepts", "chunks", "images"],
                    help="What to search (default: concepts)")
     p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
-    p.add_argument("--type", help="Concept type filter (concepts/chunks)")
+    p.add_argument("--concept-type", dest="concept_type", help="Concept type filter (concepts/chunks)")
     p.add_argument("--tags", help="Comma-separated tag filters (concepts/chunks)")
-    p.add_argument("--parent", help="Parent directory ID (concepts/chunks)")
-    p.add_argument("--chunks", action="store_true", help="Include matched chunks per concept result")
+    p.add_argument("--parent-id", dest="parent_id", help="Parent directory ID (concepts/chunks)")
+    p.add_argument("--include-chunks", dest="include_chunks", action="store_true", help="Include matched chunks per concept result")
     p.add_argument("--expand", action="store_true", help="Chunks: attach graph neighborhood to each hit")
     p.add_argument("--context-hops", type=int, default=1, help="Expansion hops with --expand (default: 1)")
     p.add_argument("--hub-rerank", action="store_true", help="Chunks: rerank by graph hub score")
@@ -1258,7 +1266,7 @@ def build_parser():
     p.add_argument("concept_id", help="Concept ID")
     p.add_argument("--include", default="body", choices=["body", "chunks", "document", "context"],
                    help="What to return (default: body)")
-    p.add_argument("--output", help="Output file for --include document (default: stdout)")
+    p.add_argument("--output-path", dest="output_path", help="Output file for --include document (default: stdout)")
     p.add_argument("--max-tokens", type=int, default=None,
                    help="Token budget: assemble self + PPR-ranked neighbours "
                    "(index-first for context), truncating to fit")
@@ -1271,7 +1279,7 @@ def build_parser():
     p.add_argument("--relationship", default="CONTAINS", choices=["CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET"])
     p.add_argument("--direction", default="OUTGOING", choices=["OUTGOING", "INCOMING", "BOTH"])
     p.add_argument("--depth", type=int, default=1, help="Max depth (1-5)")
-    p.add_argument("--type", help="Target node type filter")
+    p.add_argument("--node-type", dest="node_type", help="Target node type filter")
     p.add_argument("--target", default=None, help="Find shortest path from start_id to this ID instead of traversing")
     p.add_argument("--max-path-length", type=int, default=6, help="Max path length with --target (default: 6)")
 
@@ -1439,11 +1447,6 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
-
-    # NOTE: --bundle and --bundle-root COMBINE (primary + named extras);
-    # the plan draft said "mutually exclusive" but no actual conflict
-    # exists, so combination is allowed. Recorded as a deviation in the
-    # plan doc (Phase 2 §2.6).
 
     if not args.command:
         parser.print_help()

@@ -87,9 +87,9 @@ class TestOKFRouterSmoke:
         from okfgraph.components import EmbeddingEngine
         assert hasattr(EmbeddingEngine, "_encode")
 
-    def test_search_hybrid_method_exists(self):
+    def test_search_method_exists(self):
         from okfgraph.router import OKFRouter
-        assert hasattr(OKFRouter, "search_hybrid")
+        assert hasattr(OKFRouter, "search")  # canonical search op
 
     def test_traverse_method_exists(self):
         from okfgraph.router import OKFRouter
@@ -377,7 +377,7 @@ class TestIngestThoughts:
         )
 
         # Search should find it
-        results = r.search_hybrid("graph database")
+        results = r.search("graph database")
         ids = [r["id"] for r in results]
         assert result["concept_id"] in ids
         r.close()

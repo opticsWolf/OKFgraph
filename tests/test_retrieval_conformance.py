@@ -48,24 +48,24 @@ def _score(r):
 
 class TestRetrievalConformance:
     def test_hybrid_top1_wildlife(self, retr_router):
-        res = retr_router.search_hybrid("honey badger hive raiding mustelid")
+        res = retr_router.search("honey badger hive raiding mustelid")
         assert _ids(res)[0] == "honey-badger"
 
     def test_hybrid_top1_biology(self, retr_router):
-        res = retr_router.search_hybrid("mycorrhizal hyphae symbiosis")
+        res = retr_router.search("mycorrhizal hyphae symbiosis")
         assert _ids(res)[0] == "mycorrhizae"
 
     def test_hybrid_top1_programming(self, retr_router):
-        res = retr_router.search_hybrid("borrow checker lifetimes affine")
+        res = retr_router.search("borrow checker lifetimes affine")
         assert _ids(res)[0] == "rust-borrowck"
 
     def test_tag_filter_narrows(self, retr_router):
-        res = retr_router.search_hybrid("bread baking", tags=["food"])
+        res = retr_router.search("bread baking", tags=["food"])
         assert _ids(res)[0] == "sourdough"
         assert all("food" in r["tags"] for r in res)
 
     def test_type_filter_narrows(self, retr_router):
-        res = retr_router.search_hybrid("threads", concept_type="note")
+        res = retr_router.search("threads", concept_type="note")
         assert _ids(res)[0] == "concurrency"
         assert all(r["type"] == "note" for r in res)
 
@@ -77,7 +77,7 @@ class TestRetrievalConformance:
         assert "autolyse" in top["chunk_text"]
 
     def test_hub_rank_lifts_linked_hub(self, retr_router):
-        res = retr_router.search_hybrid("africa grassland", rank="hub")
+        res = retr_router.search("africa grassland", rank="hub")
         assert _ids(res)[0] == "savanna"
 
     def test_ppr_surfaces_hub_without_model(self, retr_router, monkeypatch):
@@ -95,7 +95,7 @@ class TestRetrievalConformance:
     def test_no_match_returns_rrf_dregs(self, retr_router):
         """Unknown vocabulary matches nothing: hybrid returns RRF-floor
         dregs (1/(60+k)), never an error and never a confident hit."""
-        res = retr_router.search_hybrid("xyzzy platypus interferometer")
+        res = retr_router.search("xyzzy platypus interferometer")
         assert res, "hybrid always returns the fused list"
         assert max(_score(r) for r in res) < 0.02
 

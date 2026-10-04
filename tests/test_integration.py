@@ -97,7 +97,7 @@ class TestIntegration:
             assert len(chunks) >= 1, f"Expected chunks for {title}"
 
     def test_hybrid_search_finds_concepts(self, router, full_bundle):
-        results = router.search_hybrid("core subject matter")
+        results = router.search("core subject matter")
         assert len(results) > 0
 
     def test_chunk_search_finds_content(self, router, full_bundle):
@@ -106,12 +106,12 @@ class TestIntegration:
         assert all("rrf_score" in r for r in results)
 
     def test_search_with_graph_filters(self, router, full_bundle):
-        results = router.search_hybrid("overview", concept_type="Concept")
+        results = router.search("overview", concept_type="Concept")
         assert isinstance(results, list)
 
     def test_traverse_part_of_returns_chunks(self, router, full_bundle):
         cid = full_bundle["overview"]
-        results = router.traverse(cid, "PART_OF", "OUTGOING", 1)
+        results = router.traverse(cid, relationship="PART_OF", direction="OUTGOING", depth=1)
         assert len(results) >= 1
 
     def test_reconstruct_document(self, router, full_bundle):
@@ -129,7 +129,7 @@ class TestIntegration:
             assert "incoming_links" in r
 
     def test_hybrid_search_include_chunks(self, router, full_bundle):
-        results = router.search_hybrid("overview", include_chunks=True)
+        results = router.search("overview", include_chunks=True)
         if results:
             r = results[0]
             assert "matched_chunks" in r

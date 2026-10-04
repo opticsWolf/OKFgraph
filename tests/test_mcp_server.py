@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from okfgraph.errors import OKFError
 from okfgraph.mcp_server import create_mcp_server
+from okfgraph.ops import QueryOps
 from okfgraph.settings import Settings
 
 
@@ -99,7 +101,8 @@ class TestMCPServer:
             assert "query" in props
             assert "query" in search.parameters["required"]
             assert props["target"]["default"] == "concepts"
-            for flag in ("expand", "hub_rerank", "limit", "type_filter", "tags", "parent_id"):
+            for flag in ("expand", "hub_rerank", "limit", "concept_type", "tags",
+                         "parent_id", "include_chunks", "max_chunks_per_doc"):
                 assert flag in props, f"search missing {flag}"
 
     def test_read_schema(self):
@@ -201,7 +204,20 @@ class _StubSearchEngine:
     def __init__(self, calls):
         self.calls = calls
 
-    def search_chunks(self, query, limit=10, **filt):
+    def search_hybrid(self, query, concept_type=None, tags=None, parent_id=None,
+                      exclude_reserved=True, limit=10, include_chunks=False,
+                      rank="none", hub_weight=0.3):
+        filt = {k: v for k, v in (("concept_type", concept_type), ("tags", tags),
+                                  ("parent_id", parent_id)) if v is not None}
+        if rank != "none":
+            filt["rank"] = rank
+        self.calls.append(("search_hybrid", query, limit, filt))
+        return [{"id": "c1", "type": "note"}]
+
+    def search_chunks(self, query, concept_type=None, tags=None, parent_id=None,
+                      limit=10, max_chunks_per_doc=3):
+        filt = {k: v for k, v in (("concept_type", concept_type), ("tags", tags),
+                                  ("parent_id", parent_id)) if v is not None}
         self.calls.append(("search_chunks", query, limit, filt))
         return [{"chunk_id": "c1"}]
 
@@ -217,15 +233,26 @@ class _StubSearchEngine:
         self.calls.append(("get_chunks", concept_id))
         return []
 
-    def find_path(self, start_id, end_id, max_length=6):
-        self.calls.append(("find_path", start_id, end_id, max_length))
-        return [{"id": end_id}]
+    def read_with_budget(self, concept_id, include="body", max_tokens=2000):
+        self.calls.append(("read_with_budget", concept_id, include, max_tokens))
+        return {"concept_id": concept_id, "budget": max_tokens,
+                "used": 10, "truncated": False, "sections": []}
 
-    def _get_ancestry(self, concept_id):
+    def traverse(self, start_id, relationship="CONTAINS", direction="OUTGOING",
+                 depth=1, node_type=None):
+        self.calls.append(("traverse", start_id, relationship, direction, depth))
         return []
 
-    def _get_siblings(self, concept_id):
-        return []
+    def get_context(self, concept_id, cap=10):
+        self.calls.append(("get_context", concept_id, cap))
+        return {"ancestry": [], "siblings": []}
+
+    def node_exists(self, node_id):
+        return True
+
+    def find_path(self, start_id, target, max_path_length=6):
+        self.calls.append(("find_path", start_id, target, max_path_length))
+        return [{"id": target}]
 
 
 class _StubEmbedEngine:
@@ -254,7 +281,13 @@ class _StubIngestMgr:
         return {"concept_id": "c-t"}
 
 
-class _StubRouter:
+class _StubRouter(QueryOps):
+    """Plain router double that inherits the canonical ops.
+
+    The MCP adapters route through the ops, so the stub supplies the
+    component attributes the ops reach for.
+    """
+
     def __init__(self, calls):
         self.calls = calls
         self.search_engine = _StubSearchEngine(calls)
@@ -262,21 +295,11 @@ class _StubRouter:
         self.ingest_mgr = _StubIngestMgr(calls)
         self.image_mgr = _StubImageMgr(calls)
 
-    def search_hybrid(self, query, limit=10, **filt):
-        self.calls.append(("search_hybrid", query, limit, filt))
-        return [{"id": "c1"}]
-
-    def search_images(self, query, limit=10):
-        self.calls.append(("search_images", query, limit))
-        return []
-
-    def traverse(self, start_id, rel="CONTAINS", direction="OUTGOING", depth=1):
-        self.calls.append(("traverse", start_id, rel, direction, depth))
-        return []
-
     def get_by_id(self, concept_id):
         self.calls.append(("get_by_id", concept_id))
-        return None if concept_id == "missing" else {"id": concept_id, "type": "note"}
+        if concept_id == "missing":
+            return None
+        return {"id": concept_id, "type": "note"}
 
     def list_directory(self, directory_id):
         self.calls.append(("list_directory", directory_id))
@@ -336,7 +359,7 @@ class TestToolDispatch:
         out = self._fn("read")("c1", ctx=self._ctx(_StubRouter(calls)))
         assert calls[0][0] == "get_by_id"
         out = self._fn("read")("missing", ctx=self._ctx(_StubRouter(calls)))
-        assert "not found" in out
+        assert out.startswith("error: UNKNOWN_CONCEPT")
 
     def test_read_variants(self):
         for include, expect in [("chunks", "get_chunks"), ("document", "reconstruct"), ("context", "traverse")]:
@@ -417,24 +440,18 @@ class TestRoundupDispatch:
         import json
         calls = []
         stub = _StubRouter(calls)
-        stub.search_engine.read_with_budget = lambda *a, **k: (
-            calls.append(("read_with_budget", a, k)) or
-            {"concept_id": "c1", "sections": []}
-        )
         fn = TestToolDispatch._fn("read")
         out = fn("c1", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
         assert json.loads(out)["concept_id"] == "c1"
-        assert calls[0][0] == "read_with_budget"
+        # The op verifies the concept's existence first, then budgets.
+        assert any(c[0] == "read_with_budget" for c in calls)
 
     def test_read_budget_missing(self):
         calls = []
         stub = _StubRouter(calls)
-        def _missing(*a, **k):
-            raise KeyError("nope")
-        stub.search_engine.read_with_budget = _missing
         fn = TestToolDispatch._fn("read")
-        out = fn("nope", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
-        assert "not found" in out
+        out = fn("missing", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
+        assert out.startswith("error: UNKNOWN_CONCEPT")
 
     def test_export_schema_has_flavor(self):
         mcp = create_mcp_server(Settings(db_path=":memory:"))

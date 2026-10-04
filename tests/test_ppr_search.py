@@ -68,25 +68,26 @@ class TestPprSearch:
 
     def test_search_hybrid_rank_ppr_matches_direct(self, router):
         direct = router.search_engine.search_with_ppr("honey badger")
-        via_hybrid = router.search_hybrid("honey badger", rank="ppr")
+        via_hybrid = router.search("honey badger", rank="ppr")
         assert [r["id"] for r in via_hybrid] == [r["id"] for r in direct]
 
     def test_search_hybrid_rank_hub_blends(self, router):
-        plain = router.search_hybrid("savanna")
-        hubbed = router.search_hybrid("savanna", rank="hub")
+        plain = router.search("savanna")
+        hubbed = router.search("savanna", rank="hub")
         assert {r["id"] for r in hubbed} == {r["id"] for r in plain}
         assert all("hub_score" in r for r in hubbed)
         # 'savanna' has the most incoming links -> hub weight lifts it to top.
         assert hubbed[0]["id"] == "savanna"
 
     def test_search_hybrid_default_unchanged(self, router):
-        results = router.search_hybrid("honey badger")
+        results = router.search("honey badger")
         assert results and "hub_score" not in results[0]
         assert all("relevance_score" in r for r in results)
 
     def test_search_hybrid_bad_rank_raises(self, router):
-        with pytest.raises(ValueError):
-            router.search_hybrid("honey badger", rank="bogus")
+        from okfgraph.errors import UsageError
+        with pytest.raises(UsageError):
+            router.search("honey badger", rank="bogus")
 
 
 class TestBudgetedRead:

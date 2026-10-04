@@ -409,7 +409,7 @@ class TestPhase4_Graph:
         chunks = router.search_engine.get_chunks(id_a)
         if not chunks:
             pytest.skip("No chunks created")
-        results = router.traverse(id_a, "PART_OF", "OUTGOING", 1)
+        results = router.traverse(id_a, relationship="PART_OF", direction="OUTGOING", depth=1)
         assert len(results) >= 1
 
     def test_traverse_includes_asset(self, router):

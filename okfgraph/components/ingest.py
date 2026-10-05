@@ -97,10 +97,10 @@ class IngestManager:
         if not md_path.exists():
             raise FileNotFoundError(f"Markdown file not found: {md_path}")
 
-        # Lint the file (may auto-fix in-place)
-        lint_result = self._lint_converted_md(md_path, auto_fix=True)
-        if lint_result["fixed"]:
-            md_path.write_text(lint_result["content"], encoding="utf-8")
+        # Lint report only: md_path is the user's source, never rewritten
+        # (bulk import doesn't touch sources either, and a fix would make
+        # the graph drift from the file). Fixable issues are only counted.
+        lint_result = self._lint_converted_md(md_path, auto_fix=False)
 
         # Parse frontmatter
         post = frontmatter.load(md_path)
@@ -134,7 +134,8 @@ class IngestManager:
         })
 
         # Import via shared single-concept pipeline
-        result = self.import_mgr._import_single_concept(concept, post.content, mode, force)
+        result = self.import_mgr._import_single_concept(
+            concept, post.content, mode, force, base_dir=md_path.parent)
 
         return {
             "concept_id": result["concept_id"],
@@ -145,6 +146,7 @@ class IngestManager:
             "image_count": result["image_count"],
             "lint_issues": {
                 "fixed_count": lint_result["fixed_count"],
+                "fixable_count": lint_result["fixable_count"],
                 "unfixable_count": len(lint_result["unfixable"]),
                 "error_count": len(lint_result["errors"]),
             },
@@ -242,6 +244,7 @@ class IngestManager:
         - "content": the (possibly fixed) markdown content (str)
         - "fixed": whether content was modified (bool)
         - "fixed_count": number of auto-fixed issues (int)
+        - "fixable_count": fixable issues found, fixed or not (int)
         - "unfixable": list of unfixable diagnostics (list)
         - "errors": list of error-level diagnostics (list)
         """
@@ -253,6 +256,7 @@ class IngestManager:
                 "content": content,
                 "fixed": False,
                 "fixed_count": 0,
+                "fixable_count": 0,
                 "unfixable": [],
                 "errors": [],
             }
@@ -299,6 +303,7 @@ class IngestManager:
             "content": fixed_content,
             "fixed": fixed_count > 0,
             "fixed_count": fixed_count,
+            "fixable_count": len(diagnostics) - len(unfixable),
             "unfixable": unfixable,
             "errors": errors,
         }

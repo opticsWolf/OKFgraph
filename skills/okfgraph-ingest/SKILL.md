@@ -40,6 +40,11 @@ re-extracting it from files.
   lint_issues, ...}`; thoughts → `{concept_id, topic, chunk_count, ...}`;
   pdf → `{concept_ids, page_count, md_path, image_dir}`. Params that
   belong to another kind are refused, not ignored.
+- md ingest never modifies `md_path`: `lint_issues` (`fixable_count`,
+  `unfixable_count`, `error_count`) is a report only. `image_count` counts
+  real `![alt](src)` images resolved next to the file (or remote).
+- Ingest is not idempotent by content: there is no delete op yet, so check
+  `search` before ingesting a file twice under different ids.
 
 ## CLI: `okf ingest`
 

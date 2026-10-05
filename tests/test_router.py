@@ -216,14 +216,12 @@ class TestIngestMd:
         r.close()
 
     def test_import_with_linting(self, tmp_path):
-        """Linting auto-fixes fixable issues."""
+        """md ingest reports fixable lint issues but never rewrites the source."""
         from okfgraph.router import OKFRouter
 
         md_path = tmp_path / "test.md"
-        md_path.write_text(
-            "---\ntitle: Test\n---\n\nHello  \n\nWorld",
-            encoding="utf-8",
-        )  # trailing spaces (MD009)
+        original = b"---\ntitle: Test\n---\n\nHello  \n\nWorld"  # MD009 + MD047
+        md_path.write_bytes(original)
 
         r = OKFRouter(
             db_path=str(tmp_path / "test.db"),
@@ -232,8 +230,33 @@ class TestIngestMd:
         )
         result = r.ingest_mgr.ingest("md", md_path=md_path)
 
-        assert result["lint_issues"]["fixed_count"] > 0
+        assert result["lint_issues"]["fixable_count"] > 0
+        assert result["lint_issues"]["fixed_count"] == 0
+        assert md_path.read_bytes() == original
         r.close()
+
+    def test_md_ingest_image_count(self, tmp_path):
+        """image_count counts linked images, not the stats dict's keys (was 7)."""
+        from okfgraph.router import OKFRouter
+
+        (tmp_path / "pic.png").write_bytes(
+            b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        no_img = tmp_path / "plain.md"
+        no_img.write_text("---\ntitle: Plain\n---\n\nSee https://example.org/x.png\n",
+                          encoding="utf-8")
+        one_img = tmp_path / "one.md"
+        one_img.write_text("---\ntitle: One\n---\n\n![a pic](pic.png)\n",
+                           encoding="utf-8")
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        try:
+            assert r.ingest_mgr.ingest("md", md_path=no_img)["image_count"] == 0
+            assert r.ingest_mgr.ingest("md", md_path=one_img, mode="text")["image_count"] == 1
+        finally:
+            r.close()
 
     def test_import_nonexistent_file(self, tmp_path):
         """Importing a non-existent file raises OKFError(FILE_NOT_FOUND)."""

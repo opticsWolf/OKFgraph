@@ -110,6 +110,29 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
   parsers run with `allow_abbrev=False`, so prefix shortcuts like
   `okf export --output` (argparse prefix matching) refuse too.
 
+### Fixed (field report)
+- **Chunk search segfault (exit 139).** ladybug 0.21.2 crashes
+  deterministically in multi-threaded scoring of an unbounded
+  `QUERY_FTS_INDEX` whose terms match many rows (a 28k-chunk graph, a
+  common word like "index"). Both FTS stages (chunks, concepts) now pass
+  `top := limit * 3`, the depth RRF consumes anyway; any explicit `top`
+  avoids the crash.
+- **md ingest never rewrites the source file.** Lint runs report-only
+  (`lint_issues` gains `fixable_count`; `fixed_count` stays 0), matching
+  bulk import; the old in-place auto-fix could touch any file passed as
+  `md_path` (e.g. a `.bib`). Converter output (pdf kind) is still fixed.
+- **md ingest `image_count`** reported `len()` of the 7-key stats dict
+  (always 7); now counts linked images. Relative image paths resolve
+  against the source file's folder instead of the CWD.
+- **ONNX Runtime hint:** an installed-but-unimportable runtime (partial
+  uninstall, locked DLL) was reported as "no ONNX Runtime installed";
+  now typed `NO_ORT_RUNTIME` naming the installed distribution and the
+  import error (also in `doctor`'s `ort_runtime` info; `ort_info()`
+  gains `import_error`).
+- **Database held by another process** (an `okf-mcp` server, a parallel
+  `okf`) raised a raw ladybug `RuntimeError` (`INTERNAL`); now the new
+  state code `DB_LOCKED` with a remedy.
+
 ## [0.9.0] — 2026-10-03
 
 ### Added

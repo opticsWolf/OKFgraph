@@ -36,6 +36,12 @@ class SearchEngine:
         (notably QUERY_FTS_INDEX) on one connection segfault the process.
         Connections are cheap; each index query gets its own, with the
         extensions loaded explicitly (LOAD is per-connection).
+
+        Every QUERY_FTS_INDEX call must pass ``top := k``: ladybug 0.21.2
+        segfaults (multi-threaded scoring, deterministic) on an unbounded
+        FTS query whose terms match many rows — seen on a 28k-chunk graph
+        for a common word like "index". Any explicit ``top`` avoids it, and
+        RRF only consumes the first ``limit * 3`` hits anyway.
         """
         if self._db is None:
             res = self.conn.execute(cypher, params)
@@ -89,10 +95,11 @@ class SearchEngine:
             if node_id:
                 vec_scores[node_id] = 1 - row.get("distance", 0)
 
-        # Stage 2: Full-text search on chunks
+        # Stage 2: Full-text search on chunks (top-k bounded, see _index_rows)
         fts_rows = self._index_rows(
-            "CALL QUERY_FTS_INDEX('Chunk', 'chunk_fts', $query) RETURN node, score",
-            {"query": query},
+            "CALL QUERY_FTS_INDEX('Chunk', 'chunk_fts', $query, top := $k) "
+            "RETURN node, score",
+            {"query": query, "k": limit * 3},
         )
         fts_scores: Dict[str, float] = {}
         for row in fts_rows:
@@ -576,10 +583,11 @@ class SearchEngine:
             if node_id:
                 vec_scores[node_id] = 1 - row.get("distance", 0)
 
-        # Stage 2: Full-text search
+        # Stage 2: Full-text search (top-k bounded, see _index_rows)
         fts_rows = self._index_rows(
-            "CALL QUERY_FTS_INDEX('Concept', 'concept_fts', $query) RETURN node, score",
-            {"query": query},
+            "CALL QUERY_FTS_INDEX('Concept', 'concept_fts', $query, top := $k) "
+            "RETURN node, score",
+            {"query": query, "k": limit * 3},
         )
         fts_scores: Dict[str, float] = {}
         for row in fts_rows:

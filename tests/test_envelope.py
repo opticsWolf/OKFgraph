@@ -30,7 +30,7 @@ class TestCodeTable:
         # not usage — the session was opened wrong, not the caller dumb.
         for code in ("UNKNOWN_CONCEPT", "UNKNOWN_ASSET", "NOT_RECOVERABLE",
                      "DETACHED", "PURGE_REFUSED_ABSENT_ROOT",
-                     "SEARCH_UNAVAILABLE", "WRITE_LOCK_TIMEOUT",
+                     "SEARCH_UNAVAILABLE", "WRITE_LOCK_TIMEOUT", "DB_LOCKED",
                      "DIM_MISMATCH", "MODEL_PIN_MISMATCH",
                      "PRECISION_PIN_MISMATCH", "IMAGE_PIN_MISMATCH",
                      "VISION_INCOMPATIBLE", "NO_ORT_RUNTIME"):

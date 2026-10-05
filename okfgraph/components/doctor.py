@@ -233,17 +233,14 @@ class DoctorManager:
         # the shared binary, and whether both are installed (loader picks one
         # silently — hard warning, cpu XOR gpu).
         try:
-            from okfgraph.components.embedding import ort_info
+            from okfgraph.components.embedding import ort_info, ort_missing_hint
             ort = ort_info()
         except Exception:
             ort = {}
         if ort:
-            if not ort.get("installed"):
-                info.append({
-                    "rule": "ort_runtime",
-                    "message": "no ONNX Runtime installed: pip install "
-                             "'okfgraph[cpu]' or 'okfgraph[gpu]' (exactly one)",
-                })
+            hint = ort_missing_hint(ort)
+            if hint:
+                info.append({"rule": "ort_runtime", "message": hint})
             else:
                 info.append({
                     "rule": "ort_runtime",

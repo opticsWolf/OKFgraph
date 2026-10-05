@@ -987,10 +987,13 @@ class ImportManager:
         body: str,
         mode: "str | IngestMode" = IngestMode.TEXT,
         force: bool = False,
+        base_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """Import a single concept using the full pipeline (encode, upsert, chunk, etc.).
 
         This is the core shared logic between ingest_md() and ingest_thoughts().
+        ``base_dir`` resolves relative image paths (the source file's folder);
+        None falls back to the CWD, then the bundle root.
         """
         mode = IngestMode.coerce(mode)
         # Rootless addressed write: force bypasses the detached refusal,
@@ -1085,11 +1088,13 @@ class ImportManager:
         self._extract_links_for_concept(concept.id, body)
 
         # Phase 6: Images
+        # Count assets actually linked (embedded + reused), not the stats
+        # dict's key count — len() of it reported 7 for every document.
         image_count = 0
         try:
-            image_count = len(
-                self.image_mgr._ingest_concept_images(concept.id, body, Path("."), mode)
-            )
+            stats = self.image_mgr._ingest_concept_images(
+                concept.id, body, base_dir or Path("."), mode)
+            image_count = stats["total"] - stats["skipped"]
         except Exception:
             pass
 

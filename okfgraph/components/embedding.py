@@ -610,12 +610,15 @@ def ort_info() -> Dict[str, Any]:
             pass
     version: Optional[str] = None
     providers: List[str] = []
+    import_error: Optional[str] = None
     try:
         import onnxruntime as _ort
         version = getattr(_ort, "__version__", None)
         providers = list(_ort.get_available_providers())
-    except ImportError:
-        pass
+    except ImportError as exc:
+        # Installed-but-broken (half-removed wheel, locked DLL) is a
+        # different remedy from not-installed — keep the cause.
+        import_error = f"{type(exc).__name__}: {exc}"
     return {
         "dylib_path": os.environ.get("ORT_DYLIB_PATH"),
         "installed": [name for name, _ in installed],
@@ -623,7 +626,27 @@ def ort_info() -> Dict[str, Any]:
         "providers": providers,
         "cuda_usable": "CUDAExecutionProvider" in providers,
         "both_installed": len(installed) > 1,
+        "import_error": import_error,
     }
+
+
+def ort_missing_hint(ort: Dict[str, Any]) -> Optional[str]:
+    """The install hint for an unusable ORT, or None when it imports.
+
+    Distinguishes "no runtime distribution installed" from "a runtime is
+    installed but fails to import", so a broken install is not sent down
+    the install-an-extra path.
+    """
+    if ort.get("import_error") is None:
+        return None
+    if not ort.get("installed"):
+        return ("no ONNX Runtime installed: pip install 'okfgraph[cpu]' "
+                "or 'okfgraph[gpu]' (exactly one), or set ORT_DYLIB_PATH "
+                "to an onnxruntime 1.29 library")
+    return (f"ONNX Runtime is installed ({', '.join(ort['installed'])}) but "
+            f"fails to import ({ort['import_error']}): reinstall it, e.g. "
+            "pip install --force-reinstall 'okfgraph[cpu]' or 'okfgraph[gpu]' "
+            "(exactly one), or set ORT_DYLIB_PATH to an onnxruntime 1.29 library")
 
 
 def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None) -> Optional[str]:

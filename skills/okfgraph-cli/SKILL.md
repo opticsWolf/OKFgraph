@@ -91,6 +91,9 @@ filters on `--target images`) instead of silently dropping them.
 - So batch: one `search --target chunks --expand` beats N `read`s;
   `okf shell` keeps one warm process (`search chunks:<q> hub`,
   `read <id> document`, `traverse <a> <b>`; any CLI flag after the verb).
+- One process per database: run `okf` commands sequentially. A second
+  process on the same db (a parallel `okf`, or an `okf-mcp` server) is
+  refused with `DB_LOCKED`; use that MCP server's tools instead.
 
 ## Models and dimensions
 

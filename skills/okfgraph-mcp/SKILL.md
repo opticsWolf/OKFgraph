@@ -60,6 +60,8 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
   `UNKNOWN_CONCEPT` → search first to find IDs; `BAD_VALUE` names the
   offending param in `fields`; `SEARCH_UNAVAILABLE` → the vector/FTS
   extensions failed to load (graph reads still work).
+- The server holds the database for its lifetime: a shell `okf` on the
+  same db fails with `DB_LOCKED`, so query through these tools instead.
 - Params a path ignores are refused, never silently dropped:
   `context_hops` needs `expand`; `hub_weight` needs rank="hub" or
   `hub_rerank`; filters (`concept_type`, `tags`, `parent_id`) apply to

@@ -238,3 +238,33 @@ class TestEmbeddingErrors:
             embroider.JinaV5.open_files(
                 str(bad_onnx), str(tok_path), truncate_dim=64, device="cpu"
             )
+
+
+class TestDbLock:
+    def test_db_held_by_other_process_is_typed(self, tmp_path):
+        """A db held by another process (okf-mcp, a parallel okf) raises
+        DB_LOCKED with a remedy, not a raw ladybug RuntimeError."""
+        import subprocess
+        import sys
+
+        from okfgraph.errors import OKFError
+
+        db = tmp_path / "held.db"
+        _router(tmp_path).close()  # create it
+        (tmp_path / "err.db").rename(db)
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, ladybug as lb; d = lb.Database(sys.argv[1]); "
+             "print('held', flush=True); sys.stdin.read()", str(db)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "held"
+            with pytest.raises(OKFError) as ei:
+                OKFRouter(db_path=str(db), bundle_root=str(tmp_path),
+                          enable_chunking=False, device="cpu")
+            assert ei.value.code == "DB_LOCKED"
+            assert ei.value.exit_code == 1
+            assert ei.value.remedy
+        finally:
+            holder.communicate("")

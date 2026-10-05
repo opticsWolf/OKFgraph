@@ -191,7 +191,21 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
             )
         self.max_length = max_length if max_length is not None else embroider.MAX_LENGTH
 
-        self.db = lb.Database(db_path)
+        try:
+            self.db = lb.Database(db_path)
+        except RuntimeError as exc:
+            # The database file lock is per process: a second process
+            # (okf-mcp, another okf) on the same db is refused by ladybug.
+            if "lock" not in str(exc).lower():
+                raise
+            raise OKFError(
+                "DB_LOCKED",
+                f"database {db_path} is open in another process ({exc})",
+                fields={"db_path": str(db_path)},
+                remedy="run okf commands one at a time, stop the other "
+                       "process (e.g. an okf-mcp server on this db), or "
+                       "query through that MCP server instead",
+            ) from None
         self.conn = lb.Connection(self.db)
         self.db_path = db_path
 
@@ -323,19 +337,17 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         # in one index. The wheel import above stays fail-fast; the session
         # open is lazy so model-free commands (PPR search, budgeted reads,
         # diff, doctor) never pay model-download/session-build costs.
-        def _ort_missing() -> bool:
+        def _require_ort() -> None:
             # Core installs carry no ORT wheel (it lives in okfgraph[cpu|gpu]).
+            # Fail before JinaV5.open: a failed ORT init poisons ort's
+            # global lock and aborts the process at teardown, so the
+            # backend must never be touched when no runtime exists.
             if self.ort_dylib is not None:
-                return False
-            try:
-                import onnxruntime  # noqa: F401
-            except ImportError:
-                return True
-            return False
-
-        _ORT_HINT = ("no ONNX Runtime installed: pip install 'okfgraph[cpu]' "
-                     "or 'okfgraph[gpu]' (exactly one), or set ORT_DYLIB_PATH "
-                     "to an onnxruntime 1.29 library")
+                return
+            from okfgraph.components.embedding import ort_info, ort_missing_hint
+            hint = ort_missing_hint(ort_info())
+            if hint:
+                raise OKFError("NO_ORT_RUNTIME", hint)
 
         if explicit_files:
             def _open_session():
@@ -371,12 +383,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
             )
 
         def session_factory():
-            if _ort_missing():
-                # Fail before JinaV5.open: a failed ORT init poisons ort's
-                # global lock and aborts the process at teardown, so the
-                # backend must never be touched when no runtime exists.
-                raise RuntimeError(_ORT_HINT)
-            # No post-hoc wrap: _ort_missing() already returned False and
+            _require_ort()
+            # No post-hoc wrap: _require_ort() already passed and
             # nothing changes in between, so a second check after a failed
             # open could never fire. Backend errors (including pyo3
             # PanicException, a BaseException) propagate raw and are cached
@@ -430,8 +438,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
             )
 
         def _vision_session_factory():
-            if _ort_missing():
-                raise RuntimeError(_ORT_HINT)
+            _require_ort()
             # Fail-closed compat BEFORE any download: wrong text model,
             # oversize dim, or unknown image id all refuse here.
             enforce_vision_compat(

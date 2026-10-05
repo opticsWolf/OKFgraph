@@ -271,8 +271,9 @@ One envelope on the wire for CLI `--json` and MCP:
 | `PURGE_REFUSED_ABSENT_ROOT` | state | `prune_missing` with an unmounted root |
 | `MODEL_PIN_MISMATCH` / `PRECISION_PIN_MISMATCH` / `DIM_MISMATCH` | state | embedding pins |
 | `IMAGE_PIN_MISMATCH` / `VISION_INCOMPATIBLE` | state | vision pins / text-small graph |
-| `NO_ORT_RUNTIME` | state | the router's pre-open check (today a `RuntimeError` with the hint) |
+| `NO_ORT_RUNTIME` | state | the router's pre-open check (missing vs installed-but-unimportable runtime get different hints) |
 | `WRITE_LOCK_TIMEOUT` | state | `_write_lock_ctx` |
+| `DB_LOCKED` | state | router open: the database is held by another process (okf-mcp, a parallel `okf`) |
 | `SEARCH_UNAVAILABLE` | state | index missing / dirty when the search engine refuses |
 | `DOCTOR_FINDINGS` / `LINT_ERRORS` / `DIFF_DIFFERENT` | outcome | exit 1 with the full report in `data`, not `error` (Python: `err.data`) |
 | `INTERNAL` | state | anything unconverted (each one found is a bug to convert) |

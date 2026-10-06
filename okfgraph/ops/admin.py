@@ -129,15 +129,19 @@ class AdminOps:
     # ------------------------------------------------------------------
 
     def doctor(self, *, stale_days: int = 365, fix: bool = False,
-               strict: bool = False) -> dict:
+               strict: bool = False, cache_dir: str | None = None) -> dict:
         """Scored health scan; ``fix`` applies safe repairs first.
+
+        ``cache_dir`` pins the hub-cache root the informational cache
+        sections inspect (default: the effective HF hub cache).
 
         Returns ``{"report", "fixed"}`` (``fixed`` is None without
         ``fix``). With ``strict``, findings raise ``DOCTOR_FINDINGS``
         (exit 1) with that same result on ``err.data``.
         """
         fixed = self.doctor_mgr.fix() if fix else None
-        report = self.doctor_mgr.diagnose(stale_days=stale_days)
+        report = self.doctor_mgr.diagnose(stale_days=stale_days,
+                                          cache_dir=cache_dir)
         result = {"report": report, "fixed": fixed}
         if strict and report["findings"]:
             raise OKFError(

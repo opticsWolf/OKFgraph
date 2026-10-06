@@ -1015,6 +1015,85 @@ class EmbeddingEngine:
             )
         return str(Path(base) / "hub")
 
+    @classmethod
+    def cache_hygiene(
+        cls, cache_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Flag hub-cache repos that look unused by cache-mode (read-only).
+
+        A ``models--*`` repo whose ``snapshots/`` tree holds files but whose
+        ``blobs/`` is missing or empty comes from a pre-cache-mode seeder
+        (old ``huggingface_hub`` or a manual copy): modern cache-mode
+        lookups can never reuse it, so it is dead weight. Deleting such a
+        repo is safe — anything still needed re-downloads once, in the
+        current blobs+snapshots layout.
+
+        Pure filesystem walk (listings + stat only): never writes, never
+        deletes, never touches the network. Returns ``{"cache_dir",
+        "scanned", "legacy", "reclaimable_bytes"}`` where ``legacy``
+        holds ``{"repo": "owner/name", "bytes": int}`` rows.
+        """
+        import os
+        root = cache_dir or cls.default_cache_dir()
+        legacy: List[Dict[str, Any]] = []
+        scanned = 0
+        try:
+            entries = sorted(os.listdir(root))
+        except OSError:
+            entries = []
+        for entry in entries:
+            if not entry.startswith("models--"):
+                continue
+            scanned += 1
+            repo_dir = os.path.join(root, entry)
+            try:
+                has_snapshots = any(
+                    os.path.isfile(os.path.join(d, f))
+                    for d, _, files in os.walk(
+                        os.path.join(repo_dir, "snapshots")
+                    )
+                    for f in files
+                )
+            except OSError:
+                continue  # unreadable repo: not ours to judge
+            if not has_snapshots:
+                continue
+            try:
+                has_blobs = any(
+                    os.path.isfile(os.path.join(d, f))
+                    for d, _, files in os.walk(
+                        os.path.join(repo_dir, "blobs")
+                    )
+                    for f in files
+                )
+            except OSError:
+                continue
+            if has_blobs:
+                continue
+            try:
+                size = sum(
+                    os.path.getsize(os.path.join(d, f))
+                    for d, _, files in os.walk(
+                        os.path.join(repo_dir, "snapshots")
+                    )
+                    for f in files
+                )
+            except OSError:
+                continue
+            rest = entry[len("models--"):]
+            owner, _, name = rest.partition("--")
+            legacy.append({
+                "repo": f"{owner}/{name}" if name else rest,
+                "bytes": size,
+            })
+        legacy.sort(key=lambda r: r["repo"])
+        return {
+            "cache_dir": root,
+            "scanned": scanned,
+            "legacy": legacy,
+            "reclaimable_bytes": sum(r["bytes"] for r in legacy),
+        }
+
 
     @classmethod
     def model_info(cls, model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",

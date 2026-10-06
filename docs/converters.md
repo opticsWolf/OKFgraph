@@ -40,6 +40,28 @@ Bobine-specific knobs (`routing_mode`, `extract_images`) live on
 options. `converter`/`on_page` are Python-only advanced params. Device
 selection for ONNX-backed converters is ORT-level (`ORT_DYLIB_PATH`).
 
+## Converter cache status (0.10)
+
+`converters.converter_status(cache_dir=None)` aggregates
+`bobine.model_status()` (bobine >= 0.6.0) into the same report shape as
+`model_info`, so one screen answers "is this machine ready for PDF
+ingest offline?". It never raises: missing bobine, bobine < 0.6.0
+(no `model_status`), and lookup failures all come back as data
+(`{"available", "reports", "note"}`). Surfaced as `okf model-info
+--converters` and as the informational `converter_cache` doctor entry
+(never a finding, never scored).
+
+## Hub-cache hygiene (0.10)
+
+`EmbeddingEngine.cache_hygiene(cache_dir=None)` walks the hub-cache root
+(listings + stat only — never writes, deletes, or downloads) and flags
+`models--*` repos whose `snapshots/` hold files but whose `blobs/` are
+missing or empty. Such repos come from pre-cache-mode seeders and can
+never be reused by modern lookups: deleting them is safe, and anything
+still needed re-downloads once in the current layout. Surfaced as the
+informational `cache_hygiene` doctor entry, which names the repos, the
+reclaimable bytes, and the remedy — report-only, never a finding.
+
 ## Tests
 
 `tests/test_ingest.py::TestCustomConverter` plugs a stub pipeline through all

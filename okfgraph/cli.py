@@ -414,6 +414,10 @@ def _model_info(args):
                                 cache_dir=settings.cache_dir,
                                 device=settings.device,
                                 precision=settings.precision)
+    if args.converters:
+        from okfgraph.components.converters import converter_status
+        info = {**info, "converters": converter_status(
+            cache_dir=settings.cache_dir)}
 
     def render(info):
         print(f"model: {info['model_id']}")
@@ -425,6 +429,20 @@ def _model_info(args):
             print(f"size: {info['disk_usage_bytes'] / (1024 ** 3):.2f} GB")
         else:
             print("status: not cached (will download on first use)")
+        conv = info.get("converters")
+        if conv is not None:
+            if conv["available"]:
+                reps = conv["reports"]
+                n = sum(1 for r in reps if r.get("cached"))
+                print(f"converters: {n}/{len(reps)} families cached")
+                for r in reps:
+                    if r.get("cached"):
+                        gb = r["disk_usage_bytes"] / (1024 ** 3)
+                        print(f"  [cached] {r['repo']} ({gb:.2f} GB)")
+                    else:
+                        print(f"  [fetch-on-use] {r['repo']}")
+            else:
+                print(conv["note"])
 
     return _out(args, "model_info", info, render)
 
@@ -746,6 +764,7 @@ def _doctor(args):
     """
     result = _router(args).doctor(
         stale_days=args.stale_days, fix=args.fix, strict=args.strict,
+        cache_dir=_settings(args).cache_dir,
     )
     return _out(args, "doctor", result, _render_doctor)
 
@@ -1088,7 +1107,10 @@ def build_parser():
         return p
 
     command("init", "Initialize database and schema")
-    command("model-info", "Show model cache status")
+    p = command("model-info", "Show model cache status")
+    p.add_argument("--converters", action="store_true",
+                   help="Include converter-model cache status "
+                   "(bobine >=0.6.0, offline)")
 
     p = command("import", "Import OKF files (delta-aware)")
     p.add_argument("files", nargs="*", help="Files to import")

@@ -42,6 +42,17 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
   precedence CLI > env > TOML > defaults with a presence-based merge;
   generated CLI flags + env names; `[database] db_path` etc.; invalid
   values/scopes are refused (`CONFIG_INVALID`).
+- **Converter cache aggregation.** `converters.converter_status()`
+  wraps `bobine.model_status()` (bobine ≥ 0.6.0) in the `model_info`
+  report shape — never raises (missing/old bobine come back as data).
+  Surfaced as `okf model-info --converters` and the informational
+  `converter_cache` doctor entry.
+- **Hub-cache hygiene.** `EmbeddingEngine.cache_hygiene()` flags
+  legacy snapshot-only repos (files under `snapshots/`, empty/missing
+  `blobs/`) as dead weight — read-only walk, report-only doctor entry
+  (`cache_hygiene`) naming repos, reclaimable bytes, and the remedy.
+  Both cache sections accept the configured `cache_dir` (threaded
+  through `doctor` → `diagnose`) and never affect score or `--strict`.
 
 ### Changed
 - **Ingest (§3.5):** one `ingest(kind, …)` dispatcher on `IngestManager`

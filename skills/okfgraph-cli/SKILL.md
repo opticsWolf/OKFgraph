@@ -64,6 +64,7 @@ Same graph and the same ops as the MCP skill, through `okf` commands.
 | Health score + safe repairs | `doctor [--fix] [--strict]` |
 | End the mirror: the DB becomes the artifact | `detach [--bundle-path D] [--no-verify] [--force]` |
 | Soft-deleted concepts | `deleted-list`, `deleted-recover ID`, `deleted-purge` |
+| Remove a wrongly imported concept | `delete ID` — soft-delete, recoverable 24 h; **refuses file-backed concepts while their source file exists** (remedy: remove the file, then `import --all --prune-missing`) |
 
 Search refuses parameters its chosen path ignores (e.g. `--context-hops`
 without `--expand`, `--hub-weight` without `--rank hub`/`--hub-rerank`,

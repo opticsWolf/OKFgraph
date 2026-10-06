@@ -43,8 +43,11 @@ re-extracting it from files.
 - md ingest never modifies `md_path`: `lint_issues` (`fixable_count`,
   `unfixable_count`, `error_count`) is a report only. `image_count` counts
   real `![alt](src)` images resolved next to the file (or remote).
-- Ingest is not idempotent by content: there is no delete op yet, so check
-  `search` before ingesting a file twice under different ids.
+- Ingest is not content-idempotent: ingesting the same reasoning under a
+  new id mints a new concept. Wrongly imported? CLI `okf delete ID`
+  soft-deletes it (24 h recover window); file-backed concepts must have
+  their source removed + `import --all --prune-missing` first (the graph
+  never drifts from the bundle).
 
 ## CLI: `okf ingest`
 

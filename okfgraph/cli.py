@@ -32,13 +32,16 @@ logger = logging.getLogger("cli")
 _LOG_HANDLER = None
 
 
-def _setup_logging(verbose: bool = False, quiet: bool = False, log_file: str = "") -> None:
+def _setup_logging(verbose: bool = False, quiet: bool = False, log_file: str = "",
+                   console_level: int = None) -> None:
     """Configure logging for the CLI.
 
-    Precedence: quiet > verbose > default.
+    Precedence: quiet > verbose > console_level > default.
     - quiet: ERROR and above only
-    - default: INFO
     - verbose: DEBUG
+    - default: INFO (console_level=None); ``--json`` passes WARNING so
+      harnesses that merge stderr into stdout still parse the envelope
+      (D3): results go to stdout, warnings/errors to stderr.
     """
     global _LOG_HANDLER
 
@@ -46,6 +49,8 @@ def _setup_logging(verbose: bool = False, quiet: bool = False, log_file: str = "
         level = logging.ERROR
     elif verbose:
         level = logging.DEBUG
+    elif console_level is not None:
+        level = console_level
     else:
         level = logging.INFO
 
@@ -406,10 +411,13 @@ def _model_info(args):
     """Show model cache status without loading the model."""
     settings = _settings(args)
     info = OKFRouter.model_info(model_id=settings.model_id,
-                                cache_dir=settings.cache_dir)
+                                cache_dir=settings.cache_dir,
+                                device=settings.device,
+                                precision=settings.precision)
 
     def render(info):
         print(f"model: {info['model_id']}")
+        print(f"repo: {info['repo']} ({info['precision']})")
         print(f"cache: {info['cache_dir']}")
         if info["cached"]:
             print("status: cached")
@@ -863,6 +871,18 @@ def _deleted_recover(args):
                 lambda r: print(f"[OK] Recovered concept '{r['concept_id']}'."))
 
 
+def _deleted_delete(args):
+    """Soft-delete a concept (op delete; file-backed + existing source
+    is a BAD_VALUE refusal naming the file and the pruning remedy)."""
+    def render(r):
+        print(f"[OK] Deleted concept '{r['concept_id']}' "
+              f"(soft-deleted; recoverable until {r['recoverable_until']}).")
+        print("     'okf deleted-recover' undoes it; file-backed concepts "
+              "are refused while their source exists.")
+
+    return _out(args, "delete", _router(args).delete(args.concept_id), render)
+
+
 def _deleted_purge(args):
     """Permanently delete expired soft-deleted concepts."""
     return _out(args, "purge_deleted",
@@ -881,6 +901,8 @@ Commands:
   read <id> [chunks|document|context] — read a concept (default: body)
   traverse [id] [REL] [DIR] [depth] — traverse; 2 ids = shortest path
   images <concept_id>        — list images attached to a concept
+  delete <id>                — soft-delete a concept (file-backed + existing
+                               source is refused; recoverable for 24h)
   export-bundle <output_dir> — export all concepts
   export <id> <output_dir>   — export single concept
   ingest <file> [--no-auto-import] — ingest .md, or convert + import a PDF/Office file
@@ -974,8 +996,11 @@ def _shell_argv(cmd: str, rest: str):
         path = words[0]
         kind = "md" if path.lower().endswith((".md", ".markdown")) else "pdf"
         return ["ingest", "--kind", kind, f"--{kind}-path", path] + flags
-    if cmd in ("model-info", "broken-links", "repair-links"):
+    if cmd in ("model-info", "broken-links", "repair-links",
+               "deleted-list", "deleted-recover", "deleted-purge"):
         return [cmd] + flags
+    if cmd == "delete" and flags:
+        return ["delete", *flags]
     return None
 
 
@@ -1213,6 +1238,9 @@ def build_parser():
     command("deleted-list", "List soft-deleted concepts")
     p = command("deleted-recover", "Recover a soft-deleted concept")
     p.add_argument("concept_id", help="Concept ID to recover")
+    p = command("delete", "Soft-delete a concept (recoverable for 24h; refuses "
+                           "file-backed concepts whose source still exists)")
+    p.add_argument("concept_id", help="Concept ID to delete")
     p = command("deleted-purge", "Permanently delete expired soft-deleted concepts")
     p.add_argument("--older-than", type=int, default=None, help="Override recovery window (seconds)")
 
@@ -1257,6 +1285,7 @@ _COMMANDS = {
     "reindex": _reindex,
     "deleted-list": _deleted_list,
     "deleted-recover": _deleted_recover,
+    "delete": _deleted_delete,
     "deleted-purge": _deleted_purge,
     "detach": _detach,
 }
@@ -1295,7 +1324,25 @@ def _main_catchall(args):
         return _emit_cli_error(args, err)
 
 
+def _force_utf8_streams():
+    """Windows consoles default to cp1252 — graph content (emojis,
+    `\u2190`, `\u2264`, German umlauts in names) crashes every print()
+    with UnicodeEncodeError typed as INTERNAL. Ship UTF-8 like every
+    modern CLI does; `errors="replace"` keeps unencodable bytes visible
+    instead of aborting the render. Guarded: pytest's capsys replaces
+    the streams with StringIO, which has no reconfigure."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass  # already detached / redirected; render as-is
+
+
 def main():
+    _force_utf8_streams()
     parser = build_parser()
     args = parser.parse_args()
 
@@ -1307,6 +1354,11 @@ def main():
         verbose=getattr(args, "verbose", False),
         quiet=getattr(args, "quiet", False),
         log_file=getattr(args, "log_file", ""),
+        console_level=(logging.WARNING
+                       if getattr(args, "json", False)
+                       and not getattr(args, "verbose", False)
+                       and not getattr(args, "quiet", False)
+                       else None),
     )
 
     profiler = cProfile.Profile() if getattr(args, "profile", False) else None

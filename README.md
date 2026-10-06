@@ -40,7 +40,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 | **Export** | OKF round-trip with See Also / Cited By enrichment + index files, or `--flavor obsidian` (`[[Title]]` wikilinks, no index files, edge-lossless re-import) |
 | **Images** | Caption-based (`mode=text`) or image-content (`mode=optional`/`omni` via the ONNX vision model, needs a text-nano graph; 0.8.0+) content-hash dedup, `okf-asset://` protocol |
 | **MCP** | 8 tools (`search`, `read`, `traverse`, `ingest`, `export_bundle`, `export_concept`, `list_images`, `get_image`), MCP ≥ 2.0 (`MCPServer` + `ToolAnnotations`), stdio transport; success result = envelope, failures = `isError: true` + error envelope (D7) |
-| **CLI** | Same 8 core verbs (`search`, `read`, `traverse`, `ingest`, `import`, `export`, `diff`, `doctor`) plus maintenance (`shell`, `lint`, `produce`, `reindex`, `broken-links`, `deleted-*`, `images`, `image`, …), global `--json` (D5), slim per-command help, `okfgraph.toml` config |
+| **CLI** | Same 8 core verbs (`search`, `read`, `traverse`, `ingest`, `import`, `export`, `diff`, `doctor`) plus maintenance (`shell`, `lint`, `produce`, `reindex`, `broken-links`, `deleted-*`, `delete`, `images`, `image`, …), global `--json` (D5), slim per-command help, `okfgraph.toml` config |
 | **Skills** | 3 harness-neutral skills (`okfgraph-mcp`, `okfgraph-cli`, `okfgraph-ingest`), `.mcp.json` wiring included |
 
 ---
@@ -103,7 +103,7 @@ from okfgraph import OKFRouter
 
 router = OKFRouter(db_path="kb.db", bundle_root="kb/", embedding_dim=512)
 
-# One vocabulary: every operation lives on the router (23 ops), raises
+# One vocabulary: every operation lives on the router (24 ops), raises
 # OKFError(code) with a stable exit plan, and returns dict/list data.
 
 # Import: whole bundle (delta-aware), one file, or raw reasoning
@@ -142,7 +142,7 @@ router.close()
 
 | Kind | Entry point | Notes |
 |---|---|---|
-| `md` | `router.ingest("md", md_path=…, concept_id?, title?, description?, tags?, mode?) -> {"concept_id","chunk_count","image_count",…}` | mordant-linted; frontmatter wins over overrides |
+| `md` | `router.ingest("md", md_path=…, concept_id?, title?, description?, tags?, mode?) -> {"concept_id","chunk_count","image_count","lint_issues",…}` | mordant-linted, report-only (`lint_issues.fixable_count` — the source file is never rewritten); `image_count` counts real image refs resolved next to the file; frontmatter wins over overrides |
 | `pdf` | `router.ingest("pdf", pdf_path=…, routing_mode?, extract_images?, auto_import?, output_dir?) -> {"concept_ids","page_count","md_path","image_dir"}` | bobine converter; auto-imports by default (`auto_import=False` / `--no-auto-import` converts only, into `output_dir` or next to the source) |
 | `thoughts` | `router.ingest("thoughts", thoughts=…, topic=…, concept_id?, tags?) -> {"concept_id","topic","chunk_count",…}` | cheapest, highest value: persist session reasoning with a stable topic scheme (`auth-refactor`, `api-design`) |
 
@@ -170,7 +170,12 @@ go to stdout and logs to stderr (`-q` silences logs, never results).
 Failures print `[ERROR] CODE: message (remedy)` on stderr (plus the error
 envelope on stdout under `--json`) and exit 0 ok / 1 state·outcome / 2
 usage. Outcomes (`lint` errors, `diff` differences, `doctor --strict`
-findings) still render their report before exiting 1.
+findings) still render their report before exiting 1. Typed state codes
+include `DB_LOCKED` (the db is open in another process — `okf` commands
+run one at a time per database; when `okf-mcp` is serving, query through
+it), `NO_ORT_RUNTIME` (no/broken ONNX Runtime), and the pin set.
+Concurrency: one process per db file; the 0-byte `<db>.lock` beside it is
+ladybug's own lock marker and is harmless when no process holds it.
 
 | Command | Description |
 |---|---|
@@ -186,7 +191,7 @@ findings) still render their report before exiting 1.
 | `okf import [FILE...] [--all] [--prune-missing] [--mode text] [--force]` | Single files / bulk import, delta-aware (`--force` re-attaches a detached graph); TOML `[[roots]]` (or per-call `--root ALIAS=PATH`) add named roots (`@alias/` IDs, unmounted ≠ deleted, `--prune-missing` skips while any root is absent); `--bundle-path DIR` pins one tree for this call |
 | `okf produce --from sqlite --source DB --output-dir DIR` | Generate a bundle from a data source (one concept per table, FK links, `## Observations` notes, `log.md` changelog); lint pre-flighted, CLI-only |
 | `okf detach [--bundle-path DIR] [--no-verify] [--force]` | End the mirror: the DB becomes the artifact (verify-first; imports refuse without `--force`) |
-| `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf deleted-*` | Setup, cache inspection, REPL, index rebuild, link + soft-delete maintenance |
+| `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf deleted-*`, `okf delete ID` | Setup, cache inspection, REPL, index rebuild, link + soft-delete maintenance (`delete` refuses file-backed concepts while their source exists) |
 
 Only commands that embed text (`search` except `--rank ppr`, `import`,
 `ingest`) load the model (~30s cold per process); `read`, `traverse`,
@@ -306,7 +311,7 @@ Key design decisions:
 
 ## API reference (`OKFRouter` ops)
 
-One vocabulary of 23 operations on the facade (mixins `QueryOps`,
+One vocabulary of 24 operations on the facade (mixins `QueryOps`,
 `IngestOps`, `ExportOps`, `AdminOps`); every failure raises
 `OKFError(code, message, fields?, remedy?)` — `UsageError` (exit 2) for
 caller mistakes, `StateError`/`OutcomeError` (exit 1) for graph state and
@@ -326,7 +331,7 @@ on `err.data`. A passed param the chosen path ignores is refused with
 | `list_images(concept_id)` / `get_image(asset_id)` | Image ops (metadata; bytes + base64) |
 | `init() {"db_path","embedding_dim","model_id"}` / `model_info(…)` (static) / `reindex(if_dirty?)` | Schema, cache inspection, index rebuild |
 | `doctor(stale_days?, fix?, strict?) {"report","fixed"}` / `lint(dir)` (static) / `produce(source_type, source_path?, output_dir?, prefix?, overwrite?)` (static) / `diff(old?, new?)` / `diff_dirs(old, new)` (static) | Health, pre-import gate, bundles from sources, structural diff; `strict` findings, lint errors and differences raise outcome errors with the result on `err.data` |
-| `list_deleted()` / `recover_deleted(id)` / `purge_deleted(older_than?)` / `detach(bundle_path?, verify?, force?)` | Soft-delete + mirror lifecycle |
+| `list_deleted()` / `recover_deleted(id)` / `purge_deleted(older_than?)` / `delete(concept_id)` / `detach(bundle_path?, verify?, force?)` | Soft-delete trio + `delete` (refuses file-backed concepts whose source exists — remedy: prune-missing) + mirror lifecycle |
 | `list_broken_links() [{source, target}]` / `repair_links() {"repaired"}` | Unresolved refs; exact-id + unique-name repair |
 
 Components remain reachable for advanced use (`search_engine.search_hybrid`,
@@ -363,7 +368,7 @@ okfgraph/
 │   ├── settings.py        # okfgraph.toml + env + CLI merge (per-key precedence, config spellings raise)
 │   ├── errors.py          # OKFError(code, fields, remedy) + UsageError / StateError / OutcomeError
 │   ├── router.py          # OKFRouter facade = OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps)
-│   ├── ops/               # the 23-op vocabulary: query.py, ingest.py, export.py, admin.py
+│   ├── ops/               # the 24-op vocabulary: query.py, ingest.py, export.py, admin.py
 │   ├── cli.py             # okf: 8 core verbs + maintenance + images/image, --json (D5/D6)
 │   ├── mcp_server.py      # okf-mcp: 8 tools, MCP ≥ 2.0, lifespan-managed router, envelope/_ToolFailure
 │   ├── images.py          # IngestMode (text + vision-onnx since 0.8.0), planning helpers

@@ -272,6 +272,7 @@ One envelope on the wire for CLI `--json` and MCP:
 | `MODEL_PIN_MISMATCH` / `PRECISION_PIN_MISMATCH` / `DIM_MISMATCH` | state | embedding pins |
 | `IMAGE_PIN_MISMATCH` / `VISION_INCOMPATIBLE` | state | vision pins / text-small graph |
 | `NO_ORT_RUNTIME` | state | the router's pre-open check (missing vs installed-but-unimportable runtime get different hints) |
+| `EMBROIDER_TOO_OLD` | state | `model_info` on an embroider < 0.3.2 (no `cache_info`) — editable/dev installs |
 | `WRITE_LOCK_TIMEOUT` | state | `_write_lock_ctx` |
 | `DB_LOCKED` | state | router open: the database is held by another process (okf-mcp, a parallel `okf`) |
 | `SEARCH_UNAVAILABLE` | state | index missing / dirty when the search engine refuses |

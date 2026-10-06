@@ -995,40 +995,58 @@ class EmbeddingEngine:
 
     @classmethod
     def model_info(cls, model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
-                   cache_dir: Optional[str] = None) -> Dict[str, Any]:
+                   cache_dir: Optional[str] = None,
+                   *, device: str = "auto",
+                   precision: Optional[str] = None) -> Dict[str, Any]:
         """Inspect model cache status without loading the model.
 
-        Returns a dict with cache location, snapshot path, and disk usage.
+        Wraps ``embroider.cache_info`` — the offline cache walker that
+        resolves files exactly as the engine's ``open()`` does, so the
+        FP16 mirror repo (the CUDA default) is inspected, not the fp32
+        hub repo the old ``huggingface_hub`` path answered for. Returns
+        ``model_id, repo, precision, cache_dir, files, cached,
+        snapshot_path, disk_usage_bytes``; ``files`` maps relative file
+        names to absolute paths (None until downloaded).
+
+        ``precision=None``/``"auto"`` follows the device (CUDA usable →
+        fp16 mirror, else fp32); an explicit ``"fp16"``/``"fp32"`` pins
+        it. An embroider without ``cache_info`` (before 0.3.2) raises
+        typed ``EMBROIDER_TOO_OLD`` instead of an AttributeError, and a
+        bare legacy id ("auto", no owner) raises ``BAD_VALUE``.
         """
-        from huggingface_hub import snapshot_download
-
-        effective_cache = cache_dir or cls.default_cache_dir()
-        info: Dict[str, Any] = {
-            "model_id": model_id,
-            "cache_dir": effective_cache,
-            "cached": False,
-            "snapshot_path": None,
-            "disk_usage_bytes": 0,
-        }
-
-        try:
-            snapshot_path = snapshot_download(
-                model_id,
-                cache_dir=effective_cache,
-                local_files_only=True,
+        from okfgraph.errors import OKFError
+        import embroider
+        info_fn = getattr(embroider, "cache_info", None)
+        if info_fn is None:
+            import importlib.metadata as _md
+            try:
+                ver = _md.version("embroider")
+            except Exception:
+                ver = "unknown"
+            raise OKFError(
+                "EMBROIDER_TOO_OLD",
+                f"embroider {ver} has no cache_info (needs >= 0.3.2)",
+                op="model_info",
+                remedy="upgrade: pip install 'embroider==0.3.2' (or reinstall with 'okfgraph[cpu]')",
             )
-            info["cached"] = True
-            info["snapshot_path"] = snapshot_path
-            # Calculate disk usage
-            snap = Path(snapshot_path)
-            if snap.exists():
-                info["disk_usage_bytes"] = sum(
-                    f.stat().st_size for f in snap.rglob("*") if f.is_file()
-                )
-        except Exception:
-            pass  # Not cached locally — will download on first use
-
-        return info
+        effective_id = model_id or "jinaai/jina-embeddings-v5-text-small-retrieval"
+        eff = precision
+        if eff in (None, "auto"):
+            eff = "fp32"
+            if device in (None, "auto"):
+                ort = ort_info()
+                eff = "fp16" if ort.get("cuda_usable") else "fp32"
+            elif device == "cuda":
+                eff = "fp16"
+            elif eff == "auto":
+                eff = "fp32"
+        try:
+            return dict(info_fn(effective_id,
+                                cache_dir=cache_dir or cls.default_cache_dir(),
+                                precision=eff))
+        except ValueError as exc:
+            from okfgraph.errors import UsageError
+            raise UsageError("BAD_VALUE", str(exc), op="model_info") from None
 
     # ------------------------------------------------------------------
     # Chunking

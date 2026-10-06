@@ -73,10 +73,17 @@ class AdminOps:
         return pins
 
     @staticmethod
-    def model_info(model_id=None, cache_dir=None) -> dict:
-        """Model cache status without loading the model (static)."""
+    def model_info(model_id=None, cache_dir=None, *, device="auto",
+                   precision=None) -> dict:
+        """Model cache status without loading the model (static).
+
+        Wraps ``embroider.cache_info`` (B1-a): the returned ``repo`` is
+        the precision-specific mirror the engine would really open, and
+        ``precision="auto"`` follows the device.
+        """
         from okfgraph.components.embedding import EmbeddingEngine
-        return EmbeddingEngine.model_info(model_id=model_id, cache_dir=cache_dir)
+        return EmbeddingEngine.model_info(model_id=model_id, cache_dir=cache_dir,
+                                          device=device, precision=precision)
 
     # ------------------------------------------------------------------
     # import
@@ -242,6 +249,92 @@ class AdminOps:
         """Rebuild search indexes; ``{"rebuilt": bool}``."""
         rebuilt = self.schema_mgr.reindex(force=not if_dirty)
         return {"rebuilt": bool(rebuilt)}
+
+    # ------------------------------------------------------------------
+    # delete / soft-delete trio (D2-a)
+    # ------------------------------------------------------------------
+
+    def delete(self, concept_id: str) -> dict:
+        """Soft-delete one concept (recoverable for 24h, then purge —
+        ``deleted-recover`` / ``deleted-purge`` manage the lifecycle).
+
+        Refuses with ``BAD_VALUE`` while a source file that backs the
+        concept still exists — the next ``import --all`` would resurrect
+        it, so graph and bundle must agree first: delete or move the
+        file, then run ``import --all --prune-missing``. Rootless
+        concepts (thoughts, file-less graph contents) delete freely.
+        NOT on MCP (destructive; agents get ``ingest`` only).
+        """
+        from okfgraph.errors import UsageError, StateError
+        concept = self.search_engine.get_by_id(concept_id)
+        if concept is None:
+            raise UsageError(
+                "BAD_VALUE",
+                f"unknown concept '{concept_id}'",
+                op="delete",
+                fields={"concept_id": concept_id},
+                remedy="list ids with a search first",
+            )
+        # FileHash maps bundle-relative keys (with @alias/ prefixes on
+        # named roots) to concept ids; any still-existing source means
+        # delete is the wrong tool here.
+        rows = self.conn.execute(
+            "MATCH (f:FileHash {concept_id: $cid}) RETURN f.path AS p",
+            {"cid": concept_id},
+        ).rows_as_dict().get_all()
+        alive = []
+        for row in rows:
+            rel = str(row.get("p") or "")
+            if not rel:
+                continue
+            for existing in self._resolve_file_paths(rel):
+                if existing.exists():
+                    alive.append(str(existing))
+        if alive:
+            raise UsageError(
+                "BAD_VALUE",
+                f"'{concept_id}' is backed by existing source file(s): "
+                f"{', '.join(alive)}",
+                op="delete",
+                fields={"concept_id": concept_id, "sources": alive},
+                remedy="delete or move the file(s) from the bundle, then "
+                       "run 'okf import --all --prune-missing' to drop "
+                       "the concept",
+            )
+        if not self.purge_mgr._soft_delete_concept(concept_id):
+            raise StateError(
+                "NOT_RECOVERABLE",
+                f"concept '{concept_id}' vanished mid-operation",
+                op="delete",
+            )
+        from datetime import datetime, timedelta
+        until = datetime.now() + timedelta(
+            seconds=self.purge_mgr.SOFT_DELETE_WINDOW)
+        return {
+            "concept_id": concept_id,
+            "deleted": True,
+            "recoverable_until": until.isoformat(),
+        }
+
+    def _resolve_file_paths(self, rel: str) -> list:
+        """Map a FileHash key (bundle-relative, optionally ``@alias/``
+        prefixed) to its absolute candidate paths across roots."""
+        out = []
+        key = rel.replace("\\", "/")
+        if key.startswith("@") and "/" in key:
+            alias, native = key[1:].split("/", 1)
+            root = self.import_mgr.roots.get(alias)
+            if root is not None:
+                out.append(Path(root) / native)
+            # Unknown alias: also try the primary root with the key as-is
+            primary = self.import_mgr.bundle_root
+            if primary is not None:
+                out.append(Path(primary) / key)
+        else:
+            primary = self.import_mgr.bundle_root
+            if primary is not None:
+                out.append(Path(primary) / key)
+        return out
 
     def list_deleted(self) -> list:
         """Soft-deleted concepts with recovery status."""

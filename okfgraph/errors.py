@@ -62,6 +62,7 @@ STATE_CODES = frozenset({
     "IMAGE_PIN_MISMATCH",
     "VISION_INCOMPATIBLE",
     "NO_ORT_RUNTIME",
+    "EMBROIDER_TOO_OLD",
     "INTERNAL",
 })
 

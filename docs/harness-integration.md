@@ -19,7 +19,9 @@ uv run --project . okf-mcp --db-path ./kb.db --bundle-root .
   engine is the external `embroider` package (PyPI wheels, also used by
   bobine — no Rust toolchain needed to run okfgraph).
 - The `pdf` extra (`bobine`) is needed only for `ingest` with `kind='pdf'`
-  and the default converter; the `omni` extra only for image embeddings.
+  and the default converter. Image embeddings (`mode=optional`/`omni`) run
+  through embroider (`JinaV5Vision`) on the shared ONNX Runtime — install
+  `okfgraph[cpu]` or `[gpu]` for that; there is no separate vision extra.
 - Optional: `ORT_DYLIB_PATH` to pin the ONNX Runtime binary shared by
   bobine + embroider (defaults to the pip-installed `onnxruntime==1.29.0`).
 
@@ -76,13 +78,16 @@ with absolute paths. No auth, no headers, no sidecars.
 `traverse`, `ingest`, `export`) plus image ops (`images`, `image`) and
 maintenance commands (`init`, `model-info`, `import`, `diff`, `doctor`, `lint`,
 `produce`, `shell`, `reindex`, `broken-links`, `repair-links`, `deleted-*`,
-`detach`). Useful when MCP is unavailable or for shell scripting. Every
+`delete`, `detach`). Useful when MCP is unavailable or for shell scripting. Every
 command takes `--json`: the human renderer by default, the result envelope
 (`{ok, op, data, warnings, error}`) on stdout under `--json`; results go to
-stdout and logs to stderr (`-q` silences logs only). Failure paths print
+stdout and logs to stderr (with `--json`, logs default to WARNING so
+merged streams still parse; `-q` silences them entirely). Failure paths print
 `[ERROR] CODE: message (remedy)` on stderr and exit 2 (usage) / 1 (state,
-diff/doctor/lint outcomes — those still print their report first). Only
-commands that embed text (`search` except `--rank ppr`, `import`,
+diff/doctor/lint outcomes — those still print their report first).
+Concurrency: one process per database — when `okf-mcp` is running, query
+through it; a second direct `okf` on the same file refuses with
+`DB_LOCKED`. Only commands that embed text (`search` except `--rank ppr`,
 `ingest`) load the model, so `read`/`traverse`/`doctor` stay fast.
 
 ## Cold search (no model load)

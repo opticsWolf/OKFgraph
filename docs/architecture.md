@@ -1,6 +1,6 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.6 (as-built for okfgraph 0.10.0 — surface unification per `docs/surface-unification-plan.md`: one 23-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)  
+**Version**: 6.6 (as-built for okfgraph 0.10.0 — surface unification per `docs/surface-unification-plan.md`: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)  
 **Based on**: Architecture v6.5 (0.8.x–0.9.0 tree)  
 **Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.3.x`, `bobine 0.5.12`, `onnxruntime==1.29.0`
 
@@ -10,7 +10,7 @@
 > they describe an optimum/transformers embedding stack and an in-tree
 > RapidAI ingest engine that no longer exist. This document describes the
 > shipped system: external `embroider` embedding crate, bobine converter
-> seam, MCP ≥ 2.0 with 8 tools over one 23-op vocabulary, consolidated
+> seam, MCP ≥ 2.0 with 8 tools over one 24-op vocabulary, consolidated
 > CLI, model-free PPR retrieval. Sections kept verbatim from v5.9 are those whose claims
 > still hold against the 0.2.12 tree; every changed claim below was
 > re-verified against code.
@@ -31,7 +31,7 @@ rename list in `CHANGELOG.md`):
 
 | Area | v6.5 (0.9.0) | v6.6 (0.10.0) | Reason |
 |---|---|---|---|
-| **Operations** | Per-surface spellings, `*args/**kwargs` proxies | **23 ops on the `OKFRouter` facade** (`okfgraph/ops/`), CLI/MCP are thin adapters | One vocabulary |
+| **Operations** | Per-surface spellings, `*args/**kwargs` proxies | **24 ops on the `OKFRouter` facade** (`okfgraph/ops/`), CLI/MCP are thin adapters | One vocabulary |
 | **Results** | Mixed strings / models / dicts | **Envelope `{ok, op, data, warnings, error}`** on CLI `--json` and MCP; ops return JSON-able data | D2/D5/D7 |
 | **Errors** | `ValueError`/`RuntimeError`, silent skips | **Typed `OKFError` codes** (usage → exit 2, state/outcome → exit 1); outcome reports on `err.data`; MCP `isError` | §4 |
 | **Refusals** | Ignored params silently dropped | **`BAD_VALUE` naming the ignored params** (search, traverse, ingest) | X3 |
@@ -1088,6 +1088,13 @@ map 1:1 onto `search`, `read`, `traverse`, `ingest`, `export_bundle`,
 `export_concept`, `list_images`, `get_image`; everything else is
 library/maintenance surface. Every command accepts `--json` for the D5
 envelope and exits by the §4 exit plan (0 ok / 1 state+outcome / 2 usage).
+Typed state codes worth knowing on ops: `DB_LOCKED` (the db is held by
+another process — one process per db file; when `okf-mcp` serves, query
+through it), `NO_ORT_RUNTIME` (no or broken ONNX Runtime; an
+installed-but-unimportable runtime gets a reinstall hint, not the
+install-an-extra hint), `EMBROIDER_TOO_OLD` (`model-info` on an
+embroider < 0.3.2 without `cache_info`), plus the pin set
+(`MODEL_PIN_MISMATCH` et al.) and `WRITE_LOCK_TIMEOUT`.
 Handlers are parse → op → render: the op owns validation and refusals,
 `_out` prints the envelope (`--json`) or the command's human renderer, and
 one catch-all (`_main_catchall`) turns any `OKFError` into `[ERROR] CODE:

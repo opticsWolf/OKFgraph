@@ -111,12 +111,23 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
   `okf export --output` (argparse prefix matching) refuse too.
 
 ### Fixed (field report)
+- **`okf model-info` crashed with `ModuleNotFoundError: huggingface_hub`.
+  Now `embroider.cache_info` (embroider ≥ 0.3.2, new pin floor) answers
+  the cache offline: it inspects the repo the engine would really open
+  (the FP16 mirror on CUDA), returning `repo`, `files`, `precision`,
+  `cached`, `snapshot_path`, `disk_usage_bytes`. An embroider below
+  0.3.2 raises typed `EMBROIDER_TOO_OLD` with an upgrade remedy.
 - **Chunk search segfault (exit 139).** ladybug 0.21.2 crashes
   deterministically in multi-threaded scoring of an unbounded
   `QUERY_FTS_INDEX` whose terms match many rows (a 28k-chunk graph, a
   common word like "index"). Both FTS stages (chunks, concepts) now pass
   `top := limit * 3`, the depth RRF consumes anyway; any explicit `top`
   avoids the crash.
+- **Windows render crash (cp1252).** `print()` on a Windows console
+  dies with `UnicodeEncodeError` when graph content carries `←`, `≤`,
+  arrows or emoji — typed `INTERNAL`, exit 1 (stress harness caught it:
+  2 of 90 search cases). The CLI now reconfigures stdout/stderr to
+  UTF-8 (`errors="replace"`) at boot, like every modern CLI.
 - **md ingest never rewrites the source file.** Lint runs report-only
   (`lint_issues` gains `fixable_count`; `fixed_count` stays 0), matching
   bulk import; the old in-place auto-fix could touch any file passed as
@@ -129,6 +140,18 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
   now typed `NO_ORT_RUNTIME` naming the installed distribution and the
   import error (also in `doctor`'s `ort_runtime` info; `ort_info()`
   gains `import_error`).
+### Added (field-report decisions)
+- **`delete(concept_id)` op (D2-a; surface 23 → 24 ops).** Soft-deletes a
+  concept — recoverable 24 h (`deleted-recover`/`deleted-purge` manage the
+  window). Refuses with `BAD_VALUE` (remedy included) while a source file
+  backing the concept still exists: delete or move the file, then
+  `import --all --prune-missing`; rootless content (thoughts) deletes
+  freely. CLI `okf delete ID`. **Not on MCP** (destructive; agents get
+  `ingest` only).
+- **`--json` quiets the log stream (D3).** With `--json` the console log
+  level defaults to WARNING (verbose/quiet still win), so harnesses that
+  merge stderr into stdout keep parsing the stdout envelope.
+
 - **Database held by another process** (an `okf-mcp` server, a parallel
   `okf`) raised a raw ladybug `RuntimeError` (`INTERNAL`); now the new
   state code `DB_LOCKED` with a remedy.

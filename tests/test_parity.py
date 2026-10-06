@@ -14,6 +14,9 @@ import pytest
 
 onnxruntime = pytest.importorskip("onnxruntime")
 transformers = pytest.importorskip("transformers")
+# snapshot_download in the baseline fixture; undeclared on purpose (this
+# module is opt-in only), so opt out cleanly when it is absent.
+pytest.importorskip("huggingface_hub")
 np = pytest.importorskip("numpy")
 embroider = pytest.importorskip("embroider")
 

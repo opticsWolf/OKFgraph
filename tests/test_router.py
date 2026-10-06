@@ -138,10 +138,9 @@ class TestCacheManagement:
         from okfgraph.router import OKFRouter
         info = OKFRouter.model_info()
         assert isinstance(info, dict)
-        assert "model_id" in info
-        assert "cache_dir" in info
-        assert "cached" in info
-        assert "disk_usage_bytes" in info
+        for key in ("model_id", "repo", "files", "cache_dir", "cached",
+                    "snapshot_path", "disk_usage_bytes"):
+            assert key in info
 
     def test_model_info_custom_cache_dir(self):
         from okfgraph.router import OKFRouter
@@ -149,12 +148,24 @@ class TestCacheManagement:
         with tempfile.TemporaryDirectory() as tmp:
             info = OKFRouter.model_info(cache_dir=tmp)
             assert info["cache_dir"] == tmp
-            assert info["cached"] is False  # empty dir
+            assert info["cached"] is False  # empty dir (offline walker)
+            assert info["files"] and all(v is None
+                                         for v in info["files"].values())
+            assert info["snapshot_path"] is None
 
     def test_model_info_model_id(self):
         from okfgraph.router import OKFRouter
-        info = OKFRouter.model_info(model_id="jinaai/jina-embeddings-v5-text-small-retrieval")
+        info = OKFRouter.model_info(
+            model_id="jinaai/jina-embeddings-v5-text-small-retrieval")
         assert info["model_id"] == "jinaai/jina-embeddings-v5-text-small-retrieval"
+
+    def test_model_info_bare_legacy_id_refused(self):
+        from okfgraph.router import OKFRouter
+        from okfgraph.errors import OKFError
+        import pytest
+        with pytest.raises(OKFError) as exc:
+            OKFRouter.model_info(model_id="auto")
+        assert exc.value.code == "BAD_VALUE"
 
 
 class TestDeviceSelection:

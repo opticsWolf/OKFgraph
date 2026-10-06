@@ -4,7 +4,7 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [0.10.0] — 2026-10-04
+## [0.10.0] — 2026-10-06
 
 Surface unification. **Breaking release**: every operation exists once
 across CLI / MCP / Python — one vocabulary, one rendering, one error

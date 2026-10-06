@@ -619,6 +619,10 @@ def ort_info() -> Dict[str, Any]:
         # Installed-but-broken (half-removed wheel, locked DLL) is a
         # different remedy from not-installed — keep the cause.
         import_error = f"{type(exc).__name__}: {exc}"
+    except Exception:
+        # A bare stand-in module (tests stub `onnxruntime` without the
+        # provider function): treat as absent rather than crash ort_info.
+        providers = []
     return {
         "dylib_path": os.environ.get("ORT_DYLIB_PATH"),
         "installed": [name for name, _ in installed],

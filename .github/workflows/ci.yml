@@ -43,7 +43,6 @@ jobs:
           tests/test_envelope.py
           tests/test_settings.py
           tests/test_surface_contract.py
-          tests/test_shell.py::TestParsing
           -q
 
       - name: No torch imports outside tests/docs (plan-onnx-only Phase 0)

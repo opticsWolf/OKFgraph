@@ -196,11 +196,20 @@ def test_resolve_missing_runtime_returns_none(monkeypatch, tmp_path):
 
 def test_ort_info_reports_distributions(monkeypatch):
     """ort_info() names the installed ORT distribution(s) without a session."""
+    import importlib.util
     info = emb.ort_info()
     assert set(info) == {"dylib_path", "installed", "version",
                          "providers", "cuda_usable", "both_installed",
                          "import_error"}
-    assert info["import_error"] is None
+    has_ort = importlib.util.find_spec("onnxruntime") is not None
+    if has_ort:
+        assert info["import_error"] is None
+    else:
+        # ORT-less env (dev-only venv, CI): the cause must be kept,
+        # not silently swallowed.
+        assert info["import_error"] is not None
+        assert "ModuleNotFoundError" in info["import_error"]
+        assert info["providers"] == []
     # This venv has exactly one ORT (cpu XOR gpu — never both).
     assert len(info["installed"]) <= 1
     assert info["both_installed"] is False

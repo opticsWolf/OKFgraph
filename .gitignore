@@ -228,3 +228,11 @@ whl/
 # CodeRadar
 .coderadar/
 *.db
+
+# crash-hunt harness (local only, never commit)
+/crashhunt/
+/crashhunt.sh
+
+# local DB lock marker beside kb.db (runtime artifact, never commit)
+kb.db.lock
+kb.db.wal

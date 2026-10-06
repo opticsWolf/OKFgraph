@@ -55,12 +55,14 @@ ingest offline?". It never raises: missing bobine, bobine < 0.6.0
 
 `EmbeddingEngine.cache_hygiene(cache_dir=None)` walks the hub-cache root
 (listings + stat only — never writes, deletes, or downloads) and flags
-`models--*` repos whose `snapshots/` hold files but whose `blobs/` are
-missing or empty. Such repos come from pre-cache-mode seeders and can
-never be reused by modern lookups: deleting them is safe, and anything
-still needed re-downloads once in the current layout. Surfaced as the
-informational `cache_hygiene` doctor entry, which names the repos, the
-reclaimable bytes, and the remedy — report-only, never a finding.
+`models--*` repos none of whose `refs/*` resolve to a populated snapshot.
+Offline cache-mode lookups resolve `refs/<rev>` first, so such repos — from
+pre-cache-mode seeders, manual copies, interrupted downloads — can never be
+reused: deleting them is safe, and anything still needed re-downloads once
+in the current layout. An empty `blobs/` alone is *not* legacy (Windows
+`huggingface_hub` without symlinks). Surfaced as the informational
+`cache_hygiene` doctor entry, which names the repos, the reclaimable bytes,
+and the remedy — report-only, never a finding.
 
 ## Tests
 

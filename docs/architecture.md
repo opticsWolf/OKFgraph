@@ -193,8 +193,8 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 > (`resolve_ort_dylib()` → `ORT_DYLIB_PATH`), lazy session lifecycle
 > (`LazyRustEncoder`), and explicit air-gapped model paths.
 
-**Verified versions** (0.7.x tree):
-- `ladybug==0.21.2`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider==0.2.x`, `mordant` (Rust GFM parser)
+**Verified versions** (0.10.0 tree):
+- `ladybug==0.21.2`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider>=0.3.2,<0.4`, `mordant` (Rust GFM parser)
 - Single pinned ORT binary shared by bobine + embroider — do not float.
 
 ### PDF conversion (optional — bobine)
@@ -885,6 +885,10 @@ def model_info(cls, model_id: str = "...", cache_dir: Optional[str] = None) -> D
     """
 ```
 
+Inspection follows the same device selection: `auto`/CUDA without a usable
+CUDA provider inspects the fp32 repo (paths normalized; the too-old-embroider
+remedy names the `>=0.3.2,<0.4` floor).
+
 ---
 
 ## 4.15. Index Lifecycle
@@ -1100,12 +1104,20 @@ Handlers are parse → op → render: the op owns validation and refusals,
 one catch-all (`_main_catchall`) turns any `OKFError` into `[ERROR] CODE:
 message (remedy)` on stderr (plus the error envelope on stdout under
 `--json`). Outcome errors (lint / diff / doctor) render their report from
-`err.data` first. Results go to stdout, logs to stderr (D6).
+`err.data` first. Results go to stdout, logs to stderr (D6). Beyond the
+catch-all, unexpected failures (`INTERNAL`) persist the full traceback plus
+context (argv, versions, platform) to the crash dir (`OKF_CRASH_DIR`, else
+per-user state + `okfgraph/crash`, newest 20 kept; `okfgraph/crash.py`,
+stdlib-only): the final `[ERROR]` names the file and `--json` carries it in
+`error.fields.crash_report`. Failures before the handler exists (broken
+install, unloadable native DLL) are covered by the `okf` launcher's start-up
+guard (`okfgraph/_entry.py`) with lazy `okfgraph/__init__` exports (PEP 562)
+so the guard loads without the router.
 
 | Command | Description |
 |---|---|
 | `okf init` | Initialize database and schema |
-| `okf model-info` | Show model cache status (location, size, cached/missing) |
+| `okf model-info [--converters]` | Show model cache status (location, size, cached/missing); `--converters` adds converter-model families (bobine ≥ 0.6.0) |
 | `okf import <files>` | Import one or more OKF files (all paths checked first: `FILE_NOT_FOUND`) |
 | `okf import --all [--prune-missing]` | Import every configured root (or a `--bundle-path` pin) and prune concepts whose source files vanished |
 | `okf search <query>` | Hybrid search over concepts (type/tags/parent/limit filters) |
@@ -1118,7 +1130,7 @@ message (remedy)` on stderr (plus the error envelope on stdout under
 | `okf export --all\|--concept-id ID --output-dir <dir>` | Export entire bundle (filters: `--concept-type`, `--tags`, `--directory-id`) or one concept; OKF or Obsidian flavor |
 | `okf images <id>` / `okf image <asset-id> [--output-path F]` | List a concept's image assets; dump one asset's bytes |
 | `okf diff` | Structural diff: concepts/edges/broken-link deltas |
-| `okf doctor` | Health scan: score, findings, safe `--fix` |
+| `okf doctor` | Health scan: score, findings, safe `--fix`; informational entries (`converter_cache`, `cache_hygiene`, `ort_gpu_unused`) never score |
 | `okf lint` | Validate bundle frontmatter + links before import |
 | `okf broken-links` / `okf repair-links` | List / repair links to not-yet-imported concepts |
 | `okf reindex` | Rebuild vector + FTS search indexes |
@@ -1436,7 +1448,11 @@ class DocumentConverter(Protocol):
 ```
 
 Provider owns its options (`routing_mode`, model cache, provider lists);
-okfgraph owns orchestration (kind dispatch, staging, lint, import).
+okfgraph owns orchestration (kind dispatch, staging, lint, import). Cache
+visibility follows the same split: `converters.converter_status()` aggregates
+`bobine.model_status()` (bobine ≥ 0.6.0) into the `model_info` report shape —
+never raises — surfaced as `model-info --converters` and the informational
+`converter_cache` doctor entry.
 
 ### Ingest kinds (explicit, no auto-detect)
 
@@ -1753,7 +1769,7 @@ with it. What remains are standing constraints, not gaps:
 | **Ladybug three-clause MERGE** | Vector upserts must avoid `MERGE … SET` on indexed columns (runtime abort — see the quarantine at §2). Reported upstream; watch `macrame-db` 0.18 |
 | **Single pinned ORT** | `onnxruntime==1.29.0` shared by bobine + embroider; a stale system DLL fails session creation with `BadVersion`. `ORT_DYLIB_PATH` overrides; entry points resolve before first use |
 | **Frozen vector space** | Jina contract (prefixes, last-token pooling, truncation order) is identical across okfgraph 0.2.x and embroider 0.1.x — enforced by golden parity tests, never by convention alone |
-| **Floor-pinned embroider** | `embroider>=0.1,<0.2`: a new embroider minor without an okfgraph release is a *supported* state, and the suite proves the floor still passes (contract fixtures in the embroider repo `fixtures/`, vendored at `tests/fixtures/golden_jina_v5_text_small.json` + `tests/test_golden_vectors.py`; matrix: embroider `COMPAT.md`) |
+| **Floor-pinned embroider** | `embroider>=0.3.2,<0.4`: a new embroider minor without an okfgraph release is a *supported* state, and the suite proves the floor still passes (contract fixtures in the embroider repo `fixtures/`, vendored at `tests/fixtures/golden_jina_v5_text_small.json` + `tests/test_golden_vectors.py`; matrix: embroider `COMPAT.md`) |
 | **Schema v6** | `DeletedConcept` carries a full-fidelity snapshot (embeddings + metadata survive soft-delete → recover); v5 DBs migrate on open (ALTER existing table or CREATE it — 0.2.x fresh DBs never had it) |
 | **Schema v8** | `FileHash.dir` / `DeletedPath.dir` store the exact parent DirHash key (multi-root namespacing makes path-string math ambiguous); v7 DBs migrate on open with legacy-math backfill (exact for all pre-0.4.0 rows) |
 

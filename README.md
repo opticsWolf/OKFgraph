@@ -202,6 +202,14 @@ run one at a time per database; when `okf-mcp` is serving, query through
 it), `NO_ORT_RUNTIME` (no/broken ONNX Runtime), and the pin set.
 Concurrency: one process per db file; the 0-byte `<db>.lock` beside it is
 ladybug's own lock marker and is harmless when no process holds it.
+Unexpected failures (`INTERNAL`) also write the full traceback — with argv,
+versions and platform — to a crash file (`%LOCALAPPDATA%\okfgraph\crash\`,
+else `$XDG_STATE_HOME`/`~/.local/state`; `OKF_CRASH_DIR` overrides, newest
+20 kept). The final `[ERROR]` line names the file, so it survives `tail`,
+and `--json` carries it in `error.fields.crash_report`. Start-up failures
+(a broken install, a native DLL, a half-edited checkout) are covered too:
+the `okf` launcher enters through `okfgraph._entry`, which guards the
+package import itself.
 
 | Command | Description |
 |---|---|

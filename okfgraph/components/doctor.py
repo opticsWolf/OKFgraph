@@ -100,8 +100,14 @@ class DoctorManager:
 
     # -- diagnose ------------------------------------------------------
 
-    def diagnose(self, stale_days: int = 365) -> Dict[str, Any]:
-        """Run the full health scan. Deterministic finding order (rule, path)."""
+    def diagnose(self, stale_days: int = 365,
+                 cache_dir: Optional[str] = None) -> Dict[str, Any]:
+        """Run the full health scan. Deterministic finding order (rule, path).
+
+        ``cache_dir`` pins the hub-cache root the cache sections inspect
+        (default: the effective HF hub cache). Both cache sections are
+        informational — never findings, never score deductions.
+        """
         concepts = self._concepts()
         degrees = self._degrees()
         now = datetime.now(timezone.utc)
@@ -249,12 +255,78 @@ class DoctorManager:
                                  f"{ort.get('dylib_path') or '(loader search)'}, "
                                  f"cuda_usable={ort.get('cuda_usable')}",
                 })
+                from okfgraph.components.embedding import (
+                    cpu_runtime_with_gpu_hint,
+                )
+                gpu_hint = cpu_runtime_with_gpu_hint(ort)
+                if gpu_hint:
+                    # Info, not a finding: CPU is a valid choice, it just
+                    # should be a conscious one. Never affects score/--strict.
+                    info.append({"rule": "ort_gpu_unused",
+                                 "message": gpu_hint})
             if ort.get("both_installed"):
                 findings.append({
                     "path": "", "severity": "error", "rule": "ort_runtime",
                     "message": "both onnxruntime and onnxruntime-gpu are "
                                "installed (same module name — uninstall one)",
                 })
+
+        # Converter-model cache (0.10.0): aggregate bobine.model_status
+        # when present; informational only — never a finding.
+        try:
+            from okfgraph.components.converters import converter_status
+            cs = converter_status(cache_dir=cache_dir)
+        except Exception:
+            cs = {"available": False, "reports": [],
+                  "note": "converters: status unavailable"}
+        if cs["available"]:
+            reports = cs["reports"]
+            have = sorted(r["repo"] for r in reports if r.get("cached"))
+            missing = sorted(r["repo"] for r in reports if not r.get("cached"))
+            if missing:
+                info.append({
+                    "rule": "converter_cache",
+                    "message": f"converters: {len(have)}/{len(reports)} families "
+                                 f"cached ({', '.join(have) or 'none'}); "
+                                 f"{', '.join(missing)} download on first use",
+                })
+            else:
+                info.append({
+                    "rule": "converter_cache",
+                    "message": f"converters: {len(reports)}/{len(reports)} "
+                                 "families cached",
+                })
+        else:
+            info.append({"rule": "converter_cache", "message": cs["note"]})
+
+        # Cache hygiene (0.10.0): legacy snapshot-only repos look unused
+        # by cache-mode; report-only, never a finding, never deletes.
+        try:
+            from okfgraph.components.embedding import EmbeddingEngine
+            hy = EmbeddingEngine.cache_hygiene(cache_dir=cache_dir)
+        except Exception:
+            hy = {"cache_dir": cache_dir or "?", "scanned": 0,
+                  "legacy": [], "reclaimable_bytes": 0}
+        if hy["legacy"]:
+            names = [r["repo"] for r in hy["legacy"]]
+            shown = ", ".join(names[:4])
+            if len(names) > 4:
+                shown += f", and {len(names) - 4} more"
+            gb = hy["reclaimable_bytes"] / (1024 ** 3)
+            info.append({
+                "rule": "cache_hygiene",
+                "message": f"cache hygiene: {len(names)} hub-cache repo(s) "
+                             f"look unused by cache-mode (~{gb:.1f} GB "
+                             f"reclaimable): {shown} — safe to delete; "
+                             "anything still needed re-downloads once in "
+                             "the current layout",
+            })
+        else:
+            info.append({
+                "rule": "cache_hygiene",
+                "message": f"cache hygiene: {hy['scanned']} hub-cache "
+                             "repo(s), none look unused by cache-mode",
+            })
 
         detached = None
         try:

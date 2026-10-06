@@ -263,7 +263,7 @@ One envelope on the wire for CLI `--json` and MCP:
 | `MISSING_PARAM` | usage | ingest per-kind requirements |
 | `FILE_NOT_FOUND` | usage | ingest/import/lint/produce paths |
 | `CONFIG_INVALID` | usage | TOML parse error (X6), validation failure, `bundle_root` containing `=` |
-| `UNKNOWN_CONCEPT` | state | read / traverse / export_concept / recover |
+| `UNKNOWN_CONCEPT` | state | read / traverse / export_concept / recover / delete |
 | `UNKNOWN_ASSET` | state | get_image / list_images (unknown asset or concept id) |
 | `NOT_RECOVERABLE` | state | recover past its window |
 | `DETACHED` | state | imports/ingest on a detached graph without `force` |

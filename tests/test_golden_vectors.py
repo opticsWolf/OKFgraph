@@ -36,7 +36,7 @@ def golden():
 @pytest.fixture(scope="module")
 def snap_paths():
     resolve_ort_dylib()
-    hub = Path(EmbeddingEngine.default_cache_dir()) / "hub"
+    hub = Path(EmbeddingEngine.default_cache_dir())  # already the hub dir
     cached = hub / ("models--" + MODEL.replace("/", "--")) / "snapshots"
     assert cached.is_dir(), f"model not cached locally: {MODEL}"
     snap = sorted(cached.iterdir())[-1]

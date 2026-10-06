@@ -4,6 +4,7 @@ Bodies are verbatim from okfgraph/router.py; the facade (OKFRouter) owns
 the shared resources (conn, embedder, tokenizer, ...) and injects them
 here. Public callers reach these via router.<method> (component bridge).
 """
+import functools
 import logging
 import math
 import re
@@ -634,6 +635,68 @@ def ort_info() -> Dict[str, Any]:
     }
 
 
+def _repo_has_live_ref(repo_dir: str) -> bool:
+    """True when a hub-cache ``refs/*`` entry names a snapshot that holds
+    files — the path an offline cache lookup actually takes."""
+    import os
+    refs = os.path.join(repo_dir, "refs")
+    if not os.path.isdir(refs):
+        return False
+    for d, _, files in os.walk(refs):
+        for f in files:
+            with open(os.path.join(d, f), encoding="utf-8") as fh:
+                sha = fh.read().strip()
+            snap = os.path.join(repo_dir, "snapshots", sha)
+            if sha and os.path.isdir(snap) and any(
+                files_ for _, _, files_ in os.walk(snap)
+            ):
+                return True
+    return False
+
+
+GPU_INSTALL_HINT = (
+    "for CUDA: pip install 'okfgraph[gpu]' (uv: uv sync --extra gpu ...; "
+    "replaces the CPU runtime — see README 'CPU or GPU?')"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def nvidia_gpu_name() -> Optional[str]:
+    """Name of the first NVIDIA GPU per ``nvidia-smi``, else None.
+
+    Advisory only (doctor hint, auto-fallback warning): never raises, no
+    output when ``nvidia-smi`` is absent, 5 s timeout, cached per process.
+    """
+    import shutil
+    import subprocess
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run(
+            [exe, "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    name = out.stdout.strip().splitlines()[0].strip() if out.stdout.strip() else ""
+    return name or None
+
+
+def cpu_runtime_with_gpu_hint(ort: Dict[str, Any]) -> Optional[str]:
+    """Warn text when an NVIDIA GPU sits next to a CPU-only runtime."""
+    if ort.get("import_error") is not None or ort.get("cuda_usable"):
+        return None
+    gpu = nvidia_gpu_name()
+    if not gpu:
+        return None
+    return (f"NVIDIA GPU detected ({gpu}) but the installed ONNX Runtime "
+            f"has no CUDA provider ({'+'.join(ort.get('installed') or []) or 'unknown'}): "
+            f"--device auto runs on CPU/fp32. {GPU_INSTALL_HINT}")
+
+
 def ort_missing_hint(ort: Dict[str, Any]) -> Optional[str]:
     """The install hint for an unusable ORT, or None when it imports.
 
@@ -644,9 +707,12 @@ def ort_missing_hint(ort: Dict[str, Any]) -> Optional[str]:
     if ort.get("import_error") is None:
         return None
     if not ort.get("installed"):
+        pick = ("this machine has an NVIDIA GPU, so pick [gpu]"
+                if nvidia_gpu_name() else
+                "[gpu] for an NVIDIA GPU, [cpu] otherwise")
         return ("no ONNX Runtime installed: pip install 'okfgraph[cpu]' "
-                "or 'okfgraph[gpu]' (exactly one), or set ORT_DYLIB_PATH "
-                "to an onnxruntime 1.29 library")
+                f"or 'okfgraph[gpu]' (exactly one; {pick}), or set "
+                "ORT_DYLIB_PATH to an onnxruntime 1.29 library")
     return (f"ONNX Runtime is installed ({', '.join(ort['installed'])}) but "
             f"fails to import ({ort['import_error']}): reinstall it, e.g. "
             "pip install --force-reinstall 'okfgraph[cpu]' or 'okfgraph[gpu]' "
@@ -992,9 +1058,106 @@ class EmbeddingEngine:
 
     @staticmethod
     def default_cache_dir() -> str:
-        """Return the HuggingFace default cache directory."""
+        """Return the effective HuggingFace hub cache directory.
+
+        Display helper only — mirrors hf-hub's resolution order exactly
+        (``HF_HUB_CACHE`` → ``HUGGINGFACE_HUB_CACHE`` → ``HF_HOME/hub`` →
+        ``XDG_CACHE_HOME/huggingface/hub`` → ``~/.cache/huggingface/hub``),
+        so the shown dir is the one the engine really uses. ``model_info``
+        passes ``cache_dir`` through untouched (``None`` lets embroider
+        resolve the same default) and never calls this for lookup.
+        """
         import os
-        return os.path.expanduser(os.getenv("HF_HOME", "~/.cache/huggingface"))
+        from pathlib import Path
+        for var in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+            hit = os.getenv(var)
+            if hit:
+                return hit  # verbatim, like hf-hub
+        base = os.getenv("HF_HOME")
+        if not base:
+            xdg = os.getenv("XDG_CACHE_HOME")
+            base = str(Path(xdg) / "huggingface") if xdg else str(
+                Path.home() / ".cache" / "huggingface"
+            )
+        return str(Path(base) / "hub")
+
+    @classmethod
+    def cache_hygiene(
+        cls, cache_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Flag hub-cache repos that look unused by cache-mode (read-only).
+
+        A ``models--*`` repo whose ``snapshots/`` tree holds files but none
+        of whose ``refs/*`` points at a populated snapshot comes from a
+        pre-cache-mode seeder (a manual copy, an interrupted download):
+        offline cache-mode lookups resolve ``refs/<rev>`` first, so they can
+        never reuse it — dead weight. Deleting such a repo is safe —
+        anything still needed re-downloads once. An empty ``blobs/`` alone
+        is not legacy (Windows ``huggingface_hub`` without symlinks).
+
+        Pure filesystem walk (listings + stat only): never writes, never
+        deletes, never touches the network. Returns ``{"cache_dir",
+        "scanned", "legacy", "reclaimable_bytes"}`` where ``legacy``
+        holds ``{"repo": "owner/name", "bytes": int}`` rows.
+        """
+        import os
+        root = cache_dir or cls.default_cache_dir()
+        legacy: List[Dict[str, Any]] = []
+        scanned = 0
+        try:
+            entries = sorted(os.listdir(root))
+        except OSError:
+            entries = []
+        for entry in entries:
+            if not entry.startswith("models--"):
+                continue
+            scanned += 1
+            repo_dir = os.path.join(root, entry)
+            try:
+                has_snapshots = any(
+                    os.path.isfile(os.path.join(d, f))
+                    for d, _, files in os.walk(
+                        os.path.join(repo_dir, "snapshots")
+                    )
+                    for f in files
+                )
+            except OSError:
+                continue  # unreadable repo: not ours to judge
+            if not has_snapshots:
+                continue
+            # Reusable iff some ref resolves to a populated snapshot: the
+            # offline lookup walks refs/<rev> → snapshots/<sha>/<file>.
+            # blobs/ is NOT the criterion — huggingface_hub on Windows
+            # without symlink rights moves files into snapshots/ and
+            # leaves blobs/ empty, and that layout is still found.
+            try:
+                if _repo_has_live_ref(repo_dir):
+                    continue
+            except OSError:
+                continue
+            try:
+                size = sum(
+                    os.path.getsize(os.path.join(d, f))
+                    for d, _, files in os.walk(
+                        os.path.join(repo_dir, "snapshots")
+                    )
+                    for f in files
+                )
+            except OSError:
+                continue
+            rest = entry[len("models--"):]
+            owner, _, name = rest.partition("--")
+            legacy.append({
+                "repo": f"{owner}/{name}" if name else rest,
+                "bytes": size,
+            })
+        legacy.sort(key=lambda r: r["repo"])
+        return {
+            "cache_dir": root,
+            "scanned": scanned,
+            "legacy": legacy,
+            "reclaimable_bytes": sum(r["bytes"] for r in legacy),
+        }
 
 
     @classmethod
@@ -1014,9 +1177,12 @@ class EmbeddingEngine:
 
         ``precision=None``/``"auto"`` follows the device (CUDA usable →
         fp16 mirror, else fp32); an explicit ``"fp16"``/``"fp32"`` pins
-        it. An embroider without ``cache_info`` (before 0.3.2) raises
-        typed ``EMBROIDER_TOO_OLD`` instead of an AttributeError, and a
-        bare legacy id ("auto", no owner) raises ``BAD_VALUE``.
+        it. ``cache_dir=None`` (the default) is passed through untouched
+        so embroider resolves the effective hub cache itself; the returned
+        ``cache_dir`` is that effective dir. An embroider without
+        ``cache_info`` (before 0.3.2) raises typed ``EMBROIDER_TOO_OLD``
+        instead of an AttributeError, and a bare legacy id ("auto", no
+        owner) raises ``BAD_VALUE``.
         """
         from okfgraph.errors import OKFError
         import embroider
@@ -1031,26 +1197,36 @@ class EmbeddingEngine:
                 "EMBROIDER_TOO_OLD",
                 f"embroider {ver} has no cache_info (needs >= 0.3.2)",
                 op="model_info",
-                remedy="upgrade: pip install 'embroider==0.3.2' (or reinstall with 'okfgraph[cpu]')",
+                remedy="upgrade: pip install 'embroider>=0.3.2,<0.4' "
+                       "(or reinstall with 'okfgraph[cpu]')",
             )
         effective_id = model_id or "jinaai/jina-embeddings-v5-text-small-retrieval"
         eff = precision
         if eff in (None, "auto"):
+            # Mirror the engine: auto precision follows the *landed* device,
+            # so CUDA requested but unusable degrades to fp32 weights.
             eff = "fp32"
-            if device in (None, "auto"):
-                ort = ort_info()
-                eff = "fp16" if ort.get("cuda_usable") else "fp32"
-            elif device == "cuda":
-                eff = "fp16"
-            elif eff == "auto":
-                eff = "fp32"
+            if device in (None, "auto", "cuda"):
+                eff = "fp16" if ort_info().get("cuda_usable") else "fp32"
         try:
-            return dict(info_fn(effective_id,
-                                cache_dir=cache_dir or cls.default_cache_dir(),
+            # cache_dir passes through untouched: None lets embroider
+            # resolve the effective hub cache (never the display helper).
+            info = dict(info_fn(effective_id,
+                                cache_dir=cache_dir,
                                 precision=eff))
         except ValueError as exc:
             from okfgraph.errors import UsageError
             raise UsageError("BAD_VALUE", str(exc), op="model_info") from None
+        # hf-hub joins HOME with "/.cache/huggingface" verbatim, so the
+        # reported dir mixes separators on Windows; normalize for display.
+        import os
+        for key in ("cache_dir", "snapshot_path"):
+            if info.get(key):
+                info[key] = os.path.normpath(info[key])
+        if isinstance(info.get("files"), dict):
+            info["files"] = {k: (os.path.normpath(v) if v else v)
+                             for k, v in info["files"].items()}
+        return info
 
     # ------------------------------------------------------------------
     # Chunking

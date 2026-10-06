@@ -167,6 +167,66 @@ class TestCacheManagement:
             OKFRouter.model_info(model_id="auto")
         assert exc.value.code == "BAD_VALUE"
 
+    def test_model_info_default_cache_dir_matches_hub_resolution(self):
+        # The display helper must agree with the dir embroider really
+        # resolves (HF_HUB_CACHE → … → ~/.cache/huggingface/hub). Both
+        # sides read the same env, so this holds on any machine — warm
+        # or cold cache, CI or workstation. Compared normpath-normalized:
+        # hf-hub 1.0 builds its default with string-concatenated '/'s
+        # (mixed separators on Windows) — same directory, different
+        # spelling; normpath sees through that.
+        import embroider
+        import os
+        from okfgraph.components.embedding import EmbeddingEngine
+        expected = embroider.cache_info(
+            "jinaai/jina-embeddings-v5-text-nano-retrieval")["cache_dir"]
+        assert os.path.normpath(EmbeddingEngine.default_cache_dir()) == \
+            os.path.normpath(expected)
+
+    def test_model_info_unset_cache_dir_uses_effective_default(self):
+        # Regression: model_info used to force the suffix-less display dir
+        # as an override, reporting cached=False on a warm cache. Unset
+        # cache_dir must echo embroider's effective dir instead
+        # (normpath: see the hf-hub separator quirk above).
+        import embroider
+        import os
+        from okfgraph.router import OKFRouter
+        info = OKFRouter.model_info(precision="fp32")
+        expected = embroider.cache_info(
+            "jinaai/jina-embeddings-v5-text-small-retrieval",
+            precision="fp32")["cache_dir"]
+        assert os.path.normpath(info["cache_dir"]) == os.path.normpath(expected)
+
+    def test_model_info_precision_follows_landed_device(self, monkeypatch):
+        # The engine degrades CUDA-requested-but-unusable to fp32 weights;
+        # model_info must inspect the repo that would really be opened.
+        from okfgraph.components import embedding as emb
+        from okfgraph.router import OKFRouter
+        for usable, want in ((False, "fp32"), (True, "fp16")):
+            monkeypatch.setattr(emb, "ort_info",
+                                lambda u=usable: {"cuda_usable": u})
+            for device in ("auto", "cuda"):
+                assert OKFRouter.model_info(device=device)["precision"] == want
+            assert OKFRouter.model_info(device="cpu")["precision"] == "fp32"
+            assert OKFRouter.model_info(device="cuda",
+                                        precision="fp32")["precision"] == "fp32"
+
+    def test_model_info_paths_normalized(self):
+        import os
+        from okfgraph.router import OKFRouter
+        info = OKFRouter.model_info()
+        assert info["cache_dir"] == os.path.normpath(info["cache_dir"])
+
+    def test_model_info_old_embroider_refused(self, monkeypatch):
+        import embroider
+        from okfgraph.errors import OKFError
+        from okfgraph.router import OKFRouter
+        import pytest
+        monkeypatch.delattr(embroider, "cache_info", raising=False)
+        with pytest.raises(OKFError) as exc:
+            OKFRouter.model_info()
+        assert exc.value.code == "EMBROIDER_TOO_OLD"
+
 
 class TestDeviceSelection:
     """Tests for device selection with CUDA fallback (Rust backend)."""

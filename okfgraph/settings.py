@@ -127,7 +127,7 @@ SETTINGS = [
             "Enable the CPU arena allocator (default off: ~8x lower peak "
             "RSS for ~1.4x encode time)"),
     Setting("cache_dir", "str", None, "embedding",
-            "Model cache directory (default: ~/.cache/huggingface)"),
+            "Model cache directory (default: ~/.cache/huggingface/hub)"),
     Setting("max_length", "int", None, "embedding",
             "Token truncation ceiling 1..=32768; raising it changes long-doc "
             "vectors — reimport fully after changing"),

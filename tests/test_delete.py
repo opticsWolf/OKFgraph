@@ -5,7 +5,7 @@ Covers the plan's D2-a contract:
   recoverable through `recover_deleted` and visible in `list_deleted`;
 * refusal `BAD_VALUE` + remedy while the concept's source file exists;
 * after removing the source, delete succeeds;
-* unknown id → typed BAD_VALUE;
+* unknown id → typed UNKNOWN_CONCEPT (same as read/traverse/recover);
 * NOT exposed on the MCP tool registry (destructive by policy).
 """
 from pathlib import Path
@@ -63,7 +63,8 @@ class TestDeleteOp:
         from okfgraph.errors import OKFError
         with pytest.raises(OKFError) as exc:
             env["router"].delete("no/such-id")
-        assert exc.value.code == "BAD_VALUE"
+        assert exc.value.code == "UNKNOWN_CONCEPT"
+        assert exc.value.exit_code == 1
 
     def test_thoughts_concept_deletes_freely(self, env):
         tmp, r = env["tmp"], env["router"]

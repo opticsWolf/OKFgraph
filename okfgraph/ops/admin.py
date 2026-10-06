@@ -129,15 +129,19 @@ class AdminOps:
     # ------------------------------------------------------------------
 
     def doctor(self, *, stale_days: int = 365, fix: bool = False,
-               strict: bool = False) -> dict:
+               strict: bool = False, cache_dir: str | None = None) -> dict:
         """Scored health scan; ``fix`` applies safe repairs first.
+
+        ``cache_dir`` pins the hub-cache root the informational cache
+        sections inspect (default: the effective HF hub cache).
 
         Returns ``{"report", "fixed"}`` (``fixed`` is None without
         ``fix``). With ``strict``, findings raise ``DOCTOR_FINDINGS``
         (exit 1) with that same result on ``err.data``.
         """
         fixed = self.doctor_mgr.fix() if fix else None
-        report = self.doctor_mgr.diagnose(stale_days=stale_days)
+        report = self.doctor_mgr.diagnose(stale_days=stale_days,
+                                          cache_dir=cache_dir)
         result = {"report": report, "fixed": fixed}
         if strict and report["findings"]:
             raise OKFError(
@@ -268,12 +272,13 @@ class AdminOps:
         from okfgraph.errors import UsageError, StateError
         concept = self.search_engine.get_by_id(concept_id)
         if concept is None:
-            raise UsageError(
-                "BAD_VALUE",
-                f"unknown concept '{concept_id}'",
+            # Same code as read/traverse/export_concept/recover (§4 table).
+            raise StateError(
+                "UNKNOWN_CONCEPT",
+                f"concept '{concept_id}' does not exist",
                 op="delete",
                 fields={"concept_id": concept_id},
-                remedy="list ids with a search first",
+                remedy="search first to find IDs",
             )
         # FileHash maps bundle-relative keys (with @alias/ prefixes on
         # named roots) to concept ids; any still-existing source means

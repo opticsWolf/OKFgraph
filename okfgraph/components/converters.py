@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Dict, Optional, Protocol
 
 from okfgraph.errors import OKFError
 
@@ -69,6 +69,52 @@ _BOBINE_ROUTING = {
     "always": "Always",
     "never": "Never",
 }
+
+
+def converter_status(cache_dir: Optional[str] = None) -> Dict[str, Any]:
+    """Converter-model cache status without downloading anything.
+
+    Aggregates ``bobine.model_status()`` (bobine >= 0.6.0) into the same
+    report shape okfgraph's own ``model_info`` uses, so one screen can
+    answer "is this machine ready for PDF ingest offline?". Never
+    raises: every outcome — missing bobine, too-old bobine, unexpected
+    failure — is data, so doctor and CLI can render it unconditionally.
+
+    Returns ``{"available", "reports", "note"}``: ``reports`` is the
+    verbatim ``bobine.model_status()`` list when ``available``; otherwise
+    ``note`` carries the one-line reason.
+    """
+    try:
+        import bobine  # noqa: PLC0415 — optional dependency, lazy import
+    except ImportError:
+        return {
+            "available": False,
+            "reports": [],
+            "note": ("converters: bobine not installed "
+                       "(PDF ingest unavailable; pip install bobine)"),
+        }
+    if not hasattr(bobine, "model_status"):
+        try:
+            from importlib.metadata import version as _version
+            ver = _version("bobine")
+        except Exception:  # pragma: no cover - metadata edge
+            ver = "unknown"
+        return {
+            "available": False,
+            "reports": [],
+            "note": (f"converters: bobine {ver} has no model_status "
+                       "(upgrade to >=0.6.0 for converter cache status)"),
+        }
+    try:
+        reports = bobine.model_status(cache_dir=cache_dir)
+    except Exception as exc:  # offline lookup; failures are local (perms)
+        logger.warning("converter_status: bobine.model_status failed: %s", exc)
+        return {
+            "available": False,
+            "reports": [],
+            "note": f"converters: status lookup failed ({exc})",
+        }
+    return {"available": True, "reports": list(reports), "note": None}
 
 
 class BobineConverter:

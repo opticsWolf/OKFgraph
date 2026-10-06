@@ -169,7 +169,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         except ImportError:
             raise RuntimeError(
                 "the embroider wheel is required for text embeddings: "
-                "pip install 'embroider>=0.2,<0.3'"
+                "pip install 'embroider>=0.3.2,<0.4'"
             ) from None
         if embedding_dim > 1024:
             raise ValueError(f"embedding_dim must be <= 1024 (model output), got {embedding_dim}")
@@ -331,6 +331,15 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
                     "CUDA requested but the loaded ONNX Runtime has no CUDA execution "
                     "provider — running on CPU. Install onnxruntime-gpu for acceleration."
                 )
+            elif device == "auto" and not encoder.used_cuda:
+                # auto silently landing on CPU next to a usable GPU is the
+                # classic wrong-extra install; say so once per open.
+                from okfgraph.components.embedding import (
+                    cpu_runtime_with_gpu_hint, ort_info,
+                )
+                hint = cpu_runtime_with_gpu_hint(ort_info())
+                if hint:
+                    logger.warning(hint)
 
         # Text embeddings: Rust embroider wheel (Jina v5 via ORT). No Python
         # fallback — a mid-run stack switch would silently mix vector spaces

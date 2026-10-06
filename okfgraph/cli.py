@@ -42,20 +42,24 @@ def _setup_logging(verbose: bool = False, quiet: bool = False, log_file: str = "
     - default: INFO (console_level=None); ``--json`` passes WARNING so
       harnesses that merge stderr into stdout still parse the envelope
       (D3): results go to stdout, warnings/errors to stderr.
+
+    ``console_level`` only quiets the console; ``--log-file`` keeps the
+    base level (INFO by default) so a ``--json`` run still logs fully.
     """
     global _LOG_HANDLER
 
     if quiet:
-        level = logging.ERROR
+        base = logging.ERROR
     elif verbose:
-        level = logging.DEBUG
-    elif console_level is not None:
-        level = console_level
+        base = logging.DEBUG
     else:
-        level = logging.INFO
+        base = logging.INFO
+    level = base
+    if console_level is not None and not (quiet or verbose):
+        level = console_level
 
     root = logging.getLogger()
-    root.setLevel(level)
+    root.setLevel(min(level, base) if log_file else level)
     # Remove any existing handlers to avoid duplicates across invocations
     for h in root.handlers[:]:
         root.removeHandler(h)
@@ -78,7 +82,7 @@ def _setup_logging(verbose: bool = False, quiet: bool = False, log_file: str = "
             backupCount=3,
         )
         file_handler.setFormatter(fmt)
-        file_handler.setLevel(level)
+        file_handler.setLevel(base)
         root.addHandler(file_handler)
 
 
@@ -414,6 +418,10 @@ def _model_info(args):
                                 cache_dir=settings.cache_dir,
                                 device=settings.device,
                                 precision=settings.precision)
+    if args.converters:
+        from okfgraph.components.converters import converter_status
+        info = {**info, "converters": converter_status(
+            cache_dir=settings.cache_dir)}
 
     def render(info):
         print(f"model: {info['model_id']}")
@@ -425,6 +433,20 @@ def _model_info(args):
             print(f"size: {info['disk_usage_bytes'] / (1024 ** 3):.2f} GB")
         else:
             print("status: not cached (will download on first use)")
+        conv = info.get("converters")
+        if conv is not None:
+            if conv["available"]:
+                reps = conv["reports"]
+                n = sum(1 for r in reps if r.get("cached"))
+                print(f"converters: {n}/{len(reps)} families cached")
+                for r in reps:
+                    if r.get("cached"):
+                        gb = r["disk_usage_bytes"] / (1024 ** 3)
+                        print(f"  [cached] {r['repo']} ({gb:.2f} GB)")
+                    else:
+                        print(f"  [fetch-on-use] {r['repo']}")
+            else:
+                print(conv["note"])
 
     return _out(args, "model_info", info, render)
 
@@ -746,6 +768,7 @@ def _doctor(args):
     """
     result = _router(args).doctor(
         stale_days=args.stale_days, fix=args.fix, strict=args.strict,
+        cache_dir=_settings(args).cache_dir,
     )
     return _out(args, "doctor", result, _render_doctor)
 
@@ -1088,7 +1111,10 @@ def build_parser():
         return p
 
     command("init", "Initialize database and schema")
-    command("model-info", "Show model cache status")
+    p = command("model-info", "Show model cache status")
+    p.add_argument("--converters", action="store_true",
+                   help="Include converter-model cache status "
+                   "(bobine >=0.6.0, offline)")
 
     p = command("import", "Import OKF files (delta-aware)")
     p.add_argument("files", nargs="*", help="Files to import")
@@ -1319,8 +1345,17 @@ def _main_catchall(args):
         return 130
     except Exception as exc:  # noqa: BLE001 — the §4 catch-all *is* the contract
         logger.exception("INTERNAL in %s", args.command)
-        err = internal_error(exc, op=args.command,
-                             remedy="this is a bug — report it with the message above")
+        # The console traceback is easily lost (`2>&1 | tail -n 3`); the
+        # crash file keeps every frame and the [ERROR] line names it.
+        from okfgraph.crash import write_crash_report
+        path = write_crash_report(exc, command=args.command)
+        err = internal_error(
+            exc, op=args.command,
+            remedy=(f"this is a bug — full traceback: {path}; report it with that file"
+                    if path else
+                    "this is a bug — report it with the traceback above"))
+        if path:
+            err.fields["crash_report"] = path
         return _emit_cli_error(args, err)
 
 

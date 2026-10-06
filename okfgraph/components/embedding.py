@@ -992,9 +992,28 @@ class EmbeddingEngine:
 
     @staticmethod
     def default_cache_dir() -> str:
-        """Return the HuggingFace default cache directory."""
+        """Return the effective HuggingFace hub cache directory.
+
+        Display helper only — mirrors hf-hub's resolution order exactly
+        (``HF_HUB_CACHE`` → ``HUGGINGFACE_HUB_CACHE`` → ``HF_HOME/hub`` →
+        ``XDG_CACHE_HOME/huggingface/hub`` → ``~/.cache/huggingface/hub``),
+        so the shown dir is the one the engine really uses. ``model_info``
+        passes ``cache_dir`` through untouched (``None`` lets embroider
+        resolve the same default) and never calls this for lookup.
+        """
         import os
-        return os.path.expanduser(os.getenv("HF_HOME", "~/.cache/huggingface"))
+        from pathlib import Path
+        for var in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+            hit = os.getenv(var)
+            if hit:
+                return hit  # verbatim, like hf-hub
+        base = os.getenv("HF_HOME")
+        if not base:
+            xdg = os.getenv("XDG_CACHE_HOME")
+            base = str(Path(xdg) / "huggingface") if xdg else str(
+                Path.home() / ".cache" / "huggingface"
+            )
+        return str(Path(base) / "hub")
 
 
     @classmethod
@@ -1014,9 +1033,12 @@ class EmbeddingEngine:
 
         ``precision=None``/``"auto"`` follows the device (CUDA usable →
         fp16 mirror, else fp32); an explicit ``"fp16"``/``"fp32"`` pins
-        it. An embroider without ``cache_info`` (before 0.3.2) raises
-        typed ``EMBROIDER_TOO_OLD`` instead of an AttributeError, and a
-        bare legacy id ("auto", no owner) raises ``BAD_VALUE``.
+        it. ``cache_dir=None`` (the default) is passed through untouched
+        so embroider resolves the effective hub cache itself; the returned
+        ``cache_dir`` is that effective dir. An embroider without
+        ``cache_info`` (before 0.3.2) raises typed ``EMBROIDER_TOO_OLD``
+        instead of an AttributeError, and a bare legacy id ("auto", no
+        owner) raises ``BAD_VALUE``.
         """
         from okfgraph.errors import OKFError
         import embroider
@@ -1045,8 +1067,10 @@ class EmbeddingEngine:
             elif eff == "auto":
                 eff = "fp32"
         try:
+            # cache_dir passes through untouched: None lets embroider
+            # resolve the effective hub cache (never the display helper).
             return dict(info_fn(effective_id,
-                                cache_dir=cache_dir or cls.default_cache_dir(),
+                                cache_dir=cache_dir,
                                 precision=eff))
         except ValueError as exc:
             from okfgraph.errors import UsageError

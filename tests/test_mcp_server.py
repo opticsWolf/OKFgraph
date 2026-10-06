@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from okfgraph.mcp_server import create_mcp_server
+from okfgraph.errors import OKFError
+from okfgraph.mcp_server import _ToolFailure, create_mcp_server
+from okfgraph.ops import ExportOps, IngestOps, QueryOps
+from okfgraph.settings import Settings
 
 
 class TestMCPServer:
@@ -16,24 +19,25 @@ class TestMCPServer:
         """Server creates without error."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             assert mcp is not None
 
     def test_all_tools_registered(self):
         """The five consolidated tools are registered."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
             names = [t.name for t in tools]
 
-            assert names == ["search", "read", "traverse", "ingest", "export_bundle"]
+            assert names == ["search", "read", "traverse", "ingest", "export_bundle",
+                            "export_concept", "list_images", "get_image"]
 
     def test_read_tools_have_read_only_hint(self):
         """Read-only tools have read_only_hint=True."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             read_tools = ["search", "read", "traverse"]
@@ -48,10 +52,10 @@ class TestMCPServer:
         """Write tools have read_only_hint=False."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
-            write_tools = ["export_bundle", "ingest"]
+            write_tools = ["export_bundle", "export_concept", "ingest"]
 
             for tool in tools:
                 if tool.name in write_tools:
@@ -63,7 +67,7 @@ class TestMCPServer:
         """All tools have a non-empty description."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             for tool in tools:
@@ -75,7 +79,7 @@ class TestMCPServer:
         """All tools have parameter definitions."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             for tool in tools:
@@ -90,7 +94,7 @@ class TestMCPServer:
         """search exposes target/expand/hub_rerank routing."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             search = next(t for t in tools if t.name == "search")
@@ -98,14 +102,15 @@ class TestMCPServer:
             assert "query" in props
             assert "query" in search.parameters["required"]
             assert props["target"]["default"] == "concepts"
-            for flag in ("expand", "hub_rerank", "limit", "type_filter", "tags", "parent_id"):
+            for flag in ("expand", "hub_rerank", "limit", "concept_type", "tags",
+                         "parent_id", "include_chunks", "max_chunks_per_doc"):
                 assert flag in props, f"search missing {flag}"
 
     def test_read_schema(self):
         """read exposes the include selector."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             read = next(t for t in tools if t.name == "read")
@@ -118,7 +123,7 @@ class TestMCPServer:
         """traverse exposes path mode via target."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             traverse = next(t for t in tools if t.name == "traverse")
@@ -131,7 +136,7 @@ class TestMCPServer:
         """ingest exposes the kind discriminator."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             tools = mcp._tool_manager.list_tools()
 
             ingest = next(t for t in tools if t.name == "ingest")
@@ -145,7 +150,7 @@ class TestMCPServer:
         """Server has correct name and instructions."""
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/test.db"
-            mcp = create_mcp_server(db_path=db_path)
+            mcp = create_mcp_server(Settings(db_path=db_path))
             assert mcp.name == "OKFgraph MCP Server"
             assert "ONNX" in mcp.instructions
             assert "Jina v5" in mcp.instructions
@@ -171,9 +176,9 @@ class TestMCPServer:
                 closed.append(True)
 
         monkeypatch.setattr(ms, "OKFRouter", StubRouter)
-        mcp = create_mcp_server(
+        mcp = create_mcp_server(Settings(
             db_path=str(tmp_path / "t.db"), bundle_root=str(tmp_path),
-        )
+        ))
         async with mcp.settings.lifespan(mcp) as gctx:
             assert isinstance(gctx, ms.GraphContext)
             assert isinstance(gctx.router, StubRouter)
@@ -200,7 +205,20 @@ class _StubSearchEngine:
     def __init__(self, calls):
         self.calls = calls
 
-    def search_chunks(self, query, limit=10, **filt):
+    def search_hybrid(self, query, concept_type=None, tags=None, parent_id=None,
+                      exclude_reserved=True, limit=10, include_chunks=False,
+                      rank="none", hub_weight=0.3):
+        filt = {k: v for k, v in (("concept_type", concept_type), ("tags", tags),
+                                  ("parent_id", parent_id)) if v is not None}
+        if rank != "none":
+            filt["rank"] = rank
+        self.calls.append(("search_hybrid", query, limit, filt))
+        return [{"id": "c1", "type": "note"}]
+
+    def search_chunks(self, query, concept_type=None, tags=None, parent_id=None,
+                      limit=10, max_chunks_per_doc=3):
+        filt = {k: v for k, v in (("concept_type", concept_type), ("tags", tags),
+                                  ("parent_id", parent_id)) if v is not None}
         self.calls.append(("search_chunks", query, limit, filt))
         return [{"chunk_id": "c1"}]
 
@@ -216,15 +234,26 @@ class _StubSearchEngine:
         self.calls.append(("get_chunks", concept_id))
         return []
 
-    def find_path(self, start_id, end_id, max_length=6):
-        self.calls.append(("find_path", start_id, end_id, max_length))
-        return [{"id": end_id}]
+    def read_with_budget(self, concept_id, include="body", max_tokens=2000):
+        self.calls.append(("read_with_budget", concept_id, include, max_tokens))
+        return {"concept_id": concept_id, "budget": max_tokens,
+                "used": 10, "truncated": False, "sections": []}
 
-    def _get_ancestry(self, concept_id):
+    def traverse(self, start_id, relationship="CONTAINS", direction="OUTGOING",
+                 depth=1, node_type=None):
+        self.calls.append(("traverse", start_id, relationship, direction, depth))
         return []
 
-    def _get_siblings(self, concept_id):
-        return []
+    def get_context(self, concept_id, cap=10):
+        self.calls.append(("get_context", concept_id, cap))
+        return {"ancestry": [], "siblings": []}
+
+    def node_exists(self, node_id):
+        return True
+
+    def find_path(self, start_id, target, max_path_length=6):
+        self.calls.append(("find_path", start_id, target, max_path_length))
+        return [{"id": target}]
 
 
 class _StubEmbedEngine:
@@ -240,20 +269,40 @@ class _StubIngestMgr:
     def __init__(self, calls):
         self.calls = calls
 
-    def ingest_md(self, **kwargs):
-        self.calls.append(("ingest_md", kwargs))
-        return {"concept_id": "c-md"}
+    def ingest(self, kind, **kwargs):
+        """Merged dispatch; records the per-kind label the old API used."""
+        label = {"md": "ingest_md", "pdf": "ingest_pdf",
+                 "thoughts": "ingest_thoughts"}.get(kind, kind)
+        if kind == "md":
+            if not kwargs.get("md_path"):
+                raise OKFError("MISSING_PARAM", "kind='md' requires md_path",
+                               fields={"kind": kind})
+            self.calls.append((label, kwargs))
+            return {"concept_id": "c-md"}
+        if kind == "pdf":
+            if not kwargs.get("pdf_path"):
+                raise OKFError("MISSING_PARAM", "kind='pdf' requires pdf_path",
+                               fields={"kind": kind})
+            self.calls.append((label, kwargs.get("pdf_path")))
+            return {"concept_ids": ["c-pdf"], "md_path": "x.md",
+                    "image_dir": "img", "page_count": 3}
+        if kind == "thoughts":
+            if not kwargs.get("thoughts") or not kwargs.get("topic"):
+                raise OKFError("MISSING_PARAM", "kind='thoughts' requires thoughts and topic",
+                               fields={"kind": kind})
+            self.calls.append((label, kwargs.get("thoughts"), kwargs.get("topic")))
+            return {"concept_id": "c-t"}
+        raise OKFError("BAD_VALUE", f"kind must be 'md', 'pdf' or 'thoughts', got '{kind}'",
+                       fields={"kind": kind})
 
-    def ingest_pdf(self, **kwargs):
-        self.calls.append(("ingest_pdf", kwargs))
-        return {"concept_ids": ["c-pdf"]}
 
-    def ingest_thoughts(self, thoughts, topic=None, concept_id=None, tags=None):
-        self.calls.append(("ingest_thoughts", thoughts, topic))
-        return {"concept_id": "c-t"}
+class _StubRouter(ExportOps, IngestOps, QueryOps):
+    """Plain router double that inherits the canonical ops.
 
+    The MCP adapters route through the ops, so the stub supplies the
+    component attributes the ops reach for.
+    """
 
-class _StubRouter:
     def __init__(self, calls):
         self.calls = calls
         self.search_engine = _StubSearchEngine(calls)
@@ -261,21 +310,11 @@ class _StubRouter:
         self.ingest_mgr = _StubIngestMgr(calls)
         self.image_mgr = _StubImageMgr(calls)
 
-    def search_hybrid(self, query, limit=10, **filt):
-        self.calls.append(("search_hybrid", query, limit, filt))
-        return [{"id": "c1"}]
-
-    def search_images(self, query, limit=10):
-        self.calls.append(("search_images", query, limit))
-        return []
-
-    def traverse(self, start_id, rel="CONTAINS", direction="OUTGOING", depth=1):
-        self.calls.append(("traverse", start_id, rel, direction, depth))
-        return []
-
     def get_by_id(self, concept_id):
         self.calls.append(("get_by_id", concept_id))
-        return None if concept_id == "missing" else {"id": concept_id, "type": "note"}
+        if concept_id == "missing":
+            return None
+        return {"id": concept_id, "type": "note"}
 
     def list_directory(self, directory_id):
         self.calls.append(("list_directory", directory_id))
@@ -287,7 +326,7 @@ class TestToolDispatch:
 
     @staticmethod
     def _fn(name):
-        mcp = create_mcp_server(db_path=":memory:")
+        mcp = create_mcp_server(Settings(db_path=":memory:"))
         return mcp._tool_manager.get_tool(name).fn
 
     @staticmethod
@@ -304,7 +343,9 @@ class TestToolDispatch:
         calls = []
         out = self._fn("search")("q", ctx=self._ctx(_StubRouter(calls)))
         assert calls[0][0] == "search_hybrid"
-        assert '"c1"' in out
+        env = json.loads(out)
+        assert env["ok"] is True and env["op"] == "search"
+        assert env["data"] == [{"id": "c1", "type": "note"}]
 
     def test_search_chunks_plain_and_filtered(self):
         calls = []
@@ -334,8 +375,9 @@ class TestToolDispatch:
         calls = []
         out = self._fn("read")("c1", ctx=self._ctx(_StubRouter(calls)))
         assert calls[0][0] == "get_by_id"
-        out = self._fn("read")("missing", ctx=self._ctx(_StubRouter(calls)))
-        assert "not found" in out
+        with pytest.raises(_ToolFailure) as exc:
+            self._fn("read")("missing", ctx=self._ctx(_StubRouter(calls)))
+        assert exc.value.payload["error"]["code"] == "UNKNOWN_CONCEPT"
 
     def test_read_variants(self):
         for include, expect in [("chunks", "get_chunks"), ("document", "reconstruct"), ("context", "traverse")]:
@@ -367,10 +409,14 @@ class TestToolDispatch:
 
     def test_ingest_validates_required(self):
         calls = []
-        out = self._fn("ingest")(kind="md", ctx=self._ctx(_StubRouter(calls)))
-        assert out.startswith("error:") and calls == []
-        out = self._fn("ingest")(kind="thoughts", thoughts="t", ctx=self._ctx(_StubRouter(calls)))
-        assert out.startswith("error:") and calls == []
+        with pytest.raises(_ToolFailure) as exc:
+            self._fn("ingest")(kind="md", ctx=self._ctx(_StubRouter(calls)))
+        assert exc.value.payload["error"]["code"] == "MISSING_PARAM"
+        assert calls == []
+        with pytest.raises(_ToolFailure) as exc:
+            self._fn("ingest")(kind="thoughts", thoughts="t", ctx=self._ctx(_StubRouter(calls)))
+        assert exc.value.payload["error"]["code"] == "MISSING_PARAM"
+        assert calls == []
 
 
 class _StubImageMgr:
@@ -381,12 +427,23 @@ class _StubImageMgr:
         self.calls.append(("search_images_with_text", text_query, limit))
         return []
 
+    def list_images(self, concept_id):
+        self.calls.append(("list_images", concept_id))
+        return [{"id": "i1", "file_name": "x.png", "embed_route": "text"}]
+
+    def get_image_data(self, asset_id):
+        self.calls.append(("get_image", asset_id))
+        if asset_id == "missing":
+            return None
+        return {"id": asset_id, "file_name": "x.png", "mime_type": "image/png",
+                "alt_text": None, "embed_route": "text", "data": b"PNGDATA"}
+
 
 class TestRoundupDispatch:
     """rank / max_tokens / flavor params route correctly (Phases 1, 2, 5)."""
 
     def test_search_schema_has_rank(self):
-        mcp = create_mcp_server(db_path=":memory:")
+        mcp = create_mcp_server(Settings(db_path=":memory:"))
         search = next(t for t in mcp._tool_manager.list_tools() if t.name == "search")
         props = search.parameters["properties"]
         assert props["rank"]["default"] == "none"
@@ -402,13 +459,14 @@ class TestRoundupDispatch:
     def test_search_rank_rejected_for_chunks(self):
         calls = []
         fn = TestToolDispatch._fn("search")
-        out = fn("honey", target="chunks", rank="ppr",
-                 ctx=TestToolDispatch._ctx(_StubRouter(calls)))
-        assert out.startswith("error:")
+        with pytest.raises(_ToolFailure) as exc:
+            fn("honey", target="chunks", rank="ppr",
+               ctx=TestToolDispatch._ctx(_StubRouter(calls)))
+        assert exc.value.payload["error"]["code"] == "BAD_VALUE"
         assert calls == []
 
     def test_read_schema_has_max_tokens(self):
-        mcp = create_mcp_server(db_path=":memory:")
+        mcp = create_mcp_server(Settings(db_path=":memory:"))
         read = next(t for t in mcp._tool_manager.list_tools() if t.name == "read")
         assert "max_tokens" in read.parameters["properties"]
 
@@ -416,27 +474,24 @@ class TestRoundupDispatch:
         import json
         calls = []
         stub = _StubRouter(calls)
-        stub.search_engine.read_with_budget = lambda *a, **k: (
-            calls.append(("read_with_budget", a, k)) or
-            {"concept_id": "c1", "sections": []}
-        )
         fn = TestToolDispatch._fn("read")
         out = fn("c1", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
-        assert json.loads(out)["concept_id"] == "c1"
-        assert calls[0][0] == "read_with_budget"
+        env = json.loads(out)
+        assert env["ok"] is True and env["op"] == "read"
+        assert env["data"]["concept_id"] == "c1"
+        # The op verifies the concept's existence first, then budgets.
+        assert any(c[0] == "read_with_budget" for c in calls)
 
     def test_read_budget_missing(self):
         calls = []
         stub = _StubRouter(calls)
-        def _missing(*a, **k):
-            raise KeyError("nope")
-        stub.search_engine.read_with_budget = _missing
         fn = TestToolDispatch._fn("read")
-        out = fn("nope", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
-        assert "not found" in out
+        with pytest.raises(_ToolFailure) as exc:
+            fn("missing", max_tokens=500, ctx=TestToolDispatch._ctx(stub))
+        assert exc.value.payload["error"]["code"] == "UNKNOWN_CONCEPT"
 
     def test_export_schema_has_flavor(self):
-        mcp = create_mcp_server(db_path=":memory:")
+        mcp = create_mcp_server(Settings(db_path=":memory:"))
         export = next(t for t in mcp._tool_manager.list_tools() if t.name == "export_bundle")
         props = export.parameters["properties"]
         assert props["flavor"]["default"] == "okf"
@@ -454,5 +509,7 @@ class TestRoundupDispatch:
         stub.export_mgr = _ExportMgr()
         fn = TestToolDispatch._fn("export_bundle")
         out = fn("/tmp/x", flavor="obsidian", ctx=TestToolDispatch._ctx(stub))
-        assert json.loads(out) == ["a"]
-        assert calls[0]["flavor"] == "obsidian"
+        payload = json.loads(out)["data"]
+        assert payload["flavor"] == "obsidian"
+        assert payload["concept_ids"] == ["a"]
+        assert payload["output_dir"].replace("\\", "/").endswith("/tmp/x")

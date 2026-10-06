@@ -14,33 +14,14 @@ Design choices:
       stored vectors.
 """
 
-import hashlib
-import json
 import logging
-import math
-import os
-import re
-import time
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-import frontmatter
 import ladybug as lb
 from fasteners import InterProcessLock
-import numpy as np
-import yaml
 
-from okfgraph.images import (
-    EmbedRoute,
-    IngestMode,
-    build_extracted_images,
-    plan_embedding,
-)
-import mordant
-
-from okfgraph.models import ChunkModel, ConceptModel
 from okfgraph.components import (
     DeltaDetector,
     DiffManager,
@@ -55,11 +36,20 @@ from okfgraph.components import (
     SearchEngine,
 )
 
+from okfgraph.errors import OKFError
+from okfgraph.ops import AdminOps, ExportOps, IngestOps, QueryOps
+
 logger = logging.getLogger(__name__)
 
 
-class OKFRouter:
-    """Routes OKF concepts through a Ladybug graph + vector + FTS database."""
+class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
+    """Routes OKF concepts through a Ladybug graph + vector + FTS database.
+
+    Canonical operations (``okfgraph.ops`` mixins) are part of the facade:
+    ``search``, ``read``, ``traverse`` (QueryOps) and the ingest/export/admin
+    ops as they land. Component-backed helpers stay reachable but should
+    not be used by surface adapters.
+    """
 
     # ------------------------------------------------------------------
     # Construction
@@ -68,10 +58,7 @@ class OKFRouter:
     # Valid Matryoshka truncation levels for jina-embeddings-v5-text.
     ALLOWED_DIMS = (32, 64, 128, 256, 512, 768, 1024)
 
-    # ── Component-backed classmethods (Phase 1 refactor) ──────────
-    # These are owned by EmbeddingEngine; aliases keep the public API
-    # (e.g. OKFRouter.model_info(...)) stable.
-    model_info = EmbeddingEngine.model_info
+    # Owned by EmbeddingEngine; model_info is the AdminOps op.
     default_cache_dir = EmbeddingEngine.default_cache_dir
 
     # Schema constants/registry live on SchemaManager (Phase 1 refactor).
@@ -170,7 +157,7 @@ class OKFRouter:
                 ``BobineConverter()`` built lazily — any object with a
                 ``convert(pdf_path, output_dir, *, on_page=None)`` method
                 returning a ``ConvertedDocument`` works. Per-call override
-                via ``ingest_mgr.ingest_pdf(..., converter=...)``.
+                via ``ingest_mgr.ingest("pdf", ...`` converter=...).
         """
         from okfgraph.components.embedding import resolve_ort_dylib
         # Resolve first: the native module loads ORT dynamically, so the
@@ -204,8 +191,23 @@ class OKFRouter:
             )
         self.max_length = max_length if max_length is not None else embroider.MAX_LENGTH
 
-        self.db = lb.Database(db_path)
+        try:
+            self.db = lb.Database(db_path)
+        except RuntimeError as exc:
+            # The database file lock is per process: a second process
+            # (okf-mcp, another okf) on the same db is refused by ladybug.
+            if "lock" not in str(exc).lower():
+                raise
+            raise OKFError(
+                "DB_LOCKED",
+                f"database {db_path} is open in another process ({exc})",
+                fields={"db_path": str(db_path)},
+                remedy="run okf commands one at a time, stop the other "
+                       "process (e.g. an okf-mcp server on this db), or "
+                       "query through that MCP server instead",
+            ) from None
         self.conn = lb.Connection(self.db)
+        self.db_path = db_path
 
         # WAL mode (Gap #7a) — enables concurrent reads during writes.
         if wal_mode:
@@ -335,19 +337,17 @@ class OKFRouter:
         # in one index. The wheel import above stays fail-fast; the session
         # open is lazy so model-free commands (PPR search, budgeted reads,
         # diff, doctor) never pay model-download/session-build costs.
-        def _ort_missing() -> bool:
+        def _require_ort() -> None:
             # Core installs carry no ORT wheel (it lives in okfgraph[cpu|gpu]).
+            # Fail before JinaV5.open: a failed ORT init poisons ort's
+            # global lock and aborts the process at teardown, so the
+            # backend must never be touched when no runtime exists.
             if self.ort_dylib is not None:
-                return False
-            try:
-                import onnxruntime  # noqa: F401
-            except ImportError:
-                return True
-            return False
-
-        _ORT_HINT = ("no ONNX Runtime installed: pip install 'okfgraph[cpu]' "
-                     "or 'okfgraph[gpu]' (exactly one), or set ORT_DYLIB_PATH "
-                     "to an onnxruntime 1.29 library")
+                return
+            from okfgraph.components.embedding import ort_info, ort_missing_hint
+            hint = ort_missing_hint(ort_info())
+            if hint:
+                raise OKFError("NO_ORT_RUNTIME", hint)
 
         if explicit_files:
             def _open_session():
@@ -383,12 +383,8 @@ class OKFRouter:
             )
 
         def session_factory():
-            if _ort_missing():
-                # Fail before JinaV5.open: a failed ORT init poisons ort's
-                # global lock and aborts the process at teardown, so the
-                # backend must never be touched when no runtime exists.
-                raise RuntimeError(_ORT_HINT)
-            # No post-hoc wrap: _ort_missing() already returned False and
+            _require_ort()
+            # No post-hoc wrap: _require_ort() already passed and
             # nothing changes in between, so a second check after a failed
             # open could never fire. Backend errors (including pyo3
             # PanicException, a BaseException) propagate raw and are cached
@@ -442,8 +438,7 @@ class OKFRouter:
             )
 
         def _vision_session_factory():
-            if _ort_missing():
-                raise RuntimeError(_ORT_HINT)
+            _require_ort()
             # Fail-closed compat BEFORE any download: wrong text model,
             # oversize dim, or unknown image id all refuse here.
             enforce_vision_compat(
@@ -560,12 +555,15 @@ class OKFRouter:
         try:
             acquired = self._write_lock.acquire(timeout=timeout)
         except Exception as e:
-            raise RuntimeError(f"Failed to acquire write lock: {e}") from e
+            raise OKFError("WRITE_LOCK_TIMEOUT",
+                           f"Failed to acquire write lock: {e}") from e
 
         if not acquired:
-            raise RuntimeError(
+            raise OKFError(
+                "WRITE_LOCK_TIMEOUT",
                 "Write lock acquisition timed out (another process is writing). "
-                "Wait for the other writer to finish or increase the timeout."
+                "Wait for the other writer to finish or increase the timeout.",
+                remedy="close concurrent writers or raise the lock timeout",
             )
 
         try:
@@ -596,77 +594,6 @@ class OKFRouter:
     def list_directory(self, directory_id: str):
         return self.search_engine.list_directory(directory_id)
 
-    def search_hybrid(self, *args, **kwargs):
-        return self.search_engine.search_hybrid(*args, **kwargs)
-
-    def traverse(self, *args, **kwargs):
-        return self.search_engine.traverse(*args, **kwargs)
-
-    def import_from_okf(self, *args, **kwargs):
-        return self.import_mgr.import_from_okf(*args, **kwargs)
-
-    def export_to_okf(self, *args, **kwargs):
-        return self.export_mgr.export_to_okf(*args, **kwargs)
-
-    def list_broken_links(self, *args, **kwargs):
-        return self.import_mgr.list_broken_links(*args, **kwargs)
-
-    def repair_links(self, *args, **kwargs):
-        return self.import_mgr.repair_links(*args, **kwargs)
-
-    def diagnose(self, *args, **kwargs):
-        return self.doctor_mgr.diagnose(*args, **kwargs)
-
-    def doctor_fix(self, *args, **kwargs):
-        return self.doctor_mgr.fix(*args, **kwargs)
-
-    def diff_dirs(self, *args, **kwargs):
-        return self.diff_mgr.diff_dirs(*args, **kwargs)
-
-    def diff_db_dir(self, *args, **kwargs):
-        return self.diff_mgr.diff_db_dir(*args, **kwargs)
-
-    # ------------------------------------------------------------------
-    # Schema
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Search index (re)build
-    # ------------------------------------------------------------------
-
-    # (table, index_name, create-statement) for every vector/FTS index.
-    # ------------------------------------------------------------------
-    # Index dirty-tracking (Meta key/value markers)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Delta detection (file-level hash skip)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Purge (safe deletion of a concept and all its dependents)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Soft-Delete with Recovery (Gap #1d)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Embedding
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Omni (multimodal) embedding — lazy-loaded
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Cache helpers
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     # ------------------------------------------------------------------
     # Import / Export
     # ------------------------------------------------------------------
@@ -674,60 +601,4 @@ class OKFRouter:
     # Source files the ingestion pipeline understands. Frontmatter is honoured
     # when present (Markdown); plain .txt is treated as body-only.
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
-
-    # ------------------------------------------------------------------
-    # Image ingestion (caption-based text embeddings since 0.7.0)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Broken Links
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Graph-Aware Retrieval
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Traversal
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Chunk Query
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Directory
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Lookup
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Markdown Linting (Gap #5c)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Single-File Import Helpers (Gap #5c)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # PDF Ingestion (Gap #5b)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Markdown Ingestion (Gap #5c)
-    # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Thought Ingestion (Gap #5c)
-    # ------------------------------------------------------------------
 

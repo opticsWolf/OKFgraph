@@ -9,6 +9,9 @@
 # `v1` suffix if the pinned models change. Deliberately infrequent (weekly,
 # not nightly): the lockfile is frozen, so daily re-runs would re-prove an
 # unchanged stack.
+#
+# Extras: `cpu` ships the ONNX Runtime wheel itself (the `omni` extra was
+# removed in 0.7.0 — never re-add it to a workflow).
 
 name: full-suite
 
@@ -37,8 +40,8 @@ jobs:
           path: ~/.cache/huggingface
           key: hf-models-${{ runner.os }}-v1
 
-      - name: Sync (frozen lockfile, all extras)
-        run: uv sync --frozen --extra dev --extra pdf --extra omni
+      - name: Sync (frozen lockfile; existing extras)
+        run: uv sync --frozen --extra dev --extra pdf --extra cpu
 
       - name: Full non-slow suite
         run: uv run --frozen pytest -m "not slow" -q -p no:cacheprovider

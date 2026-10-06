@@ -184,21 +184,21 @@ class TestDeletionTombstones:
 
         # No-purge run: sibling re-imported, concept persists, tombstone kept.
         with caplog.at_level(logging.INFO):
-            assert router.import_mgr.import_bundle(purge_deleted=False) == ["docs/a"]
+            assert router.import_mgr.import_bundle(prune_missing=False) == ["docs/a"]
         assert "docs/b" in _concepts(router.conn)
         assert gone in _tombstones(router.conn)
 
         # Purge run: nothing left to re-import (sibling was re-upserted
         # above), honest count, concept gone, tombstone consumed.
         with caplog.at_level(logging.INFO):
-            assert router.import_mgr.import_bundle(purge_deleted=True) == []
+            assert router.import_mgr.import_bundle(prune_missing=True) == []
         assert "purged 1 deleted concept" in caplog.text
         assert "docs/b" not in _concepts(router.conn)
         assert _tombstones(router.conn) == set()
 
         # Settled: quiet re-imports, no phantom deletions.
         assert router.import_mgr.import_bundle() == []
-        assert router.import_mgr.import_bundle(purge_deleted=True) == []
+        assert router.import_mgr.import_bundle(prune_missing=True) == []
         assert _tombstones(router.conn) == set()
 
 
@@ -270,7 +270,7 @@ class TestNestedDeletion:
 
         (Path(tmp) / "sub" / "b.md").unlink()
         gone = _native("sub", "b.md")
-        assert sorted(router.import_mgr.import_bundle(purge_deleted=False)) == ["root", "sub/a"]
+        assert sorted(router.import_mgr.import_bundle(prune_missing=False)) == ["root", "sub/a"]
         assert _tombstones(router.conn) == {gone}
         assert "root" in _concepts(router.conn)
 
@@ -328,19 +328,19 @@ class TestWedgeRepair:
             {"p": ".", "h": "0" * 64, "f": '["ghost.md"]'},
         )
 
-        report = router.diagnose()
+        report = router.doctor(stale_days=365)["report"]
         orphan = [f for f in report["findings"] if f["rule"] == "orphan_hash"]
         assert len(orphan) == 1
         assert orphan[0]["path"] == "ghost.md"
         assert orphan[0]["severity"] == "error"
 
-        fixed = router.doctor_fix()
+        fixed = router.doctor_mgr.fix()
         assert fixed["cleared_orphan_hashes"] == 1
         assert fixed["cleared_dir_hashes"] == 1
         assert _filehash_rows(router.conn) == []
         assert _dirhash_keys(router.conn) == set()
 
-        report2 = router.diagnose()
+        report2 = router.doctor(stale_days=365)["report"]
         assert not [f for f in report2["findings"] if f["rule"] == "orphan_hash"]
 
         # Repair un-wedged the baseline: the file imports normally.

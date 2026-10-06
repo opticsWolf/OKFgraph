@@ -306,7 +306,7 @@ class TestPurgeDeleted:
         (Path(tmp_dir) / "dir_w" / "w.md").unlink()
 
         # Purge via import_bundle
-        ids = router.import_mgr.import_bundle(purge_deleted=True)
+        ids = router.import_mgr.import_bundle(prune_missing=True)
         assert ids == []  # no changed files
 
         # Verify w is gone
@@ -318,7 +318,7 @@ class TestPurgeDeleted:
     def test_without_purge_concept_persists(self, seeded_bundle, tmp_dir, router):
         """Delete dir_y/y.md, re-import without purge → y still exists."""
         (Path(tmp_dir) / "dir_y" / "y.md").unlink()
-        ids = router.import_mgr.import_bundle(purge_deleted=False)
+        ids = router.import_mgr.import_bundle(prune_missing=False)
         assert ids == []  # no changed files
 
         row = router.conn.execute(

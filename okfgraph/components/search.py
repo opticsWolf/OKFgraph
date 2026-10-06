@@ -5,17 +5,11 @@ Query-vector encoding delegates to the injected EmbeddingEngine.
 """
 
 from __future__ import annotations
-import heapq
 import json
 import logging
-import math
-import re
-from collections import Counter, defaultdict, deque
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
+from okfgraph.errors import OKFError
 from okfgraph.models import ChunkModel, ConceptModel
 
 logger = logging.getLogger(__name__)
@@ -42,6 +36,12 @@ class SearchEngine:
         (notably QUERY_FTS_INDEX) on one connection segfault the process.
         Connections are cheap; each index query gets its own, with the
         extensions loaded explicitly (LOAD is per-connection).
+
+        Every QUERY_FTS_INDEX call must pass ``top := k``: ladybug 0.21.2
+        segfaults (multi-threaded scoring, deterministic) on an unbounded
+        FTS query whose terms match many rows — seen on a 28k-chunk graph
+        for a common word like "index". Any explicit ``top`` avoids it, and
+        RRF only consumes the first ``limit * 3`` hits anyway.
         """
         if self._db is None:
             res = self.conn.execute(cypher, params)
@@ -73,11 +73,13 @@ class SearchEngine:
         document appear in results.
         """
         if not getattr(self, "_search_available", False):
-            raise RuntimeError(
+            raise OKFError(
+                "SEARCH_UNAVAILABLE",
                 "Search is unavailable: the 'vector'/'fts' extensions could not "
                 "be loaded. Ensure the Ladybug extension repository is reachable, "
                 "then reopen the router (ingestion and graph queries do not need "
-                "these extensions)."
+                "these extensions).",
+                remedy="reopen the router so the vector/fts extensions load",
             )
         query_vec = self.embed_engine._encode(query, task="Query")
 
@@ -93,10 +95,11 @@ class SearchEngine:
             if node_id:
                 vec_scores[node_id] = 1 - row.get("distance", 0)
 
-        # Stage 2: Full-text search on chunks
+        # Stage 2: Full-text search on chunks (top-k bounded, see _index_rows)
         fts_rows = self._index_rows(
-            "CALL QUERY_FTS_INDEX('Chunk', 'chunk_fts', $query) RETURN node, score",
-            {"query": query},
+            "CALL QUERY_FTS_INDEX('Chunk', 'chunk_fts', $query, top := $k) "
+            "RETURN node, score",
+            {"query": query, "k": limit * 3},
         )
         fts_scores: Dict[str, float] = {}
         for row in fts_rows:
@@ -313,54 +316,59 @@ class SearchEngine:
         return results
 
 
-    def _get_ancestry(self, concept_id: str, max_depth: int = 5) -> List[Dict[str, Any]]:
-        """Return directory path from root to this concept."""
-        # Directory nodes only have an id (path), no title.
-        result = self.conn.execute("""
+    def get_context(self, concept_id: str, cap: int = 10) -> Dict[str, Any]:
+        """Ancestry + siblings in one call.
+
+        Public replacement for the former ``_get_ancestry``/``_get_siblings``
+        pair. Returns ``{"ancestry": [...], "siblings": [...]}``; the
+        ``siblings`` list is capped at ``cap`` entries.
+        """
+        # Ancestry: directory path from root. Directory nodes only have an
+        # id (path), no title.
+        result = self.conn.execute(
+            """
             MATCH (d:Directory)-[:CONTAINS*1..5]->(c:Concept {id: $cid})
             RETURN d.id AS dir_id
             LIMIT 1
         """, {"cid": concept_id})
-        rows = result.rows_as_dict().get_all()
-        if not rows:
-            return []
-        return [{"id": r["dir_id"]} for r in rows]
+        ancestry = [
+            {"id": r["dir_id"]} for r in result.rows_as_dict().get_all()
+        ]
 
-
-    def _get_siblings(self, concept_id: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Return other concepts in the same parent directory."""
-        parent_result = self.conn.execute("""
+        parent_rows = self.conn.execute(
+            """
             MATCH (d:Directory)-[:CONTAINS]->(c:Concept {id: $id})
             RETURN d.id AS parent_id
-        """, {"id": concept_id})
-        rows = parent_result.rows_as_dict().get_all()
-        if not rows:
-            # Concept not in a directory — find siblings by root-level concepts
-            root_result = self.conn.execute("""
+        """, {"id": concept_id}).rows_as_dict().get_all()
+        if not parent_rows:
+            # Concept not in a directory — siblings are the root-level concepts.
+            rows = self.conn.execute(
+                """
                 MATCH (c:Concept)
                 WHERE c.id <> $cid
                 AND NOT EXISTS { MATCH (:Directory)-[:CONTAINS]->(c) }
                 RETURN c.id AS id, c.title AS title, c.type AS type
-                LIMIT $limit
-            """, {"cid": concept_id, "limit": limit})
-            return [
+                LIMIT $cap
+            """, {"cid": concept_id, "cap": cap}).rows_as_dict().get_all()
+            return {"ancestry": ancestry, "siblings": [
                 {"id": r["id"], "title": r["title"], "type": r["type"]}
-                for r in root_result.rows_as_dict().get_all()
-            ]
-        parent_id = rows[0]["parent_id"]
+                for r in rows
+            ]}
+        parent_id = parent_rows[0]["parent_id"]
 
-        result = self.conn.execute("""
+        rows = self.conn.execute(
+            """
             MATCH (d:Directory {id: $pid})-[:CONTAINS]->(s:Concept)
             WHERE s.id <> $cid
             RETURN s.id AS id, s.title AS title, s.type AS type
-            LIMIT $limit
-        """, {"pid": parent_id, "cid": concept_id, "limit": limit})
-        return [
+            LIMIT $cap
+        """, {"pid": parent_id, "cid": concept_id, "cap": cap}).rows_as_dict().get_all()
+        return {"ancestry": ancestry, "siblings": [
             {"id": r["id"], "title": r["title"], "type": r["type"]}
-            for r in result.rows_as_dict().get_all()
-        ]
+            for r in rows
+        ]}
 
-
+    
     def search_with_context(
         self,
         query: str,
@@ -385,8 +393,9 @@ class SearchEngine:
                                       depth=context_hops)
             outgoing = self.traverse(parent_id, "LINKS_TO", "OUTGOING",
                                       depth=context_hops)
-            ancestry = self._get_ancestry(parent_id)
-            siblings = self._get_siblings(parent_id)
+            ctx = self.get_context(parent_id)
+            ancestry = ctx["ancestry"]
+            siblings = ctx["siblings"]
 
             enriched.append({
                 "chunk": chunk,
@@ -453,7 +462,6 @@ class SearchEngine:
         """, {"ids": chunk_ids})
         parent_rows = parents.rows_as_dict().get_all()
         parent_ids = [row["id"] for row in parent_rows]
-        parent_meta = {row["id"]: row for row in parent_rows}
 
         if not parent_ids:
             return []
@@ -553,11 +561,13 @@ class SearchEngine:
                 tags=tags, parent_id=parent_id,
             )
         if not getattr(self, "_search_available", False):
-            raise RuntimeError(
+            raise OKFError(
+                "SEARCH_UNAVAILABLE",
                 "Search is unavailable: the 'vector'/'fts' extensions could not "
                 "be loaded. Ensure the Ladybug extension repository is reachable, "
                 "then reopen the router (ingestion and graph queries do not need "
-                "these extensions)."
+                "these extensions).",
+                remedy="reopen the router so the vector/fts extensions load",
             )
         query_vec = self.embed_engine._encode(query, task="Query")
 
@@ -573,10 +583,11 @@ class SearchEngine:
             if node_id:
                 vec_scores[node_id] = 1 - row.get("distance", 0)
 
-        # Stage 2: Full-text search
+        # Stage 2: Full-text search (top-k bounded, see _index_rows)
         fts_rows = self._index_rows(
-            "CALL QUERY_FTS_INDEX('Concept', 'concept_fts', $query) RETURN node, score",
-            {"query": query},
+            "CALL QUERY_FTS_INDEX('Concept', 'concept_fts', $query, top := $k) "
+            "RETURN node, score",
+            {"query": query, "k": limit * 3},
         )
         fts_scores: Dict[str, float] = {}
         for row in fts_rows:
@@ -811,26 +822,26 @@ class SearchEngine:
     def find_path(
         self,
         start_id: str,
-        end_id: str,
-        max_length: int = 6,
+        target: str,
+        max_path_length: int = 6,
     ) -> List[Dict[str, Any]]:
         """Find the shortest path between two concepts.
 
         Uses BFS-style variable-length patterns across allowed edge types.
-        Returns a list of nodes on the path (including start and end) with
-        their id, title, and type.
+        Returns a list of nodes on the path (including start and target)
+        with their id, title, and type.
         """
-        max_length = max(1, min(int(max_length), 10))
+        max_path_length = max(1, min(int(max_path_length), 10))
         # Ladybug doesn't support MATCH path = ... or [*1..N] (any-rel).
         # Try increasing path lengths until we find a connection.
         # Note: Ladybug reserves $end as a parameter name, so use $sid/$eid.
-        for length in range(1, max_length + 1):
+        for length in range(1, max_path_length + 1):
             result = self.conn.execute(
                 f"""
                 MATCH (a:Concept {{id: $sid}})-[:CONTAINS|LINKS_TO|PART_OF|INCLUDES_ASSET*1..{length}]-(b:Concept {{id: $eid}})
                 RETURN a.id AS id, a.title AS title, a.type AS type
                 """,
-                {"sid": start_id, "eid": end_id},
+                {"sid": start_id, "eid": target},
             )
             rows = result.rows_as_dict().get_all()
             if rows:
@@ -845,7 +856,7 @@ class SearchEngine:
                     UNWIND nodes(p) AS node
                     RETURN node.id AS id, node.title AS title, node.type AS type
                     """,
-                    {"sid": start_id, "eid": end_id},
+                    {"sid": start_id, "eid": target},
                 )
                 return path_result.rows_as_dict().get_all()
         return []
@@ -977,6 +988,22 @@ class SearchEngine:
 
         return results_directories + results_concepts
 
+
+    def node_exists(self, node_id: str) -> bool:
+        """True if a Concept or Directory with this id exists.
+
+        Used by the ``traverse`` op to tell 'unknown start id' apart from
+        a legitimately empty result (an empty directory or a filtered-out
+        walk).
+        """
+        for label in ("Concept", "Directory"):
+            result = self.conn.execute(
+                f"MATCH (n:{label} {{id: $id}}) RETURN n.id AS id LIMIT 1",
+                {"id": node_id},
+            )
+            if result.rows_as_dict().get_all():
+                return True
+        return False
 
     def get_by_id(self, concept_id: str) -> Optional[ConceptModel]:
         """Fetch a full concept by ID, merging extra MAP fields back into the model."""

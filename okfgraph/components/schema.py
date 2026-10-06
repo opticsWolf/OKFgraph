@@ -7,7 +7,6 @@ here. Public callers reach these via router.<method> (component bridge).
 import logging
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 class SchemaManager:

@@ -13,7 +13,7 @@ from okfgraph.components.embedding import (
     MODEL_META_KEY,
     enforce_model_pin,
 )
-from okfgraph.config import DEFAULT_MODEL_ID, EmbeddingConfig, OKFConfig
+from okfgraph.settings import DEFAULT_MODEL_ID, Settings
 
 NANO = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 
@@ -22,39 +22,38 @@ NANO = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 
 def test_embedding_model_default_frozen():
     assert DEFAULT_MODEL_ID == "jinaai/jina-embeddings-v5-text-small-retrieval"
-    cfg = EmbeddingConfig()
-    assert cfg.model_id == DEFAULT_MODEL_ID
-    assert cfg.validate() == []
+    s = Settings()
+    assert s.model_id == DEFAULT_MODEL_ID
+    assert s.checks() == ([], [])
 
 
 def test_embedding_rejects_bad_model_id():
     for bad in ["", "no-slash", "a\"/b", "a'/b", "a;/b", "a\\/b"]:
-        cfg = EmbeddingConfig(model_id=bad)
-        assert any("embedding.model_id" in e for e in cfg.validate()), bad
+        errors, _ = Settings(model_id=bad).checks()
+        assert any("embedding.model_id" in e for e in errors), bad
 
 
 def test_embedding_accepts_registry_and_custom_ids():
-    assert EmbeddingConfig(model_id=NANO).validate() == []
-    assert EmbeddingConfig(model_id="someone/custom-embed").validate() == []
+    assert Settings(model_id=NANO).checks() == ([], [])
+    assert Settings(model_id="someone/custom-embed").checks() == ([], [])
 
 
 def test_toml_parses_model_id(tmp_path):
     toml = tmp_path / "okfgraph.toml"
     toml.write_text(f'[embedding]\nmodel_id = "{NANO}"\n', encoding="utf-8")
-    cfg = OKFConfig.load(bundle_root=str(tmp_path))
-    assert cfg.embedding.model_id == NANO
+    s = Settings.load(bundle_root=str(tmp_path))
+    assert s.model_id == NANO
 
 
 def test_env_overrides_model_id(monkeypatch):
-    monkeypatch.setenv("OKFGRAPH_MODEL", NANO)
-    cfg = OKFConfig.load()
-    assert cfg.embedding.model_id == NANO
+    monkeypatch.setenv("OKFGRAPH_MODEL_ID", NANO)
+    s = Settings.load()
+    assert s.model_id == NANO
 
 
 def test_cli_overrides_model_id():
-    cfg = OKFConfig()
-    OKFConfig._apply_cli(cfg, {"model": NANO})
-    assert cfg.embedding.model_id == NANO
+    s = Settings.load(cli_args={"model_id": NANO})
+    assert s.model_id == NANO
 
 
 # ---- router (cold) ---------------------------------------------------------
@@ -88,8 +87,8 @@ def test_cli_model_reaches_router(tmp_path):
     from okfgraph.cli import _router, build_parser
 
     args = build_parser().parse_args(
-        ["doctor", "--db", str(tmp_path / "m.db"),
-         "--bundle", str(tmp_path), "--model", NANO])
+        ["doctor", "--db-path", str(tmp_path / "m.db"),
+         "--bundle-root", str(tmp_path), "--model-id", NANO])
     router = _router(args)
     try:
         assert router.model_id == NANO

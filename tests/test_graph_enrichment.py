@@ -61,14 +61,14 @@ class TestGraphEnrichment:
         # hub_doc is linked by many others (high hub score)
         body_hub = "## Hub Document\n\nThis is the central hub concept. " * 20
         p_hub = _write_okf(tmp_dir, "hub.md", "Hub Doc", body_hub, tags=["hub"])
-        id_hub = router.import_from_okf(p_hub)
+        id_hub = router.import_file(p_hub)["concept_id"]
 
         # Several docs that link to hub
         ids = [id_hub]
         for i in range(3):
             body = f"## Spoke {i}\n\nContent linked to hub. " * 20 + "\n\n[[hub]]"
             p = _write_okf(tmp_dir, f"spoke_{i}.md", f"Spoke {i}", body, tags=["spoke"])
-            cid = router.import_from_okf(p)
+            cid = router.import_file(p)["concept_id"]
             ids.append(cid)
 
         cls._linked_docs = (id_hub, ids[1:])
@@ -97,14 +97,16 @@ class TestGraphEnrichment:
 
     def test_get_ancestry(self, router, linked_docs):
         hub_id, _ = linked_docs
-        path = router.search_engine._get_ancestry(hub_id)
+        ctx = router.search_engine.get_context(hub_id)
+        path = ctx["ancestry"]
         # Returns list of ancestors (may be empty if at root)
         assert isinstance(path, list)
 
     def test_get_siblings(self, router, linked_docs):
         hub_id, spoke_ids = linked_docs
         # Hub and spokes share the root directory, so siblings exist
-        siblings = router.search_engine._get_siblings(hub_id)
+        ctx = router.search_engine.get_context(hub_id)
+        siblings = ctx["siblings"]
         assert isinstance(siblings, list)
 
     def test_search_chunks_with_hub_score(self, router, linked_docs):

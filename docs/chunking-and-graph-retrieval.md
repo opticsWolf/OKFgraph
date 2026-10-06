@@ -1,5 +1,13 @@
 # OKF Graph-Aware Chunking & Retrieval — Implementation Specification
 
+> **Status (0.10):** the chunking feature shipped long ago; this is its
+> implementation record. Code samples were re-pointed to the unified op
+> vocabulary (`import_file`, `search(target="chunks")`,
+> `read(include="document")`), but §9 “Tool Definitions (tools.py)” and
+> §10 “CLI Updates” describe the surface *as planned then* — the tool
+> list and shell grammar live in `mcp_server.py` / `cli.py` now (8 MCP
+> tools, shell shorthand through the same subparsers). History in git.
+
 ## 1. Architecture Overview
 
 ```
@@ -417,10 +425,10 @@ Static method — no chunker instance needed.
 
 ## 5. Ingestion Pipeline
 
-### 5.1 Updated `import_from_okf()`
+### 5.1 Single-file import (`import_file`)
 
 ```python
-def import_from_okf(
+def import_file(
     self,
     file_path: Path,
     mode: "str | IngestMode" = IngestMode.TEXT,
@@ -1295,8 +1303,8 @@ class TestChunkSearch:
         )
 
         with self.router:
-            self.router.import_from_okf(Path(self.tmpdir / "ml.md"))
-            self.router.import_from_okf(Path(self.tmpdir / "dl.md"))
+            self.router.import_file(Path(self.tmpdir) / "ml.md")["concept_id"]
+            self.router.import_file(Path(self.tmpdir) / "dl.md")["concept_id"]
 
     def teardown_method(self):
         import shutil
@@ -1359,9 +1367,9 @@ class TestGraphEnrichment:
             "---\ntype: note\ntitle: Doc Three\n---\nContent of doc three."
         )
         with self.router:
-            self.router.import_from_okf(Path(self.tmpdir / "doc1.md"))
-            self.router.import_from_okf(Path(self.tmpdir / "doc2.md"))
-            self.router.import_from_okf(Path(self.tmpdir / "doc3.md"))
+            self.router.import_file(Path(self.tmpdir) / "doc1.md")["concept_id"]
+            self.router.import_file(Path(self.tmpdir) / "doc2.md")["concept_id"]
+            self.router.import_file(Path(self.tmpdir) / "doc3.md")["concept_id"]
 
     def teardown_method(self):
         import shutil
@@ -1417,8 +1425,9 @@ class TestEndToEnd:
                 "It has multiple paragraphs for chunking."
             )
             with OKFRouter(":memory:", tmpdir, enable_chunking=True) as router:
-                router.import_from_okf(Path(tmpdir / "test.md"))
-                results = router.search_chunks("machine learning", limit=5)
+                router.import_file(Path(tmpdir) / "test.md")["concept_id"]
+                results = router.search("machine learning",
+                                        target="chunks", limit=5)
                 assert len(results) > 0
                 for r in results:
                     doc = router.get_by_id(r["parent_doc_id"])
@@ -1435,9 +1444,10 @@ class TestEndToEnd:
             (Path(tmpdir) / "a.md").write_text("---\ntype: note\ntitle: A\n---\nA content.")
             (Path(tmpdir) / "b.md").write_text("---\ntype: note\ntitle: B\n---\nB content. [A](a.md)")
             with OKFRouter(":memory:", tmpdir, enable_chunking=True) as router:
-                router.import_from_okf(Path(tmpdir / "a.md"))
-                router.import_from_okf(Path(tmpdir / "b.md"))
-                results = router.search_with_context("content", limit=3)
+                router.import_file(Path(tmpdir) / "a.md")["concept_id"]
+                router.import_file(Path(tmpdir) / "b.md")["concept_id"]
+                results = router.search("content", target="chunks",
+                                        context_hops=1, limit=3)
                 for r in results:
                     assert r["chunk"]["chunk_text"]
                     assert r["document"].body
@@ -1452,8 +1462,8 @@ class TestEndToEnd:
             body = "# Title\n\nPara 1.\n\n- list item\n\n> quote\n\n`code`."
             (Path(tmpdir) / "test.md").write_text(body)
             with OKFRouter(":memory:", tmpdir, enable_chunking=True) as router:
-                router.import_from_okf(Path(tmpdir / "test.md"))
-                reconstructed = router.reconstruct_document("test")
+                router.import_file(Path(tmpdir) / "test.md")["concept_id"]
+                reconstructed = router.read("test", include="document")
                 assert "Title" in reconstructed
                 assert "Para 1" in reconstructed
         finally:

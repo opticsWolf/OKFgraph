@@ -4,6 +4,158 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.10.0] — 2026-10-06
+
+Surface unification. **Breaking release**: every operation exists once
+across CLI / MCP / Python — one vocabulary, one rendering, one error
+contract. Renames are atomic; legacy spellings are gone, not deprecated.
+
+### Added
+- **Typed errors + result envelope (§4).** `okfgraph.errors`:
+  `OKFError(code, message, fields?, remedy?)` with a closed code set;
+  the subclass encodes the class (usage `exit 2`, state/outcome `exit 1`;
+  diff/doctor/lint outcomes are domain results). Adapters: CLI prints
+  `[ERROR] code: message [remedy]` on stderr and exits by code; failure
+  exit codes all non-zero (0.9's silent-error paths are gone). Every
+  CLI/MCP success response is an envelope
+  `{ok, op, data, warnings, error}`; MCP failures raise so the result
+  carries `isError: true` with the error envelope as text, and untyped
+  exceptions arrive wrapped as `INTERNAL` — no bare tracebacks anywhere.
+- **Global `--json`** on every CLI command (D5): human render by default,
+  envelope on stdout with `--json` (outcome reports ride in `data`,
+  never inside `error`); `[ERROR]` lines stay on stderr (D6).
+- **Image ops on all three surfaces (Q5→B).** MCP tools `list_images`
+  and `get_image` (surface 5 → 8); CLI verbs `okf images CONCEPT_ID` and
+  `okf image ASSET_ID [--output-path F]`; ops `list_images(concept_id)` /
+  `get_image(asset_id)` (`UNKNOWN_CONCEPT` / `UNKNOWN_ASSET` typed).
+- **23 canonical ops on the `OKFRouter` facade** (`ops/query.py`,
+  `ops/ingest.py`, `ops/export.py`, `ops/admin.py`): query ops
+  (`search`, `read`, `traverse`), ingest (`ingest(kind,…)`), export
+  (`export_bundle`, `export_concept`), admin (`init`, `model_info`,
+  `import_bundle`, `import_file`, `doctor`, `diff`, `lint`, `produce`,
+  `reindex`, `list_deleted`/`recover_deleted`/`purge_deleted`, `detach`,
+  `list_broken_links`/`repair_links`, `list_images`/`get_image`);
+  static ops for router-free paths (model_info/lint/produce). The
+  interactive shell now parses every line through the same
+  `build_parser()` subcommands (`search chunks:<q> hub` shorthand kept).
+- `okfgraph.toml` is the canonical settings table (§3.1): per-key
+  precedence CLI > env > TOML > defaults with a presence-based merge;
+  generated CLI flags + env names; `[database] db_path` etc.; invalid
+  values/scopes are refused (`CONFIG_INVALID`).
+
+### Changed
+- **Ingest (§3.5):** one `ingest(kind, …)` dispatcher on `IngestManager`
+  and the router (`ingest_md`/`ingest_pdf`/`ingest_thoughts` deleted);
+  `auto_import` defaults **true** (X4) with CLI `--no-auto-import` for
+  convert-only; per-kind refusal typed as `MISSING_PARAM`, missing file
+  as `FILE_NOT_FOUND` (exit 2, was warning-with-success).
+- **Search refusals (X3):** a chosen path ignores a param →
+  `BAD_VALUE` naming it (images refuses all extras; rank on chunks
+  refused; documented precedence `hub_rerank` > `expand` > plain).
+  `read`: unknown ids refused (`UNKNOWN_CONCEPT`) instead of silent
+  empties; traversal walks the same (`node_exists` check); empty
+  `traverse` start lists the root.
+- **CLI flags (§3.6/§3.7):** `--db` → `--db-path`; `--bundle` →
+  `--bundle-root` (single value) or `--bundle-path` (one-call pin);
+  `--primary` collapsed into `--bundle-root`; extra roots via the
+  global `--root ALIAS=PATH` (per call) or TOML `[[roots]]` (persisted);
+  `--dim` → `--embedding-dim`; `--model`
+  → `--model-id`; `--image-model` → `--image-model-id`; ingest
+  `--md-file/--pdf-file/--output` → `--md-path/--pdf-path/--output-dir`;
+  `--purge` → `--prune-missing` (also on `import`); export/produce
+  `--output` → `--output-dir`, `--type` → `--concept-type`,
+  `--parent` → `--directory-id`; `no_chunking` → `enable_chunking`
+  (`--no-chunking` flips); `import_from_okf` → `import_file`;
+  `export_to_okf` → `export_concept`; `diagnose` → `doctor(stale_days,…)`
+  and `doctor_fix` → `doctor(fix=True)`; `diff_db_dir`/`diff_dirs` →
+  `diff(old?, new?)`; component `import_bundle(purge_deleted=…)` →
+  `prune_missing`; `PurgeManager._recover_concept` → public
+  `recover_deleted`. **`okfgraph/tools.py` deleted** (the duplicate
+  tool list) and `okfgraph/config.py` deleted (absorbed by
+  `okfgraph/settings.py` — config spellings raise a pointed error, X6).
+- **Exit codes (§4):** CLI exits `0` ok, `1` state/outcome (diff
+  different 0.9's exit 2 → 1, doctor `--strict`=1, lint errors),
+  `2` usage (refusals that 0.9 reported as 0-nowarn), `130` interrupt.
+- **Contract hardening (review pass):**
+  - Outcome errors carry their result on `err.data` (lint report, diff
+    report, doctor `{report, fixed}`); envelopes put it in `data`
+    automatically. The error class always follows the code, whichever
+    subclass is constructed; errors pickle.
+  - New state code `DETACH_REFUSED`; remaining untyped `ValueError`s
+    on caller paths (`_require_root`, converter `routing_mode`, produce,
+    drift diff without a root, router construction) are typed instead of
+    surfacing as `INTERNAL`.
+  - More refusals (X3): search `context_hops` without `expand`,
+    `max_chunks_per_doc` off the plain chunk path, `hub_weight` without
+    `rank='hub'`/`hub_rerank`, bad `limit`/`target`/`rank`; traverse
+    params the chosen mode ignores (incl. `max_path_length` on a walk);
+    ingest params belonging to another kind; `read max_tokens < 1`.
+  - `read(include="chunks")` returns plain dicts (no embeddings) —
+    `--json`/MCP no longer emit model reprs.
+  - MCP: `db_path` may come from `OKFGRAPH_DB_PATH` or TOML (was an
+    argparse-required flag); a missing/invalid config exits 2 with
+    `[ERROR] CONFIG_INVALID`. `ingest` `mode`/`batch_size` follow
+    `[import]` settings, as do CLI `import`/`ingest`.
+  - CLI: every command takes `--json`; results print to stdout (`-q`
+    silences logs only); `import F...` refuses missing files up front
+    (`FILE_NOT_FOUND`) instead of skipping them; `export` requires
+    exactly one of `--all`/`--concept-id`; `search --max-chunks-per-doc`
+    added; the shell's `ingest` auto-imports like the CLI.
+
+### Removed
+- `okfgraph/config.py`, `okfgraph/tools.py`, the legacy tool list, all
+  facade `*args/**kwargs` proxies; 0.9's per-surface flag spellings
+  (`--db`, `--bundle`, `--dim`, `--model`, `--md-file`, `--pdf-file`,
+  `--purge`, `no_chunking`, …). No aliases: old spellings raise — CLI
+  parsers run with `allow_abbrev=False`, so prefix shortcuts like
+  `okf export --output` (argparse prefix matching) refuse too.
+
+### Fixed (field report)
+- **`okf model-info` crashed with `ModuleNotFoundError: huggingface_hub`.
+  Now `embroider.cache_info` (embroider ≥ 0.3.2, new pin floor) answers
+  the cache offline: it inspects the repo the engine would really open
+  (the FP16 mirror on CUDA), returning `repo`, `files`, `precision`,
+  `cached`, `snapshot_path`, `disk_usage_bytes`. An embroider below
+  0.3.2 raises typed `EMBROIDER_TOO_OLD` with an upgrade remedy.
+- **Chunk search segfault (exit 139).** ladybug 0.21.2 crashes
+  deterministically in multi-threaded scoring of an unbounded
+  `QUERY_FTS_INDEX` whose terms match many rows (a 28k-chunk graph, a
+  common word like "index"). Both FTS stages (chunks, concepts) now pass
+  `top := limit * 3`, the depth RRF consumes anyway; any explicit `top`
+  avoids the crash.
+- **Windows render crash (cp1252).** `print()` on a Windows console
+  dies with `UnicodeEncodeError` when graph content carries `←`, `≤`,
+  arrows or emoji — typed `INTERNAL`, exit 1 (stress harness caught it:
+  2 of 90 search cases). The CLI now reconfigures stdout/stderr to
+  UTF-8 (`errors="replace"`) at boot, like every modern CLI.
+- **md ingest never rewrites the source file.** Lint runs report-only
+  (`lint_issues` gains `fixable_count`; `fixed_count` stays 0), matching
+  bulk import; the old in-place auto-fix could touch any file passed as
+  `md_path` (e.g. a `.bib`). Converter output (pdf kind) is still fixed.
+- **md ingest `image_count`** reported `len()` of the 7-key stats dict
+  (always 7); now counts linked images. Relative image paths resolve
+  against the source file's folder instead of the CWD.
+- **ONNX Runtime hint:** an installed-but-unimportable runtime (partial
+  uninstall, locked DLL) was reported as "no ONNX Runtime installed";
+  now typed `NO_ORT_RUNTIME` naming the installed distribution and the
+  import error (also in `doctor`'s `ort_runtime` info; `ort_info()`
+  gains `import_error`).
+### Added (field-report decisions)
+- **`delete(concept_id)` op (D2-a; surface 23 → 24 ops).** Soft-deletes a
+  concept — recoverable 24 h (`deleted-recover`/`deleted-purge` manage the
+  window). Refuses with `BAD_VALUE` (remedy included) while a source file
+  backing the concept still exists: delete or move the file, then
+  `import --all --prune-missing`; rootless content (thoughts) deletes
+  freely. CLI `okf delete ID`. **Not on MCP** (destructive; agents get
+  `ingest` only).
+- **`--json` quiets the log stream (D3).** With `--json` the console log
+  level defaults to WARNING (verbose/quiet still win), so harnesses that
+  merge stderr into stdout keep parsing the stdout envelope.
+
+- **Database held by another process** (an `okf-mcp` server, a parallel
+  `okf`) raised a raw ladybug `RuntimeError` (`INTERNAL`); now the new
+  state code `DB_LOCKED` with a remedy.
+
 ## [0.9.0] — 2026-10-03
 
 ### Added

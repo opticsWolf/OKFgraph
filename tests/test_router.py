@@ -87,9 +87,9 @@ class TestOKFRouterSmoke:
         from okfgraph.components import EmbeddingEngine
         assert hasattr(EmbeddingEngine, "_encode")
 
-    def test_search_hybrid_method_exists(self):
+    def test_search_method_exists(self):
         from okfgraph.router import OKFRouter
-        assert hasattr(OKFRouter, "search_hybrid")
+        assert hasattr(OKFRouter, "search")  # canonical search op
 
     def test_traverse_method_exists(self):
         from okfgraph.router import OKFRouter
@@ -103,13 +103,13 @@ class TestOKFRouterSmoke:
         from okfgraph.router import OKFRouter
         assert hasattr(OKFRouter, "get_by_id")
 
-    def test_import_from_okf_method_exists(self):
+    def test_import_file_op_exists(self):
         from okfgraph.router import OKFRouter
-        assert hasattr(OKFRouter, "import_from_okf")
-
-    def test_export_to_okf_method_exists(self):
+        assert hasattr(OKFRouter, "import_file")
+    def test_export_ops_method_exists(self):
         from okfgraph.router import OKFRouter
-        assert hasattr(OKFRouter, "export_to_okf")
+        assert hasattr(OKFRouter, "export_concept")
+        assert hasattr(OKFRouter, "export_bundle")
 
     def test_list_broken_links_method_exists(self):
         from okfgraph.router import OKFRouter
@@ -138,10 +138,9 @@ class TestCacheManagement:
         from okfgraph.router import OKFRouter
         info = OKFRouter.model_info()
         assert isinstance(info, dict)
-        assert "model_id" in info
-        assert "cache_dir" in info
-        assert "cached" in info
-        assert "disk_usage_bytes" in info
+        for key in ("model_id", "repo", "files", "cache_dir", "cached",
+                    "snapshot_path", "disk_usage_bytes"):
+            assert key in info
 
     def test_model_info_custom_cache_dir(self):
         from okfgraph.router import OKFRouter
@@ -149,12 +148,24 @@ class TestCacheManagement:
         with tempfile.TemporaryDirectory() as tmp:
             info = OKFRouter.model_info(cache_dir=tmp)
             assert info["cache_dir"] == tmp
-            assert info["cached"] is False  # empty dir
+            assert info["cached"] is False  # empty dir (offline walker)
+            assert info["files"] and all(v is None
+                                         for v in info["files"].values())
+            assert info["snapshot_path"] is None
 
     def test_model_info_model_id(self):
         from okfgraph.router import OKFRouter
-        info = OKFRouter.model_info(model_id="jinaai/jina-embeddings-v5-text-small-retrieval")
+        info = OKFRouter.model_info(
+            model_id="jinaai/jina-embeddings-v5-text-small-retrieval")
         assert info["model_id"] == "jinaai/jina-embeddings-v5-text-small-retrieval"
+
+    def test_model_info_bare_legacy_id_refused(self):
+        from okfgraph.router import OKFRouter
+        from okfgraph.errors import OKFError
+        import pytest
+        with pytest.raises(OKFError) as exc:
+            OKFRouter.model_info(model_id="auto")
+        assert exc.value.code == "BAD_VALUE"
 
 
 class TestDeviceSelection:
@@ -190,67 +201,8 @@ class TestDeviceSelection:
         assert err.count("falling back to CPU") <= 1
 
 
-class TestTools:
-    def test_tools_export(self):
-        from okfgraph.tools import TOOLS
-        assert len(TOOLS) == 16  # 13 original + ingest_md + ingest_thoughts + ingest_pdf
-
-    def test_tool_names(self):
-        from okfgraph.tools import TOOLS
-        names = [t["name"] for t in TOOLS]
-        assert "search_hybrid" in names
-        assert "traverse" in names
-        assert "get_by_id" in names
-        assert "list_directory" in names
-        assert "ingest_md" in names
-        assert "ingest_thoughts" in names
-
-    def test_search_hybrid_has_query_param(self):
-        from okfgraph.tools import TOOLS
-        tool = next(t for t in TOOLS if t["name"] == "search_hybrid")
-        assert "query" in tool["parameters"]["properties"]
-        assert "query" in tool["parameters"]["required"]
-
-    def test_traverse_has_start_id_param(self):
-        from okfgraph.tools import TOOLS
-        tool = next(t for t in TOOLS if t["name"] == "traverse")
-        assert "start_id" in tool["parameters"]["properties"]
-        assert "start_id" in tool["parameters"]["required"]
-
-    def test_ingest_md_tool_parameters(self):
-        from okfgraph.tools import TOOLS
-        tool = next(t for t in TOOLS if t["name"] == "ingest_md")
-        assert "md_path" in tool["parameters"]["required"]
-        assert "auto_import" not in tool["parameters"]["properties"]  # not exposed to LLM
-        assert tool["parameters"]["properties"]["mode"]["enum"] == ["text", "optional", "omni"]  # 0.8.0: vision route restored
-
-    def test_ingest_thoughts_tool_parameters(self):
-        from okfgraph.tools import TOOLS
-        tool = next(t for t in TOOLS if t["name"] == "ingest_thoughts")
-        assert set(tool["parameters"]["required"]) == {"thoughts", "topic"}
-        assert "topic" in tool["parameters"]["properties"]
-
-    def test_write_tools_reference_each_other(self):
-        """Write tools should reference each other in descriptions."""
-        from okfgraph.tools import TOOLS
-        ingest_md = next(t for t in TOOLS if t["name"] == "ingest_md")
-        ingest_thoughts = next(t for t in TOOLS if t["name"] == "ingest_thoughts")
-        # ingest_md references ingest_thoughts
-        assert "ingest_thoughts" in ingest_md["description"].lower()
-        # ingest_thoughts references ingest_md
-        assert "ingest_md" in ingest_thoughts["description"].lower()
-
-    def test_read_tools_mention_write_operations(self):
-        """Read-only tools should mention write operations in descriptions."""
-        from okfgraph.tools import TOOLS
-        search = next(t for t in TOOLS if t["name"] == "search_hybrid")
-        assert "ingest_md" in search["description"].lower()
-        traverse = next(t for t in TOOLS if t["name"] == "traverse")
-        assert "ingest_thoughts" in traverse["description"].lower()
-
-
 class TestIngestMd:
-    """Tests for OKFRouter.ingest_md()."""
+    """Tests for OKFRouter..ingest("md")."""
 
     def test_import_existing_file(self, tmp_path):
         """Import a valid markdown file."""
@@ -267,7 +219,7 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_md(md_path)
+        result = r.ingest_mgr.ingest("md", md_path=md_path)
 
         assert "concept_id" in result
         assert result["title"] == "Test"
@@ -275,27 +227,51 @@ class TestIngestMd:
         r.close()
 
     def test_import_with_linting(self, tmp_path):
-        """Linting auto-fixes fixable issues."""
+        """md ingest reports fixable lint issues but never rewrites the source."""
         from okfgraph.router import OKFRouter
 
         md_path = tmp_path / "test.md"
-        md_path.write_text(
-            "---\ntitle: Test\n---\n\nHello  \n\nWorld",
-            encoding="utf-8",
-        )  # trailing spaces (MD009)
+        original = b"---\ntitle: Test\n---\n\nHello  \n\nWorld"  # MD009 + MD047
+        md_path.write_bytes(original)
 
         r = OKFRouter(
             db_path=str(tmp_path / "test.db"),
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_md(md_path)
+        result = r.ingest_mgr.ingest("md", md_path=md_path)
 
-        assert result["lint_issues"]["fixed_count"] > 0
+        assert result["lint_issues"]["fixable_count"] > 0
+        assert result["lint_issues"]["fixed_count"] == 0
+        assert md_path.read_bytes() == original
         r.close()
 
+    def test_md_ingest_image_count(self, tmp_path):
+        """image_count counts linked images, not the stats dict's keys (was 7)."""
+        from okfgraph.router import OKFRouter
+
+        (tmp_path / "pic.png").write_bytes(
+            b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        no_img = tmp_path / "plain.md"
+        no_img.write_text("---\ntitle: Plain\n---\n\nSee https://example.org/x.png\n",
+                          encoding="utf-8")
+        one_img = tmp_path / "one.md"
+        one_img.write_text("---\ntitle: One\n---\n\n![a pic](pic.png)\n",
+                           encoding="utf-8")
+        r = OKFRouter(
+            db_path=str(tmp_path / "test.db"),
+            bundle_root=str(tmp_path),
+            device="cpu",
+        )
+        try:
+            assert r.ingest_mgr.ingest("md", md_path=no_img)["image_count"] == 0
+            assert r.ingest_mgr.ingest("md", md_path=one_img, mode="text")["image_count"] == 1
+        finally:
+            r.close()
+
     def test_import_nonexistent_file(self, tmp_path):
-        """Importing a non-existent file raises FileNotFoundError."""
+        """Importing a non-existent file raises OKFError(FILE_NOT_FOUND)."""
+        from okfgraph.errors import OKFError
         from okfgraph.router import OKFRouter
 
         r = OKFRouter(
@@ -303,8 +279,9 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        with pytest.raises(FileNotFoundError):
-            r.ingest_mgr.ingest_md("/nonexistent/path.md")
+        with pytest.raises(OKFError) as err:
+            r.ingest_mgr.ingest("md", md_path="/nonexistent/path.md")
+        assert err.value.code == "FILE_NOT_FOUND"
         r.close()
 
     def test_import_with_explicit_metadata(self, tmp_path):
@@ -322,11 +299,9 @@ class TestIngestMd:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_md(
-            md_path,
+        result = r.ingest_mgr.ingest("md", md_path=md_path,
             title="Override",
-            tags=["custom", "test"],
-        )
+            tags=["custom", "test"],)
 
         assert result["title"] == "Override"
         assert "custom" in result["tags"]
@@ -335,7 +310,7 @@ class TestIngestMd:
 
 
 class TestIngestThoughts:
-    """Tests for OKFRouter.ingest_thoughts()."""
+    """Tests for OKFRouter..ingest("thoughts")."""
 
     def test_store_reasoning(self, tmp_path):
         """Store reasoning as a searchable concept."""
@@ -346,10 +321,8 @@ class TestIngestThoughts:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_thoughts(
-            thoughts="I think we should use X because Y and Z.",
-            topic="architecture",
-        )
+        result = r.ingest_mgr.ingest("thoughts", thoughts="I think we should use X because Y and Z.",
+            topic="architecture",)
 
         assert "concept_id" in result
         assert result["topic"] == "architecture"
@@ -371,13 +344,11 @@ class TestIngestThoughts:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_thoughts(
-            thoughts="The best approach is to use a graph database.",
-            topic="database",
-        )
+        result = r.ingest_mgr.ingest("thoughts", thoughts="The best approach is to use a graph database.",
+            topic="database",)
 
         # Search should find it
-        results = r.search_hybrid("graph database")
+        results = r.search("graph database")
         ids = [r["id"] for r in results]
         assert result["concept_id"] in ids
         r.close()
@@ -391,11 +362,9 @@ class TestIngestThoughts:
             bundle_root=str(tmp_path),
             device="cpu",
         )
-        result = r.ingest_mgr.ingest_thoughts(
-            thoughts="Test reasoning.",
+        result = r.ingest_mgr.ingest("thoughts", thoughts="Test reasoning.",
             topic="test",
-            concept_id="my_custom_id",
-        )
+            concept_id="my_custom_id",)
 
         assert result["concept_id"] == "my_custom_id"
 
@@ -410,10 +379,8 @@ class TestIngestThoughts:
         )
         # Thoughts with trailing whitespace and extra blank lines
         bad_thoughts = "   This has trailing spaces.   \n\n\n\n\nParagraph two.   "
-        result = r.ingest_mgr.ingest_thoughts(
-            thoughts=bad_thoughts,
-            topic="linting_test",
-        )
+        result = r.ingest_mgr.ingest("thoughts", thoughts=bad_thoughts,
+            topic="linting_test",)
         assert result["concept_id"].startswith("thoughts/linting_test/")
         # Lint result should be present
         assert "lint_issues" in result

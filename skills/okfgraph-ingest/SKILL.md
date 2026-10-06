@@ -19,7 +19,7 @@ early, feed it structured.
 |---|---|---|
 | Decision, insight, or reasoning from this session | `thoughts` | Cheapest, highest value. Always set `topic`. |
 | Existing markdown (docs, notes, ADRs) | `md` | One file per call; bulk dirs via `okf import`. |
-| Papers, reports, scans | `pdf` (`--pdf-file` also takes Office: docx/xlsx/pptx, legacy doc/xls/ppt — bobine dispatches on extension) | See converter modes below. |
+| Papers, reports, scans | `pdf` (`--pdf-path` also takes Office: docx/xlsx/pptx, legacy doc/xls/ppt — bobine dispatches on extension) | See converter modes below. |
 | Whole bundle directory changed | `okf import` (CLI) | Delta-aware: only changed files re-embed. |
 
 Rule of thumb: thoughts > md > pdf. Reasoning you already hold beats
@@ -35,17 +35,35 @@ re-extracting it from files.
 - `kind="md"`: `md_path` (+ optional `concept_id`, `title`, `description`,
   `tags`, `mode`).
 - `kind="pdf"`: `pdf_path` (+ `routing_mode`, `extract_images`, `mode`).
+- Omitted `mode` follows the configured `[import] mode` (default `text`).
+- `data` per kind: md → `{concept_id, title, chunk_count, image_count,
+  lint_issues, ...}`; thoughts → `{concept_id, topic, chunk_count, ...}`;
+  pdf → `{concept_ids, page_count, md_path, image_dir}`. Params that
+  belong to another kind are refused, not ignored.
+- md ingest never modifies `md_path`: `lint_issues` (`fixable_count`,
+  `unfixable_count`, `error_count`) is a report only. `image_count` counts
+  real `![alt](src)` images resolved next to the file (or remote).
+- Ingest is not content-idempotent: ingesting the same reasoning under a
+  new id mints a new concept. Wrongly imported? CLI `okf delete ID`
+  soft-deletes it (24 h recover window); file-backed concepts must have
+  their source removed + `import --all --prune-missing` first (the graph
+  never drifts from the bundle).
 
 ## CLI: `okf ingest`
 
 - `--kind thoughts --thoughts TEXT --topic TOPIC [--tags a,b]`
-- `--kind md --md-file F [--concept-id ID] [--title T] [--tags a,b]`
-- `--kind pdf --pdf-file F [--auto-import] [--routing-mode ...]`
-  Bulk: `okf import --all --bundle DIR` (`--purge` drops deleted concepts).
+- `--kind md --md-path F [--concept-id ID] [--title T] [--tags a,b]`
+- `--kind pdf --pdf-path F [--routing-mode ...]` — auto-imports by default;
+  `--no-auto-import` converts only (next to the source, or
+  `--output-dir DIR`), then `okf import --all --bundle-path DIR`.
+  Bulk: `okf import --all [--bundle-path DIR]` (`--prune-missing` drops
+  concepts whose files vanished from disk).
+- `--json` prints the same `data` as the MCP tool inside the envelope.
 
 ## Namespaced IDs (multi-root graphs)
 
-- A file inside a named root (`--bundle-root ALIAS=PATH`) mints
+- A file inside a named root (TOML `[[roots]]` or `--root ALIAS=PATH`,
+  repeatable — the primary root is `bundle_root`) mints
   `@alias/rel` instead of the bare id — same stem in two roots no longer
   collides. Omit `--concept-id` to get the resolved id; an explicit
   `--concept-id` always wins.

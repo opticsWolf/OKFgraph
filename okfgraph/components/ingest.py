@@ -1,28 +1,28 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import heapq
-import json
 import logging
-import math
-import os
 import re
-import time
 import uuid
-from contextlib import contextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Set
-from urllib.parse import urlparse
+from typing import Any, Callable, Dict
 
 import mordant
-import numpy as np
-import yaml
 import frontmatter
-from okfgraph.models import ChunkModel, ConceptModel, normalize_tags
+from okfgraph.models import ConceptModel, normalize_tags
+from okfgraph.errors import OKFError
 
 logger = logging.getLogger(__name__)
+
+#: Optional (None-default) ingest params each kind honours; passing any
+#: other one is refused rather than silently dropped.
+_INGEST_HONOURS = {
+    "md": frozenset({"md_path", "concept_id", "title", "description", "tags"}),
+    "thoughts": frozenset({"thoughts", "topic", "concept_id", "tags"}),
+    "pdf": frozenset({"pdf_path", "output_dir"}),
+}
+
 
 def _slugify_topic(topic: str) -> str:
     """Map a thought topic to a single safe namespace level.
@@ -34,6 +34,16 @@ def _slugify_topic(topic: str) -> str:
     """
     slug = re.sub(r"[^A-Za-z0-9_.\-]+", "_", topic.lower().replace(" ", "_"))
     return slug.strip("._")[:30]
+
+
+def _require_file(path: str | Path, kind: str = "file") -> None:
+    """Raise the typed ``FILE_NOT_FOUND`` error when a path is absent."""
+    if not Path(path).exists():
+        raise OKFError(
+            "FILE_NOT_FOUND",
+            f"{kind} not found: {path}",
+            fields={"path": str(path)},
+        )
 
 
 def _ingest_namespace(pdf_path, work_dir) -> str:
@@ -87,10 +97,10 @@ class IngestManager:
         if not md_path.exists():
             raise FileNotFoundError(f"Markdown file not found: {md_path}")
 
-        # Lint the file (may auto-fix in-place)
-        lint_result = self._lint_converted_md(md_path, auto_fix=True)
-        if lint_result["fixed"]:
-            md_path.write_text(lint_result["content"], encoding="utf-8")
+        # Lint report only: md_path is the user's source, never rewritten
+        # (bulk import doesn't touch sources either, and a fix would make
+        # the graph drift from the file). Fixable issues are only counted.
+        lint_result = self._lint_converted_md(md_path, auto_fix=False)
 
         # Parse frontmatter
         post = frontmatter.load(md_path)
@@ -124,7 +134,8 @@ class IngestManager:
         })
 
         # Import via shared single-concept pipeline
-        result = self.import_mgr._import_single_concept(concept, post.content, mode, force)
+        result = self.import_mgr._import_single_concept(
+            concept, post.content, mode, force, base_dir=md_path.parent)
 
         return {
             "concept_id": result["concept_id"],
@@ -135,6 +146,7 @@ class IngestManager:
             "image_count": result["image_count"],
             "lint_issues": {
                 "fixed_count": lint_result["fixed_count"],
+                "fixable_count": lint_result["fixable_count"],
                 "unfixable_count": len(lint_result["unfixable"]),
                 "error_count": len(lint_result["errors"]),
             },
@@ -232,6 +244,7 @@ class IngestManager:
         - "content": the (possibly fixed) markdown content (str)
         - "fixed": whether content was modified (bool)
         - "fixed_count": number of auto-fixed issues (int)
+        - "fixable_count": fixable issues found, fixed or not (int)
         - "unfixable": list of unfixable diagnostics (list)
         - "errors": list of error-level diagnostics (list)
         """
@@ -243,6 +256,7 @@ class IngestManager:
                 "content": content,
                 "fixed": False,
                 "fixed_count": 0,
+                "fixable_count": 0,
                 "unfixable": [],
                 "errors": [],
             }
@@ -289,6 +303,7 @@ class IngestManager:
             "content": fixed_content,
             "fixed": fixed_count > 0,
             "fixed_count": fixed_count,
+            "fixable_count": len(diagnostics) - len(unfixable),
             "unfixable": unfixable,
             "errors": errors,
         }
@@ -340,160 +355,162 @@ class IngestManager:
         }
 
 
-    def ingest_md(
+    def ingest(
         self,
-        md_path: str | Path,
+        kind: str,
         *,
+        md_path: str | Path | None = None,
+        pdf_path: str | Path | None = None,
+        thoughts: str | None = None,
+        topic: str | None = None,
         concept_id: str | None = None,
         title: str | None = None,
         description: str | None = None,
         tags: list[str] | None = None,
         mode: str = "text",
+        routing_mode: str = "auto",
+        extract_images: bool = True,
+        auto_import: bool = True,
+        output_dir: str | Path | None = None,
+        batch_size: int = 32,
+        prune_missing: bool = False,
         force: bool = False,
+        on_page: Callable[[int, int], None] | None = None,
+        converter=None,
     ) -> Dict[str, Any]:
-        """Import a single markdown file into the knowledge graph.
+        """One ingest dispatch (0.10: five spellings merged into one).
 
-        This is the programmatic counterpart to ``import_bundle()`` but
-        operates on a single file with explicit metadata control.
+        kind='md': import a markdown file (md_path required).
+        kind='pdf': convert (pdf_path required; bobine) and auto-import
+        unless ``auto_import=False``, which writes ``output_dir`` only.
+        kind='thoughts': persist LLM reasoning (thoughts + topic required).
 
-        The file is linted with mordant before import. Fixable issues
-        (MD009, MD012, MD047) are auto-corrected. Unfixable issues
-        are logged as warnings but do not block import.
-
-        Args:
-            md_path: Path to the markdown file to import.
-            concept_id: Optional explicit concept ID. If None, generated from filename.
-            title: Optional title override (defaults to frontmatter or filename).
-            description: Optional description override (defaults to frontmatter).
-            tags: Optional tags to apply to the concept.
-            mode: Image ingestion mode ('text' captions; 'optional'/'omni' for ONNX vision content, needs a text-nano graph).
-
-        Returns:
-            Dict with keys:
-            - "concept_id": The imported concept ID
-            - "title": Title used
-            - "description": Description used
-            - "tags": Applied tags
-            - "chunk_count": Number of chunks created (if chunking enabled)
-            - "image_count": Number of images ingested
-            - "lint_issues": Lint result dict (fixed_count, unfixable, errors)
+        File paths that don't exist raise ``FILE_NOT_FOUND``; missing
+        required params raise ``MISSING_PARAM``; a passed param the kind
+        ignores raises ``BAD_VALUE`` naming it. ``on_page``/``converter``
+        are Python-only advanced params.
         """
-        # Acquire write lock (Gap #7b)
-        with self._write_lock_ctx():
-            return self._ingest_md_inner(md_path, concept_id, title, description, tags, mode, force)
+        passed = {
+            "md_path": md_path, "pdf_path": pdf_path, "thoughts": thoughts,
+            "topic": topic, "concept_id": concept_id, "title": title,
+            "description": description, "tags": tags,
+            "output_dir": output_dir,
+        }
+        honours = _INGEST_HONOURS.get(kind)
+        if honours is not None:
+            if kind == "pdf" and auto_import:
+                honours = honours - {"output_dir"}
+            ignored = [k for k, v in passed.items()
+                       if v is not None and k not in honours]
+            if ignored:
+                raise OKFError(
+                    "BAD_VALUE",
+                    f"kind='{kind}' ignores: {', '.join(ignored)}",
+                    fields={"kind": kind, "ignored": ignored},
+                    remedy=("output_dir needs auto_import=False"
+                            if ignored == ["output_dir"] and kind == "pdf"
+                            else "drop the params of other kinds"),
+                )
+        if kind == "md":
+            if not md_path:
+                raise OKFError(
+                    "MISSING_PARAM",
+                    "kind='md' requires md_path",
+                    fields={"kind": kind, "md_path": md_path},
+                )
+            _require_file(md_path, kind="markdown file")
+            with self._write_lock_ctx():
+                return self._ingest_md_inner(md_path, concept_id, title, description, tags, mode, force)
+        if kind == "thoughts":
+            if not thoughts or not topic:
+                raise OKFError(
+                    "MISSING_PARAM",
+                    "kind='thoughts' requires thoughts and topic",
+                    fields={"kind": kind, "thoughts": bool(thoughts), "topic": bool(topic)},
+                )
+            with self._write_lock_ctx():
+                return self._ingest_thoughts_inner(thoughts, topic, concept_id, tags, force)
+        if kind == "pdf":
+            if not pdf_path:
+                raise OKFError(
+                    "MISSING_PARAM",
+                    "kind='pdf' requires pdf_path",
+                    fields={"kind": kind, "pdf_path": pdf_path},
+                )
+            _require_file(pdf_path, kind="PDF")
+            pdf_path = Path(pdf_path)
+            converter = self._resolve_converter(
+                converter, routing_mode=routing_mode,
+                extract_images=extract_images,
+            )
+            from tempfile import TemporaryDirectory
+
+            if auto_import:
+                with TemporaryDirectory(prefix="okf_ingest_") as tmp:
+                    work_dir = Path(tmp)
+                    logger.info("converting %s → %s", pdf_path, work_dir)
+                    doc = converter.convert(pdf_path, work_dir, on_page=on_page)
+                    md_path = Path(doc.md_path)
+                    lint_result = self._lint_converted_md(md_path, auto_fix=True)
+                    if lint_result["fixed"]:
+                        md_path.write_text(lint_result["content"], encoding="utf-8")
+                    if lint_result["errors"]:
+                        logger.warning(
+                            "PDF output has %d structural errors — proceeding anyway",
+                            len(lint_result["errors"]),
+                        )
+                    ids = self._import_work_dir(
+                        work_dir, batch_size, mode, prune_missing, pdf_path, force
+                    )
+                    return {
+                        "md_path": str(md_path),
+                        "concept_ids": ids,
+                        "image_dir": str(doc.image_dir),
+                        "page_count": doc.page_count,
+                    }
+            output_dir = Path(output_dir) if output_dir else pdf_path.parent
+            output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("converting %s → %s", pdf_path, output_dir)
+            doc = converter.convert(pdf_path, output_dir, on_page=on_page)
+            md_path = Path(doc.md_path)
+            lint_result = self._lint_converted_md(md_path, auto_fix=True)
+            if lint_result["fixed"]:
+                md_path.write_text(lint_result["content"], encoding="utf-8")
+            logger.info("written %s", md_path)
+            return {
+                "md_path": str(md_path),
+                "concept_ids": [],
+                "image_dir": str(doc.image_dir),
+                "page_count": doc.page_count,
+            }
+        raise OKFError(
+            "BAD_VALUE",
+            f"kind must be 'md', 'pdf' or 'thoughts', got '{kind}'",
+            fields={"kind": kind},
+        )
 
 
-    def _resolve_converter(self, converter):
-        """Per-call override → manager default → lazy BobineConverter."""
+
+    def _resolve_converter(self, converter, routing_mode="auto", extract_images=True):
+        """Per-call override → manager default → lazy BobineConverter.
+
+        ``routing_mode``/``extract_images`` only apply when a BobineConverter
+        is built here; an explicit ``converter`` instance is used verbatim.
+        """
         if converter is not None:
             return converter
+        if (routing_mode != "auto" or not extract_images):
+            # Non-default converter knobs: build ad hoc, never cache —
+            # a cached converter would pin one call's routing for all.
+            from okfgraph.components.converters import BobineConverter
+            return BobineConverter(routing_mode=routing_mode,
+                                   extract_images=extract_images)
         if self._converter is None:
             from okfgraph.components.converters import BobineConverter
             self._converter = BobineConverter()
         return self._converter
 
-    def ingest_pdf(
-        self,
-        pdf_path: str | Path,
-        *,
-        auto_import: bool = True,
-        output_dir: str | Path | None = None,
-        mode: str = "text",
-        batch_size: int = 32,
-        purge_deleted: bool = False,
-        on_page: Callable[[int, int], None] | None = None,
-        converter=None,
-        force: bool = False,
-    ) -> Dict[str, Any]:
-        """Convert a PDF to markdown and optionally import into the graph.
-
-        Conversion is delegated to a DocumentConverter (see
-        ``okfgraph.components.converters``) — bobine by default, swappable
-        for any other pipeline.
-
-        This is the programmatic counterpart to the ``okf ingest`` CLI command.
-        It converts the PDF, then optionally imports the resulting markdown
-        into the knowledge graph via ``import_bundle()``.
-
-        Args:
-            pdf_path: Path to the PDF file.
-            auto_import: If True, import the converted markdown into the graph.
-                If False, write to disk only.
-            output_dir: Output directory for the markdown (used when
-                auto_import=False). Defaults to the PDF's parent directory.
-            mode: Image ingestion mode for auto-import — "text".
-                Only used when auto_import=True.
-            batch_size: Batch size for encoding during auto-import.
-            purge_deleted: If True, purge deleted concepts during auto-import.
-            force: Bypass the detached-graph refusal (0.2.16). Note: the
-                auto-import root is a temp dir, which never matches detach
-                provenance - PDF auto-import on a detached graph refuses
-                even with force (convert-only stays allowed).
-            on_page: Optional callback(page_index, page_total) for progress.
-            converter: DocumentConverter to use for this call. Defaults to
-                the manager's converter (bobine unless overridden).
-
-        Returns:
-            A dict with keys:
-            - "md_path": Path to the converted markdown file. Transient
-              when auto_import=True (conversion runs in a temp dir that is
-              removed after import — the content lives in the graph).
-            - "concept_ids": List of imported concept IDs (only when auto_import=True)
-            - "image_dir": Path to the staged images directory (always present)
-            - "page_count": Number of pages in the PDF
-
-        Raises:
-            RuntimeError: If the default converter needs bobine and it is
-                not installed.
-        """
-        from tempfile import TemporaryDirectory
-
-        pdf_path = Path(pdf_path)
-        if not pdf_path.exists():
-            raise FileNotFoundError(f"PDF not found: {pdf_path}")
-
-        converter = self._resolve_converter(converter)
-
-        if auto_import:
-            with TemporaryDirectory(prefix="okf_ingest_") as tmp:
-                work_dir = Path(tmp)
-                logger.info("converting %s → %s", pdf_path, work_dir)
-                doc = converter.convert(pdf_path, work_dir, on_page=on_page)
-                md_path = Path(doc.md_path)
-                lint_result = self._lint_converted_md(md_path, auto_fix=True)
-                if lint_result["fixed"]:
-                    md_path.write_text(lint_result["content"], encoding="utf-8")
-                if lint_result["errors"]:
-                    logger.warning(
-                        "PDF output has %d structural errors — proceeding anyway",
-                        len(lint_result["errors"]),
-                    )
-                ids = self._import_work_dir(
-                    work_dir, batch_size, mode, purge_deleted, pdf_path, force
-                )
-                return {
-                    "md_path": str(md_path),
-                    "concept_ids": ids,
-                    "image_dir": str(doc.image_dir),
-                    "page_count": doc.page_count,
-                }
-        output_dir = Path(output_dir) if output_dir else pdf_path.parent
-        output_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("converting %s → %s", pdf_path, output_dir)
-        doc = converter.convert(pdf_path, output_dir, on_page=on_page)
-        md_path = Path(doc.md_path)
-        lint_result = self._lint_converted_md(md_path, auto_fix=True)
-        if lint_result["fixed"]:
-            md_path.write_text(lint_result["content"], encoding="utf-8")
-        logger.info("written %s", md_path)
-        return {
-            "md_path": str(md_path),
-            "concept_ids": [],
-            "image_dir": str(doc.image_dir),
-            "page_count": doc.page_count,
-        }
-
-    def _import_work_dir(self, work_dir, batch_size, mode, purge_deleted, pdf_path, force=False):
+    def _import_work_dir(self, work_dir, batch_size, mode, prune_missing, pdf_path, force=False):
         """Import a converted-PDF work dir, keeping bundle_root overrides in sync."""
         from okfgraph.components.delta import DeltaDetector as _DD
         old_bundle_root = self.bundle_root
@@ -524,7 +541,7 @@ class IngestManager:
                     work_dir,
                     batch_size=batch_size,
                     mode=mode,
-                    purge_deleted=purge_deleted,
+                    prune_missing=prune_missing,
                     alias=_ns,
                     force=force,
                 )
@@ -535,40 +552,4 @@ class IngestManager:
             self.import_mgr._delta_by_alias.pop(_ns, None)
         logger.info("imported %d concept(s) from %s", len(ids), pdf_path)
         return ids
-
-    def ingest_thoughts(
-        self,
-        thoughts: str,
-        *,
-        topic: str,
-        concept_id: str | None = None,
-        tags: list[str] | None = None,
-        force: bool = False,
-    ) -> Dict[str, Any]:
-        """Store LLM reasoning/thinking as a searchable concept.
-
-        Wraps the raw reasoning text in OKF-compliant markdown with metadata
-        (type=thought, thought_type=reasoning, topic) so it can be searched,
-        traversed, and used as context for other queries.
-
-        The markdown is linted with mordant before import. Fixable issues
-        are auto-corrected.
-
-        Args:
-            thoughts: The raw reasoning text from the LLM.
-            topic: High-level topic or domain for the reasoning.
-            concept_id: Optional explicit concept ID. If None, generated from topic.
-            tags: Optional additional tags.
-
-        Returns:
-            Dict with keys:
-            - "concept_id": The created concept ID
-            - "topic": Topic used
-            - "tags": Applied tags
-            - "chunk_count": Number of chunks created
-            - "markdown": The generated markdown content
-        """
-        # Acquire write lock (Gap #7b)
-        with self._write_lock_ctx():
-            return self._ingest_thoughts_inner(thoughts, topic, concept_id, tags, force)
 

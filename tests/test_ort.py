@@ -196,9 +196,20 @@ def test_resolve_missing_runtime_returns_none(monkeypatch, tmp_path):
 
 def test_ort_info_reports_distributions(monkeypatch):
     """ort_info() names the installed ORT distribution(s) without a session."""
+    import importlib.util
     info = emb.ort_info()
     assert set(info) == {"dylib_path", "installed", "version",
-                         "providers", "cuda_usable", "both_installed"}
+                         "providers", "cuda_usable", "both_installed",
+                         "import_error"}
+    has_ort = importlib.util.find_spec("onnxruntime") is not None
+    if has_ort:
+        assert info["import_error"] is None
+    else:
+        # ORT-less env (dev-only venv, CI): the cause must be kept,
+        # not silently swallowed.
+        assert info["import_error"] is not None
+        assert "ModuleNotFoundError" in info["import_error"]
+        assert info["providers"] == []
     # This venv has exactly one ORT (cpu XOR gpu — never both).
     assert len(info["installed"]) <= 1
     assert info["both_installed"] is False
@@ -224,3 +235,25 @@ def test_ort_info_no_runtime(monkeypatch):
     assert info["installed"] == []
     assert info["version"] is None
     assert info["cuda_usable"] is False
+    assert "no ONNX Runtime installed" in emb.ort_missing_hint(info)
+
+
+def test_ort_hint_installed_but_broken(monkeypatch):
+    """An installed ORT that fails to import is reported as broken, with the
+    import error, not as missing (the misleading pre-fix hint)."""
+    import builtins
+    real_import = builtins.__import__
+
+    def _broken(name, *args, **kwargs):
+        if name == "onnxruntime":
+            raise ImportError("DLL load failed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _broken)
+    info = emb.ort_info()
+    if not info["installed"]:
+        pytest.skip("no ORT distribution in this venv")
+    hint = emb.ort_missing_hint(info)
+    assert "installed" in hint and "fails to import" in hint
+    assert "DLL load failed" in hint
+    assert "no ONNX Runtime installed" not in hint

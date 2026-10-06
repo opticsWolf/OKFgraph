@@ -7,15 +7,9 @@ injected SchemaManager.
 """
 
 from __future__ import annotations
-import base64
 import hashlib
 import logging
-import math
-import mimetypes
-import re
-import urllib.parse
-import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
 from okfgraph.images import (
@@ -27,7 +21,6 @@ from okfgraph.images import (
     plan_embedding,
     prepare_vision_rgb,
 )
-from okfgraph.models import ChunkModel, ConceptModel
 
 logger = logging.getLogger(__name__)
 

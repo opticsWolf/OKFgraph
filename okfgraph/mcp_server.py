@@ -1,86 +1,89 @@
 """MCP server for the OKF knowledge graph.
 
-Exposes all OKFgraph tools via the Model Context Protocol so any
-MCP-compatible client (Claude Desktop, Cursor, Continue, etc.) can
-call search, traverse, ingest, and export operations directly.
+Exposes the graph ops as eight Model Context Protocol tools so any
+MCP-compatible client (Claude Desktop, Cursor, Continue, …) can search,
+read, traverse, ingest and export directly. Every tool is a thin adapter
+over the canonical op on :class:`~okfgraph.router.OKFRouter`; results are
+the envelope ``{ok, op, data, warnings, error}`` and failures raise so
+the wire result carries ``isError: true``.
 
 Usage:
-    # CLI entry point (configured in pyproject.toml)
+    # Entry point (configured in pyproject.toml)
     okf-mcp --db-path ./my_graph.db
 
-    # Or as a Python module
+    # Or as a module
     python -m okfgraph.mcp_server --db-path ./my_graph.db
 
     # Or programmatically
     from okfgraph.mcp_server import create_mcp_server
-    mcp = create_mcp_server(db_path="./my_graph.db")
-    mcp.run()
+    from okfgraph.settings import Settings
+    create_mcp_server(Settings(db_path="./my_graph.db")).run()
+
+Boot flags are the CLI's global flags (one settings table); the server
+also reads ``okfgraph.toml`` and ``OKFGRAPH_*`` env vars. ``db_path`` must
+come from one of them — the client's working directory is no anchor.
 """
 
 import argparse
 import json
 import logging
+import sys
+import warnings
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Dict, Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from okfgraph.models import ConceptModel
+from okfgraph.errors import OKFError, dumps_envelope, envelope, internal_error
 from okfgraph.router import OKFRouter
+from okfgraph.settings import MCP_REQUIRED, Settings, cli_signal, set_cli_flags
 
 logger = logging.getLogger(__name__)
+
+INSTRUCTIONS = (
+    "OKF knowledge graph with ONNX + Jina v5 embeddings: persistent project "
+    "knowledge as markdown concepts with hybrid (vector + full-text) search "
+    "and graph traversal. Start with search; read a concept once you have "
+    "its id; traverse to follow links or list directories; ingest to "
+    "persist new knowledge (kind='thoughts' for reasoning, 'md' for a "
+    "markdown file, 'pdf' for PDF/Office documents). Every result is an "
+    "envelope {ok, op, data, warnings, error}; failures set isError with "
+    "a typed error code (e.g. UNKNOWN_CONCEPT means search for the id "
+    "first, BAD_VALUE names the parameter to drop)."
+)
 
 
 @dataclass
 class GraphContext:
     """Shared context for the MCP server lifespan."""
     router: OKFRouter
+    settings: Optional[Settings] = None
 
 
-def make_lifespan(
-    db_path: str,
-    bundle_root: Optional[str],
-    device: str,
-    embedding_dim: int,
-    enable_chunking: bool,
-    max_length: Optional[int] = None,
-    roots: Optional[Dict[str, str]] = None,
-    precision: str = "auto",
-    cpu_arena: bool = False,
-    model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
-):
+def make_lifespan(settings: Settings):
     """Factory that returns a lifespan async-context-manager for MCPServer."""
 
     @asynccontextmanager
     async def _lifespan(mcp: MCPServer):
-        root = bundle_root if bundle_root is not None else str(Path(db_path).parent)
-
+        db_path = settings.db_path
+        # Default bundle root: the database's parent directory.
+        root = settings.bundle_root or str(Path(db_path).parent)
         router = OKFRouter(
             db_path=db_path,
             bundle_root=root,
-            model_id=model_id,
-            device=device,
-            embedding_dim=embedding_dim,
-            max_length=max_length,
-            enable_chunking=enable_chunking,
-            roots=roots,
-            precision=precision,
-            cpu_arena=cpu_arena,
+            **settings.router_kwargs(),
         )
         logger.info(
             "OKFgraph MCP server started: db=%s model=%s device=%s precision=%s",
-            db_path,
-            model_id,
-            device,
-            precision,
+            db_path, settings.model_id, settings.device, settings.precision,
         )
-
         try:
-            yield GraphContext(router=router)
+            yield GraphContext(router=router, settings=settings)
         finally:
             router.close()
             logger.info("OKFgraph MCP server shutdown complete")
@@ -88,71 +91,76 @@ def make_lifespan(
     return _lifespan
 
 
-def _get_router(ctx: Context) -> OKFRouter:
-    """Extract the OKFRouter from the MCP context."""
+def _graph(ctx: Context) -> GraphContext:
     gc = ctx.request_context.lifespan_context
     if isinstance(gc, GraphContext):
-        return gc.router
-    # Fallback: if lifespan_context is a dict (default MCP behavior)
-    if isinstance(gc, dict):
-        return gc["router"]
+        return gc
+    if isinstance(gc, dict) and "router" in gc:
+        return GraphContext(router=gc["router"], settings=gc.get("settings"))
     raise RuntimeError("No OKFRouter found in lifespan context")
 
 
-def create_mcp_server(
-    db_path: str,
-    bundle_root: Optional[str] = None,
-    device: str = "auto",
-    embedding_dim: int = 512,
-    enable_chunking: bool = True,
-    max_length: Optional[int] = None,
-    roots: Optional[Dict[str, str]] = None,
-    precision: str = "auto",
-    cpu_arena: bool = False,
-    model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
-) -> MCPServer:
+def _get_router(ctx: Context) -> OKFRouter:
+    """Extract the OKFRouter from the MCP context."""
+    return _graph(ctx).router
+
+
+class _ToolFailure(ToolError):
+    """Raised by a tool so the wire result carries ``isError: true`` (D7)
+    with the full error envelope as the result text (after the SDK's
+    ``Error executing tool <name>:`` prefix)."""
+
+    def __init__(self, payload):
+        super().__init__(json.dumps(payload, default=str, indent=2))
+        self.payload = payload
+
+
+def _tool_result(op: str, produce):
+    """Envelope adapter (§4): success → success envelope; failure → raise.
+
+    Non-OKFError exceptions never cross as bare tracebacks: they are
+    wrapped as ``INTERNAL`` with the type name. Warnings recorded during
+    the call ride on the envelope.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            data = produce()
+        except OKFError as exc:
+            raise _ToolFailure(envelope(op, error=exc, warnings=caught)) from None
+        except Exception as exc:  # noqa: BLE001 — catch-all is the point (§4)
+            raise _ToolFailure(envelope(
+                op, error=internal_error(exc, op=op), warnings=caught)) from None
+    return dumps_envelope(envelope(op, data=data, warnings=caught))
+
+
+_RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                      idempotentHint=True, openWorldHint=False)
+# Exports rewrite files in output_dir: repeatable, nothing else touched.
+_EXPORT = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                          idempotentHint=True, openWorldHint=False)
+# Ingest adds graph content; thoughts mint a new concept per call.
+_INGEST = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                          idempotentHint=False, openWorldHint=False)
+
+_FLAVOR = Literal["okf", "obsidian"]
+
+
+def create_mcp_server(settings: Settings) -> MCPServer:
     """Create an MCP server instance connected to an OKFgraph database.
 
     Args:
-        db_path: Path to the Ladybug database file.
-        bundle_root: Optional root directory for the OKF bundle.
-        device: Device for ONNX inference ("auto", "cpu" or "cuda").
-        embedding_dim: Dimension of the embedding vectors.
-        enable_chunking: Whether to enable document chunking.
-        max_length: Token truncation ceiling 1..=32768 (default: 8192).
-        roots: Optional additional {alias: path} bundle roots (§2.6).
-        precision: Weight precision ("auto" follows device).
-        cpu_arena: Enable the CPU arena allocator (default off).
-        model_id: Text embedding model id (registry; switch forces reimport).
+        settings: Merged canonical settings (``Settings.load`` or direct
+            construction in tests).
 
     Returns:
-        Configured MCPServer server instance.
+        Configured MCPServer instance.
     """
-    lifespan_fn = make_lifespan(
-        db_path=db_path,
-        bundle_root=bundle_root,
-        device=device,
-        embedding_dim=embedding_dim,
-        enable_chunking=enable_chunking,
-        max_length=max_length,
-        roots=roots,
-        precision=precision,
-        cpu_arena=cpu_arena,
-        model_id=model_id,
-    )
-
     mcp = MCPServer(
         name="OKFgraph MCP Server",
-        instructions=(
-            "OKF knowledge graph with ONNX + Jina v5 embeddings. "
-            "Provides semantic search, graph traversal, document ingestion, "
-            "and thought persistence capabilities."
-        ),
-        lifespan=lifespan_fn,
+        instructions=INSTRUCTIONS,
+        lifespan=make_lifespan(settings),
     )
-
-    _RO = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
-    _WR = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
     @mcp.tool(annotations=_RO)
     def search(
@@ -161,19 +169,21 @@ def create_mcp_server(
             Literal["concepts", "chunks", "images"],
             Field(
                 description=(
-                    "'concepts' = RRF hybrid search over concepts (open-ended questions). "
-                    "'chunks' = RRF vector+FTS over document chunks (exact passages). "
-                    "'images' = text query against image assets."
+                    "'concepts' = hybrid vector+FTS over concepts (open-ended questions). "
+                    "'chunks' = hybrid search over document chunks (exact passages). "
+                    "'images' = text query against image assets (query/limit only)."
                 ),
             ),
         ] = "concepts",
         limit: Annotated[int, Field(ge=1, le=50, description="Maximum results.")] = 10,
-        type_filter: Annotated[Optional[str], Field(description="Concept type filter (concepts/chunks only).")] = None,
-        tags: Annotated[Optional[list[str]], Field(description="Tag filter, ALL must match (concepts/chunks only).")] = None,
-        parent_id: Annotated[Optional[str], Field(description="Directory ID to constrain search (concepts/chunks only).")] = None,
-        expand: Annotated[bool, Field(description="Chunks only: attach graph neighborhood (incoming/outgoing links, ancestry, siblings) to each hit.")] = False,
-        context_hops: Annotated[int, Field(ge=1, le=3, description="Expansion depth when expand=True.")] = 1,
-        hub_rerank: Annotated[bool, Field(description="Chunks only: rerank by graph hub score (incoming link count). Wins over expand.")] = False,
+        concept_type: Annotated[Optional[str], Field(description="Concept type filter (concepts; plain chunks path).")] = None,
+        tags: Annotated[Optional[list[str]], Field(description="Tag filter, ALL must match (concepts; plain chunks path).")] = None,
+        parent_id: Annotated[Optional[str], Field(description="Directory ID to constrain search (concepts; plain chunks path).")] = None,
+        include_chunks: Annotated[bool, Field(description="Concepts (rank none|hub): attach matched chunks per hit. For chunk-level hits use target='chunks'.")] = False,
+        max_chunks_per_doc: Annotated[int, Field(ge=1, le=10, description="Plain chunks path: cap hits per source document.")] = 3,
+        expand: Annotated[bool, Field(description="Chunks: attach graph neighborhood (links, ancestry, siblings) to each hit.")] = False,
+        context_hops: Annotated[int, Field(ge=1, le=3, description="Neighborhood depth with expand=true.")] = 1,
+        hub_rerank: Annotated[bool, Field(description="Chunks: rerank by graph hub score (incoming links). Wins over expand.")] = False,
         hub_weight: Annotated[float, Field(ge=0, le=1, description="Hub weight for hub_rerank (chunks) or rank='hub' (concepts).")] = 0.3,
         rank: Annotated[
             Literal["none", "hub", "ppr"],
@@ -193,38 +203,25 @@ def create_mcp_server(
         Routing: target='concepts' for open-ended questions; 'chunks' for exact
         passages (expand=true adds graph neighborhood, hub_rerank=true ranks by
         importance); 'images' for image assets. rank='ppr' answers from the
-        link graph alone when the embedder is cold or unavailable. If you
-        already have a concept ID, use read instead of searching. If you want
-        related concepts, use traverse. To add content, use ingest."""
+        link graph alone when the embedder is cold or unavailable. Params the
+        chosen path ignores are refused with BAD_VALUE naming them. If you
+        already have a concept ID, use read; for related concepts, traverse."""
         router = _get_router(ctx)
-        if target == "images":
-            return json.dumps(
-                router.image_mgr.search_images_with_text(text_query=query, limit=limit),
-                default=str, indent=2,
-            )
-        filt: dict = {}
-        if type_filter is not None:
-            filt["concept_type"] = type_filter
-        if tags is not None:
-            filt["tags"] = tags
-        if parent_id is not None:
-            filt["parent_id"] = parent_id
-        if target == "chunks":
-            if rank != "none":
-                return "error: rank is concepts-only; use hub_rerank/expand for chunks"
-            if hub_rerank:
-                results = router.search_engine.search_chunks_with_hub_score(
-                    query, limit=limit, hub_weight=hub_weight
-                )
-            elif expand:
-                results = router.search_engine.search_with_context(
-                    query, limit=min(limit, 20), context_hops=context_hops
-                )
-            else:
-                results = router.search_engine.search_chunks(query, limit=limit, **filt)
-            return json.dumps(results, default=str, indent=2)
-        results = router.search_hybrid(query, limit=limit, rank=rank, hub_weight=hub_weight, **filt)
-        return json.dumps(results, default=str, indent=2)
+        return _tool_result("search", lambda: router.search(
+            query,
+            target=target,
+            limit=limit,
+            concept_type=concept_type,
+            tags=tags,
+            parent_id=parent_id,
+            include_chunks=include_chunks,
+            max_chunks_per_doc=max_chunks_per_doc,
+            expand=expand,
+            context_hops=context_hops,
+            hub_rerank=hub_rerank,
+            hub_weight=hub_weight,
+            rank=rank,
+        ))
 
     @mcp.tool(annotations=_RO)
     def read(
@@ -233,7 +230,7 @@ def create_mcp_server(
             Literal["body", "chunks", "document", "context"],
             Field(
                 description=(
-                    "'body' = full markdown of the concept. "
+                    "'body' = the concept with its full markdown. "
                     "'chunks' = stored chunks ordered by index. "
                     "'document' = original markdown rebuilt from chunks. "
                     "'context' = incoming/outgoing links, ancestry, siblings."
@@ -261,82 +258,68 @@ def create_mcp_server(
         section list. For open questions use search; to walk
         relationships use traverse."""
         router = _get_router(ctx)
-        if max_tokens is not None:
-            try:
-                reading = router.search_engine.read_with_budget(
-                    concept_id, include=include, max_tokens=max_tokens,
-                )
-            except KeyError:
-                return f"Concept not found: {concept_id}"
-            return json.dumps(reading, default=str, indent=2)
-        if include == "chunks":
-            return json.dumps(router.search_engine.get_chunks(concept_id), default=str, indent=2)
-        if include == "document":
-            return json.dumps(router.embed_engine.reconstruct_document(concept_id), default=str, indent=2)
-        if include == "context":
-            return json.dumps({
-                "incoming_links": router.traverse(concept_id, "LINKS_TO", "INCOMING", 1)[:10],
-                "outgoing_links": router.traverse(concept_id, "LINKS_TO", "OUTGOING", 1)[:10],
-                "ancestry": router.search_engine._get_ancestry(concept_id),
-                "siblings": router.search_engine._get_siblings(concept_id)[:10],
-            }, default=str, indent=2)
-        concept = router.get_by_id(concept_id)
-        if concept is None:
-            return f"Concept not found: {concept_id}"
-        # Coercion boundary: validate whatever arrives (model or plain
-        # mapping) so the serialize surface below is always a ConceptModel.
-        concept = ConceptModel.model_validate(concept)
-        return json.dumps(concept.public_dict(), default=str, indent=2)
+        return _tool_result("read", lambda: router.read(
+            concept_id, include=include, max_tokens=max_tokens,
+        ))
 
     @mcp.tool(annotations=_RO)
     def traverse(
-        start_id: Annotated[str, Field(description="ID of the starting concept or directory. Empty string lists the root directory.")],
+        start_id: Annotated[str, Field(description="ID of the starting concept or directory. Empty string (default) lists the root directory.")] = "",
         relationship: Annotated[
             Literal["CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET"],
-            Field(description="Relationship type. CONTAINS depth 1 = directory listing."),
+            Field(description="Relationship type (walk mode). CONTAINS depth 1 = directory listing."),
         ] = "CONTAINS",
         direction: Annotated[
             Literal["OUTGOING", "INCOMING", "BOTH"],
-            Field(description="Traversal direction."),
+            Field(description="Traversal direction (walk mode)."),
         ] = "OUTGOING",
-        depth: Annotated[int, Field(ge=1, le=5, description="Maximum traversal depth.")] = 1,
+        depth: Annotated[int, Field(ge=1, le=5, description="Maximum traversal depth (walk mode).")] = 1,
+        node_type: Annotated[
+            Optional[str],
+            Field(description="Filter walk results by node type (e.g. 'Concept', 'Directory'). Walk mode only."),
+        ] = None,
         target: Annotated[
             Optional[str],
-            Field(description="If set, find the shortest path from start_id to this concept ID instead of traversing (uses max_path_length)."),
+            Field(description="If set, find the shortest path from start_id to this concept ID instead of walking."),
         ] = None,
-        max_path_length: Annotated[int, Field(ge=1, le=10, description="Maximum path length, only used with target.")] = 6,
+        max_path_length: Annotated[int, Field(ge=1, le=10, description="Maximum path length (path mode, with target).")] = 6,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Navigate graph relationships, browse directories, or connect two concepts.
 
-        Routing: default CONTAINS depth 1 lists a directory (empty id = root);
-        LINKS_TO follows references; target=<id> finds the shortest path
-        instead. Search first to find IDs. To add content use ingest."""
+        Routing: empty start_id lists the root; CONTAINS depth 1 lists a
+        directory; LINKS_TO follows references; target=<id> finds the
+        shortest path instead. Params the chosen mode ignores are refused.
+        Search first to find IDs."""
         router = _get_router(ctx)
-        if not start_id:
-            return json.dumps(router.list_directory(""), default=str, indent=2)
-        if target is not None:
-            return json.dumps(
-                router.search_engine.find_path(start_id, target, max_length=max_path_length),
-                default=str, indent=2,
-            )
-        return json.dumps(router.traverse(start_id, relationship, direction, depth), default=str, indent=2)
+        return _tool_result("traverse", lambda: router.traverse(
+            start_id,
+            relationship=relationship,
+            direction=direction,
+            depth=depth,
+            node_type=node_type,
+            target=target,
+            max_path_length=max_path_length,
+        ))
 
-    @mcp.tool(annotations=_WR)
+    @mcp.tool(annotations=_INGEST)
     def ingest(
         kind: Annotated[
             Literal["md", "pdf", "thoughts"],
-            Field(description="'md' = import a markdown file. 'pdf' = convert a PDF (bobine) and import. 'thoughts' = persist LLM reasoning as a searchable concept."),
+            Field(description="'md' = import a markdown file. 'pdf' = convert a PDF/Office file (bobine) and import. 'thoughts' = persist LLM reasoning as a searchable concept."),
         ],
         md_path: Annotated[Optional[str], Field(description="Markdown file to import (kind='md').")] = None,
         pdf_path: Annotated[Optional[str], Field(description="File to convert and import (kind='pdf'): PDF or Office (docx/xlsx/pptx, legacy doc/xls/ppt). Bobine dispatches on extension.")] = None,
         thoughts: Annotated[Optional[str], Field(description="Raw reasoning text (kind='thoughts').")] = None,
-        topic: Annotated[Optional[str], Field(description="Topic for kind='thoughts' (required then).")] = None,
-        concept_id: Annotated[Optional[str], Field(description="Explicit concept ID (md/thoughts). Generated if omitted (thoughts: thoughts/<topic>/<ts>_<id>, a virtual namespace — no file needed, exports there later). Slashes are namespaces.")] = None,
+        topic: Annotated[Optional[str], Field(description="Topic for kind='thoughts' (required then). Keep a consistent per-project scheme.")] = None,
+        concept_id: Annotated[Optional[str], Field(description="Explicit concept ID (md/thoughts). Generated if omitted (thoughts: thoughts/<topic>/<ts>_<id>, a virtual namespace — no file needed). Slashes are namespaces.")] = None,
         title: Annotated[Optional[str], Field(description="Title override (md only).")] = None,
         description: Annotated[Optional[str], Field(description="Description override (md only).")] = None,
         tags: Annotated[Optional[list[str]], Field(description="Tags to apply (md/thoughts).")] = None,
-        mode: Annotated[Literal["text", "optional", "omni"], Field(description="Image ingestion mode: text (captions), optional/omni (ONNX vision content, needs a text-nano graph).", json_schema_extra={"enum": ["text", "optional", "omni"]})] = "text",
+        mode: Annotated[
+            Optional[Literal["text", "optional", "omni"]],
+            Field(description="Image ingestion mode (md/pdf): text (captions), optional/omni (ONNX vision content, needs a text-nano graph). Omit for the server's configured default."),
+        ] = None,
         routing_mode: Annotated[
             Literal["auto", "surgical", "always", "never"],
             Field(description="PDF converter routing (kind='pdf'). 'never' = fast path, no ONNX."),
@@ -344,143 +327,110 @@ def create_mcp_server(
         extract_images: Annotated[bool, Field(description="Extract embedded images (kind='pdf').")] = True,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
-        """Add content to the knowledge graph. Returns concept ID(s) for search/traverse.
+        """Add content to the knowledge graph. Returns the new concept ID(s).
 
-        Routing: kind='md' imports a markdown file; 'pdf' converts a PDF
-        ('never' routing = fast, no ONNX); 'thoughts' persists reasoning.
-        Markdown is mordant-linted before import."""
-        from okfgraph.components.converters import BobineConverter
-        router = _get_router(ctx)
-        if kind == "md":
-            if not md_path:
-                return "error: md_path is required for kind='md'"
-            kwargs: dict = {"md_path": md_path, "mode": mode}
-            if concept_id is not None:
-                kwargs["concept_id"] = concept_id
-            if title is not None:
-                kwargs["title"] = title
-            if description is not None:
-                kwargs["description"] = description
-            if tags is not None:
-                kwargs["tags"] = tags
-            result = router.ingest_mgr.ingest_md(**kwargs)
-        elif kind == "pdf":
-            if not pdf_path:
-                return "error: pdf_path is required for kind='pdf'"
-            result = router.ingest_mgr.ingest_pdf(
-                pdf_path=pdf_path, auto_import=True, mode=mode,
-                converter=BobineConverter(routing_mode=routing_mode, extract_images=extract_images),
-            )
-        elif kind == "thoughts":
-            if not thoughts or not topic:
-                return "error: thoughts and topic are required for kind='thoughts'"
-            result = router.ingest_mgr.ingest_thoughts(
-                thoughts, topic=topic, concept_id=concept_id, tags=tags,
-            )
-        else:  # pragma: no cover - Literal constrains this
-            return f"error: unknown kind '{kind}'"
-        return json.dumps(result, default=str, indent=2)
+        Results: md → {concept_id, chunk_count}; thoughts → {concept_id};
+        pdf → {concept_ids, page_count, ...} (its md_path is a temp file —
+        verify with search, not by reading the path). Markdown is
+        mordant-linted before import. Missing required params raise
+        MISSING_PARAM; absent files FILE_NOT_FOUND."""
+        gc = _graph(ctx)
+        cfg = gc.settings or Settings()
+        return _tool_result("ingest", lambda: gc.router.ingest(
+            kind,
+            md_path=md_path,
+            pdf_path=pdf_path,
+            thoughts=thoughts,
+            topic=topic,
+            concept_id=concept_id,
+            title=title,
+            description=description,
+            tags=tags,
+            mode=mode or cfg.mode,
+            routing_mode=routing_mode,
+            extract_images=extract_images,
+            batch_size=cfg.batch_size,
+        ))
 
-    @mcp.tool(annotations=_WR)
+    @mcp.tool(annotations=_EXPORT)
     def export_bundle(
         output_dir: Annotated[str, Field(description="Output directory for the bundle.")],
         directory_id: Annotated[Optional[str], Field(description="Only export concepts under this directory.")] = None,
         concept_type: Annotated[Optional[str], Field(description="Only export concepts of this type.")] = None,
         tags: Annotated[Optional[list[str]], Field(description="Only export concepts with ALL these tags.")] = None,
         flavor: Annotated[
-            Literal["okf", "obsidian"],
+            _FLAVOR,
             Field(description="'okf' = [t](id.md) links + index files. 'obsidian' = [[Title]] wikilinks, no index files, re-imports losslessly."),
         ] = "okf",
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
-        """Export concepts from the graph to an OKF-compliant bundle directory. To add content back to the graph, use ingest."""
-        router = _get_router(ctx)
-        kwargs: dict = {"output_dir": output_dir, "flavor": flavor}
-        if directory_id is not None:
-            kwargs["directory_id"] = directory_id
-        if concept_type is not None:
-            kwargs["concept_type"] = concept_type
-        if tags is not None:
-            kwargs["tags"] = tags
-        result = router.export_mgr.export_bundle(**kwargs)
-        return json.dumps(result, default=str, indent=2)
+        """Export concepts to an OKF bundle directory. Returns {output_dir, concept_ids, flavor}.
 
+        To add content back to the graph, use ingest."""
+        router = _get_router(ctx)
+        return _tool_result("export_bundle", lambda: router.export_bundle(
+            output_dir,
+            directory_id=directory_id,
+            concept_type=concept_type,
+            tags=tags,
+            flavor=flavor,
+        ))
+
+    @mcp.tool(annotations=_EXPORT)
+    def export_concept(
+        concept_id: Annotated[str, Field(description="ID of the concept to export.")],
+        output_dir: Annotated[str, Field(description="Output directory; writes <output_dir>/<concept_id>.md.")],
+        flavor: Annotated[
+            _FLAVOR,
+            Field(description="'okf' = [t](id.md) links. 'obsidian' = [[Title]] wikilinks."),
+        ] = "okf",
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """Export a single concept to a .md file. Returns {concept_id, path}.
+
+        Unknown IDs raise UNKNOWN_CONCEPT (search first). For a whole
+        bundle use export_bundle."""
+        router = _get_router(ctx)
+        return _tool_result("export_concept", lambda: router.export_concept(
+            concept_id, output_dir=output_dir, flavor=flavor,
+        ))
+
+    @mcp.tool(annotations=_RO)
+    def list_images(
+        concept_id: Annotated[str, Field(description="ID of the concept whose images to list.")],
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """List image assets attached to a concept (metadata, no bytes).
+
+        Unknown concepts raise UNKNOWN_CONCEPT — search first."""
+        router = _get_router(ctx)
+        return _tool_result("list_images", lambda: router.list_images(concept_id))
+
+    @mcp.tool(annotations=_RO)
+    def get_image(
+        asset_id: Annotated[str, Field(description="ID of the image asset (from list_images or an images search).")],
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """Fetch one image asset: metadata plus base64-encoded ``data``.
+
+        Unknown assets raise UNKNOWN_ASSET."""
+        router = _get_router(ctx)
+        return _tool_result("get_image", lambda: router.get_image(asset_id))
 
     return mcp
 
 
 def main():
-    """CLI entry point for the MCP server."""
-    import sys
-
+    """Entry point for ``okf-mcp``."""
     parser = argparse.ArgumentParser(
         description=(
             "OKFgraph MCP Server — expose knowledge graph tools "
-            "via Model Context Protocol"
+            "via Model Context Protocol (stdio)"
         ),
+        allow_abbrev=False,
     )
-    parser.add_argument(
-        "--db-path",
-        type=str,
-        required=True,
-        help="Path to the Ladybug database file.",
-    )
-    parser.add_argument(
-        "--bundle-root",
-        type=str,
-        default=None,
-        help="Root directory for the OKF bundle (defaults to db parent).",
-    )
-    parser.add_argument(
-        "--root",
-        action="append",
-        default=None,
-        metavar="ALIAS=PATH",
-        help="Additional named bundle root (repeatable; named roots mint "
-        "@alias/rel IDs).",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="auto",
-        choices=["auto", "cpu", "cuda"],
-        help="Device for ONNX inference (default: auto).",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="jinaai/jina-embeddings-v5-text-small-retrieval",
-        help="Text embedding model id (registry: text-small default, text-nano). Switching models forces a fresh reimport.",
-    )
-    parser.add_argument(
-        "--precision",
-        type=str,
-        default="auto",
-        choices=["auto", "fp32", "fp16", "int8"],
-        help="Weight precision: auto follows device (default: auto; int8 explicit only).",
-    )
-    parser.add_argument(
-        "--cpu-arena",
-        action="store_true",
-        help="Enable the CPU arena allocator (default off).",
-    )
-    parser.add_argument(
-        "--embedding-dim",
-        type=int,
-        default=512,
-        help="Dimension of the embedding vectors (default: 512; Matryoshka ladder: 32, 64, 128, 256, 512, 768, 1024).",
-    )
-    parser.add_argument(
-        "--max-length",
-        type=int,
-        default=None,
-        help="Token truncation ceiling 1..=32768 (default: 8192).",
-    )
-    parser.add_argument(
-        "--no-chunking",
-        action="store_true",
-        help="Disable document chunking.",
-    )
+    # Boot flags derive from the same settings table as the CLI's globals.
+    set_cli_flags(parser, mcp=True)
     parser.add_argument(
         "--log-level",
         type=str,
@@ -488,48 +438,28 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level (default: INFO).",
     )
-
     args = parser.parse_args()
 
-    # Configure logging
+    # stderr only: stdout is the stdio transport.
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         stream=sys.stderr,
     )
 
-    logger.info(
-        "starting OKFgraph MCP server: db=%s model=%s device=%s precision=%s",
-        args.db_path,
-        args.model,
-        args.device,
-        args.precision,
-    )
+    try:
+        signal = cli_signal(args)
+        settings = Settings.load(cli_args=signal, require=MCP_REQUIRED)
+        if settings.bundle_root:
+            # Second pass: a --bundle-root'd okfgraph.toml is a lookup
+            # candidate too (the CWD candidate already had its chance).
+            settings = Settings.load(bundle_root=settings.bundle_root,
+                                     cli_args=signal, require=MCP_REQUIRED)
+    except ValueError as e:
+        print(f"[ERROR] CONFIG_INVALID: {e}", file=sys.stderr)
+        raise SystemExit(2)
 
-    roots: Optional[Dict[str, str]] = None
-    if args.root:
-        roots = {}
-        for item in args.root:
-            alias, sep, path = str(item).partition("=")
-            if not sep or not alias or not path:
-                parser.error(f"--root must be ALIAS=PATH, got {item!r}")
-            roots[alias] = path
-
-    mcp = create_mcp_server(
-        db_path=args.db_path,
-        bundle_root=args.bundle_root,
-        device=args.device,
-        embedding_dim=args.embedding_dim,
-        enable_chunking=not args.no_chunking,
-        max_length=args.max_length,
-        roots=roots,
-        precision=args.precision,
-        cpu_arena=args.cpu_arena,
-        model_id=args.model,
-    )
-
-    # Run with stdio transport (default for MCP servers)
-    mcp.run(transport="stdio")
+    create_mcp_server(settings).run(transport="stdio")
 
 
 if __name__ == "__main__":

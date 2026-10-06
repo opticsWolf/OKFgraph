@@ -86,7 +86,7 @@ class TestSanitizeLive:
             "resource: postgres://u:pw@db.internal:5432/app\n---\nBody.\n",
             encoding="utf-8",
         )
-        cid = self.router.import_from_okf(src)
+        cid = self.router.import_file(src)["concept_id"]
         stored = self.router.get_by_id(cid)
         assert stored.resource == "postgres://***@db.internal:5432/app"
 

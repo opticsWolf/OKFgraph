@@ -106,7 +106,7 @@ class TestSchemaErrors:
         monkeypatch.setattr(r.embed_engine, "_encode_batch", lambda texts, task="Document": [[0.0] * 512 for _ in texts])
         r.import_mgr.import_bundle(tmp_path)
         assert r.purge_mgr._soft_delete_concept("m") is True
-        assert r.purge_mgr._recover_concept("m") is True
+        assert r.purge_mgr.recover_deleted("m") is True
         r.close()
 
     def test_v5_table_gains_snapshot_column(self, tmp_path, monkeypatch):
@@ -137,7 +137,7 @@ class TestSchemaErrors:
         monkeypatch.setattr(r.embed_engine, "_encode_batch", lambda texts, task="Document": [[0.0] * 512 for _ in texts])
         r.import_mgr.import_bundle(tmp_path)
         assert r.purge_mgr._soft_delete_concept("m") is True
-        assert r.purge_mgr._recover_concept("m") is True
+        assert r.purge_mgr.recover_deleted("m") is True
         assert r.get_by_id("m").model_dump()["body"].strip() == "# M\n\nBody."
         r.close()
 
@@ -180,9 +180,9 @@ class TestPurgeErrors:
         assert r.purge_mgr._soft_delete_concept("one") is True
         assert {d["concept_id"] for d in r.purge_mgr.list_deleted_concepts()} == {"one"}
         # Active or missing ids cannot be recovered.
-        assert r.purge_mgr._recover_concept("two") is False
-        assert r.purge_mgr._recover_concept("no-such-id") is False
-        assert r.purge_mgr._recover_concept("one") is True
+        assert r.purge_mgr.recover_deleted("two") is False
+        assert r.purge_mgr.recover_deleted("no-such-id") is False
+        assert r.purge_mgr.recover_deleted("one") is True
         assert r.purge_mgr.list_deleted_concepts() == []
         # Full fidelity: body, tags, and the vector survive the round-trip.
         after = r.get_by_id("one").model_dump()
@@ -238,3 +238,33 @@ class TestEmbeddingErrors:
             embroider.JinaV5.open_files(
                 str(bad_onnx), str(tok_path), truncate_dim=64, device="cpu"
             )
+
+
+class TestDbLock:
+    def test_db_held_by_other_process_is_typed(self, tmp_path):
+        """A db held by another process (okf-mcp, a parallel okf) raises
+        DB_LOCKED with a remedy, not a raw ladybug RuntimeError."""
+        import subprocess
+        import sys
+
+        from okfgraph.errors import OKFError
+
+        db = tmp_path / "held.db"
+        _router(tmp_path).close()  # create it
+        (tmp_path / "err.db").rename(db)
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, ladybug as lb; d = lb.Database(sys.argv[1]); "
+             "print('held', flush=True); sys.stdin.read()", str(db)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "held"
+            with pytest.raises(OKFError) as ei:
+                OKFRouter(db_path=str(db), bundle_root=str(tmp_path),
+                          enable_chunking=False, device="cpu")
+            assert ei.value.code == "DB_LOCKED"
+            assert ei.value.exit_code == 1
+            assert ei.value.remedy
+        finally:
+            holder.communicate("")

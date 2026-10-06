@@ -51,8 +51,7 @@ class TestThoughtIds:
     def test_default_id_namespaced(self, tmp_path):
         r = _router(tmp_path)
         try:
-            out = r.ingest_mgr.ingest_thoughts(
-                thoughts="some reasoning", topic="Vision Parity")
+            out = r.ingest_mgr.ingest("thoughts", thoughts="some reasoning", topic="Vision Parity")
             assert ID_RE.match(out["concept_id"]), out["concept_id"]
         finally:
             r.close()
@@ -60,7 +59,7 @@ class TestThoughtIds:
     def test_empty_slug_falls_back(self, tmp_path):
         r = _router(tmp_path)
         try:
-            out = r.ingest_mgr.ingest_thoughts(thoughts="x", topic="!!!")
+            out = r.ingest_mgr.ingest("thoughts", thoughts="x", topic="!!!")
             assert out["concept_id"].startswith("thoughts/untitled/")
             assert ID_RE.match(out["concept_id"])
         finally:
@@ -69,8 +68,7 @@ class TestThoughtIds:
     def test_explicit_id_with_slashes_preserved(self, tmp_path):
         r = _router(tmp_path)
         try:
-            out = r.ingest_mgr.ingest_thoughts(
-                thoughts="x", topic="y",
+            out = r.ingest_mgr.ingest("thoughts", thoughts="x", topic="y",
                 concept_id="journal/2026-10/my-thought")
             assert out["concept_id"] == "journal/2026-10/my-thought"
         finally:
@@ -83,8 +81,7 @@ class TestFilelessLifecycle:
     def test_export_lands_in_namespace(self, tmp_path):
         r = _router(tmp_path)
         try:
-            cid = r.ingest_mgr.ingest_thoughts(
-                thoughts="vision is live", topic="Release Notes")["concept_id"]
+            cid = r.ingest_mgr.ingest("thoughts", thoughts="vision is live", topic="Release Notes")["concept_id"]
             exported = r.export_mgr.export_bundle(tmp_path / "out")
             assert cid in exported
             expect = tmp_path / "out" / (cid + ".md")
@@ -97,8 +94,7 @@ class TestFilelessLifecycle:
     def test_export_reimport_roundtrip(self, tmp_path):
         r1 = _router(tmp_path, "a.db")
         try:
-            cid = r1.ingest_mgr.ingest_thoughts(
-                thoughts="roundtrip body", topic="Roundtrip")["concept_id"]
+            cid = r1.ingest_mgr.ingest("thoughts", thoughts="roundtrip body", topic="Roundtrip")["concept_id"]
             r1.export_mgr.export_bundle(tmp_path / "bundle")
         finally:
             r1.close()
@@ -123,8 +119,7 @@ class TestFilelessLifecycle:
         # they export flat and reimport unchanged (no migration needed).
         r1 = _router(tmp_path, "a.db")
         try:
-            cid = r1.ingest_mgr.ingest_thoughts(
-                thoughts="legacy", topic="Legacy",
+            cid = r1.ingest_mgr.ingest("thoughts", thoughts="legacy", topic="Legacy",
                 concept_id="thought_legacy_20200101000000_abcdef")["concept_id"]
             r1.export_mgr.export_bundle(tmp_path / "bundle")
             assert (tmp_path / "bundle" / (cid + ".md")).is_file()

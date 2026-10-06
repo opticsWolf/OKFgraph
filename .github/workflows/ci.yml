@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [dev_rework, dev, main]
+    branches: [dev_rework, dev, main, dev_roadtov010]
   pull_request:
-    branches: [dev_rework, dev, main]
+    branches: [dev_rework, dev, main, dev_roadtov010]
 
 env:
   UV_FROZEN: "1"
@@ -40,6 +40,9 @@ jobs:
           tests/test_roundup_cli.py::TestRoundupHelp
           tests/test_mcp_stdio.py
           tests/test_error_paths.py
+          tests/test_envelope.py
+          tests/test_settings.py
+          tests/test_surface_contract.py
           -q
 
       - name: No torch imports outside tests/docs (plan-onnx-only Phase 0)

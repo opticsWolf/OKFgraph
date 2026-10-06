@@ -43,9 +43,9 @@ class TestOKFExportCompliance:
         )
 
         # Import documents
-        cls.router.import_from_okf(Path(cls.tmp_dir) / "doc_a.md")
-        cls.router.import_from_okf(Path(cls.tmp_dir) / "doc_b.md")
-        cls.router.import_from_okf(Path(cls.tmp_dir) / "doc_c.md")
+        cls.router.import_file(Path(cls.tmp_dir) / "doc_a.md")["concept_id"]
+        cls.router.import_file(Path(cls.tmp_dir) / "doc_b.md")["concept_id"]
+        cls.router.import_file(Path(cls.tmp_dir) / "doc_c.md")["concept_id"]
 
         # Create graph edges: doc_a -> doc_b, doc_c -> doc_a
         cls.router.conn.execute("""
@@ -95,7 +95,7 @@ class TestOKFExportCompliance:
         nested = Path(self.tmp_dir) / "nested/item.md"
         nested.parent.mkdir(exist_ok=True)
         nested.write_text("---\ntype: note\ntitle: Nested Item\n---\nNested.")
-        self.router.import_from_okf(nested)
+        self.router.import_file(nested)["concept_id"]
         self.router.export_mgr.export_bundle(out)
         assert (out / "nested" / "index.md").exists()
 
@@ -121,7 +121,7 @@ class TestOKFExportCompliance:
         nested = Path(self.tmp_dir) / "sub/nested.md"
         nested.parent.mkdir(exist_ok=True)
         nested.write_text("---\ntype: note\ntitle: Nested\n---\nNested content.")
-        self.router.import_from_okf(nested)
+        self.router.import_file(nested)["concept_id"]
         out = Path(self.tmp_dir) / "export_sub"
         self.router.export_mgr.export_bundle(out, directory_id="sub")
         assert (out / "sub" / "nested.md").exists()
@@ -130,7 +130,8 @@ class TestOKFExportCompliance:
     def test_export_single_concept(self):
         """Export a single concept by ID."""
         out = Path(self.tmp_dir) / "export"
-        self.router.export_to_okf("doc_a", out / "doc_a.md")
+        result = self.router.export_concept("doc_a", output_dir=out)
+        assert result["path"] == str(out / "doc_a.md")
         assert (out / "doc_a.md").exists()
         body = (out / "doc_a.md").read_text()
         assert "## See Also" in body

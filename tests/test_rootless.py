@@ -9,6 +9,7 @@ bundle dir → adopted by the primary detector).
 
 import pytest
 
+from okfgraph.errors import UsageError
 from okfgraph.router import OKFRouter
 
 
@@ -20,8 +21,7 @@ class TestFileFreeLoop:
     def test_thoughts_search_read_traverse_doctor_export(self, tmp_path):
         r = _rootless(tmp_path)
         try:
-            cid = r.ingest_mgr.ingest_thoughts(
-                thoughts="the falcon cannot hear the falconer",
+            cid = r.ingest_mgr.ingest("thoughts", thoughts="the falcon cannot hear the falconer",
                 topic="Rootless Loop")["concept_id"]
             assert cid.startswith("thoughts/rootless_loop/")
             # read
@@ -33,7 +33,7 @@ class TestFileFreeLoop:
             # traverse (graph-side)
             assert r.search_engine.get_by_id(cid) is not None
             # doctor (root status must not crash on a None primary)
-            report = r.doctor_mgr.diagnose()
+            report = r.doctor(stale_days=365)["report"]
             assert report["score"] >= 0
             # export (explicit output dir, no bundle needed)
             exported = r.export_mgr.export_bundle(tmp_path / "out")
@@ -55,8 +55,9 @@ class TestFailClosed:
     def test_diff_no_side_refused(self, tmp_path):
         r = _rootless(tmp_path)
         try:
-            with pytest.raises(ValueError, match="bundle_root"):
-                r.diff_db_dir()
+            # The op refuses any side-less diff without a bundle root.
+            with pytest.raises(UsageError, match="bundle"):
+                r.diff()
         finally:
             r.close()
 
@@ -76,7 +77,7 @@ class TestExplicitPaths:
                       encoding="utf-8")
         r = _rootless(tmp_path)
         try:
-            cid = r.import_mgr.import_from_okf(md)
+            cid = r.import_file(md)["concept_id"]
             assert cid == "note"
             assert r.search_engine.get_by_id("note") is not None
         finally:
@@ -99,7 +100,7 @@ class TestExplicitPaths:
             # second run is delta-clean (detector tracks the adopted tree)
             assert r.import_mgr.import_bundle(bundle) == []
             # drift diff against the adopted tree is identical
-            assert r.diff_db_dir(bundle)["identical"] is True
+            assert r.diff(new=bundle)["identical"] is True
         finally:
             r.close()
 
@@ -108,7 +109,7 @@ class TestExplicitPaths:
         md.write_text("---\ntitle: Doc\n---\n\nContent.\n", encoding="utf-8")
         r = _rootless(tmp_path)
         try:
-            out = r.ingest_mgr.ingest_md(md_path=str(md))
+            out = r.ingest_mgr.ingest("md", md_path=str(md))
             assert out["concept_id"] == "doc"
         finally:
             r.close()

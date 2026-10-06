@@ -1,26 +1,16 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import heapq
 import json
 import logging
-import math
-import os
 import re
 import time
-import uuid
-from contextlib import contextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Set
-from urllib.parse import urlparse
+from typing import Any, Dict, List, Optional, Tuple, Set
 
-import mordant
-import numpy as np
-import yaml
 import frontmatter
-from okfgraph.models import ChunkModel, ConceptModel
+from okfgraph.errors import OKFError
+from okfgraph.models import ConceptModel
 from okfgraph.images import IngestMode
 from okfgraph.components.roots import (
     namespaced_id,
@@ -109,13 +99,16 @@ def _require_root(root: Optional[Path], op: str) -> Path:
     File-free routers (``bundle_root=None``) serve thoughts/search/read/
     traverse/doctor/export from the graph alone. Anything that needs a
     tree — default bundle import, drift diff, detach — raises a clear
-    ``ValueError`` naming the missing root instead of crashing on None.
+    ``MISSING_PARAM`` (a ``ValueError``) naming the missing root instead
+    of crashing on None.
     """
     if root is None:
-        raise ValueError(
+        raise OKFError(
+            "MISSING_PARAM",
             f"{op} needs a bundle root: this router was opened without "
             "bundle_root (file-free mode). Pass an explicit path, or open "
-            "the router with bundle_root set."
+            "the router with bundle_root set.",
+            op=op,
         )
     return root
 
@@ -601,7 +594,7 @@ class ImportManager:
         bundle_path: Optional[Path],
         batch_size: int,
         mode: "str | IngestMode",
-        purge_deleted: bool,
+        prune_missing: bool,
         alias: Optional[str] = None,
     ) -> List[str]:
         """Inner implementation of import_bundle (called under write lock)."""
@@ -622,13 +615,16 @@ class ImportManager:
         # Suspended work-dir imports never purge (existing guard below),
         # so the gate skips them too — PDF auto-import must not refuse
         # over an unrelated unmounted root.
-        if purge_deleted and self.roots and not det._suspended:
+        if prune_missing and self.roots and not det._suspended:
             absent = self._absent_roots()
             if absent:
                 names = [a or "<primary>" for a in absent]
-                raise RuntimeError(
+                raise OKFError(
+                    "PURGE_REFUSED_ABSENT_ROOT",
                     f"purge refused: root(s) {names} not present — "
-                    "remount them so every tree's state is known, then retry."
+                    "remount them so every tree's state is known, then retry.",
+                    fields={"roots": names},
+                    remedy="remount the absent roots, then retry",
                 )
         # Single walk, partitioned: reserved names (index.md, ...) are graph
         # noise, never knowledge — but counted in the log so silent loss is
@@ -692,7 +688,7 @@ class ImportManager:
         # detections plus tombstones left by earlier no-purge runs.
         # Skipped for suspended (work-dir) imports: a temp import must
         # never tombstone real concepts.
-        if purge_deleted and not det._suspended:
+        if prune_missing and not det._suspended:
             pending = det._load_pending_deletions()
             if pending:
                 purged = 0
@@ -991,10 +987,13 @@ class ImportManager:
         body: str,
         mode: "str | IngestMode" = IngestMode.TEXT,
         force: bool = False,
+        base_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """Import a single concept using the full pipeline (encode, upsert, chunk, etc.).
 
         This is the core shared logic between ingest_md() and ingest_thoughts().
+        ``base_dir`` resolves relative image paths (the source file's folder);
+        None falls back to the CWD, then the bundle root.
         """
         mode = IngestMode.coerce(mode)
         # Rootless addressed write: force bypasses the detached refusal,
@@ -1089,11 +1088,13 @@ class ImportManager:
         self._extract_links_for_concept(concept.id, body)
 
         # Phase 6: Images
+        # Count assets actually linked (embedded + reused), not the stats
+        # dict's key count — len() of it reported 7 for every document.
         image_count = 0
         try:
-            image_count = len(
-                self.image_mgr._ingest_concept_images(concept.id, body, Path("."), mode)
-            )
+            stats = self.image_mgr._ingest_concept_images(
+                concept.id, body, base_dir or Path("."), mode)
+            image_count = stats["total"] - stats["skipped"]
         except Exception:
             pass
 
@@ -1222,7 +1223,7 @@ class ImportManager:
         bundle_path: Optional[Path] = None,
         batch_size: int = 32,
         mode: "str | IngestMode" = IngestMode.TEXT,
-        purge_deleted: bool = False,
+        prune_missing: bool = False,
         force: bool = False,
         alias: Optional[str] = None,
     ) -> List[str]:
@@ -1235,7 +1236,7 @@ class ImportManager:
             bundle_path: Root directory of the OKF bundle (defaults to constructor bundle_root).
             batch_size: Number of texts per ONNX forward pass.
             mode: Image ingestion mode (``text`` | ``optional`` | ``omni``).
-            purge_deleted: If True, concepts whose source files were deleted
+            prune_missing: If True, concepts whose source files were deleted
                 from disk are removed from the graph (including chunks,
                 links, and orphaned image assets).
             force: Bypass the detached-graph refusal (0.2.16). The root must
@@ -1260,7 +1261,7 @@ class ImportManager:
                     force, bundle_path or self.bundle_root
                 )
                 _one = self._import_bundle_inner(
-                    bundle_path, batch_size, mode, purge_deleted,
+                    bundle_path, batch_size, mode, prune_missing,
                     alias=alias,
                 )
                 if self.roots:
@@ -1283,9 +1284,12 @@ class ImportManager:
                 absent = self._absent_roots()
                 if absent:
                     names = [a or "<primary>" for a in absent]
-                    raise RuntimeError(
+                    raise OKFError(
+                        "DETACHED",
                         f"re-attach refused: root(s) {names} not present — "
-                        "remount the full recorded source tree, then retry."
+                        "remount the full recorded source tree, then retry.",
+                        fields={"roots": names},
+                        remedy="remount the recorded source tree, then re-import",
                     )
                 recorded = {
                     r.get("alias", ""): r.get("path")
@@ -1298,10 +1302,13 @@ class ImportManager:
                 configured.update({a: str(Path(p).resolve())
                                    for a, p in self.roots.items()})
                 if recorded != configured:
-                    raise RuntimeError(
+                    raise OKFError(
+                        "DETACHED",
                         "re-attach refused: configured roots differ from the "
                         f"recorded source tree ({recorded}). Create a new "
-                        "database for a different tree."
+                        "database for a different tree.",
+                        fields={"recorded": recorded},
+                        remedy="match the recorded roots, or create a new database",
                     )
             all_ids: List[str] = []
             _targets = (
@@ -1321,7 +1328,7 @@ class ImportManager:
                     continue
                 reattach = self._require_attached(force, _root)
                 _ids = self._import_bundle_inner(
-                    _root, batch_size, mode, purge_deleted, alias=_alias
+                    _root, batch_size, mode, prune_missing, alias=_alias
                 )
                 logger.info(
                     "import: root %s: %d concept(s)",
@@ -1348,10 +1355,12 @@ class ImportManager:
         if not self.delta_mgr.is_detached():
             return False
         if not force:
-            raise RuntimeError(
+            raise OKFError(
+                "DETACHED",
                 "graph is detached from its bundle (see `okf detach`): mirror "
                 "writes are refused. Re-attach with --force (the bundle root "
-                "must match the recorded source tree)."
+                "must match the recorded source tree).",
+                remedy="re-attach with --force, or pass --force to import",
             )
         if root is None:
             return False
@@ -1359,10 +1368,13 @@ class ImportManager:
         roots = (self.delta_mgr.get_detached_state() or {}).get("roots", [])
         if not any(r.get("path") == want for r in roots):
             known = roots[0]["path"] if roots else "<unknown>"
-            raise RuntimeError(
+            raise OKFError(
+                "DETACHED",
                 f"graph was detached from a different source tree ({known}); "
                 f"refusing --force import from {want}. Create a new database "
-                "for a different tree."
+                "for a different tree.",
+                fields={"detached_from": known, "want": str(want)},
+                remedy="create a new database for a different tree",
             )
         return True
 
@@ -1395,10 +1407,12 @@ class ImportManager:
         if self.delta_mgr.is_detached():
             state = self.delta_mgr.get_detached_state() or {}
             since = state.get("detached_at")
-            raise RuntimeError(
+            raise OKFError(
+                "DETACHED",
                 "graph is already detached"
                 + (f" (since epoch {since})" if since else "")
-                + "."
+                + ".",
+                fields={"since": since},
             )
         # Multi-root whole-graph detach (§2.5): every configured tree is
         # verified (with its alias) and recorded as its own SourceRoot row.
@@ -1426,10 +1440,12 @@ class ImportManager:
         baseline_count = baseline_rows[0]["n"] if baseline_rows else 0
         if verify:
             if not root.is_dir():
-                raise RuntimeError(
-                    f"bundle '{root}' not found - nothing to verify against. "
-                    "Pass --bundle pointing at the source tree, or --no-verify "
-                    "to detach an already-removed tree without verification."
+                raise OKFError(
+                    "FILE_NOT_FOUND",
+                    f"bundle '{root}' not found - nothing to verify against.",
+                    fields={"bundle": str(root)},
+                    remedy="pass the source tree, or --no-verify to detach an "
+                           "already-removed tree",
                 )
             self._verify_detach_fidelity(root, report)
             summary = (
@@ -1442,13 +1458,15 @@ class ImportManager:
                     f"{m['path']} [{', '.join(m['fields'])}]"
                     for m in report["mismatched"][:5]
                 )
-                raise RuntimeError(
+                raise OKFError(
+                    "DETACH_REFUSED",
                     f"detach refused: {summary}. Re-import first so the graph "
                     "matches the files, or pass --force to declare the "
                     f"database the artifact anyway. e.g. {sample}"
                 )
             if (report["untracked"] or report["non_source_files"]) and not force:
-                raise RuntimeError(
+                raise OKFError(
+                    "DETACH_REFUSED",
                     f"detach refused: {summary} - these files have no counterpart "
                     "in the graph and would not survive source deletion "
                     "(WILL-NOT-SURVIVE). Pass --force to acknowledge."
@@ -1491,7 +1509,8 @@ class ImportManager:
             for alias, root in targets:
                 name = alias or "<primary>"
                 if not root.is_dir():
-                    raise RuntimeError(
+                    raise OKFError(
+                        "DETACH_REFUSED",
                         f"root {name} ({root}) not found - nothing to verify "
                         "against. Remount it, or pass --no-verify to detach "
                         "without verification."
@@ -1509,13 +1528,15 @@ class ImportManager:
                 f"{len(report['non_source_files'])} source-only"
             )
             if report["mismatched"] and not force:
-                raise RuntimeError(
+                raise OKFError(
+                    "DETACH_REFUSED",
                     f"detach refused: {summary}. Re-import first so the graph "
                     "matches the files, or pass --force to declare the "
                     "database the artifact anyway."
                 )
             if (report["untracked"] or report["non_source_files"]) and not force:
-                raise RuntimeError(
+                raise OKFError(
+                    "DETACH_REFUSED",
                     f"detach refused: {summary} - these files have no counterpart "
                     "in the graph and would not survive source deletion "
                     "(WILL-NOT-SURVIVE). Pass --force to acknowledge."

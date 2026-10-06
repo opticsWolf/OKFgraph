@@ -62,7 +62,7 @@ class TestChunkSearch:
         for i, tag in enumerate(["alpha", "beta", "gamma"]):
             body = f"## Section {i}\n\nTopic {tag} content with shared query words. " * 20
             p = _write_okf(tmp_dir, f"search_{i}.md", f"Search Doc {i}", body, tags=[tag])
-            cid = router.import_from_okf(p)
+            cid = router.import_file(p)["concept_id"]
             ids.append(cid)
         cls._seeded_docs = ids
         return cls._seeded_docs
@@ -113,3 +113,25 @@ class TestChunkSearch:
         results = router.search_engine.search_chunks("xyzzyplughthudethquux")
         # May still get some vector hits, but should be limited
         assert isinstance(results, list)
+
+    def test_fts_queries_are_top_k_bounded(self, router, seeded_docs, monkeypatch):
+        """Every FTS index query passes `top := k`: ladybug 0.21.2 segfaults
+        on unbounded FTS queries that match many rows (28k-chunk graph,
+        common word). Asserted on the issued Cypher — the crash itself
+        needs a large graph to reproduce."""
+        engine = router.search_engine
+        issued = []
+        real = engine._index_rows
+
+        def spy(cypher, params):
+            issued.append((cypher, params))
+            return real(cypher, params)
+
+        monkeypatch.setattr(engine, "_index_rows", spy)
+        engine.search_chunks("shared query words", limit=4)
+        engine.search_hybrid("shared query words", limit=4)
+        fts = [(c, p) for c, p in issued if "QUERY_FTS_INDEX" in c]
+        assert len(fts) == 2
+        for cypher, params in fts:
+            assert "top := $k" in cypher
+            assert params["k"] == 12

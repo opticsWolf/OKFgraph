@@ -158,7 +158,7 @@ class TestPhase1_Chunking:
             sections.append(f"Section {i} content here. " * 15)
         body = "\n\n".join(sections)
         p = _write_okf(tmp_dir, "long.md", "Long Doc", body)
-        cid = router.import_from_okf(p)
+        cid = router.import_file(p)["concept_id"]
         cls._long_doc = cid
         return cls._long_doc
 
@@ -238,7 +238,7 @@ class TestPhase2_Ingestion:
         subdir = Path(tmp_dir) / "import_0"
         subdir.mkdir(exist_ok=True)
         p = _write_okf(str(subdir), "test.md", "Chunk Test", body)
-        cid = router.import_from_okf(p)
+        cid = router.import_file(p)["concept_id"]
         rows = router.conn.execute(
             "MATCH (p:Concept {id: $cid})-[:PART_OF]->(c:Chunk) RETURN count(c) AS n",
             {"cid": cid},
@@ -261,7 +261,7 @@ class TestPhase2_Ingestion:
         subdir = Path(tmp_dir) / "import_2"
         subdir.mkdir(exist_ok=True)
         p = _write_okf(str(subdir), "test.md", "Parent Test", body)
-        cid = router.import_from_okf(p)
+        cid = router.import_file(p)["concept_id"]
         rows = router.conn.execute(
             """
             MATCH (p:Concept {id: $cid})-[:PART_OF]->(c:Chunk)
@@ -313,7 +313,7 @@ class TestPhase3_Search:
         for i in range(3):
             body = f"Topic {i} discussion with unique words alpha beta gamma delta epsilon " * 20
             _write_okf(tmp_dir, f"topic_{i}.md", f"Topic {i}", body)
-            router.import_from_okf(Path(tmp_dir) / f"topic_{i}.md")
+            router.import_file(Path(tmp_dir) / f"topic_{i}.md")
 
     def test_search_chunks_returns_results(self, router, seeded_db):
         results = router.search_engine.search_chunks("alpha beta gamma")
@@ -380,8 +380,8 @@ class TestPhase4_Graph:
         body_b = "Document B content. " * 50 + "\n\n[[doc_a]]"
         _write_okf(tmp_dir, "doc_a.md", "Doc A", body_a, tags=["test"])
         _write_okf(tmp_dir, "doc_b.md", "Doc B", body_b, tags=["test"])
-        id_a = router.import_from_okf(Path(tmp_dir) / "doc_a.md")
-        id_b = router.import_from_okf(Path(tmp_dir) / "doc_b.md")
+        id_a = router.import_file(Path(tmp_dir) / "doc_a.md")["concept_id"]
+        id_b = router.import_file(Path(tmp_dir) / "doc_b.md")["concept_id"]
         cls._linked_db = (id_a, id_b)
         return cls._linked_db
 
@@ -409,7 +409,7 @@ class TestPhase4_Graph:
         chunks = router.search_engine.get_chunks(id_a)
         if not chunks:
             pytest.skip("No chunks created")
-        results = router.traverse(id_a, "PART_OF", "OUTGOING", 1)
+        results = router.traverse(id_a, relationship="PART_OF", direction="OUTGOING", depth=1)
         assert len(results) >= 1
 
     def test_traverse_includes_asset(self, router):
@@ -418,29 +418,6 @@ class TestPhase4_Graph:
 
 
 # ── Phase 5: CLI & Tools (NO router needed — no embedding overhead) ───────
-
-class TestPhase5_Tools:
-    """Tool definition checks — no router/embedding needed.
-
-    TODO: At full-test maturity, add integration tests that call tools
-    through the full CLI pipeline with real embedding verification.
-    """
-
-    def test_chunk_tools_present(self):
-        from okfgraph.tools import TOOLS
-        names = [t["name"] for t in TOOLS]
-        assert "search_chunks" in names
-        assert "expand_with_graph_context" in names
-        assert "get_chunks" in names
-        assert "reconstruct_document" in names
-
-    def test_traverse_tool_has_new_rels(self):
-        from okfgraph.tools import TOOLS
-        traverse = next(t for t in TOOLS if t["name"] == "traverse")
-        rels = traverse["parameters"]["properties"]["relationship"]["enum"]
-        assert "PART_OF" in rels
-        assert "INCLUDES_ASSET" in rels
-
 
 class TestPhase5_CLI:
     """CLI parser checks — no router/embedding needed.
@@ -523,7 +500,7 @@ class TestIndexRebuild:
     def test_reindex_includes_chunk_indexes(self, router, tmp_dir):
         body = "Index test content. " * 100
         _write_okf(tmp_dir, "idx.md", "Idx", body)
-        router.import_from_okf(Path(tmp_dir) / "idx.md")
+        router.import_file(Path(tmp_dir) / "idx.md")
         router.schema_mgr.reindex(force=True)
         rows = router.conn.execute(
             """

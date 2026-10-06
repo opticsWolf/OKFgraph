@@ -50,9 +50,9 @@ class TestRoundupWorkflow:
         cls.db_path = f"{cls.tmpdir}/test.db"
         cls.bundle = f"{cls.tmpdir}/bundle"
         shutil.copytree(FIX / "doctor_bundle", cls.bundle)
-        cls._run(["init", "--db", cls.db_path, "--bundle", cls.bundle])
+        cls._run(["init", "--db-path", cls.db_path, "--bundle-root", cls.bundle])
         assert Path(cls.db_path).exists()
-        cls._run(["import", "--db", cls.db_path, "--bundle", cls.bundle, "--all"])
+        cls._run(["import", "--db-path", cls.db_path, "--bundle-root", cls.bundle, "--all"])
 
     @classmethod
     def teardown_class(cls):
@@ -67,7 +67,7 @@ class TestRoundupWorkflow:
         return result
 
     def _base(self):
-        return ["--db", self.db_path, "--bundle", self.bundle]
+        return ["--db-path", self.db_path, "--bundle-root", self.bundle]
 
     def test_search_rank_ppr(self):
         result = self._run(["search", *self._base(), "--rank", "ppr", "hub spokes"])
@@ -77,7 +77,9 @@ class TestRoundupWorkflow:
     def test_search_rank_rejected_for_chunks(self):
         result = self._run(
             ["search", *self._base(), "--target", "chunks", "--rank", "ppr", "hub"])
-        assert "concepts-only" in result.stdout
+        # BAD_VALUE refusal: usage-class error, exit code 2, on stderr.
+        assert result.returncode == 2
+        assert "concepts-only" in result.stderr
 
     def test_read_max_tokens(self):
         result = self._run(["read", *self._base(), "hub", "--max-tokens", "40"])
@@ -97,8 +99,10 @@ class TestRoundupWorkflow:
         import json
         result = self._run(["diff", str(FIX / "diff_a"), str(FIX / "diff_b"), "--json"])
         assert result.returncode == 1
-        report = json.loads(result.stdout)
-        assert report["added"] == ["gamma"]
+        env = json.loads(result.stdout)
+        assert env["ok"] is False and env["op"] == "diff"
+        assert env["error"]["code"] == "DIFF_DIFFERENT"
+        assert env["data"]["added"] == ["gamma"]
 
     def test_diff_drift_clean(self):
         result = self._run(["diff", *self._base()])
@@ -121,7 +125,7 @@ class TestRoundupWorkflow:
 
     def test_export_obsidian_flavor(self):
         out = f"{self.tmpdir}/vault"
-        result = self._run(["export", *self._base(), "--all", "--output", out,
+        result = self._run(["export", *self._base(), "--all", "--output-dir", out,
                             "--flavor", "obsidian"])
         assert result.returncode == 0
         exported = list(Path(out).rglob("*.md"))
@@ -131,7 +135,7 @@ class TestRoundupWorkflow:
         # (obsidian omits it: backlinks re-imported as [[..]] would flip).
         out_okf = f"{self.tmpdir}/okfbundle"
         result = self._run(["export", *self._base(), "--all",
-                            "--output", out_okf])
+                            "--output-dir", out_okf])
         assert result.returncode == 0
         hub = (Path(out_okf) / "hub.md").read_text(encoding="utf-8")
         assert "## Cited By" in hub

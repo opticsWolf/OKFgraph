@@ -14,7 +14,7 @@
 <nav class="top" aria-label="Main navigation">
   <a class="brand" href="#top">
     <svg class="mark" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M6 7 21 5 23 21 7 23 6 7Zm0 0 17 14M21 5 7 23" stroke="currentColor" stroke-width="1.5"/><g fill="currentColor"><circle cx="6" cy="7" r="3"/><circle cx="21" cy="5" r="3"/><circle cx="23" cy="21" r="3"/><circle cx="7" cy="23" r="3"/></g></svg>
-    OKFgraph <span class="release">0.9.0</span>
+    OKFgraph <span class="release">0.10.0</span>
   </a>
   <div class="links">
     <a href="#positioning">Why OKFgraph</a>
@@ -105,13 +105,13 @@ Refresh flow: <span class="syntax-link">[[token-refresh]]</span></code></pre>
     <div><h3>Install and configure</h3><p>Use the CPU extra for local embeddings. Add <code>pdf</code> only when you need PDF or Office conversion; use the GPU extra instead of CPU for a CUDA setup, not alongside it.</p><pre tabindex="0" aria-label="Installation commands"><code>pip install "okfgraph[cpu]"
 # Optional document conversion:
 # pip install "okfgraph[cpu,pdf]"</code></pre></div>
-    <div><h3>Save as <code>okfgraph.toml</code></h3><pre tabindex="0" aria-label="Project configuration"><code>bundle = "kb"
+    <div><h3>Save as <code>okfgraph.toml</code></h3><pre tabindex="0" aria-label="Project configuration"><code>bundle_root = "kb"
 
 [database]
-path = "kb.db"
-dim = 512
+db_path = "kb.db"
 
 [embedding]
+embedding_dim = 512
 device = "cpu"</code></pre><p class="small-copy"><code>init</code> initializes the database; it does not write this configuration for you.</p></div>
   </div>
   <div class="timeline">
@@ -135,7 +135,7 @@ okf import --all
 okf import --all
 
 # Explicitly remove deleted sources:
-# okf import --all --purge</code></pre></div>
+# okf import --all --prune-missing</code></pre></div>
     </article>
     <article class="step">
       <div class="step-copy"><span class="step-no">3</span><h3>Find the passage, follow the context.</h3><p>Ask an open question with hybrid search, or use PPR for lexical-seeded graph retrieval without loading an embedding model. Read the selected concept with a token budget and surrounding context, then traverse links when you need to inspect the relationships rather than just the prose.</p></div>
@@ -152,13 +152,13 @@ okf traverse auth --direction BOTH</code></pre></div>
   --topic auth
 
 okf ingest --kind pdf \
-  --pdf-file paper.pdf --auto-import</code></pre></div>
+  --pdf-path paper.pdf</code></pre></div>
     </article>
     <article class="step">
       <div class="step-copy"><span class="step-no">5</span><h3>Check the graph. Share the knowledge.</h3><p>Doctor reports graph health; diff shows drift between the index and its source folder. Use strict checks in CI to make findings visible. Export writes graph content to a new directory, including thoughts created without files, with an Obsidian flavor when you want a vault.</p></div>
       <div class="example"><span class="example-label">Maintain and export</span><pre tabindex="0" aria-label="Maintenance commands"><code>okf doctor --strict
 okf diff
-okf export --all --output out/ \
+okf export --all --output-dir out/ \
   --flavor obsidian</code></pre></div>
     </article>
   </div>
@@ -199,9 +199,9 @@ okf read auth --include context \
 </section>
 
 <section id="surfaces" aria-labelledby="surfaces-title">
-  <div class="section-intro"><h2 id="surfaces-title">One graph.<br>Three ways in.</h2><div class="prose"><p>MCP gives agents a small tool surface, the CLI supports interactive work and automation, and Python exposes the router for your own pipelines. All use the same underlying components. Bundle import and maintenance remain outside the five MCP tools, so agents don't need a large administrative tool catalogue.</p></div></div>
+  <div class="section-intro"><h2 id="surfaces-title">One graph.<br>Three ways in.</h2><div class="prose"><p>MCP gives agents a small tool surface, the CLI supports interactive work and automation, and Python exposes the router for your own pipelines. All use the same underlying components. Bundle import and maintenance stay outside the eight MCP tools, so agents don't need a large administrative tool catalogue; anything snapshot-shaped (diff, doctor, lint, produce) is CLI-only.</p></div></div>
   <div class="doors">
-    <article><h3>MCP for agents</h3><p>Connect with stdio. The five tools are <code>search</code>, <code>read</code>, <code>traverse</code>, <code>ingest</code>, and <code>export_bundle</code>. Use persistent, absolute paths appropriate to your machine.</p><pre tabindex="0" aria-label="MCP client configuration"><code>{
+    <article><h3>MCP for agents</h3><p>Connect with stdio. The eight tools are <code>search</code>, <code>read</code>, <code>traverse</code>, <code>ingest</code>, <code>export_bundle</code>, <code>export_concept</code>, <code>list_images</code>, and <code>get_image</code>. Every tool returns the result envelope; failures carry <code>isError</code> with the typed error. Use persistent, absolute paths appropriate to your machine.</p><pre tabindex="0" aria-label="MCP client configuration"><code>{
   "mcpServers": {
     "okfgraph": {
       "command": "okf-mcp",
@@ -225,9 +225,9 @@ from okfgraph import OKFRouter
 r = OKFRouter(bundle_root="./kb",
               db_path="kb.db")
 try:
-    r.import_from_okf("./kb")
-    hits = r.search_hybrid("auth", limit=5)
-    r.export_mgr.export_bundle(Path("out"))
+    r.import_bundle(None)
+    hits = r.search("auth", limit=5)
+    r.export_bundle(Path("out"))
 finally:
     r.close()</code></pre></article>
   </div>
@@ -236,7 +236,7 @@ finally:
 <section id="stack" aria-labelledby="stack-title">
   <div class="section-intro"><h2 id="stack-title">A focused stack,<br>with clear ownership.</h2><div class="prose"><p>OKFgraph owns the knowledge workflow and the embedding-space pins. Two independently usable Rust-backed libraries support it: bobine converts documents, and embroider supplies Jina embeddings and shared ONNX session policy. Each consumer owns its sessions; sharing runtime policy doesn't mean sharing one global inference session.</p><p>The graph store is LadybugDB, not SQLite. SQLite is supported as a source for bundle production. CPU and GPU runtime extras are alternatives: install one ONNX Runtime distribution, not both.</p></div></div>
   <div class="package" id="bobine">
-    <div class="package-heading"><h3>bobine <span class="ver">0.5.13</span></h3><p>Documents → Markdown</p><a class="text-link" href="https://github.com/opticsWolf/bobine">Repository <span aria-hidden="true">↗</span></a></div>
+    <div class="package-heading"><h3>bobine <span class="ver">0.5.13</span></h3><p>Documents → Markdown</p><a class="text-link" href="https://opticswolf.github.io/bobine/">Website <span aria-hidden="true">↗</span></a> <a class="text-link" href="https://github.com/opticsWolf/bobine">Repository <span aria-hidden="true">↗</span></a></div>
     <div class="prose"><p>PDF and Office conversion stays behind a replaceable converter boundary. PDF routes let you choose text extraction, surgical formula processing, or full layout/OCR analysis. DOCX, XLSX, PPTX and their legacy counterparts enter through extension-based dispatch; Excel also offers per-sheet CSV and typed JSON output.</p><p>Provider defaults follow measurement: CUDA helps layout and OCR, while SLANet-plus tables remain CPU-pinned. TexTeller defaults to int8 CPU, with fp32 CUDA available as an opt-in. Faster hardware is only useful when the model's graph benefits from it.</p></div>
   </div>
   <details class="benchmark"><summary>Inspect the CPU / CUDA measurements</summary><p>RTX 3090 results from the published bobine benchmarks, measured with ORT 1.28.1 before the current 1.29.0 pin. These are workload-specific observations, not latency guarantees for your machine.</p><div class="table-wrap" tabindex="0" role="region" aria-label="CPU and CUDA benchmark comparison"><table><caption>Published conversion benchmarks</caption><thead><tr><th scope="col">Workload</th><th scope="col">CPU</th><th scope="col">CUDA</th><th scope="col">Routing choice</th></tr></thead><tbody>
@@ -249,11 +249,11 @@ finally:
     <tr><th scope="row">TexTeller fp32</th><td>0.95 s</td><td>0.42 s</td><td>CUDA opt-in</td></tr>
   </tbody></table></div><a class="text-link" href="https://github.com/opticsWolf/bobine/blob/main/docs/benchmarks.md">Methodology and full results <span aria-hidden="true">↗</span></a></details>
   <div class="package" id="embroider">
-    <div class="package-heading"><h3>embroider <span class="ver">0.3.1</span></h3><p>Jina v5 → ONNX embeddings</p><a class="text-link" href="https://github.com/opticsWolf/embroider">Repository <span aria-hidden="true">↗</span></a></div>
+    <div class="package-heading"><h3>embroider <span class="ver">0.3.1</span></h3><p>Jina v5 → ONNX embeddings</p><a class="text-link" href="https://opticswolf.github.io/embroider/">Website <span aria-hidden="true">↗</span></a> <a class="text-link" href="https://github.com/opticsWolf/embroider">Repository <span aria-hidden="true">↗</span></a></div>
     <div class="prose"><p>embroider combines a Rust embedding engine with Python bindings and an ONNX session-policy API. OKFgraph uses its Jina v5 text and vision encoders; bobine uses the runtime policy for its own conversion models, not Jina inference.</p><p>Text pooling, normalization, model dimensions, and vision preprocessing are explicit contracts. Checked-in conformance fixtures test numerical alignment. Automatic precision follows the device: fp32 CPU or fp16 CUDA; vision fp16 on CPU is rejected. Text models also offer an explicit int8 option.</p><p><a href="https://github.com/opticsWolf/embroider/blob/main/docs/quickref.md">API quick reference</a> · <a href="https://github.com/opticsWolf/embroider/blob/main/docs/compat.md">Runtime compatibility</a></p></div>
   </div>
   <div class="table-wrap" tabindex="0" role="region" aria-label="Package versions"><table><caption>Published stack</caption><thead><tr><th scope="col">Responsibility</th><th scope="col">Package</th><th scope="col">Version</th></tr></thead><tbody>
-    <tr><th scope="row">Knowledge graph · retrieval · MCP</th><td><a href="https://pypi.org/project/okfgraph/">okfgraph</a></td><td>0.9.0</td></tr>
+    <tr><th scope="row">Knowledge graph · retrieval · MCP</th><td><a href="https://pypi.org/project/okfgraph/">okfgraph</a></td><td>0.10.0</td></tr>
     <tr><th scope="row">PDF / Office conversion</th><td><a href="https://pypi.org/project/bobine/">bobine</a></td><td>0.5.13</td></tr>
     <tr><th scope="row">Jina embeddings · runtime policy</th><td><a href="https://pypi.org/project/embroider/">embroider</a></td><td>0.3.1</td></tr>
     <tr><th scope="row">Graph · vectors · full-text index</th><td>ladybug</td><td>0.21.2</td></tr>
@@ -264,6 +264,6 @@ finally:
 
 <section class="closing" aria-labelledby="closing-title"><h2 id="closing-title">Start with the knowledge<br>you already have.</h2><p>One local graph for the documents you own and the memory your agents keep. Build a small corpus first, save a useful decision, and pick it up again in the next session.</p><div class="cta"><a class="btn" href="#workflow">Follow the workflow <span aria-hidden="true">↑</span></a><a class="text-link" href="https://github.com/opticsWolf/OKFgraph/blob/main/docs/architecture.md">Explore the architecture <span aria-hidden="true">↗</span></a></div></section>
 </main>
-<footer><a class="brand" href="#top">OKFgraph</a><p>Local knowledge, connected.</p><div><a href="https://github.com/opticsWolf/OKFgraph">Source</a><a href="https://github.com/opticsWolf/OKFgraph#quick-start">Documentation</a><a href="https://pypi.org/project/okfgraph/">PyPI</a></div></footer>
+<footer><a class="brand" href="#top">OKFgraph</a><p>Local knowledge, connected.</p><div><a href="https://github.com/opticsWolf/OKFgraph">Source</a><a href="https://github.com/opticsWolf/OKFgraph#quick-start">Documentation</a><a href="https://pypi.org/project/okfgraph/">PyPI</a><a href="https://opticswolf.github.io/embroider/">embroider</a><a href="https://opticswolf.github.io/bobine/">bobine</a></div></footer>
 </body>
 </html>

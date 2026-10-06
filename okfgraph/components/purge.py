@@ -8,10 +8,9 @@ import json
 import logging
 import time
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional
 
-from okfgraph.models import ChunkModel, ConceptModel
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +288,7 @@ class PurgeManager:
         return True
 
 
-    def _recover_concept(self, concept_id: str) -> bool:
+    def recover_deleted(self, concept_id: str) -> bool:
         """Recover a soft-deleted concept from the DeletedConcept table.
 
         Args:

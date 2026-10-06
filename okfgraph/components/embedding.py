@@ -149,7 +149,8 @@ def enforce_precision_pin(conn, precision: str) -> str:
             logger.info(
                 "empty graph re-pinned to precision=%s", precision)
             return precision
-        raise RuntimeError(
+        raise OKFError(
+            "PRECISION_PIN_MISMATCH",
             f"graph is pinned to precision={pinned} but the session opened "
             f"with precision={precision}: FP16 and FP32 vectors share the "
             f"dimension but live in different spaces and must never mix. "
@@ -201,7 +202,8 @@ def enforce_model_pin(conn, model_id: str) -> str:
             )
             logger.info("empty graph re-pinned to model=%s", model_id)
             return model_id
-        raise RuntimeError(
+        raise OKFError(
+            "MODEL_PIN_MISMATCH",
             f"graph is pinned to model={pinned} but the session opened "
             f"with model={model_id}: different weights live in different "
             f"vector spaces and must never mix. Reimport into a fresh "
@@ -260,7 +262,8 @@ def enforce_image_model_pin(conn, image_model_id: str) -> str:
             )
             logger.info("empty graph re-pinned to image model=%s", image_model_id)
             return image_model_id
-        raise RuntimeError(
+        raise OKFError(
+            "IMAGE_PIN_MISMATCH",
             f"graph is pinned to image model={pinned} but the vision session opened "
             f"with image model={image_model_id}: image vectors only compare "
             f"within one (model, precision, contract) triple. Reimport into a "
@@ -306,7 +309,8 @@ def enforce_image_precision_pin(conn, precision: str) -> str:
             )
             logger.info("empty graph re-pinned to image precision=%s", precision)
             return precision
-        raise RuntimeError(
+        raise OKFError(
+            "IMAGE_PIN_MISMATCH",
             f"graph is pinned to image precision={pinned} but the vision session "
             f"opened with precision={precision}: FP16 and FP32 vision vectors "
             f"live in different spaces and must never mix. Reimport into a fresh "
@@ -330,22 +334,27 @@ def vision_text_partner(image_model_id: str) -> str:
     try:
         import embroider
     except ImportError:
-        raise RuntimeError(
+        raise OKFError(
+            "NO_ORT_RUNTIME",
             "the embroider wheel is required for image embeddings: "
-            "pip install 'embroider>=0.3,<0.4'"
+            "pip install 'embroider>=0.3,<0.4'",
         ) from None
     for m in embroider.available_models():
         if m.get("id") == image_model_id:
             partner = m.get("text_partner") or ""
             if not partner:
-                raise RuntimeError(
+                raise OKFError(
+                    "IMAGE_PIN_MISMATCH",
                     f"image model {image_model_id!r} names no text partner — "
-                    "image vectors would compare against nothing"
+                    "image vectors would compare against nothing",
+                    fields={"image_model": image_model_id},
                 )
             return partner
-    raise RuntimeError(
+    raise OKFError(
+        "IMAGE_PIN_MISMATCH",
         f"unknown image model {image_model_id!r} (needs embroider>=0.3, "
-        "which registers the vision contract)"
+        "which registers the vision contract)",
+        fields={"image_model": image_model_id},
     )
 
 
@@ -364,7 +373,8 @@ def enforce_vision_compat(conn, *, text_model_id: str, embedding_dim: int,
     """
     partner = vision_text_partner(image_model_id)
     if embedding_dim > 768:
-        raise RuntimeError(
+        raise OKFError(
+            "VISION_INCOMPATIBLE",
             f"image-content search needs embedding_dim<=768 (vision native "
             f"width; this graph uses dim={embedding_dim}): reimport with a "
             "smaller dim, or use mode=text (captions)"
@@ -378,9 +388,12 @@ def enforce_vision_compat(conn, *, text_model_id: str, embedding_dim: int,
     pinned = rows[0]["v"] if rows else None
     effective = pinned or text_model_id
     if effective != partner:
-        raise RuntimeError(
+        raise OKFError(
+            "VISION_INCOMPATIBLE",
             f"image-content search needs a {partner} graph; this graph uses "
-            f"{effective} — use mode=text (captions)"
+            f"{effective} — use mode=text (captions)",
+            fields={"need": partner, "have": effective},
+            remedy="use mode=text (captions)",
         )
     return partner
 
@@ -480,6 +493,8 @@ class LazyVisionEncoder:
             f"LazyVisionEncoder({self._image_model_id}, "
             f"dim={self._truncate_dim}, {state})"
         )
+from okfgraph.errors import OKFError
+
 logger = logging.getLogger(__name__)
 
 # `onnxruntime-gpu` installs the same `onnxruntime` module name — one entry suffices.
@@ -595,12 +610,19 @@ def ort_info() -> Dict[str, Any]:
             pass
     version: Optional[str] = None
     providers: List[str] = []
+    import_error: Optional[str] = None
     try:
         import onnxruntime as _ort
         version = getattr(_ort, "__version__", None)
         providers = list(_ort.get_available_providers())
-    except ImportError:
-        pass
+    except ImportError as exc:
+        # Installed-but-broken (half-removed wheel, locked DLL) is a
+        # different remedy from not-installed — keep the cause.
+        import_error = f"{type(exc).__name__}: {exc}"
+    except Exception:
+        # A bare stand-in module (tests stub `onnxruntime` without the
+        # provider function): treat as absent rather than crash ort_info.
+        providers = []
     return {
         "dylib_path": os.environ.get("ORT_DYLIB_PATH"),
         "installed": [name for name, _ in installed],
@@ -608,7 +630,27 @@ def ort_info() -> Dict[str, Any]:
         "providers": providers,
         "cuda_usable": "CUDAExecutionProvider" in providers,
         "both_installed": len(installed) > 1,
+        "import_error": import_error,
     }
+
+
+def ort_missing_hint(ort: Dict[str, Any]) -> Optional[str]:
+    """The install hint for an unusable ORT, or None when it imports.
+
+    Distinguishes "no runtime distribution installed" from "a runtime is
+    installed but fails to import", so a broken install is not sent down
+    the install-an-extra path.
+    """
+    if ort.get("import_error") is None:
+        return None
+    if not ort.get("installed"):
+        return ("no ONNX Runtime installed: pip install 'okfgraph[cpu]' "
+                "or 'okfgraph[gpu]' (exactly one), or set ORT_DYLIB_PATH "
+                "to an onnxruntime 1.29 library")
+    return (f"ONNX Runtime is installed ({', '.join(ort['installed'])}) but "
+            f"fails to import ({ort['import_error']}): reinstall it, e.g. "
+            "pip install --force-reinstall 'okfgraph[cpu]' or 'okfgraph[gpu]' "
+            "(exactly one), or set ORT_DYLIB_PATH to an onnxruntime 1.29 library")
 
 
 def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None) -> Optional[str]:
@@ -957,40 +999,58 @@ class EmbeddingEngine:
 
     @classmethod
     def model_info(cls, model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
-                   cache_dir: Optional[str] = None) -> Dict[str, Any]:
+                   cache_dir: Optional[str] = None,
+                   *, device: str = "auto",
+                   precision: Optional[str] = None) -> Dict[str, Any]:
         """Inspect model cache status without loading the model.
 
-        Returns a dict with cache location, snapshot path, and disk usage.
+        Wraps ``embroider.cache_info`` — the offline cache walker that
+        resolves files exactly as the engine's ``open()`` does, so the
+        FP16 mirror repo (the CUDA default) is inspected, not the fp32
+        hub repo the old ``huggingface_hub`` path answered for. Returns
+        ``model_id, repo, precision, cache_dir, files, cached,
+        snapshot_path, disk_usage_bytes``; ``files`` maps relative file
+        names to absolute paths (None until downloaded).
+
+        ``precision=None``/``"auto"`` follows the device (CUDA usable →
+        fp16 mirror, else fp32); an explicit ``"fp16"``/``"fp32"`` pins
+        it. An embroider without ``cache_info`` (before 0.3.2) raises
+        typed ``EMBROIDER_TOO_OLD`` instead of an AttributeError, and a
+        bare legacy id ("auto", no owner) raises ``BAD_VALUE``.
         """
-        from huggingface_hub import list_repo_files, snapshot_download
-
-        effective_cache = cache_dir or cls.default_cache_dir()
-        info: Dict[str, Any] = {
-            "model_id": model_id,
-            "cache_dir": effective_cache,
-            "cached": False,
-            "snapshot_path": None,
-            "disk_usage_bytes": 0,
-        }
-
-        try:
-            snapshot_path = snapshot_download(
-                model_id,
-                cache_dir=effective_cache,
-                local_files_only=True,
+        from okfgraph.errors import OKFError
+        import embroider
+        info_fn = getattr(embroider, "cache_info", None)
+        if info_fn is None:
+            import importlib.metadata as _md
+            try:
+                ver = _md.version("embroider")
+            except Exception:
+                ver = "unknown"
+            raise OKFError(
+                "EMBROIDER_TOO_OLD",
+                f"embroider {ver} has no cache_info (needs >= 0.3.2)",
+                op="model_info",
+                remedy="upgrade: pip install 'embroider==0.3.2' (or reinstall with 'okfgraph[cpu]')",
             )
-            info["cached"] = True
-            info["snapshot_path"] = snapshot_path
-            # Calculate disk usage
-            snap = Path(snapshot_path)
-            if snap.exists():
-                info["disk_usage_bytes"] = sum(
-                    f.stat().st_size for f in snap.rglob("*") if f.is_file()
-                )
-        except Exception:
-            pass  # Not cached locally — will download on first use
-
-        return info
+        effective_id = model_id or "jinaai/jina-embeddings-v5-text-small-retrieval"
+        eff = precision
+        if eff in (None, "auto"):
+            eff = "fp32"
+            if device in (None, "auto"):
+                ort = ort_info()
+                eff = "fp16" if ort.get("cuda_usable") else "fp32"
+            elif device == "cuda":
+                eff = "fp16"
+            elif eff == "auto":
+                eff = "fp32"
+        try:
+            return dict(info_fn(effective_id,
+                                cache_dir=cache_dir or cls.default_cache_dir(),
+                                precision=eff))
+        except ValueError as exc:
+            from okfgraph.errors import UsageError
+            raise UsageError("BAD_VALUE", str(exc), op="model_info") from None
 
     # ------------------------------------------------------------------
     # Chunking

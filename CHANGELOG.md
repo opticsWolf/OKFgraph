@@ -48,8 +48,11 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
   Surfaced as `okf model-info --converters` and the informational
   `converter_cache` doctor entry.
 - **Hub-cache hygiene.** `EmbeddingEngine.cache_hygiene()` flags
-  legacy snapshot-only repos (files under `snapshots/`, empty/missing
-  `blobs/`) as dead weight — read-only walk, report-only doctor entry
+  legacy snapshot-only repos (files under `snapshots/` but no
+  `refs/<rev>` resolving to a populated snapshot — the offline lookup can
+  never reach them) as dead weight. An empty `blobs/` alone is *not*
+  legacy: Windows `huggingface_hub` without symlink rights leaves it
+  empty, and that cache is still reused. Read-only walk, report-only doctor entry
   (`cache_hygiene`) naming repos, reclaimable bytes, and the remedy.
   Both cache sections accept the configured `cache_dir` (threaded
   through `doctor` → `diagnose`) and never affect score or `--strict`.
@@ -151,21 +154,53 @@ contract. Renames are atomic; legacy spellings are gone, not deprecated.
   now typed `NO_ORT_RUNTIME` naming the installed distribution and the
   import error (also in `doctor`'s `ort_runtime` info; `ort_info()`
   gains `import_error`).
+- **Database held by another process** (an `okf-mcp` server, a parallel
+  `okf`) raised a raw ladybug `RuntimeError` (`INTERNAL`); now the new
+  state code `DB_LOCKED` with a remedy.
+- **`model_info` precision on a CPU-only runtime.** `device="auto"`/
+  `"cuda"` without a usable CUDA provider now inspects the fp32 repo the
+  engine actually falls back to (was the fp16 mirror → false "not
+  cached"). Returned paths are `os.path.normpath`-ed (no mixed `/`/`\`
+  on Windows); the `EMBROIDER_TOO_OLD` remedy names the real pin
+  (`embroider>=0.3.2,<0.4`), as does the router's missing-embroider
+  error (still said `>=0.2,<0.3`).
+
 ### Added (field-report decisions)
 - **`delete(concept_id)` op (D2-a; surface 23 → 24 ops).** Soft-deletes a
   concept — recoverable 24 h (`deleted-recover`/`deleted-purge` manage the
   window). Refuses with `BAD_VALUE` (remedy included) while a source file
   backing the concept still exists: delete or move the file, then
   `import --all --prune-missing`; rootless content (thoughts) deletes
-  freely. CLI `okf delete ID`. **Not on MCP** (destructive; agents get
-  `ingest` only).
+  freely. CLI `okf delete ID`. An unknown id is `UNKNOWN_CONCEPT`
+  (exit 1), like `read`/`traverse`/`deleted-recover`. **Not on MCP**
+  (destructive; agents get `ingest` only).
 - **`--json` quiets the log stream (D3).** With `--json` the console log
   level defaults to WARNING (verbose/quiet still win), so harnesses that
-  merge stderr into stdout keep parsing the stdout envelope.
-
-- **Database held by another process** (an `okf-mcp` server, a parallel
-  `okf`) raised a raw ladybug `RuntimeError` (`INTERNAL`); now the new
-  state code `DB_LOCKED` with a remedy.
+  merge stderr into stdout keep parsing the stdout envelope. Only the
+  console is quieted: `--log-file` keeps INFO.
+- **Crash reports.** An unexpected failure (`INTERNAL`) now writes its
+  full traceback, with argv, versions and platform, to
+  `%LOCALAPPDATA%\okfgraph\crash\` (else `$XDG_STATE_HOME`/`~/.local/state`;
+  `OKF_CRASH_DIR` overrides; newest 20 kept). The final `[ERROR]` line
+  names the file, so it survives `2>&1 | tail -n 1`; `--json` carries it
+  in `error.fields.crash_report`. Start-up failures (a broken install, a
+  native DLL, a half-edited editable checkout) are covered too: the `okf`
+  script now enters through `okfgraph._entry`, which guards the package
+  import, and `okfgraph/__init__.py` exports lazily (PEP 562) so the guard
+  loads without the router. Reinstall to regenerate the `okf` launcher.
+- **CPU-or-GPU guidance.** The README install section opens with a
+  "CPU or GPU?" table (when to pick `[gpu]`/`[cpu]`, what `--device
+  auto` lands on, the FP16/FP32 precision pin) and gives one `uv sync`
+  per choice. The old sequential `uv sync --extra …` lines uninstalled
+  each other's extras. With an NVIDIA GPU (`nvidia-smi`) next to a
+  CPU-only runtime, `okf doctor` adds an `ort_gpu_unused` info note
+  (never scored), `--device auto` logs a WARNING on landing on CPU, and
+  the no-runtime hint recommends the matching extra.
+- **`pdf` extra requires `bobine>=0.6`** (was `>=0.5`): 0.5.x fetched
+  converter models into each temporary output directory, re-downloading
+  them on every conversion; 0.6 uses the shared hub cache that
+  `converter_status()` reports on. Lock refreshed (bobine 0.6.0,
+  embroider 0.3.3).
 
 ## [0.9.0] — 2026-10-03
 

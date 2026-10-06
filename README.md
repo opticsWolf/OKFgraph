@@ -47,29 +47,55 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
 ## Installation
 
-Requires Python ≥ 3.11.
+Requires Python ≥ 3.11. You must pick **exactly one** ONNX Runtime
+extra, `cpu` or `gpu`:
+
+### CPU or GPU?
+
+| | `[gpu]` | `[cpu]` |
+|---|---|---|
+| **Pick it when** | the machine has an NVIDIA GPU (`nvidia-smi` prints it) | no NVIDIA GPU, macOS, CI, or a small install |
+| Runtime | `onnxruntime-gpu[cuda,cudnn]==1.29.0` (bundles the CUDA + cuDNN runtime wheels: a large download) | `onnxruntime==1.29.0` (small) |
+| `--device auto` lands on | CUDA, FP16 weights (much faster bulk import) | CPU, FP32 weights |
+| Platforms | Windows, Linux x86-64 with a recent NVIDIA driver | all |
+
+Not sure? Run `nvidia-smi`: if it lists a GPU, take `[gpu]`. After
+installing, `okf doctor` shows `cuda_usable=True/False`. With a GPU
+present but the CPU runtime installed it adds an `ort_gpu_unused` note,
+and `--device auto` logs a warning when it falls back to CPU. Switching
+later is safe: the extras conflict, so installing one replaces the
+other. Vectors made on CPU (FP32) and GPU (FP16) cannot share one graph
+(the precision pin refuses it), so pick before the first import or plan
+a reimport.
+
+**PyPI**
 
 ```bash
-pip install "okfgraph[cpu,pdf]"   # PyPI (embeddings come from the published `embroider` wheels; use [gpu,pdf] for CUDA)
+pip install "okfgraph[gpu,pdf]"   # NVIDIA GPU
+pip install "okfgraph[cpu,pdf]"   # everything else
 ```
 
-Or from source with `uv` (no Rust toolchain needed — the embedding
-engine is the external `embroider` package):
+**From source** with `uv` (no Rust toolchain needed: the embedding
+engine is the external `embroider` package). Name every extra in **one**
+`uv sync`: each sync makes the venv exactly what it names, so a later
+`uv sync --extra pdf` would uninstall the runtime again.
 
 ```bash
 git clone <repo> && cd OKFgraph
-uv sync                 # core: ladybug, embroider, mordant, mcp, … (no ORT — pick cpu|gpu)
-uv sync --extra cpu     # ONNX Runtime CPU (or --extra gpu for CUDA)
-uv sync --extra pdf     # bobine PDF converter
-uv sync --extra dev     # pytest
+uv sync --extra gpu --extra pdf --extra dev   # NVIDIA GPU
+uv sync --extra cpu --extra pdf --extra dev   # everything else
 ```
+
+(`pdf` = bobine PDF converter, `dev` = pytest; drop what you don't need.
+Bare `uv sync` installs the core only, with no runtime: the first
+encode then fails with an install hint.)
 
 Prefer a system-wide ONNX Runtime (conda, distro package, self-built)?
 Skip both extras and point `ORT_DYLIB_PATH` at your onnxruntime 1.29
 library instead — but never rely on bare OS-loader discovery: a stale
 system DLL (e.g. in `System32`) fails the load instead of being used.
 
-Core dependencies are deliberately few: `ladybug==0.21.2`, `embroider>=0.3,<0.4`
+Core dependencies are deliberately few: `ladybug==0.21.2`, `embroider>=0.3.2,<0.4`
 (the shared embedding engine — github.com/opticsWolf/embroider, also used by
 bobine), `onnxruntime==1.29.0` (one pinned ORT binary shared by bobine +
 embroider; `ORT_DYLIB_PATH`-overridable), `mordant`, `mcp>=2.0`, `pydantic`,
@@ -386,7 +412,7 @@ okfgraph/
 
 ## Requirements
 
-Core (`uv sync`): `ladybug==0.21.2`, `embroider>=0.3,<0.4` (PyPI wheels,
+Core (`uv sync`): `ladybug==0.21.2`, `embroider>=0.3.2,<0.4` (PyPI wheels,
 github.com/opticsWolf/embroider), `mordant>=0.9`,
 `mcp>=2.0`, `pydantic>=2`, `pyyaml>=6`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.
@@ -394,7 +420,7 @@ Plus exactly one ORT provider: `okfgraph[cpu]` (`onnxruntime==1.29.0`)
 or `okfgraph[gpu]` (`onnxruntime-gpu[cuda,cudnn]==1.29.0`) — shared with
 bobine via `ORT_DYLIB_PATH`.
 
-- `--extra pdf`: `bobine>=0.5` (default PDF converter).
+- `--extra pdf`: `bobine>=0.6` (default PDF converter).
 - `--extra dev`: `pytest>=8`.
 
 ---

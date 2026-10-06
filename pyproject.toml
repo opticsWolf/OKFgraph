@@ -53,7 +53,7 @@ gpu = [
 ]
 # PDF conversion (default BobineConverter; custom converters need none of this)
 pdf = [
-    "bobine>=0.5",
+    "bobine>=0.6",
 ]
 
 [tool.uv]
@@ -63,7 +63,7 @@ pdf = [
 conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]
 
 [project.scripts]
-okf = "okfgraph.cli:main"
+okf = "okfgraph._entry:okf"
 okf-mcp = "okfgraph.mcp_server:main"
 
 [tool.setuptools.packages.find]

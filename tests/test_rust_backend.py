@@ -73,7 +73,7 @@ def test_open_files_matches_hf_acquisition():
     default path."""
     from okfgraph.components.embedding import EmbeddingEngine
 
-    hub = Path(EmbeddingEngine.default_cache_dir()) / "hub"
+    hub = Path(EmbeddingEngine.default_cache_dir())  # already the hub dir
     cached = hub / ("models--" + MODEL.replace("/", "--")) / "snapshots"
     snapshots = sorted(cached.iterdir())
     assert snapshots, f"model not cached locally: {MODEL}"

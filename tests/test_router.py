@@ -197,6 +197,26 @@ class TestCacheManagement:
             precision="fp32")["cache_dir"]
         assert os.path.normpath(info["cache_dir"]) == os.path.normpath(expected)
 
+    def test_model_info_precision_follows_landed_device(self, monkeypatch):
+        # The engine degrades CUDA-requested-but-unusable to fp32 weights;
+        # model_info must inspect the repo that would really be opened.
+        from okfgraph.components import embedding as emb
+        from okfgraph.router import OKFRouter
+        for usable, want in ((False, "fp32"), (True, "fp16")):
+            monkeypatch.setattr(emb, "ort_info",
+                                lambda u=usable: {"cuda_usable": u})
+            for device in ("auto", "cuda"):
+                assert OKFRouter.model_info(device=device)["precision"] == want
+            assert OKFRouter.model_info(device="cpu")["precision"] == "fp32"
+            assert OKFRouter.model_info(device="cuda",
+                                        precision="fp32")["precision"] == "fp32"
+
+    def test_model_info_paths_normalized(self):
+        import os
+        from okfgraph.router import OKFRouter
+        info = OKFRouter.model_info()
+        assert info["cache_dir"] == os.path.normpath(info["cache_dir"])
+
     def test_model_info_old_embroider_refused(self, monkeypatch):
         import embroider
         from okfgraph.errors import OKFError

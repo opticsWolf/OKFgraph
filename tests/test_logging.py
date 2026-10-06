@@ -40,6 +40,25 @@ class TestLoggingSetup:
         # Should have at least 2 handlers (console + file)
         assert len(root.handlers) >= 2
 
+    def test_json_console_level_keeps_file_at_info(self, tmp_path):
+        """--json quiets the console only; --log-file still gets INFO."""
+        from logging.handlers import RotatingFileHandler
+        from okfgraph.cli import _setup_logging
+        log_file = tmp_path / "json.log"
+        _setup_logging(log_file=str(log_file), console_level=logging.WARNING)
+        root = logging.getLogger()
+        try:
+            fh = next(h for h in root.handlers
+                      if isinstance(h, RotatingFileHandler))
+            console = next(h for h in root.handlers if h is not fh)
+            assert console.level == logging.WARNING
+            assert fh.level == logging.INFO
+            logging.getLogger("okfgraph.test").info("info-line")
+            fh.flush()
+            assert "info-line" in log_file.read_text(encoding="utf-8")
+        finally:
+            _setup_logging()
+
     def test_teardown_logging(self):
         from okfgraph.cli import _setup_logging, _teardown_logging
         _setup_logging()

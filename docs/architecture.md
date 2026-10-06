@@ -200,7 +200,7 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 ### PDF conversion (optional — bobine)
 
 ```bash
-pip install "okfgraph[pdf]"   # bobine>=0.5: PDF/Office/text → Markdown engine
+pip install "okfgraph[pdf]"   # bobine>=0.6: PDF/Office/text → Markdown engine
 ```
 
 PDF conversion runs through the `bobine` Rust engine behind the

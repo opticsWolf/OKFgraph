@@ -255,6 +255,15 @@ class DoctorManager:
                                  f"{ort.get('dylib_path') or '(loader search)'}, "
                                  f"cuda_usable={ort.get('cuda_usable')}",
                 })
+                from okfgraph.components.embedding import (
+                    cpu_runtime_with_gpu_hint,
+                )
+                gpu_hint = cpu_runtime_with_gpu_hint(ort)
+                if gpu_hint:
+                    # Info, not a finding: CPU is a valid choice, it just
+                    # should be a conscious one. Never affects score/--strict.
+                    info.append({"rule": "ort_gpu_unused",
+                                 "message": gpu_hint})
             if ort.get("both_installed"):
                 findings.append({
                     "path": "", "severity": "error", "rule": "ort_runtime",

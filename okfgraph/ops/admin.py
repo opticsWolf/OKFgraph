@@ -272,12 +272,13 @@ class AdminOps:
         from okfgraph.errors import UsageError, StateError
         concept = self.search_engine.get_by_id(concept_id)
         if concept is None:
-            raise UsageError(
-                "BAD_VALUE",
-                f"unknown concept '{concept_id}'",
+            # Same code as read/traverse/export_concept/recover (§4 table).
+            raise StateError(
+                "UNKNOWN_CONCEPT",
+                f"concept '{concept_id}' does not exist",
                 op="delete",
                 fields={"concept_id": concept_id},
-                remedy="list ids with a search first",
+                remedy="search first to find IDs",
             )
         # FileHash maps bundle-relative keys (with @alias/ prefixes on
         # named roots) to concept ids; any still-existing source means

@@ -60,6 +60,50 @@ def test_empty_blobs_dir_counts_as_legacy(tmp_path):
     assert [r["repo"] for r in rep["legacy"]] == ["o/emptyblobs"]
 
 
+def test_windows_no_symlink_layout_not_flagged(tmp_path):
+    """huggingface_hub on Windows without symlink rights moves files into
+    snapshots/ and leaves blobs/ empty; refs/main still resolves, so the
+    offline lookup reuses it — must not be reported as deletable."""
+    hub = str(tmp_path)
+    base, _ = _legacy(hub, name="winnosym")
+    os.makedirs(os.path.join(base, "blobs"))
+    os.makedirs(os.path.join(base, "refs"))
+    with open(os.path.join(base, "refs", "main"), "w") as f:
+        f.write("def456")
+    assert EE.cache_hygiene(cache_dir=hub)["legacy"] == []
+
+
+def test_dangling_ref_counts_as_legacy(tmp_path):
+    """A ref naming a snapshot that is absent cannot be resolved."""
+    hub = str(tmp_path)
+    base, _ = _legacy(hub, name="dangling")
+    os.makedirs(os.path.join(base, "refs"))
+    with open(os.path.join(base, "refs", "main"), "w") as f:
+        f.write("0000000")
+    assert [r["repo"] for r in EE.cache_hygiene(cache_dir=hub)["legacy"]] == ["o/dangling"]
+
+
+def test_hygiene_agrees_with_embroider_lookup(tmp_path):
+    """Ground truth: anything flagged must be unreusable by embroider's
+    offline lookup, and anything reusable must not be flagged."""
+    import pytest
+    embroider = pytest.importorskip("embroider")
+    if not hasattr(embroider, "cache_info_files"):
+        pytest.skip("embroider < 0.3.3")
+    hub = str(tmp_path)
+    _modern(hub, name="modern")
+    _legacy(hub, name="noref")
+    base, _ = _legacy(hub, name="winnosym")
+    os.makedirs(os.path.join(base, "refs"))
+    with open(os.path.join(base, "refs", "main"), "w") as f:
+        f.write("def456")
+    flagged = {r["repo"] for r in EE.cache_hygiene(cache_dir=hub)["legacy"]}
+    for name, fname in (("modern", "model.onnx"), ("noref", "model.onnx"),
+                        ("winnosym", "model.onnx")):
+        rep = embroider.cache_info_files(f"o/{name}", [fname], cache_dir=hub)
+        assert rep["cached"] != (f"o/{name}" in flagged), name
+
+
 def test_snapshots_without_files_not_flagged(tmp_path):
     hub = str(tmp_path)
     base = os.path.join(hub, "models--o--partial")

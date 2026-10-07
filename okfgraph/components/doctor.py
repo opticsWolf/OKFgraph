@@ -328,6 +328,44 @@ class DoctorManager:
                              "repo(s), none look unused by cache-mode",
             })
 
+        # Stale write-lock report (0.10.1): the `<db>.lock` file survives
+        # crashes/kills, so its presence never proves a live holder. Probe
+        # with a non-blocking acquire — held means a live writer, free
+        # means a stale leftover. Info only (never a finding, never the
+        # score); the CLI never auto-deletes (that would break mutual
+        # exclusion) — remove by hand after checking no okf/mcp process
+        # is running.
+        try:
+            from pathlib import Path as _P
+            _dbp = getattr(self.import_mgr, "_db_path", None)
+            _lock = (_P(_dbp).with_suffix(_P(_dbp).suffix + ".lock")
+                       if _dbp else None)
+            if _lock is not None and _lock.is_file():
+                from fasteners import InterProcessLock as _IPL
+                _probe = _IPL(str(_lock))
+                _held = not _probe.acquire(blocking=False)
+                if not _held:
+                    try:
+                        _probe.release()
+                    except Exception:
+                        pass
+                    info.append({
+                        "rule": "stale_lock",
+                        "message": f"lock file '{_lock.name}' exists but no "
+                                     "live holder (leftover from a crash/kill?) "
+                                     "— harmless, but safe to remove after "
+                                     "checking no okf/mcp process is running",
+                    })
+                else:
+                    info.append({
+                        "rule": "db_lock_held",
+                        "message": f"lock file '{_lock.name}' is held by a "
+                                     "live process (another okf/mcp writer?) "
+                                     "— run one writer per database",
+                    })
+        except Exception:
+            pass
+
         detached = None
         try:
             detached = self.import_mgr.delta_mgr.get_detached_state()

@@ -10,7 +10,9 @@ Report shape (JSON-stable, all lists sorted)::
     {"dir": str, "files": int,
      "errors": [{"file", "rule", "message", ...}],
      "warnings": [{"file", "rule", "message"}],
-     "clean": bool}  # True when errors is empty (warnings allowed)
+     "skipped_hidden": int,  # 0.10.1 B2: concept files hidden by the
+     "clean": bool}  # shared dot/tool-dir skip rule (diagnostic only)
+     # True when errors is empty (warnings allowed)
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from typing import Any, Dict, List, Tuple
 import frontmatter
 
 from okfgraph.components.import_ import (
+    count_skipped_concept_files,
     in_skipped_dir,
     is_concept_file,
     parse_source_file,
@@ -49,6 +52,9 @@ def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
     root = Path(bundle_dir)
     files = sorted(fp for fp in root.rglob("*")
                     if is_concept_file(fp) and not in_skipped_dir(fp))
+    # B2: count what the shared skip rule hid so a fully-filtered walk can
+    # say so instead of reporting 0 files as clean silence.
+    skipped_hidden = count_skipped_concept_files(root)
 
     errors: List[Dict[str, Any]] = []
     warnings: List[Dict[str, Any]] = []
@@ -119,5 +125,6 @@ def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
         "files": len(files),
         "errors": errors,
         "warnings": warnings,
+        "skipped_hidden": skipped_hidden,
         "clean": not errors,
     }

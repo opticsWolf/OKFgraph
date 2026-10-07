@@ -250,9 +250,19 @@ def _render_lint(report, label=""):
     print(f"{label}{report['files']} file(s): "
           f"{len(report['errors'])} error(s), "
           f"{len(report['warnings'])} warning(s)")
+    skipped = report.get("skipped_hidden", 0)
+    if skipped:
+        print(f"{label}skipped {skipped} file(s) in hidden/tool dirs "
+              f"(.git, .venv, .obsidian, ...)")
     _print_findings(report)
-    if report["clean"]:
+    # B2: a fully-filtered non-empty walk must never endorse itself as
+    # safe to import — the scanner never looked inside the skipped dirs.
+    fully_filtered = report["files"] == 0 and skipped > 0
+    if report["clean"] and not fully_filtered:
         print("Bundle is lint-clean (safe to import).")
+    elif fully_filtered and report["clean"]:
+        print(f"{label}no importable files: every discovered file was "
+              f"skipped (hidden/tool dirs). Nothing to import.")
 
 
 def _render_diff(result) -> None:
@@ -480,18 +490,52 @@ def _import(args):
     if not args.files:
         raise OKFError("MISSING_PARAM", "import needs FILES or --all",
                        op="import_file")
-    for flag, value in (("--bundle-path", args.bundle_path),
-                        ("--prune-missing", args.prune_missing)):
-        if value:
-            raise OKFError("BAD_VALUE", f"{flag} only applies with --all",
-                           op="import_file", fields={"flag": flag})
+    if args.prune_missing:
+        raise OKFError("BAD_VALUE", "--prune-missing only applies with --all",
+                       op="import_file", fields={"flag": "--prune-missing"})
     missing = [f for f in args.files if not Path(f).is_file()]
     if missing:
         # Refuse up front: never import half a file list.
         raise OKFError("FILE_NOT_FOUND", f"file(s) not found: {', '.join(missing)}",
                        op="import_file", fields={"files": missing})
     router = _router(args)
-    results = [router.import_file(f, mode=mode, force=force) for f in args.files]
+    identity_root = None
+    if args.bundle_path:
+        # A1: explicit identity root for positional FILES (not a scan).
+        # IDs are minted relative to this tree; every file must live under
+        # it — validated before any import so a bad list never half-imports.
+        base = Path(args.bundle_path)
+        if not base.is_dir():
+            raise OKFError("FILE_NOT_FOUND",
+                           f"not a bundle directory: {args.bundle_path}",
+                           op="import_file",
+                           fields={"bundle_path": str(args.bundle_path)})
+        try:
+            resolved_base = base.resolve()
+        except OSError:
+            resolved_base = base.absolute()
+        outsiders = []
+        for f in args.files:
+            try:
+                under = Path(f).resolve().is_relative_to(resolved_base)
+            except (ValueError, OSError):
+                under = False
+            if not under:
+                outsiders.append(f)
+        if outsiders:
+            raise OKFError(
+                "BAD_VALUE",
+                f"file(s) outside --bundle-path '{args.bundle_path}': "
+                f"{', '.join(outsiders)}",
+                op="import_file",
+                fields={"files": outsiders,
+                        "bundle_path": str(args.bundle_path)},
+                remedy="pass --bundle-path DIR containing every FILE, "
+                       "or omit it for the legacy fallback")
+        identity_root = resolved_base
+    results = [router.import_file(f, mode=mode, force=force,
+                                  identity_root=identity_root)
+               for f in args.files]
 
     def render(results):
         for r in results:
@@ -1122,8 +1166,10 @@ def build_parser():
                    help="Import entire bundle (omit --bundle-path to import every "
                    "configured root; with --bundle-path, only that tree)")
     p.add_argument("--bundle-path", default=None,
-                   help="Pin a single tree for this import (with --all); "
-                        "the primary root still comes from --bundle-root/TOML")
+                   help="With --all: pin one tree to scan. With FILES: "
+                        "explicit identity root — IDs are minted relative to "
+                        "DIR (every file must live under it). Omit it to keep "
+                        "the legacy bare-stem fallback (warns)." )
     p.add_argument("--batch-size", type=int, default=None,
                    help="Encode batch size (default: [import] batch_size, 32)")
     p.add_argument("--mode", default=None, choices=_MODES,
@@ -1268,7 +1314,7 @@ def build_parser():
                            "file-backed concepts whose source still exists)")
     p.add_argument("concept_id", help="Concept ID to delete")
     p = command("deleted-purge", "Permanently delete expired soft-deleted concepts")
-    p.add_argument("--older-than", type=int, default=None, help="Override recovery window (seconds)")
+    p.add_argument("--older-than", type=int, default=None, help="Override recovery window (seconds; 0 purges everything deleted so far)")
 
     p = command("detach", "End the mirror relationship: the DB becomes the artifact")
     p.add_argument("--bundle-path", default=None,

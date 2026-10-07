@@ -111,8 +111,16 @@ class AdminOps:
         images = {cid: len(self.image_mgr.list_images(cid)) for cid in ids}
         return {"concept_ids": ids, "images": images}
 
-    def import_file(self, file_path, *, mode: str = "text", force: bool = False) -> dict:
-        """Import a single OKF file. Missing files raise ``FILE_NOT_FOUND``."""
+    def import_file(self, file_path, *, mode: str = "text", force: bool = False,
+                      identity_root=None) -> dict:
+        """Import a single OKF file. Missing files raise ``FILE_NOT_FOUND``.
+
+        ``identity_root`` (0.10.1 A1) is an explicit hierarchy base for
+        positional imports: the file must live under it, and the concept ID
+        is minted relative to it. ``None`` keeps the legacy configured-root
+        lookup with the bare-stem fallback (plus a hierarchy-dropped
+        warning). Return shape is unchanged.
+        """
         file_path = Path(file_path)
         if not file_path.is_file():
             raise OKFError(
@@ -121,7 +129,8 @@ class AdminOps:
                 op="import_file",
                 fields={"file_path": str(file_path)},
             )
-        cid = self.import_mgr.import_from_okf(file_path, mode=mode, force=force)
+        cid = self.import_mgr.import_from_okf(
+            file_path, mode=mode, force=force, identity_root=identity_root)
         return {"concept_id": cid, "images": len(self.image_mgr.list_images(cid))}
 
     # ------------------------------------------------------------------

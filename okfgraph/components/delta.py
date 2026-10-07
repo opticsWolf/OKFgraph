@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterator, List, Optional, Set
 
 from okfgraph.components.import_ import in_skipped_dir, is_concept_file
 from okfgraph.components.roots import prefix_key, strip_prefix
+from okfgraph.errors import OKFError
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class DeltaDetector:
 
 
     def _changed_directories(
-        self, source_files: List[Path]
+        self, source_files: List[Path], walk_root: Optional[Path] = None,
     ) -> tuple[List[Path], List[str], Dict[str, Dict]]:
         """Return (changed_files, deleted_paths, dir_updates) — no side effects.
 
@@ -144,9 +145,22 @@ class DeltaDetector:
         ``dir_updates`` is the would-be DirHash state. The caller persists it
         only after concepts commit (crash-consistency: hashes must never
         describe state newer than the graph). Nothing is written here.
+
+        ``walk_root`` (0.10.1 B1) is the tree actually walked; it defaults to
+        ``self.bundle_root`` for legacy callers. A file outside it is a
+        caller bug — raised as typed ``BAD_VALUE``, never a raw
+        ``ValueError`` crash.
         """
         if self._suspended:
             return list(source_files), [], {}
+        base = Path(walk_root) if walk_root is not None else self.bundle_root
+        if base is None:
+            raise OKFError(
+                "MISSING_PARAM",
+                "delta detection needs a walk root (file-free mode): "
+                "pass walk_root explicitly",
+                op="import_bundle",
+            )
         # Own namespace only, in native coordinates: another root's rows
         # must never read as this root's state (same native rel, e.g. ".",
         # exists under every root).
@@ -155,7 +169,18 @@ class DeltaDetector:
         # Group files by parent directory
         dir_files: Dict[str, List[Path]] = {}
         for fp in source_files:
-            parent = str(fp.parent.relative_to(self.bundle_root))
+            try:
+                parent = str(Path(fp).parent.relative_to(base))
+            except ValueError as exc:
+                raise OKFError(
+                    "BAD_VALUE",
+                    f"source file '{fp}' is outside walk root '{base}': "
+                    "walk and delta roots must agree",
+                    op="import_bundle",
+                    fields={"file": str(fp), "walk_root": str(base)},
+                    remedy="resolve --bundle-path once and reuse it for "
+                           "enumeration and delta",
+                ) from exc
             dir_files.setdefault(parent, []).append(fp)
 
         # Compute current directory hashes with file paths
@@ -163,7 +188,7 @@ class DeltaDetector:
         changed: List[Path] = []
         changed_dirs: Set[str] = set()
         for dir_rel, files in dir_files.items():
-            dir_path = self.bundle_root / dir_rel
+            dir_path = Path(base) / dir_rel
             if dir_path.exists():
                 dir_hash, file_paths = self._compute_directory_hash_with_files(dir_path)
             else:
@@ -203,7 +228,7 @@ class DeltaDetector:
         # bundle, one --purge away from data loss). Re-walk recursively so
         # both sides are dir-relative recursive listings.
         for dir_rel in sorted(changed_dirs):
-            dir_path = self.bundle_root / dir_rel
+            dir_path = Path(base) / dir_rel
             if not dir_path.exists():
                 continue
             stored_data = stored_dir_hashes.get(dir_rel, {})

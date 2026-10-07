@@ -72,6 +72,43 @@ def is_concept_file(fp: Path) -> bool:
     )
 
 
+def count_skipped_concept_files(root: Path) -> int:
+    """Count concept files hidden by the shared skip rule (0.10.1).
+
+    Shared by ``lint`` and the ``import --all`` zero-file diagnostic so both
+    agree on why a walk can be non-empty yet yield zero files: any dot-dir
+    component or tool-dir name (``in_skipped_dir``) hides the file from the
+    bundle file set. Reserved names (index.md, ...) are not counted here —
+    import logs those separately.
+    """
+    try:
+        walker = Path(root).rglob("*")
+    except OSError:
+        return 0
+    skipped = 0
+    for fp in walker:
+        try:
+            if fp.is_file() and in_skipped_dir(fp):
+                if (fp.suffix.lower() in SOURCE_EXTS
+                        and fp.name.lower() not in RESERVED_FILENAMES):
+                    skipped += 1
+        except OSError:
+            continue
+    return skipped
+
+
+def _try_resolve(path) -> Path:
+    """Resolve without raising on unresolvable input (0.10.1 B1).
+
+    ``Path.resolve()`` can raise ``OSError`` for malformed input; callers
+    comparing walk roots need a best-effort absolute path, never a crash.
+    """
+    try:
+        return Path(path).resolve()
+    except OSError:
+        return Path(path).absolute()
+
+
 _USERINFO_RE = re.compile(
     r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<userinfo>[^/@]*@)(?P<rest>.*)$",
 )
@@ -599,8 +636,14 @@ class ImportManager:
     ) -> List[str]:
         """Inner implementation of import_bundle (called under write lock)."""
         mode = IngestMode.coerce(mode)
-        root = Path(bundle_path) if bundle_path is not None else _require_root(
-            self.bundle_root, "import_bundle")
+        # B1: resolve once at the boundary so relative --bundle-path values
+        # share anchors with the absolute configured root (mixed anchors
+        # crashed delta.py:158 on 0.10.0). Unresolvable input never crashes
+        # here — downstream validation turns it into a typed error.
+        if bundle_path is not None:
+            root = _try_resolve(bundle_path)
+        else:
+            root = _require_root(self.bundle_root, "import_bundle")
         if alias is None:
             alias = self._alias_for_root(root)
         det = self._detector_for(alias)
@@ -609,6 +652,28 @@ class ImportManager:
             # it (delta state is content-keyed and DB-persisted, so a later
             # switch of trees only costs redundant upserts, never skips).
             det.bundle_root = root
+        # Pinned-tree isolation (0.10.1 B1 ledger decision): an explicit
+        # bundle_path resolving away from the detector's owned tree is a
+        # foreign single-tree import (relative subdir, absolute inside
+        # subdir, or absolute outside root). Its tree-relative keys (e.g.
+        # "thoughts/...") would collide with the owned ledger and its
+        # absence from the walk would read as mass deletion — so it runs
+        # isolated: every file imports, nothing tombstones, nothing
+        # persists to the shared DirHash/FileHash ledger. Repeated imports
+        # stay stable (same IDs, redundant upserts) without overwriting the
+        # default tree's baseline. No schema change: isolation is a
+        # read/write skip, not a new namespace.
+        isolated = (
+            bundle_path is not None
+            and det.bundle_root is not None
+            and _try_resolve(root) != _try_resolve(det.bundle_root)
+        )
+        if isolated:
+            logger.info(
+                "pinned tree '%s' differs from detector root '%s' — "
+                "isolated import (no delta baseline, no ledger writes)",
+                root, det.bundle_root,
+            )
         # Purge is fail-closed in multi-root graphs (§2.3): consuming
         # tombstones while a root's state is unknown could purge live
         # concepts as "deleted". Single-root graphs keep legacy behaviour.
@@ -640,6 +705,17 @@ class ImportManager:
                 "skipping %d reserved file(s) (index.md, ...)",
                 len(candidates) - len(source_files),
             )
+        if not source_files:
+            # B2: shared hidden/tool-dir diagnostic — a non-empty walk that
+            # yields zero files is a skip, never a silent empty. The count
+            # uses the same in_skipped_dir rule as lint/delta/diff.
+            skipped = count_skipped_concept_files(root)
+            if skipped:
+                logger.info(
+                    "skipped %d file(s) in hidden/tool dirs "
+                    "(.git, .venv, .obsidian, ...)",
+                    skipped,
+                )
         if not source_files and not Path(root).is_dir():
             # Absent tree (unmounted root, mistyped path): no baseline can
             # be computed — return before detection so nothing reads as
@@ -676,8 +752,24 @@ class ImportManager:
         # concepts commit (Phase 3b), so a crash can never leave hashes
         # describing state newer than the graph.
         _t1 = time.monotonic()
-        changed, deleted, dir_updates = det._changed_directories(source_files)
-        logger.info("directory-delta: %d changed, %d deleted (%.1fs)", len(changed), len(deleted), time.monotonic() - _t1)
+        if isolated:
+            # Isolated pinned tree: no baseline read, no deletions, no
+            # ledger writes. Every walked file imports; prune is ignored
+            # (a temp tree must never tombstone the owned graph).
+            if prune_missing:
+                logger.warning(
+                    "prune_missing ignored for pinned tree '%s' "
+                    "(isolated import has no deletion baseline)",
+                    root,
+                )
+            changed, deleted, dir_updates = list(source_files), [], {}
+            logger.info("directory-delta: isolated pinned tree: %d changed, "
+                        "0 deleted (%.1fs)", len(changed),
+                        time.monotonic() - _t1)
+        else:
+            changed, deleted, dir_updates = det._changed_directories(
+                source_files, walk_root=root)
+            logger.info("directory-delta: %d changed, %d deleted (%.1fs)", len(changed), len(deleted), time.monotonic() - _t1)
 
         # Record deletions durably: tombstones survive no-purge runs so a
         # later --purge-deleted still sees them.
@@ -687,8 +779,8 @@ class ImportManager:
         # Purge deleted concepts if requested — consumes this run's
         # detections plus tombstones left by earlier no-purge runs.
         # Skipped for suspended (work-dir) imports: a temp import must
-        # never tombstone real concepts.
-        if prune_missing and not det._suspended:
+        # never tombstone real concepts. Isolated pinned trees skip too.
+        if prune_missing and not det._suspended and not isolated:
             pending = det._load_pending_deletions()
             if pending:
                 purged = 0
@@ -787,19 +879,22 @@ class ImportManager:
         # files whose concepts committed, and only now. Directories holding
         # failed files are dropped from dir_updates so the next run
         # re-walks them (plus their successfully parsed siblings — wasted
-        # work only, never a silent skip).
-        file_hashes: Dict[str, str] = {}
-        for p in parsed:
-            fp = p["fp"]
-            rel = str(fp.relative_to(root))
-            file_hashes[rel] = det._file_hash(fp)
-        det._store_file_hashes(file_hashes)
-        for fp in failed_files:
-            # dir_updates keys are DB (namespaced) keys — pop via the
-            # detector's key space, not the native rel.
-            from okfgraph.components.roots import prefix_key as _pk
-            dir_updates.pop(_pk(det.alias, str(fp.parent.relative_to(root))), None)
-        det._store_directory_hashes(dir_updates)
+        # work only, never a silent skip). Isolated pinned trees skip both
+        # persists: their tree-relative keys must never overwrite the owned
+        # ledger (B1 collision rule).
+        if not isolated:
+            file_hashes: Dict[str, str] = {}
+            for p in parsed:
+                fp = p["fp"]
+                rel = str(fp.relative_to(root))
+                file_hashes[rel] = det._file_hash(fp)
+            det._store_file_hashes(file_hashes)
+            for fp in failed_files:
+                # dir_updates keys are DB (namespaced) keys — pop via the
+                # detector's key space, not the native rel.
+                from okfgraph.components.roots import prefix_key as _pk
+                dir_updates.pop(_pk(det.alias, str(fp.parent.relative_to(root))), None)
+            det._store_directory_hashes(dir_updates)
 
         # Phase 3.5: Chunk all documents (NEW) — per-concept error isolation
         _import_chunk_errors: List[Tuple[str, Exception]] = []
@@ -1693,6 +1788,7 @@ class ImportManager:
         mode: "str | IngestMode" = IngestMode.TEXT,
         rebuild_indexes: bool = True,
         force: bool = False,
+        identity_root: Optional[Path] = None,
     ) -> str:
         """Parse an OKF .md/.txt file and create/update the concept in the graph.
 
@@ -1706,17 +1802,73 @@ class ImportManager:
 
         force: Bypass the detached-graph refusal (0.2.16). Rootless addressed
             write: never re-attaches.
+        identity_root: Explicit hierarchy base for positional imports (0.10.1
+            A1). When given, the file must live under it and the concept ID
+            is minted relative to it; otherwise ``BAD_VALUE``. ``None`` keeps
+            the legacy configured-root lookup with the bare-stem fallback.
         """
         mode = IngestMode.coerce(mode)
         self._require_attached(force)
+        file_path = Path(file_path)
+        resolved_file = _try_resolve(file_path)
 
-        # 1-2. Parse frontmatter/body and build the Concept model.
-        # Multi-root (§2.1/§2.6): a file inside a named root mints that
-        # root's namespaced ID; outside every root keeps the legacy
-        # bare-stem fallback.
-        _alias = resolve_alias_for_path(file_path, self.roots) or ""
-        _root = self.roots[_alias] if _alias else self.bundle_root
-        concept, body, concept_id = self._parse_source_file(file_path, _root, _alias)
+        if identity_root is not None:
+            # Explicit identity root (CLI ``import --bundle-path DIR FILES``):
+            # hierarchy is derived from this tree, never guessed from the
+            # file list's common parent.
+            resolved_base = _try_resolve(identity_root)
+            if not Path(resolved_base).is_dir():
+                raise OKFError(
+                    "FILE_NOT_FOUND",
+                    f"not a bundle directory: {identity_root}",
+                    op="import_file",
+                    fields={"identity_root": str(identity_root)},
+                )
+            try:
+                under = resolved_file.is_relative_to(resolved_base)
+            except (ValueError, OSError):
+                under = False
+            if not under:
+                raise OKFError(
+                    "BAD_VALUE",
+                    f"file '{file_path}' is outside identity root '{identity_root}': "
+                    "pass the tree that actually contains every file, or omit "
+                    "--bundle-path to keep the legacy bare-stem fallback",
+                    op="import_file",
+                    fields={"file_path": str(file_path),
+                            "identity_root": str(identity_root)},
+                    remedy="pass --bundle-path DIR containing every FILE",
+                )
+            _alias = self._alias_for_root(resolved_base)
+            _root: Optional[Path] = resolved_base
+            concept, body, concept_id = self._parse_source_file(
+                resolved_file, _root, _alias)
+        else:
+            # 1-2. Parse frontmatter/body and build the Concept model.
+            # Multi-root (§2.1/§2.6): a file inside a named root mints that
+            # root's namespaced ID; outside every root keeps the legacy
+            # bare-stem fallback.
+            _alias = resolve_alias_for_path(resolved_file, self.roots) or ""
+            _root = self.roots[_alias] if _alias else self.bundle_root
+            concept, body, concept_id = self._parse_source_file(
+                resolved_file, _root, _alias)
+            # A2: never silently drop hierarchy. The bare-stem fallback is
+            # correct for a lone stray file but wrong as a silent default —
+            # warn with both the source path and the minted ID. File-free
+            # routers (no bundle root) intentionally mint bare stems, so they
+            # stay quiet; everyone else hears about the fallback.
+            if _root is not None:
+                try:
+                    inside = resolved_file.is_relative_to(_try_resolve(_root))
+                except (ValueError, OSError):
+                    inside = False
+                if not inside:
+                    logger.warning(
+                        "hierarchy-dropped: '%s' from '%s' is outside "
+                        "bundle_root '%s' — pass --bundle-path DIR containing "
+                        "every file to preserve hierarchy",
+                        concept_id, resolved_file, _root,
+                    )
 
         # 2.5. Chunk the body (NEW)
         if self.enable_chunking:
@@ -1800,7 +1952,7 @@ class ImportManager:
                 raise
 
         # 5. Ingest any embedded images under the requested mode
-        self.image_mgr._ingest_concept_images(concept_id, body, file_path.parent, mode)
+        self.image_mgr._ingest_concept_images(concept_id, body, resolved_file.parent, mode)
 
         # 6. Extract and create LINKS_TO relationships for this concept
         self._extract_links_for_concept(concept_id, body)

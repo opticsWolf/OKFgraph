@@ -202,6 +202,11 @@ run one at a time per database; when `okf-mcp` is serving, query through
 it), `NO_ORT_RUNTIME` (no/broken ONNX Runtime), and the pin set.
 Concurrency: one process per db file; the 0-byte `<db>.lock` beside it is
 ladybug's own lock marker and is harmless when no process holds it.
+A leftover after a crash/kill is indistinguishable from a live hold at first
+glance — check processes first, then remove by hand if stale (`okf doctor`
+reports it; the CLI never auto-deletes). Pin the database in `okfgraph.toml`
+(`db_path = "kb.db"`, overridable per-invocation with `OKFGRAPH_DB_PATH`)
+so a held-open default can never silently fork a second database.
 Unexpected failures (`INTERNAL`) also write the full traceback — with argv,
 versions and platform — to a crash file (`%LOCALAPPDATA%\okfgraph\crash\`,
 else `$XDG_STATE_HOME`/`~/.local/state`; `OKF_CRASH_DIR` overrides, newest

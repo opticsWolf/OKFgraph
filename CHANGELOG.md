@@ -4,6 +4,42 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.10.1] — 2026-10-07
+
+Graph-reunification follow-ups (field report 2026-10-07: positional import
+flattened 8 thoughts to bare-stem IDs; relative `--bundle-path` crashed in
+delta; dot-dir lint endorsed an unscanned tree). Forward behavior +
+diagnostics only — no schema change, no migration, no embedding/doctor-score
+or MCP changes.
+
+### Fixed
+- **Positional import hierarchy (A1/A2).** `import FILES --bundle-path DIR`
+  now takes DIR as an explicit identity root (not a scan): IDs are minted
+  relative to it, and every file must live under it (rejected up front,
+  before any import). Without it, configured-root lookup is kept but the
+  bare-stem fallback warns (`hierarchy-dropped`, naming the source path
+  and the minted ID) instead of misplacing silently. **Behavior fix:**
+  rooted multi-file lists now mint `thoughts/<topic>/<stem>` where 0.10.0
+  minted bare stems. Python return shapes unchanged.
+- **Bundle-path crash (B1).** `--bundle-path` is resolved once at the
+  boundary, so relative paths (the incident's `merge-tmp`) and absolute
+  trees outside the configured root (the `/tmp` variant) import with
+  correct hierarchical IDs instead of `ValueError`. Pinned trees import
+  isolated — every file imports, nothing tombstones, and nothing is
+  written to the shared DirHash/FileHash ledger — so repeated imports stay
+  stable without colliding with the owned tree's baseline. Genuinely
+  invalid inputs raise typed `BAD_VALUE`, never a raw traceback.
+- **Lint skip diagnostics (B2).** `lint` (and the `import --all` zero-file
+  path) reports `skipped <n> file(s) in hidden/tool dirs`; a fully-filtered
+  non-empty walk no longer claims `lint-clean (safe to import)`.
+
+### Added
+- `doctor` reports a leftover `<db>.lock` with no live holder as
+  info-only `stale_lock` (never auto-deleted — check processes first).
+- Documented `deleted-purge --older-than 0` as the immediate-purge path,
+  and the `okfgraph.toml` `db_path` pin + `OKFGRAPH_DB_PATH` precedence
+  that keeps a held-open default from silently forking a second database.
+
 ## [0.10.0] — 2026-10-06
 
 Surface unification. **Breaking release**: every operation exists once

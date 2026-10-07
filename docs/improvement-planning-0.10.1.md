@@ -1,6 +1,6 @@
 # OKFgraph 0.10.1 — improvement plan (graph-reunification follow-ups)
 
-**Status:** draft on `dev_0.10.1` (forked from `main@0e803f4`, v0.10.0). No code changed yet.
+**Status:** implemented on `dev_0.10.1` (commits `4e0ae60` + `15ed2bd`, pushed). Full serial suite green (876 passed, 6 skipped, 0 failed). This document stands as the historical record: why the work exists (field report + incident), what was decided, and what was built.
 **Rev 3:** Amendment B appended 2026-10-07 — resolves the positional-import root ambiguity, corrects Phase 2's operative B1 contract for outside-root trees, and restores upstream issue filing as an explicit follow-up (see §9).
 **Source:** field report `D:\User\Documents\Python\okf-graph-issues-20261007.md` — issues observed 2026-10-07 while reuniting the split `kb.db` / `okfgraph.db` pair in `D:\User\Documents\Python\OKFgraph` (OKFgraph 0.10.0, `.venv` install).
 **Scope:** patch release. Forward behavior + diagnostics only. No schema change, no migration, no embedding/doctor-score work, no MCP changes.
@@ -259,3 +259,10 @@ Amendment A §8.1 prematurely concluded that no upstream filing was needed merel
 ### 9.4 Coverage and boundaries
 
 The revised Phase 0/1/2 steps and §6 test matrix now explicitly cover: rooted positional imports, no-root fallback warnings, preflight rejection of files outside an explicitly supplied identity root, relative and absolute-outside bundle paths, repeated import/delta stability, and the lint conclusion for a fully skipped dot-dir. These remain scratch-DB tests; there is no live-graph repro or schema migration in scope.
+
+### 9.5 Decision log (implementation session, 2026-10-07)
+
+- **Upstream issue filing (§9.3): REJECTED by maintainer.** No Issues A/B will be filed; the private field report plus this plan and the CHANGELOG entry stand as the record. Phase 0 item 6 is closed as declined, not done.
+- **bobine:** installed `bobine==0.6.0` (built from `D:/User/Documents/Rust/bobine`) into `.venv`; the 13 PDF-ingest failures were a missing optional dependency. Full serial suite green: 876 passed, 6 skipped, 0 failed.
+- **`uv.lock`:** restored (was deleted in the working tree, breaking CI `--frozen`) and re-locked for 0.10.1 — one-line diff (`okfgraph 0.10.0 → 0.10.1`), `uv lock --check` passes.
+- **`okfgraph.toml`:** live repo-local pin (`db_path = "kb.db"`) stays untracked by design; tracked as `okfgraph.toml.example` + `.gitignore` entry. Known quirk retained: CWD-first lookup can shadow test fixtures when the suite runs from the repo root (workaround: move the live TOML aside for the run, restore after).

@@ -1,7 +1,7 @@
 # OKFgraph 0.10.1 — improvement plan (graph-reunification follow-ups)
 
 **Status:** draft on `dev_0.10.1` (forked from `main@0e803f4`, v0.10.0). No code changed yet.
-**Rev 2:** Amendment A appended 2026-10-07 — full report re-read (earlier read was truncated), B1 root cause confirmed from the crash log + scratch-DB repro, one new crash class found (see §8).
+**Rev 3:** Amendment B appended 2026-10-07 — resolves the positional-import root ambiguity, corrects Phase 2's operative B1 contract for outside-root trees, and restores upstream issue filing as an explicit follow-up (see §9).
 **Source:** field report `D:\User\Documents\Python\okf-graph-issues-20261007.md` — issues observed 2026-10-07 while reuniting the split `kb.db` / `okfgraph.db` pair in `D:\User\Documents\Python\OKFgraph` (OKFgraph 0.10.0, `.venv` install).
 **Scope:** patch release. Forward behavior + diagnostics only. No schema change, no migration, no embedding/doctor-score work, no MCP changes.
 
@@ -41,10 +41,10 @@ Report's recovery was correct: soft-delete the 8 flats (recoverable 24 h) + re-i
 
 Do both, in this order:
 
-- **A1 — shared-parent-relative IDs:** when all `FILES` share a non-trivial common parent, derive IDs relative to it (or relative to CWD) instead of bare stems. Single outsider keeps the bare-stem fallback.
-- **A2 — warn whenever the fallback fires:** `WARNING hierarchy-dropped: <stem> from <abs path> is outside bundle_root <root>` and print both file path and minted ID. A1 without A2 still leaves the single-file case silent; A2 without A1 still forces the temp-bundle workaround for the common case.
+- **A1 — explicit identity root for positional `FILES`:** permit `--bundle-path DIR` with positional files as an identity base (not a recursive scan); resolve the root and file paths, and derive IDs relative to it only when every supplied file is beneath it. Without an explicit `--bundle-path`, keep configured-root resolution; do not infer a base from the files' common parent (for a globbed topic directory that is usually the topic directory itself and would still drop `thoughts/<topic>`). Files outside every configured root retain the bare-stem fallback, but are no longer silent under A2. A lone stray file remains supported.
+- **A2 — warn whenever the fallback fires:** `WARNING hierarchy-dropped: <stem> from <abs path> is outside bundle_root <root>` and print both file path and minted ID. A1 without A2 leaves unrooted files silent; A2 without A1 keeps the behavior visible but still requires the caller to supply an identity root to preserve hierarchy.
 
-Open lookup for Phase 0: what `root` does `import_from_okf` pass? If it unconditionally passes `self.bundle_root`, even bundle-adjacent flows can't help positional imports — confirm before designing A1's relative base.
+Resolved lookup: `import_from_okf` consults configured roots, then falls back to `self.bundle_root` (Amendment A §8.5). The remaining A1 decision is CLI contract: positional imports need an explicit identity root for external paths; `--bundle-path` is already parsed but currently rejected unless `--all` (see Amendment B §9).
 
 No data migration in 0.10.1 — forward behavior + warning only.
 
@@ -69,7 +69,7 @@ Analysis:
 - Candidates: `_alias_for_root` / `resolve_alias_for_path` (`import_.py:580`), `_import_bundle_inner:659,794,801`, `_require_dir` (`ops/admin.py:100-104`), router bundle-root setup. Absolute-with-forward-slashes working while bare-relative crashes points to a missing `.resolve()` / separator mismatch on Windows (`\\` vs `/`) — same guess as the reporter. **Confirmed — see Amendment A §8.2:** crash site is `delta.py:158`; the mechanism is mixed relative/absolute anchors, not separators.
 - `cli.py:483` validates `--bundle-path` only with `--all`, so the crash path is `import --all --bundle-path <relative>`. Crash reporting itself worked — keep that log for repro.
 
-Fix: normalize **both** sides (`Path(bundle_path).resolve()`, `root.resolve()`) before any `relative_to` / `is_relative_to`; never let a raw user path reach `relative_to` unguarded — convert residual mismatch to `OKFError(BAD_VALUE)` with a remedy ("use an absolute path or check CWD").
+Fix (operative — see Amendment B §9.2): resolve `bundle_path` once, then use the same resolved walked tree for enumeration, delta relative-path calculation, and hash lookup. Do not compare valid outside-root paths against the configured root; outside-root trees are supported. Convert only malformed/unresolvable input to `OKFError(BAD_VALUE)` with a remedy. The exact DirHash key/namespace rule is a Phase 0 decision; no schema migration.
 
 ### B2 — dot-dir silently skipped. Severity: Medium (silent, not crash).
 
@@ -77,7 +77,7 @@ Observation: hidden directory `.merge-tmp` invisible to the bundle scanner — `
 
 Analysis: by design — `in_skipped_dir` (`import_.py:53-57`) skips any component starting with `.` plus `SKIP_DIR_NAMES`, shared by import/detach/diff/lint/delta so all agree on the file set. The bug is **diagnostic silence**: `0 file(s)` with no "skipped dot-dir" line.
 
-Fix is docs + one log line, not a behavior change: `lint` (and `--all` with 0 files) reports `skipped <n> file(s) in hidden/tool dirs` when the walk was non-empty but fully filtered. Keep skipping `.git/.venv/.obsidian` — just say so.
+Fix is diagnostics only, not a walk behavior change: `lint` (and `--all` with 0 files) reports `skipped <n> file(s) in hidden/tool dirs` when the walk was non-empty but fully filtered. Keep skipping `.git/.venv/.obsidian`; for lint, do not print "lint-clean (safe to import)" when every discovered file was filtered out (Amendment A §8.4).
 
 ## 3. Minor observations (evaluated, mostly docs/small hardening)
 
@@ -93,7 +93,7 @@ Fix is docs + one log line, not a behavior change: `lint` (and `--all` with 0 fi
 
 - `kb.db` (91 MB + WAL) is live working data and untracked. All repro on **scratch DBs**; never run Phase 0-2 scenarios against `kb.db`.
 - Full serial suite stays the release gate (Windows `onnx_data` locking forbids sharded runs — prior history).
-- Python return shapes for `import_file` / `import_bundle` stay identical; only ID *values* change for shared-parent lists (A1). Flag as behavior fix in CHANGELOG.
+- Python return shapes for `import_file` / `import_bundle` stay identical. Positional imports only mint hierarchy relative to an explicit identity root; adding an optional internal/keyword root parameter is acceptable if needed, but keep the public return shapes unchanged. Flag changed ID values and fallback warnings in CHANGELOG.
 - Keep the crash-log pipeline as-is; it worked.
 
 ## 5. Work plan
@@ -102,26 +102,29 @@ Fix is docs + one log line, not a behavior change: `lint` (and `--all` with 0 fi
 
 1. Decide `okfgraph.toml` + `uv.lock` disposition. Proposal: restore `uv.lock` (`git checkout -- uv.lock`); track `okfgraph.toml.example`, gitignore local `okfgraph.toml` — unless repo-local `kb.db` is canonical, in which case track it. Needs explicit call (environment-specific either way).
 2. Repro scripts on temp dirs only:
-   - A: `okf import <tmpdir>/thoughts/<topic>/*.md` → assert current flat-ID behavior, capture warning absence.
-   - B1: `okf import --all --bundle-path <relative>` (forms: `merge-tmp`, `merge-tmp/` forward slash, backslash variant, absolute) → capture `ValueError` + crash-log ref.
-   - B2: `okf lint <dot-dir>` → capture `0 file(s)` silence.
+   - A: positional files outside configured roots with and without explicit `--bundle-path`; capture flat IDs and warning behavior, then assert the rooted form can express the intended hierarchy.
+   - B1: `okf import --all --bundle-path <relative>` (forward/backslash forms), absolute-inside, and absolute-outside; capture result + crash-log ref.
+   - B2: `okf lint <dot-dir>`; assert the fully skipped walk does not claim "lint-clean (safe to import)".
 3. ~~Read crash log `okf-20261007-140036-*.log`; pin the exact `relative_to` line for B1.~~ **Done — Amendment A §8.2.**
 4. ~~Confirm what `root` `import_from_okf` passes (feeds A1 design).~~ **Done — Amendment A §8.5.**
+5. Agree A1 CLI/API contract: `--bundle-path` as identity root for positional `FILES`, validation when any file is outside it, and whether a narrowly-scoped optional root parameter is needed internally.
+6. Follow report §6: check for existing upstream Issues A/B; open or link them with a sanitized crash trace (remove local usernames/paths).
 
-Acceptance: three repros captured on scratch DBs; B1 line identified; toml/lock decision recorded. **Repros done (Amendment A §8.6); toml/lock decision still open.**
+Acceptance: scratch-DB repros captured (Amendment A §8.6); A1 identity-root contract and B1 DirHash ledger namespace decision recorded; upstream issue numbers/links or a documented duplicate decision recorded; toml/lock decision recorded.
 
 ### Phase 1 — Issue A: positional import hierarchy (1 day)
 
-- Implement A1 (shared-parent-relative IDs for multi-file lists) + A2 (fallback warning with file → minted ID).
-- Update `import FILES --help` (hierarchy rule, 2 lines).
-- Tests: new `tests/test_import_positional.py` — (a) shared-parent list mints `thoughts/<topic>/<stem>`; (b) lone outsider warns + mints stem (no crash); (c) `--bundle-path` bulk path unchanged.
-- Acceptance: report's 8-file scenario mints correct IDs with no temp-bundle workaround; single-file outsider still imports.
+- Implement A1/A2: allow `--bundle-path DIR` with positional `FILES` as their identity root (not a directory walk); derive IDs relative to it only when all files are contained. Without an explicit root, preserve configured-root behavior and warn for each hierarchy-dropped fallback. Do not infer identity root from the common parent.
+- Update `import FILES --help` to distinguish positional identity-root use from `--all` tree scanning.
+- Tests: new `tests/test_import_positional.py` — (a) rooted multi-file list mints `thoughts/<topic>/<stem>`; (b) outside-root file with no explicit base keeps stem and warns; (c) file outside a supplied identity root is rejected before importing any file; (d) lone outsider still imports; (e) `--all --bundle-path` bulk behavior unchanged.
+- Keep Python return shapes unchanged; if an optional root is threaded internally, test default single-file behavior.
+- Acceptance: report's 8-file scenario mints correct IDs when its source root is explicit; no silent hierarchy loss; single-file outsider still imports.
 
 ### Phase 2 — Issue B: bundle-path + lint diagnostics (1 day)
 
-- B1: resolve/normalize both sides before `relative_to`; residual mismatch → `OKFError BAD_VALUE` with remedy. Regression tests: relative / absolute / `/` / `\\` on Windows + POSIX.
-- B2: shared "skipped in hidden/tool dirs" count in `lint` + `import --all` zero-file path (one helper; walk sites already share `in_skipped_dir`).
-- Acceptance: relative `merge-tmp` form imports 8/8 with hierarchical IDs; `.merge-tmp` lint explains why it's empty.
+- B1: resolve `bundle_path` once at the boundary, then carry the resolved **walk root** through source enumeration, delta directory grouping, and directory hashing. `delta.py` must calculate relative directory keys and hash paths against that same walked tree, not blindly against the configured `self.bundle_root`; otherwise valid absolute trees outside the configured root still fail. Preserve a distinct/qualified DirHash namespace for pinned trees so tree-relative keys cannot collide with the default-root ledger. Decide the namespace in Phase 0; no schema migration. Convert only genuinely invalid/unresolvable inputs to `OKFError(BAD_VALUE)` with a remedy — an existing external tree is valid and must not be rejected merely for being outside the configured root. Regression tests: relative/absolute paths, inside/outside configured root, `/` and `\\` separators on Windows + POSIX.
+- B2: shared "skipped in hidden/tool dirs" count in `lint` + `import --all` zero-file path (one helper; walk sites already share `in_skipped_dir`). A fully-filtered non-empty lint walk must not claim "lint-clean (safe to import)".
+- Acceptance: relative and absolute-outside forms import the same hierarchical IDs with correct delta bookkeeping; repeated import is stable and default-root DirHash state is not overwritten/collided. `.merge-tmp` lint explains why it is empty without an unsafe-to-import success claim.
 
 ### Phase 3 — small hardening (0.5 day)
 
@@ -138,15 +141,15 @@ Acceptance: three repros captured on scratch DBs; B1 line identified; toml/lock 
 
 | Area | New test | Must still pass |
 |---|---|---|
-| positional import | `tests/test_import_positional.py` (3 cases above) | existing import/router/lint suites |
-| bundle-path | relative/absolute/sep regression (Windows + POSIX) | `test_produce`, `test_router`, multi-root/detach |
-| lint skips | dot-dir diagnostic assertion | lint/diff/delta agreement tests |
+| positional import | `tests/test_import_positional.py`: explicit identity root, missing root fallback warning, outside-root rejection before partial import | existing import/router/lint suites; Python return shapes |
+| bundle-path | relative/absolute × inside/outside root × separator variants; repeated-import and DirHash-namespace checks (Windows + POSIX) | `test_produce`, `test_router`, multi-root/detach |
+| lint skips | dot-dir skipped-count + no "lint-clean (safe to import)" on fully-filtered walk | lint/diff/delta agreement tests |
 | purge/lock | `--older-than 0` doc-test or alias test; stale-lock doctor info test | purge recovery-window tests unchanged |
 
 ## 7. Risks / unknowns
 
-- B1's exact line unconfirmed until the crash log is read — could sit in router setup rather than import; Phase 0 covers it.
-- A1 changes minted IDs for shared-parent lists — must not break MCP/Python consumers relying on old flat stems; CHANGELOG behavior-fix note required.
+- B1's root cause is confirmed, but pinned-tree DirHash namespace/key semantics remain a design risk; Phase 0 must settle collision behavior before implementation.
+- A1 must not guess an identity root from a file list. Explicit `--bundle-path` use for positional `FILES` changes CLI validation/help and may require an optional internal root parameter; preserve Python return shapes and single-file default behavior.
 - Link-rot editorial (doctor 10/100) explicitly excluded — needs per-link decisions, separate task.
 
 ## 8. Amendment A (2026-10-07, rev 2) — full report read + crash log + verified repro
@@ -234,3 +237,25 @@ Repro script: `scratchpad/amend_probe.sh` (untracked). Fresh crash logs generate
 - **§6 test matrix**: add outside-root bundle-path row and a "no 'safe to import' on fully-filtered walk" assertion.
 - **§7 risks**: first risk resolved; replaced by the ledger-keying risk (§8.3).
 - **§1 A1**: base must be explicit (§8.5); CLI-layer preferred.
+
+## 9. Amendment B (2026-10-07) — make the plan executable
+
+This amendment follows a second full read of the field report and the current plan. It **supersedes conflicting A1 recommendations in §1 and §8.5, the upstream-filing resolution in §8.1, and the prospective-only Phase 2 / test-matrix notes in §8.7**. The revised work-plan sections above are operative; this section records why they changed.
+
+### 9.1 A1 needs an explicit identity root, not an inferred common parent
+
+The base plan's phrase "shared-parent-relative IDs" was underspecified and can produce the wrong hierarchy: for `.../thoughts/<topic>/*.md`, the files' common parent is `<topic>`, so IDs relative to that parent are only `<stem>` — exactly the flattening the fix is meant to prevent. `import_from_okf` already uses configured roots and falls back to `self.bundle_root`, but positional files outside those roots have no meaningful hierarchy base.
+
+The operative design is therefore: allow `--bundle-path DIR` with positional `FILES` as an **explicit identity root**, validating that every file is under it before importing any file; then mint IDs relative to that root. It does not recursively scan the directory in this mode. Without this explicit root, retain existing configured-root behavior and emit A2's hierarchy-dropped warning when a file falls back to its stem. This avoids guessing from an ambiguous file list, provides a direct path for the report's `/tmp/okf-merge` case, and keeps lone GUI-written files supported. The current CLI explicitly rejects `--bundle-path` unless `--all` (`cli.py:_import`), so Phase 1 must intentionally relax that validation and clarify help text.
+
+### 9.2 B1 must treat an outside-root tree as valid input
+
+Amendment A §8.3 proved that a valid absolute tree outside the configured root crashes. The earlier phrase "convert residual mismatch to `BAD_VALUE`" must not be interpreted as rejecting such trees: **outside the configured root is not itself an error**. Normalize once, then use the same resolved walked tree for enumeration, relative directory keys, and hash lookup. Keep pinned-tree delta state distinct or qualified so it cannot collide with the default-root ledger; Phase 0 must choose and document the key/namespace rule. Only malformed or unresolvable paths should produce a user-facing `BAD_VALUE`.
+
+### 9.3 Restore the report's upstream issue follow-up
+
+Amendment A §8.1 prematurely concluded that no upstream filing was needed merely because fixes were planned in this repository. The field report explicitly lists "File Issues A/B upstream with the crash log above" as an open follow-up. Phase 0 now requires checking for duplicates and either opening/linking Issues A and B or recording why an existing issue covers each one. If attaching a crash trace, sanitize local usernames and paths first. This is issue tracking, not a release gate for the fixes themselves.
+
+### 9.4 Coverage and boundaries
+
+The revised Phase 0/1/2 steps and §6 test matrix now explicitly cover: rooted positional imports, no-root fallback warnings, preflight rejection of files outside an explicitly supplied identity root, relative and absolute-outside bundle paths, repeated import/delta stability, and the lint conclusion for a fully skipped dot-dir. These remain scratch-DB tests; there is no live-graph repro or schema migration in scope.

@@ -1,6 +1,7 @@
 # OKFgraph 0.10.1 — improvement plan (graph-reunification follow-ups)
 
 **Status:** draft on `dev_0.10.1` (forked from `main@0e803f4`, v0.10.0). No code changed yet.
+**Rev 2:** Amendment A appended 2026-10-07 — full report re-read (earlier read was truncated), B1 root cause confirmed from the crash log + scratch-DB repro, one new crash class found (see §8).
 **Source:** field report `D:\User\Documents\Python\okf-graph-issues-20261007.md` — issues observed 2026-10-07 while reuniting the split `kb.db` / `okfgraph.db` pair in `D:\User\Documents\Python\OKFgraph` (OKFgraph 0.10.0, `.venv` install).
 **Scope:** patch release. Forward behavior + diagnostics only. No schema change, no migration, no embedding/doctor-score work, no MCP changes.
 
@@ -65,7 +66,7 @@ Passing the bundle path absolute with forward slashes (`--bundle-path D:/.../mer
 Analysis:
 
 - The string `is not in the subpath of` does not appear in `okfgraph/` — it is Python 3.13 `pathlib.relative_to` wording. Some call does `Path(user_arg).relative_to(resolved_root)` without normalizing first, or mixes CWD-relative vs resolved paths.
-- Candidates: `_alias_for_root` / `resolve_alias_for_path` (`import_.py:580`), `_import_bundle_inner:659,794,801`, `_require_dir` (`ops/admin.py:100-104`), router bundle-root setup. Absolute-with-forward-slashes working while bare-relative crashes points to a missing `.resolve()` / separator mismatch on Windows (`\\` vs `/`) — same guess as the reporter; Phase 0 confirms the exact line from the crash log.
+- Candidates: `_alias_for_root` / `resolve_alias_for_path` (`import_.py:580`), `_import_bundle_inner:659,794,801`, `_require_dir` (`ops/admin.py:100-104`), router bundle-root setup. Absolute-with-forward-slashes working while bare-relative crashes points to a missing `.resolve()` / separator mismatch on Windows (`\\` vs `/`) — same guess as the reporter. **Confirmed — see Amendment A §8.2:** crash site is `delta.py:158`; the mechanism is mixed relative/absolute anchors, not separators.
 - `cli.py:483` validates `--bundle-path` only with `--all`, so the crash path is `import --all --bundle-path <relative>`. Crash reporting itself worked — keep that log for repro.
 
 Fix: normalize **both** sides (`Path(bundle_path).resolve()`, `root.resolve()`) before any `relative_to` / `is_relative_to`; never let a raw user path reach `relative_to` unguarded — convert residual mismatch to `OKFError(BAD_VALUE)` with a remedy ("use an absolute path or check CWD").
@@ -104,10 +105,10 @@ Fix is docs + one log line, not a behavior change: `lint` (and `--all` with 0 fi
    - A: `okf import <tmpdir>/thoughts/<topic>/*.md` → assert current flat-ID behavior, capture warning absence.
    - B1: `okf import --all --bundle-path <relative>` (forms: `merge-tmp`, `merge-tmp/` forward slash, backslash variant, absolute) → capture `ValueError` + crash-log ref.
    - B2: `okf lint <dot-dir>` → capture `0 file(s)` silence.
-3. Read crash log `okf-20261007-140036-*.log`; pin the exact `relative_to` line for B1.
-4. Confirm what `root` `import_from_okf` passes (feeds A1 design).
+3. ~~Read crash log `okf-20261007-140036-*.log`; pin the exact `relative_to` line for B1.~~ **Done — Amendment A §8.2.**
+4. ~~Confirm what `root` `import_from_okf` passes (feeds A1 design).~~ **Done — Amendment A §8.5.**
 
-Acceptance: three repros captured on scratch DBs; B1 line identified; toml/lock decision recorded.
+Acceptance: three repros captured on scratch DBs; B1 line identified; toml/lock decision recorded. **Repros done (Amendment A §8.6); toml/lock decision still open.**
 
 ### Phase 1 — Issue A: positional import hierarchy (1 day)
 
@@ -147,3 +148,89 @@ Acceptance: three repros captured on scratch DBs; B1 line identified; toml/lock 
 - B1's exact line unconfirmed until the crash log is read — could sit in router setup rather than import; Phase 0 covers it.
 - A1 changes minted IDs for shared-parent lists — must not break MCP/Python consumers relying on old flat stems; CHANGELOG behavior-fix note required.
 - Link-rot editorial (doctor 10/100) explicitly excluded — needs per-link decisions, separate task.
+
+## 8. Amendment A (2026-10-07, rev 2) — full report read + crash log + verified repro
+
+Written after re-reading `okf-graph-issues-20261007.md` in full (the drafting read was truncated) and running scratch-DB repros. Supersedes the listed base-plan passages where they conflict; base text above is kept for history.
+
+### 8.1 Basis
+
+Full re-read found **no contradictions** with the base plan — every symptom, quote, and observation in §1-§3 above matches the complete report. One base-plan gap: the report's §6 "File Issues A/B upstream with the crash log above" had no matching action. Resolution: with the root cause now confirmed (8.2), no external upstream filing is needed — the issues are tracked here and land as 0.10.1 fixes + CHANGELOG entries. If either is ever filed publicly, redact local usernames/paths from the crash log first.
+
+### 8.2 B1 root cause — CONFIRMED (replaces §2 B1 analysis)
+
+Crash log `C:\Users\Main\AppData\Local\okfgraph\crash\okf-20261007-140036-880560-31116.log` (verified on disk, 38 lines) pins the exact site:
+
+```
+File "...\okfgraph\components\delta.py", line 158, in _changed_directories
+    parent = str(fp.parent.relative_to(self.bundle_root))
+ValueError: 'merge-tmp\\thoughts\\coderadar-v0.12-impl' is not in the subpath of 'D:\\User\\Documents\\Python\\OKFgraph'
+```
+
+Call chain: `cli.py:_import` → `ops/admin.py:import_bundle` → `import_.py:import_bundle:1263` → `_import_bundle_inner:679` → `delta.py:_changed_directories:158`.
+
+Mechanism — **mixed anchors, not separators**:
+
+- `fp` comes from `root.rglob("*")` where `root = Path(bundle_path)` is the **raw user argument** (`_import_bundle_inner:602` does not resolve it). With a relative `--bundle-path`, every `fp` is CWD-relative.
+- `self.bundle_root` is the **resolved configured root** (`D:\...\OKFgraph`, from `bundle_root = "."`).
+- `relative_to` between a relative operand and an absolute anchor raises `ValueError` **always** — regardless of separator style or whether the tree physically lives under the configured root. So relative `--bundle-path` can never work on 0.10.0; it is not a Windows `PurePath` bug.
+- The absolute-with-forward-slashes form worked only because `pathlib` normalizes `D:/...` to the same anchor, and the tree happened to live inside the configured root, so the subpath check passed.
+
+### 8.3 NEW crash class — outside-root trees (extends §2 B1 scope)
+
+Scratch-DB probe P3: `--bundle-path <absolute path outside the configured root>` crashes with the **same** `ValueError`, even though the user path was fully absolute:
+
+```
+ValueError: 'C:\\Users\\Main\\AppData\\Local\\Temp\\okf-amend-probe-20822\\bundle\\thoughts\\topic'
+  is not in the subpath of 'D:\\User\\Documents\\Python\\OKFgraph'
+```
+
+This matters because outside-the-root temp dirs are the natural place for scratch bundles — exactly what the reporter's `/tmp/okf-merge` was. **Consequence for the fix:** the base plan's "normalize both sides before `relative_to`" is necessary but **not sufficient** — resolving the user path would still crash on outside-root trees (`fp` under `C:\\...`, anchor `D:\\...\\OKFgraph`). The real fix has two parts:
+
+1. Resolve the user path at import entry (`root = Path(bundle_path).resolve()`), and
+2. Align the delta detector with the tree actually walked: `delta.py:158` must key directories against the walked tree (a per-import walk root), not unconditionally against `self.bundle_root`. Related: `_compute_directory_hash_with_files(self.bundle_root / dir_rel)` (~line 166) would likewise probe the wrong path for outside trees.
+
+**Design decision needed (Phase 0):** DirHash ledger keying for pinned trees. Today's absolute-inside success already writes root-relative keys (`scratch_probe_bundle\\thoughts`) into the `""`-alias ledger — precedent exists, but an explicit choice between (a) tree-relative keys, (b) root-relative keys (status quo), or (c) a pinned-tree marker must be made before coding, with collision analysis against the default tree's ledger (`thoughts` at repo root vs a pinned tree's internal `thoughts/`).
+
+### 8.4 B2 sharpened — lint is worse than silent
+
+Scratch-DB probe: `okf lint .scratch_lint_probe` (one real file inside a dot-dir) prints:
+
+```
+0 file(s): 0 error(s), 0 warning(s)
+Bundle is lint-clean (safe to import).
+```
+
+Not just silence — the conclusion line **actively endorses a tree the scanner never looked into**. The base-plan fix (a `skipped <n> file(s) in hidden/tool dirs` count) stands, but the acceptance test must also cover the conclusion line: a fully-filtered non-empty walk must not print "lint-clean (safe to import)".
+
+### 8.5 Phase 0 item 4 resolved — `import_from_okf` root lookup
+
+`import_.py:1717-1718`:
+
+```python
+_alias = resolve_alias_for_path(file_path, self.roots) or ""
+_root = self.roots[_alias] if _alias else self.bundle_root
+```
+
+So positional single-file imports **do** consult configured roots, but files outside every root fall back to `self.bundle_root` → `parse_source_file` gets a root the file is not under → bare-stem fallback. Consequence for A1: hierarchical minting for positional `FILES` lists needs an **explicit base** — either a new optional parameter threaded through `import_file`/`parse_source_file` (Python API surface addition — default single-file behavior unchanged) or computed CLI-side before calling `import_file`. The CLI-layer option keeps the Python API untouched; prefer it unless it forks logic.
+
+### 8.6 Repro results (scratch DBs, `OKFGRAPH_DB_PATH` pointed at temp — `kb.db` untouched)
+
+| Probe | `--bundle-path` form | Result on 0.10.0 |
+|---|---|---|
+| P1 | absolute, inside root, `/` separators | imports 1 concept, ID `thoughts/topic/probe_a` (matches report) |
+| P2 | relative via symlink from repo cwd | `ValueError` (incident repro) |
+| P4 | plain relative, inside root, cwd=repo | `ValueError` — relative **never** works |
+| P3 | absolute, **outside** root | `ValueError` — new crash class (§8.3) |
+| B2 | `okf lint <dot-dir>` | `0 file(s)` + "lint-clean (safe to import)" (§8.4) |
+
+Repro script: `scratchpad/amend_probe.sh` (untracked). Fresh crash logs generated: `okf-20261007-191452-471299-25308.log`, `okf-20261007-191453-331700-36568.log`, `okf-20261007-191459-827784-2516.log` (same crash dir as the incident log). All probe dirs and scratch DBs removed; working tree back to `D uv.lock` + `?? okfgraph.toml` + untracked `scratchpad/`.
+
+### 8.7 Plan deltas caused by this amendment
+
+- **§5 Phase 2 (B1 fix)**: replace "normalize both sides" with the two-part fix of §8.3 (resolve at entry + walk-root alignment) plus the ledger-keying decision.
+- **§5 Phase 2 (B2)**: acceptance adds the conclusion-line guard (§8.4).
+- **§5 Phase 0**: items 3-4 done; item 1 (toml/lock) still open.
+- **§6 test matrix**: add outside-root bundle-path row and a "no 'safe to import' on fully-filtered walk" assertion.
+- **§7 risks**: first risk resolved; replaced by the ledger-keying risk (§8.3).
+- **§1 A1**: base must be explicit (§8.5); CLI-layer preferred.

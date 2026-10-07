@@ -1,0 +1,15 @@
+# Local config pin — copy to `okfgraph.toml` (untracked, gitignored) to use it.
+#
+# Why a copy, not the file itself: `okfgraph.toml` is looked up CWD-first,
+# so a repo-root copy silently re-pins the working database for every CLI
+# run and pytest invocation from here. Keeping the live file untracked
+# makes the pin a deliberate local choice, documented by this example.
+#
+# Without any TOML the built-ins apply: db_path = "okfgraph.db",
+# bundle_root = "." (CLI) — overridable per-invocation with
+# OKFGRAPH_DB_PATH / OKFGRAPH_BUNDLE_ROOT.
+
+bundle_root = "."
+
+[database]
+db_path = "kb.db"

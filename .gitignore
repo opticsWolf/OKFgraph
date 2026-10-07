@@ -236,3 +236,8 @@ whl/
 # local DB lock marker beside kb.db (runtime artifact, never commit)
 kb.db.lock
 kb.db.wal
+
+# Local config pin (see okfgraph.toml.example). The live file stays
+# untracked: CWD-first lookup means a repo-root TOML shadows test
+# fixtures and silently re-pins the working database.
+okfgraph.toml

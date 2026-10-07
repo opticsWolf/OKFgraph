@@ -107,3 +107,36 @@ def test_pages_scrollable_code_is_keyboard_accessible():
     css = (PAGES / "style.css").read_text(encoding="utf-8")
     assert ":focus-visible" in css
     assert "prefers-reduced-motion" in css
+
+
+def _uv_lock_versions():
+    """Every ``[[package]]`` name -> version pinned in uv.lock."""
+    text = (Path(__file__).resolve().parents[1] / "uv.lock").read_text(
+        encoding="utf-8")
+    return dict(re.findall(
+        r'\[\[package\]\]\nname = "([^"]+)"\nversion = "([^"]+)"',
+        text))
+
+
+def test_pages_published_stack_matches_pins():
+    """The 'Published stack' table must track the release + locked pins.
+
+    okfgraph follows pyproject (bump it in the release commit, tag before
+    merging to main so the table never claims an unpublished version);
+    every dependency follows uv.lock. CPU/GPU runtime parity is asserted
+    too — the plan-onnx-only single-binary pin.
+    """
+    root = Path(__file__).resolve().parents[1]
+    html = (PAGES / "index.html").read_text(encoding="utf-8")
+    release = tomllib.loads(
+        (root / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["version"]
+    locked = _uv_lock_versions()
+    assert locked["onnxruntime"] == locked["onnxruntime-gpu"]
+    shown = dict(re.findall(
+        r'pypi\.org/project/([^/"]+)/">[^<]*</a></td><td>([^<]+)</td>',
+        html))
+    assert shown["okfgraph"] == release
+    assert f'<span class="release">{release}</span>' in html  # hero badge
+    for pkg in ("bobine", "embroider", "ladybug", "onnxruntime"):
+        assert shown[pkg] == locked[pkg], (pkg, shown[pkg], locked[pkg])

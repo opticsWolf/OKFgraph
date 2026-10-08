@@ -16,6 +16,6 @@ class IngestOps:
 
     def ingest(self, kind: str, **kwargs):
         """Add content to the graph. See ``IngestManager.ingest`` for the
-        full contract: kind={md|pdf|thoughts}, per-kind required params,
+        full contract: kind={md|pdf|thoughts|bib}, per-kind required params,
         ``auto_import`` (default True), ``prune_missing``, ``force``."""
         return self.ingest_mgr.ingest(kind, **kwargs)

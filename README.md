@@ -221,7 +221,7 @@ package import itself.
 | `okf search QUERY [--target concepts\|chunks\|images] [--rank none\|hub\|ppr] [--expand] [--hub-rerank]` | Concepts (RRF hybrid), chunks (passages), images; `--rank ppr` is model-free |
 | `okf read ID [--include body\|chunks\|document\|context] [--max-tokens N]` | Full shapes uncapped; budgeted section list with `--max-tokens` |
 | `okf traverse [ID] [--relationship CONTAINS\|LINKS_TO\|PART_OF\|INCLUDES_ASSET] [--direction …] [--target ID]` | Relationships, directory listing (empty ID = root), shortest path via `--target` |
-| `okf ingest --kind md\|pdf\|thoughts …` | `--md-path`, `--pdf-path` (`--routing-mode`, auto-imports by default; `--no-auto-import` converts only), `--thoughts --topic` |
+| `okf ingest --kind md\|pdf\|thoughts\|bib …` | `--md-path`, `--pdf-path` (`--routing-mode`, auto-imports by default; `--no-auto-import` converts only), `--thoughts --topic`, `--bib-path` (one `refs/<key>` concept per BibTeX entry) |
 | `okf export --all\|--concept-id ID --output-dir DIR [--flavor okf\|obsidian]` | Bundle or single-concept export; obsidian = `[[Title]]` links, no index files |
 | `okf images CONCEPT_ID` / `okf image ASSET_ID [--output-path F]` | Image assets on a concept; metadata (+ bytes) per asset |
 | `okf diff [OLD] [NEW] [--json]` | Snapshot (two dirs, no model) or drift (graph vs dir); exit 0 identical / 1 different |
@@ -266,7 +266,7 @@ okf-mcp --db-path ./kb.db --bundle-root ./kb
 | `search(query, target?, rank?, …)` | `concepts` = open questions; `chunks` = exact passages (`expand`, `hub_rerank`); `images` = assets; `rank=ppr` = model-free topic search |
 | `read(concept_id, include?, max_tokens?)` | Full shapes, or a budgeted section list |
 | `traverse(start_id, relationship?, direction?, target?, …)` | Walk edges, list dirs, connect two concepts |
-| `ingest(kind, …)` | `md` / `pdf` / `thoughts` with per-kind params |
+| `ingest(kind, …)` | `md` / `pdf` / `thoughts` / `bib` with per-kind params |
 | `export_bundle(output_dir, …, flavor?)` | `okf` or `obsidian` |
 | `export_concept(concept_id, output_dir, flavor?)` | Single concept → `<output_dir>/<id>.md` |
 | `list_images(concept_id)` | Image assets on one concept (metadata) |
@@ -364,7 +364,7 @@ on `err.data`. A passed param the chosen path ignores is refused with
 | `search(query, target="concepts", limit?, concept_type?, tags?, parent_id?, include_chunks?, max_chunks_per_doc?, expand?, context_hops?, hub_rerank?, hub_weight?, rank="none"\|"hub"\|"ppr")` | RRF hybrid; `hub` blends authority, `ppr` is model-free; chunk paths: `hub_rerank` > `expand` > plain |
 | `read(concept_id, include="body"\|"chunks"\|"document"\|"context", max_tokens?)` | Concept dict / chunk dicts (no embeddings) / `{"concept_id","markdown"}` / `{incoming_links, outgoing_links, ancestry, siblings}`; or a budgeted `{sections, used, budget, truncated}` |
 | `traverse(start_id, relationship?, direction?, depth?, node_type?, target?, max_path_length?)` | Walk, list (empty id = root), connect |
-| `ingest(kind, …)` | `md` / `pdf` / `thoughts`, per-kind params, lint + chunk + embed + link |
+| `ingest(kind, …)` | `md` / `pdf` / `thoughts` / `bib`, per-kind params, lint + chunk + embed + link |
 | `import_file(path, mode?) {"concept_id","images"}` / `import_bundle(path?, …, prune_missing?) {"concept_ids","images"}` | Single / whole-bundle delta import |
 | `export_bundle(output_dir, directory_id?, concept_type?, tags?, flavor?) {"concept_ids",…}` / `export_concept(concept_id, output_dir, flavor?) {"path"}` | Both flavors |
 | `list_images(concept_id)` / `get_image(asset_id)` | Image ops (metadata; bytes + base64) |

@@ -839,6 +839,7 @@ def _ingest(args):
         kind,
         md_path=args.md_path,
         pdf_path=args.pdf_path,
+        bib_path=args.bib_path,
         thoughts=args.thoughts,
         topic=args.topic,
         concept_id=args.concept_id,
@@ -863,6 +864,13 @@ def _ingest(args):
             print(f"[OK] Imported {result['concept_id']} ({result['chunk_count']} chunks)")
         elif kind == "thoughts":
             print(f"[OK] Stored thought {result['concept_id']}")
+        elif kind == "bib":
+            print(f"[OK] Imported {result['entry_count']} reference(s)")
+            for cid in result["concept_ids"]:
+                print(f"  {cid}")
+            if result["skipped_entries"]:
+                print(f"  skipped {len(result['skipped_entries'])} entr(y/ies): "
+                      + "; ".join(s.get("reason", "?") for s in result["skipped_entries"]))
         elif args.auto_import:
             print(f"[OK] Imported {len(result['concept_ids'])} concept(s) "
                   f"from {result['page_count']} page(s)")
@@ -1061,7 +1069,12 @@ def _shell_argv(cmd: str, rest: str):
         if not words:
             return None
         path = words[0]
-        kind = "md" if path.lower().endswith((".md", ".markdown")) else "pdf"
+        if path.lower().endswith((".md", ".markdown")):
+            kind = "md"
+        elif path.lower().endswith(".bib"):
+            kind = "bib"
+        else:
+            kind = "pdf"
         return ["ingest", "--kind", kind, f"--{kind}-path", path] + flags
     if cmd in ("model-info", "broken-links", "repair-links",
                "deleted-list", "deleted-recover", "deleted-purge"):
@@ -1224,10 +1237,11 @@ def build_parser():
     p.add_argument("--target", default=None, help="Find shortest path from start_id to this ID instead of traversing")
     p.add_argument("--max-path-length", type=int, default=6, help="Max path length with --target (default: 6)")
 
-    p = command("ingest", "Add content: markdown file, PDF/Office file, or thoughts")
-    p.add_argument("--kind", required=True, choices=["md", "pdf", "thoughts"],
+    p = command("ingest", "Add content: markdown file, PDF/Office file, thoughts, or BibTeX")
+    p.add_argument("--kind", required=True, choices=["md", "pdf", "thoughts", "bib"],
                    help="What to ingest")
     p.add_argument("--md-path", default=None, help="Markdown file (--kind md)")
+    p.add_argument("--bib-path", default=None, help="BibTeX file (--kind bib): one concept per entry as refs/<key>")
     p.add_argument("--pdf-path", default=None, help="File to convert (--kind pdf): PDF or Office (docx/xlsx/pptx, legacy doc/xls/ppt)")
     p.add_argument("--thoughts", default=None, help="Raw reasoning text (--kind thoughts)")
     p.add_argument("--topic", default=None, help="Topic (--kind thoughts)")

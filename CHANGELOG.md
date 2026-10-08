@@ -4,13 +4,28 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [0.10.1] — 2026-10-07
+## [0.10.2] — 2026-10-07
 
-Graph-reunification follow-ups (field report 2026-10-07: positional import
-flattened 8 thoughts to bare-stem IDs; relative `--bundle-path` crashed in
-delta; dot-dir lint endorsed an unscanned tree). Forward behavior +
-diagnostics only — no schema change, no migration, no embedding/doctor-score
-or MCP changes.
+Supersedes the untagged 0.10.1 line: graph-reunification follow-ups
+(field report 2026-10-07 — positional import flattened 8 thoughts to
+bare-stem IDs; relative `--bundle-path` crashed in delta; dot-dir lint
+endorsed an unscanned tree) plus BibTeX ingest, released as one version.
+Forward behavior + diagnostics + one new ingest kind — no schema change,
+no migration, no embedding/doctor-score or MCP changes.
+
+### Added
+- **BibTeX ingest (`ingest --kind bib --bib-path refs.bib`).** One
+  `reference` concept per `@entry` under stable `refs/<key>` IDs
+  (idempotent re-imports; slug collisions disambiguated, never silently
+  overwritten). Stdlib-only parser: nested braces, quotes, `#` concat,
+  `@string` macros, `%` comments; malformed entries reported per-entry
+  (`skipped_entries`) without aborting the run. Titles unwrapped,
+  `Author (Year). Venue` descriptions, DOI/URL links, abstracts.
+- `doctor` reports a leftover `<db>.lock` with no live holder as
+  info-only `stale_lock` (never auto-deleted — check processes first).
+- Documented `deleted-purge --older-than 0` as the immediate-purge path,
+  and the `okfgraph.toml` `db_path` pin + `OKFGRAPH_DB_PATH` precedence
+  that keeps a held-open default from silently forking a second database.
 
 ### Fixed
 - **Positional import hierarchy (A1/A2).** `import FILES --bundle-path DIR`
@@ -32,13 +47,6 @@ or MCP changes.
 - **Lint skip diagnostics (B2).** `lint` (and the `import --all` zero-file
   path) reports `skipped <n> file(s) in hidden/tool dirs`; a fully-filtered
   non-empty walk no longer claims `lint-clean (safe to import)`.
-
-### Added
-- `doctor` reports a leftover `<db>.lock` with no live holder as
-  info-only `stale_lock` (never auto-deleted — check processes first).
-- Documented `deleted-purge --older-than 0` as the immediate-purge path,
-  and the `okfgraph.toml` `db_path` pin + `OKFGRAPH_DB_PATH` precedence
-  that keeps a held-open default from silently forking a second database.
 
 ## [0.10.0] — 2026-10-06
 

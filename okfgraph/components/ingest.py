@@ -21,6 +21,9 @@ _INGEST_HONOURS = {
     "md": frozenset({"md_path", "concept_id", "title", "description", "tags"}),
     "thoughts": frozenset({"thoughts", "topic", "concept_id", "tags"}),
     "pdf": frozenset({"pdf_path", "output_dir"}),
+    # Per-entry IDs come from citation keys, so bib honours only the
+    # file-level inputs: one file in, N concepts out.
+    "bib": frozenset({"bib_path", "tags"}),
 }
 
 
@@ -67,6 +70,60 @@ def _ingest_namespace(pdf_path, work_dir) -> str:
         return f"pdf-{hashlib.sha256(chr(10).join(entries).encode()).hexdigest()[:12]}"
     except OSError:
         return f"pdf-{uuid.uuid4().hex[:12]}"
+
+
+def _bib_entry_concept(entry, concept_id: str,
+                       file_tags: list[str] | None) -> tuple:
+    """Map one parsed BibTeX entry to (ConceptModel, markdown body)."""
+    from okfgraph.components.bibtex import unwrap_braces
+
+    f = entry.fields
+    title = unwrap_braces(f.get("title", "")).strip() or entry.key
+    authors = f.get("author", "").strip()
+    year = f.get("year", "").strip()
+    venue = next(
+        (f.get(k, "").strip()
+         for k in ("journal", "booktitle", "school", "publisher")
+         if f.get(k, "").strip()),
+        "",
+    )
+    head = " ".join(p for p in [authors, f"({year})" if year else ""] if p)
+    citation = f"{head}. {venue}".strip(" .") if (head or venue) else entry.key
+    entry_tags = ["reference", entry.entrytype] + ([year] if year else [])
+    all_tags = normalize_tags(entry_tags + list(file_tags or []))
+    metadata: Dict[str, Any] = {
+        "title": title,
+        "type": "reference",
+        "citekey": entry.key,
+        "entrytype": entry.entrytype,
+    }
+    for meta_key, bib_key in (("author", "author"), ("year", "year"),
+                              ("venue", None), ("doi", "doi"),
+                              ("url", "url")):
+        value = venue if bib_key is None else f.get(bib_key, "").strip()
+        if value:
+            metadata[meta_key] = value
+    lines = ["## Citation", "", citation, ""]
+    links = []
+    if f.get("doi", "").strip():
+        doi = f["doi"].strip()
+        links.append(f"[DOI](https://doi.org/{doi})")
+    if f.get("url", "").strip():
+        links.append(f"[URL]({f['url'].strip()})")
+    if links:
+        lines += [" ".join(links), ""]
+    abstract = unwrap_braces(f.get("abstract", "")).strip()
+    lines += ["## Abstract", "", abstract or "_No abstract provided._", ""]
+    markdown = frontmatter.dumps(frontmatter.Post("\n".join(lines), **metadata))
+    concept = ConceptModel.model_validate({
+        "id": concept_id,
+        "title": title,
+        "description": citation,
+        "body": markdown,
+        "type": "reference",
+        "tags": all_tags,
+    })
+    return concept, markdown
 
 
 class IngestManager:
@@ -355,12 +412,82 @@ class IngestManager:
         }
 
 
+    def _ingest_bib_inner(
+        self,
+        bib_path: str | Path,
+        tags: list[str] | None,
+        mode: str,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """Inner implementation of kind='bib' (called under write lock)."""
+        from okfgraph.components.bibtex import parse_bibtex, slugify_key
+
+        bib_path = Path(bib_path)
+        if not bib_path.exists():
+            raise FileNotFoundError(f"BibTeX file not found: {bib_path}")
+        try:
+            text = bib_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            logger.warning(
+                "ingest_bib: %s is not UTF-8, falling back to latin-1",
+                bib_path,
+            )
+            text = bib_path.read_text(encoding="latin-1")
+        parsed = parse_bibtex(text)
+        skipped: List[Dict[str, str]] = list(parsed.skipped)
+        if not parsed.entries:
+            raise OKFError(
+                "BAD_VALUE",
+                f"no usable BibTeX entries in {bib_path}",
+                fields={"bib_path": str(bib_path), "skipped": skipped},
+            )
+        counts: Dict[str, int] = {}
+        first_key: Dict[str, str] = {}
+        ids: List[str] = []
+        for entry in parsed.entries:
+            slug = slugify_key(entry.key)
+            if slug in counts:
+                counts[slug] += 1
+                cid = f"refs/{slug}~{counts[slug]}"
+                skipped.append({
+                    "key": entry.key, "line": str(entry.line),
+                    "concept_id": cid,
+                    "reason": f"slug collides with '{first_key[slug]}'; "
+                                "disambiguated, nothing overwritten",
+                })
+                logger.warning(
+                    "ingest_bib: key '%s' slug-collides, minted %s",
+                    entry.key, cid,
+                )
+            else:
+                counts[slug] = 1
+                first_key[slug] = entry.key
+                cid = f"refs/{slug}"
+            concept, markdown = _bib_entry_concept(entry, cid, tags)
+            lint_result = self._lint_converted_md_str(markdown, auto_fix=True)
+            if lint_result["fixed"]:
+                markdown = lint_result["content"]
+            if lint_result["errors"]:
+                logger.warning(
+                    "ingest_bib: %s has %d structural errors — "
+                    "importing anyway", cid, len(lint_result["errors"]),
+                )
+            result = self.import_mgr._import_single_concept(
+                concept, markdown, mode, force)
+            ids.append(result["concept_id"])
+        return {
+            "concept_ids": ids,
+            "entry_count": len(ids),
+            "skipped_entries": skipped,
+        }
+
     def ingest(
         self,
         kind: str,
         *,
         md_path: str | Path | None = None,
         pdf_path: str | Path | None = None,
+        bib_path: str | Path | None = None,
         thoughts: str | None = None,
         topic: str | None = None,
         concept_id: str | None = None,
@@ -384,6 +511,8 @@ class IngestManager:
         kind='pdf': convert (pdf_path required; bobine) and auto-import
         unless ``auto_import=False``, which writes ``output_dir`` only.
         kind='thoughts': persist LLM reasoning (thoughts + topic required).
+        kind='bib': import one concept per BibTeX entry (bib_path
+        required); IDs are ``refs/<key>``, stable across re-imports.
 
         File paths that don't exist raise ``FILE_NOT_FOUND``; missing
         required params raise ``MISSING_PARAM``; a passed param the kind
@@ -394,7 +523,7 @@ class IngestManager:
             "md_path": md_path, "pdf_path": pdf_path, "thoughts": thoughts,
             "topic": topic, "concept_id": concept_id, "title": title,
             "description": description, "tags": tags,
-            "output_dir": output_dir,
+            "output_dir": output_dir, "bib_path": bib_path,
         }
         honours = _INGEST_HONOURS.get(kind)
         if honours is not None:
@@ -421,6 +550,16 @@ class IngestManager:
             _require_file(md_path, kind="markdown file")
             with self._write_lock_ctx():
                 return self._ingest_md_inner(md_path, concept_id, title, description, tags, mode, force)
+        if kind == "bib":
+            if not bib_path:
+                raise OKFError(
+                    "MISSING_PARAM",
+                    "kind='bib' requires bib_path",
+                    fields={"kind": kind, "bib_path": bib_path},
+                )
+            _require_file(bib_path, kind="BibTeX file")
+            with self._write_lock_ctx():
+                return self._ingest_bib_inner(bib_path, tags, mode, force)
         if kind == "thoughts":
             if not thoughts or not topic:
                 raise OKFError(
@@ -485,7 +624,7 @@ class IngestManager:
             }
         raise OKFError(
             "BAD_VALUE",
-            f"kind must be 'md', 'pdf' or 'thoughts', got '{kind}'",
+            f"kind must be 'md', 'pdf', 'thoughts' or 'bib', got '{kind}'",
             fields={"kind": kind},
         )
 

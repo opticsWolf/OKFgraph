@@ -55,7 +55,7 @@ Same graph and the same ops as the MCP skill, through `okf` commands.
 | Follow CONTAINS / LINKS_TO | `traverse ID [--relationship LINKS_TO] [--depth 1-3]` |
 | How two concepts connect | `traverse ID1 --target ID2` |
 | Browse a directory | `traverse` (root) or `traverse DIR_ID` |
-| Store markdown / PDF / reasoning | `ingest --kind md\|pdf\|thoughts ...` (okfgraph-ingest skill) |
+| Store markdown / PDF / reasoning / bibliography | `ingest --kind md\|pdf\|thoughts\|bib ...` (okfgraph-ingest skill) |
 | Re-sync a bundle (delta-aware) | `import --all [--bundle-path DIR] [--prune-missing]`; single files: `import F...` |
 | Export | `export --all --output-dir D` or `export --concept-id ID --output-dir D` (`--flavor obsidian`) |
 | Validate a bundle before import (no DB, no model) | `lint [DIR]` |

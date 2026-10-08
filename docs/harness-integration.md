@@ -104,7 +104,7 @@ budgeted section list (self first, then PPR-ranked neighbours).
 - `search` (concepts/chunks/images, expand, hub_rerank, rank),
   `read` (body/chunks/document/context, max_tokens),
   `traverse` (relationships, directory listing, shortest path),
-  `ingest` (md/pdf/thoughts), `export_bundle` (okf/obsidian flavors),
+  `ingest` (md/pdf/thoughts/bib), `export_bundle` (okf/obsidian flavors),
   `export_concept` (single concept), `list_images` (assets on a concept),
   `get_image` (metadata + base64 bytes).
 - Wire contract (D7): a success result is the envelope string

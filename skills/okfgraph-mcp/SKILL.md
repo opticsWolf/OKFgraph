@@ -48,7 +48,7 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 | Follow CONTAINS / LINKS_TO | `traverse` start_id, relationship, depth 1–3 |
 | How two concepts connect | `traverse` start_id, target |
 | Browse a directory | `traverse` (empty start_id = root) |
-| Store markdown / PDF / reasoning | `ingest` kind="md"\|"pdf"\|"thoughts" (okfgraph-ingest skill) |
+| Store markdown / PDF / reasoning / bibliography | `ingest` kind="md"\|"pdf"\|"thoughts"\|"bib" (okfgraph-ingest skill) |
 | Export | `export_bundle` output_dir (+ filters, flavor); `export_concept` concept_id, output_dir |
 
 ## Results and errors

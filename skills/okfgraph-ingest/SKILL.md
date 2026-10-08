@@ -2,9 +2,9 @@
 name: okfgraph-ingest
 description: >
   Feeding the OKFgraph knowledge graph: what to store, which ingest kind
-  to use (md, pdf, thoughts), converter modes, and topic discipline. Use
-  whenever persisting project knowledge — decisions, docs, papers, or
-  reasoning — through MCP (ingest) or CLI (okf ingest). Complements the
+  to use (md, pdf, thoughts, bib), converter modes, and topic discipline. Use
+  whenever persisting project knowledge — decisions, docs, papers,
+  bibliographies, or reasoning — through MCP (ingest) or CLI (okf ingest). Complements the
   okfgraph-mcp and okfgraph-cli skills, which cover finding knowledge.
 ---
 
@@ -20,6 +20,7 @@ early, feed it structured.
 | Decision, insight, or reasoning from this session | `thoughts` | Cheapest, highest value. Always set `topic`. |
 | Existing markdown (docs, notes, ADRs) | `md` | One file per call; bulk dirs via `okf import`. |
 | Papers, reports, scans | `pdf` (`--pdf-path` also takes Office: docx/xlsx/pptx, legacy doc/xls/ppt — bobine dispatches on extension) | See converter modes below. |
+| Bibliography file | `bib` | One `reference` concept per `@entry` as `refs/<key>` (stable IDs — re-ingesting the same file upserts); malformed entries are reported, never fatal. |
 | Whole bundle directory changed | `okf import` (CLI) | Delta-aware: only changed files re-embed. |
 
 Rule of thumb: thoughts > md > pdf. Reasoning you already hold beats
@@ -34,17 +35,23 @@ re-extracting it from files.
   `/` namespaces the same way.
 - `kind="md"`: `md_path` (+ optional `concept_id`, `title`, `description`,
   `tags`, `mode`).
+- `kind="bib"`: `bib_path` (+ optional `tags`, applied to every entry).
+  IDs are `refs/<key>`; `data` → `{concept_ids, entry_count,
+  skipped_entries}`.
 - `kind="pdf"`: `pdf_path` (+ `routing_mode`, `extract_images`, `mode`).
 - Omitted `mode` follows the configured `[import] mode` (default `text`).
 - `data` per kind: md → `{concept_id, title, chunk_count, image_count,
   lint_issues, ...}`; thoughts → `{concept_id, topic, chunk_count, ...}`;
-  pdf → `{concept_ids, page_count, md_path, image_dir}`. Params that
+  pdf → `{concept_ids, page_count, md_path, image_dir}`;
+  bib → `{concept_ids, entry_count, skipped_entries}`. Params that
   belong to another kind are refused, not ignored.
 - md ingest never modifies `md_path`: `lint_issues` (`fixable_count`,
   `unfixable_count`, `error_count`) is a report only. `image_count` counts
   real `![alt](src)` images resolved next to the file (or remote).
 - Ingest is not content-idempotent: ingesting the same reasoning under a
-  new id mints a new concept. Wrongly imported? CLI `okf delete ID`
+  new id mints a new concept. Exception: `kind="bib"` re-imports upsert
+  by stable `refs/<key>` IDs — the same file twice is a refresh, not
+  a dupe. Wrongly imported? CLI `okf delete ID`
   soft-deletes it (24 h recover window); file-backed concepts must have
   their source removed + `import --all --prune-missing` first (the graph
   never drifts from the bundle).
@@ -53,6 +60,7 @@ re-extracting it from files.
 
 - `--kind thoughts --thoughts TEXT --topic TOPIC [--tags a,b]`
 - `--kind md --md-path F [--concept-id ID] [--title T] [--tags a,b]`
+- `--kind bib --bib-path F [--tags a,b]` — one `refs/<key>` concept per entry
 - `--kind pdf --pdf-path F [--routing-mode ...]` — auto-imports by default;
   `--no-auto-import` converts only (next to the source, or
   `--output-dir DIR`), then `okf import --all --bundle-path DIR`.

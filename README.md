@@ -171,6 +171,7 @@ router.close()
 | `md` | `router.ingest("md", md_path=…, concept_id?, title?, description?, tags?, mode?) -> {"concept_id","chunk_count","image_count","lint_issues",…}` | mordant-linted, report-only (`lint_issues.fixable_count` — the source file is never rewritten); `image_count` counts real image refs resolved next to the file; frontmatter wins over overrides |
 | `pdf` | `router.ingest("pdf", pdf_path=…, routing_mode?, extract_images?, auto_import?, output_dir?) -> {"concept_ids","page_count","md_path","image_dir"}` | bobine converter; auto-imports by default (`auto_import=False` / `--no-auto-import` converts only, into `output_dir` or next to the source) |
 | `thoughts` | `router.ingest("thoughts", thoughts=…, topic=…, concept_id?, tags?) -> {"concept_id","topic","chunk_count",…}` | cheapest, highest value: persist session reasoning with a stable topic scheme (`auth-refactor`, `api-design`) |
+| `bib` | `router.ingest("bib", bib_path=…, tags?) -> {"concept_ids","entry_count","skipped_entries",…}` | one `reference` concept per `@entry` as `refs/<key>` (stable IDs — re-ingesting upserts; slug collisions disambiguated, never silently overwritten); malformed entries reported per-entry in `skipped_entries`, never fatal |
 
 Params that belong to another kind are refused (`BAD_VALUE` naming them),
 not silently dropped.

@@ -1,8 +1,8 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.6 (as-built for okfgraph 0.10.0 — surface unification per `docs/surface-unification-plan.md`: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)  
+**Version**: 6.7 (as-built for okfgraph 0.10.2 — v6.6 surface per `docs/surface-unification-plan.md` plus the v6.6 → v6.7 summary below: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)
 **Based on**: Architecture v6.5 (0.8.x–0.9.0 tree)  
-**Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.3.x`, `bobine 0.5.12`, `onnxruntime==1.29.0`
+**Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.3.x`, `bobine 0.6.x`, `onnxruntime==1.29.0`
 
 > **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
 > `docs/OKF Graph V6.0.md`, `docs/Okfgraph 6.0 amendment.md`,
@@ -37,6 +37,20 @@ rename list in `CHANGELOG.md`):
 | **Refusals** | Ignored params silently dropped | **`BAD_VALUE` naming the ignored params** (search, traverse, ingest) | X3 |
 | **Settings** | `config.py` + hand-written flags | **`settings.py` table** generates CLI/MCP flags, env names, TOML keys; CLI > env > TOML > defaults | §3.1 |
 | **MCP** | 5 tools | **8 tools** (+ `export_concept`, `list_images`, `get_image`); `db_path` from flag, env or TOML | Q5 |
+
+## Summary of Changes (v6.6 → v6.7)
+
+As-built for okfgraph 0.10.2 (`docs/improvement-planning-0.10.1.md` for the
+0.10.1 import/lint hardening; BibTeX ingest is new surface):
+
+| Area | v6.6 (0.10.0) | v6.7 (0.10.2) | Reason |
+|---|---|---|---|
+| **BibTeX ingest** | Unhandled (bundle skips `.bib`; forced `--kind md` reads flat text) | **`ingest --kind bib --bib-path`**: one `reference` concept per `@entry` as `refs/<key>` — stable IDs (re-ingests upsert), stdlib-only parser, per-entry skip reports | Bibliographies as graph content |
+| **Positional import** | Bare-stem fallback, silent | **`--bundle-path` as explicit identity root** (pre-validated) + `hierarchy-dropped` warning on the legacy fallback | 0.10.1 A1/A2: silent misplacement |
+| **Pinned trees** | Relative/outside-root `--bundle-path` crashes (`ValueError`) | **Resolve-once + isolated import** (no shared-ledger writes, stable repeats) | 0.10.1 B1 |
+| **Lint skips** | Fully-filtered walk claims `lint-clean (safe to import)` | **Skipped-hidden count + guarded endorsement** | 0.10.1 B2 |
+
+---
 
 ## Summary of Changes (v6.4 → v6.5)
 
@@ -193,7 +207,7 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 > (`resolve_ort_dylib()` → `ORT_DYLIB_PATH`), lazy session lifecycle
 > (`LazyRustEncoder`), and explicit air-gapped model paths.
 
-**Verified versions** (0.10.0 tree):
+**Verified versions** (0.10.2 tree, re-resolved + full suite green):
 - `ladybug==0.21.2`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider>=0.3.2,<0.4`, `mordant` (Rust GFM parser)
 - Single pinned ORT binary shared by bobine + embroider — do not float.
 
@@ -1125,7 +1139,7 @@ so the guard loads without the router.
 | `okf search <query> --rank hub\|ppr` | Rerank by hub score, or model-free PPR (§4.7) |
 | `okf read <id> [--include body\|chunks\|document\|context]` | Fetch a concept, its chunks, the reconstructed document, or graph context |
 | `okf traverse <id>` | Graph traversal (relationship/direction/depth); no id = root listing; two ids = shortest path |
-| `okf ingest --kind md\|pdf\|thoughts <path>` | Add one piece of content (PDF/Office through bobine, §10; thoughts mint `thoughts/<topic>/<ts>_<id>` namespaces) |
+| `okf ingest --kind md\|pdf\|thoughts\|bib <path>` | Add content (PDF/Office through bobine, §10; thoughts mint `thoughts/<topic>/<ts>_<id>` namespaces; bib mints one `reference` per `@entry` as `refs/<key>`) |
 | `okf produce --from sqlite --source DB --output-dir DIR` | Generate a bundle from a data source (§10d; lint pre-flight included) |
 | `okf export --all\|--concept-id ID --output-dir <dir>` | Export entire bundle (filters: `--concept-type`, `--tags`, `--directory-id`) or one concept; OKF or Obsidian flavor |
 | `okf images <id>` / `okf image <asset-id> [--output-path F]` | List a concept's image assets; dump one asset's bytes |

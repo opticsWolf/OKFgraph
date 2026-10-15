@@ -92,7 +92,7 @@ class Setting:
     required_mcp: bool = False
 
 
-#: The table. Row order = validation report order (database, embedding, import).
+#: The table. Row order = validation report order (database, embedding, import, search).
 SETTINGS = [
     # ── database ────────────────────────────────────────────────────────────
     Setting("db_path", "str", "okfgraph.db", "database",
@@ -103,6 +103,10 @@ SETTINGS = [
             "Primary bundle root directory"),
     Setting("wal_mode", "bool", False, "database",
             "Enable WAL mode for concurrent reads"),
+    Setting("extension_dir", "str", None, "database",
+            "Directory holding libvector/libfts .lbug_extension files: load "
+            "from there and never download (offline machines; fill it with "
+            "'okf setup extensions')"),
     # ── embedding ───────────────────────────────────────────────────────────
     Setting("embedding_dim", "int", 512, "embedding",
             "Truncated Matryoshka dimension (ladder 32/64/128/256/512/768/1024; "
@@ -150,6 +154,16 @@ SETTINGS = [
             choices=("text", "optional", "omni"), cli=False, mcp=False),
     Setting("batch_size", "int", 32, "import",
             "Encode batch for import ops", cli=False, mcp=False),
+    Setting("identity", "str", "path", "import",
+            "Concept identity: path (ids from file paths) or frontmatter "
+            "(a frontmatter id: is the concept id; moves keep links)",
+            choices=("path", "frontmatter")),
+    # ── search ──────────────────────────────────────────────────────────────
+    # TOML/env only: `search --exclude-tags` is the per-call spelling, and
+    # a global flag of the same name would collide with it.
+    Setting("exclude_tags", "csv", [], "search",
+            "Tags hidden from search unless a call passes exclude_tags "
+            "(e.g. superseded)", cli=False, mcp=False),
 ]
 
 
@@ -227,6 +241,7 @@ class Settings:
     db_path: str = "okfgraph.db"
     bundle_root: Optional[str] = None
     wal_mode: bool = False
+    extension_dir: Optional[str] = None
     embedding_dim: int = 512
     model_id: str = DEFAULT_MODEL_ID
     device: str = "auto"
@@ -243,6 +258,8 @@ class Settings:
     allowed_image_domains: List[str] = field(default_factory=list)
     mode: str = "text"
     batch_size: int = 32
+    identity: str = "path"
+    exclude_tags: List[str] = field(default_factory=list)
     roots: Dict[str, str] = field(default_factory=dict)
 
     # ---------------------------------------------------------------- load --
@@ -371,6 +388,10 @@ class Settings:
             errors.append("import.chunk_overlap must be >= 0 and < chunk_size")
         if any(not domain.strip() for domain in self.allowed_image_domains):
             errors.append("allowed_image_domains contains empty entries")
+        if self.extension_dir and not Path(self.extension_dir).expanduser().is_dir():
+            errors.append(
+                f"database.extension_dir is not a directory: {self.extension_dir} "
+                "(create it with 'okf setup extensions')")
 
         return errors, warnings
 
@@ -396,6 +417,9 @@ class Settings:
             enable_chunking=self.enable_chunking,
             wal_mode=self.wal_mode,
             roots=dict(self.roots) or None,
+            extension_dir=self.extension_dir,
+            identity=self.identity,
+            exclude_tags=list(self.exclude_tags),
         )
 
 

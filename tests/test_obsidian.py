@@ -115,8 +115,10 @@ class TestObsidianVaultLive:
             "---\ntitle: Late Arrival\ntype: note\n---\n\nHello.\n"
         )
         router.import_file(tmp_path / "arrival.md")["concept_id"]
-        assert router.repair_links()["repaired"] == 1
+        # 0.11.0: every import repairs earlier misses it satisfies, so the
+        # link exists already and an explicit repair has nothing left to do.
         assert (cid, "arrival") in _edges(router)
+        assert router.repair_links()["repaired"] == 0
 
     def test_obsidian_export_round_trip(self, router, tmp_path):
         out = tmp_path / "vault-out"

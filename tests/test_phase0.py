@@ -116,10 +116,10 @@ class TestCrashConsistency:
         orig_store = router.delta_mgr._store_file_hashes
         state = {"fail": True}
 
-        def flaky(hashes):
+        def flaky(hashes, **kw):
             if state["fail"] and hashes:
                 raise RuntimeError("simulated crash after commit")
-            return orig_store(hashes)
+            return orig_store(hashes, **kw)
 
         router.delta_mgr._store_file_hashes = flaky
         try:
@@ -182,9 +182,10 @@ class TestDeletionTombstones:
         (Path(tmp) / "docs" / "b.md").unlink()
         gone = _native("docs", "b.md")
 
-        # No-purge run: sibling re-imported, concept persists, tombstone kept.
+        # No-purge run: the unchanged sibling is skipped by its file hash
+        # (0.11.0, O2), the concept persists, the tombstone is kept.
         with caplog.at_level(logging.INFO):
-            assert router.import_mgr.import_bundle(prune_missing=False) == ["docs/a"]
+            assert router.import_mgr.import_bundle(prune_missing=False) == []
         assert "docs/b" in _concepts(router.conn)
         assert gone in _tombstones(router.conn)
 
@@ -257,7 +258,9 @@ class TestNestedDeletion:
         # Touch one nested file: ancestor hashes change too (recursive),
         # but nothing is deleted — tombstones must stay empty.
         _write_okf(tmp, "sub/a.md", "A", "alpha content REWRITTEN words about the first letter, changed.")
-        assert sorted(router.import_mgr.import_bundle()) == ["root", "sub/a", "sub/b"]
+        # Only the touched file re-imports (0.11.0, O2: per-file detection
+        # inside changed directories).
+        assert sorted(router.import_mgr.import_bundle()) == ["sub/a"]
         assert _tombstones(router.conn) == set()
         assert _concepts(router.conn) == {"root", "sub/a", "sub/b"}
 
@@ -270,7 +273,8 @@ class TestNestedDeletion:
 
         (Path(tmp) / "sub" / "b.md").unlink()
         gone = _native("sub", "b.md")
-        assert sorted(router.import_mgr.import_bundle(prune_missing=False)) == ["root", "sub/a"]
+        # Nothing left to re-import: the survivors' bytes are unchanged (O2).
+        assert sorted(router.import_mgr.import_bundle(prune_missing=False)) == []
         assert _tombstones(router.conn) == {gone}
         assert "root" in _concepts(router.conn)
 

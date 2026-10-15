@@ -18,13 +18,55 @@ logger = logging.getLogger(__name__)
 #: Optional (None-default) ingest params each kind honours; passing any
 #: other one is refused rather than silently dropped.
 _INGEST_HONOURS = {
-    "md": frozenset({"md_path", "concept_id", "title", "description", "tags"}),
-    "thoughts": frozenset({"thoughts", "topic", "concept_id", "tags"}),
+    "md": frozenset({"md_path", "concept_id", "title", "description", "tags",
+                     "type", "extra", "materialize"}),
+    "thoughts": frozenset({"thoughts", "topic", "concept_id", "tags",
+                           "type", "extra", "materialize"}),
     "pdf": frozenset({"pdf_path", "output_dir"}),
     # Per-entry IDs come from citation keys, so bib honours only the
     # file-level inputs: one file in, N concepts out.
     "bib": frozenset({"bib_path", "tags"}),
 }
+
+
+#: Concept fields ``extra`` may not set: they have their own parameters or
+#: are owned by the pipeline (0.11.0, O9).
+_RESERVED_EXTRA = frozenset({
+    "id", "type", "title", "description", "resource", "tags", "timestamp",
+    "body", "embedding", "uid", "source_path",
+})
+
+_SAFE_ID_RE = re.compile(r"^(@[A-Za-z0-9_-]+/)?[A-Za-z0-9_][A-Za-z0-9_.\-]*(/[A-Za-z0-9_][A-Za-z0-9_.\-]*)*$")
+
+
+def _check_extra(extra) -> Dict[str, Any]:
+    """Validate ``extra`` (O9): a mapping of plain keys, none reserved."""
+    if extra is None:
+        return {}
+    if not isinstance(extra, dict):
+        raise OKFError("BAD_VALUE", "extra must be a mapping of key -> value",
+                       fields={"extra": type(extra).__name__})
+    bad = sorted(k for k in extra if not isinstance(k, str) or k in _RESERVED_EXTRA)
+    if bad:
+        raise OKFError(
+            "BAD_VALUE",
+            f"extra may not set {', '.join(map(str, bad))} (use the dedicated "
+            "parameters: concept_id, type, title, description, tags)",
+            fields={"reserved": [str(b) for b in bad]},
+        )
+    return dict(extra)
+
+
+def _check_concept_id(concept_id: str) -> None:
+    """An explicit id that becomes a file path must be a safe relative id."""
+    if ".." in concept_id.split("/") or not _SAFE_ID_RE.match(concept_id):
+        raise OKFError(
+            "BAD_VALUE",
+            f"concept_id {concept_id!r} cannot be materialized as a bundle file "
+            "(letters, digits, '_', '.', '-' and '/' only; no '..'; an "
+            "optional leading @alias/ names a root)",
+            fields={"concept_id": concept_id},
+        )
 
 
 def _slugify_topic(topic: str) -> str:
@@ -148,8 +190,21 @@ class IngestManager:
         tags: list[str] | None,
         mode: str,
         force: bool = False,
+        type: str | None = None,
+        extra: Dict[str, Any] | None = None,
+        materialize: bool = False,
     ) -> Dict[str, Any]:
-        """Inner implementation of ingest_md (called under write lock)."""
+        """Inner implementation of ingest_md (called under write lock).
+
+        0.11.0: the file is parsed exactly as a bundle import parses it, so
+        every frontmatter key (``relations:``, Jev fields, ...) survives —
+        before, md ingest kept only title/description/type/tags. Explicit
+        params override frontmatter; ``extra`` merges over it. When the file
+        lives in a configured root its hash is recorded (O2), so the next
+        bundle import does not embed it again. ``materialize`` (O9) writes
+        the resulting markdown into the bundle at ``<concept_id>.md`` and
+        imports that file — for a source outside every root.
+        """
         md_path = Path(md_path)
         if not md_path.exists():
             raise FileNotFoundError(f"Markdown file not found: {md_path}")
@@ -159,40 +214,45 @@ class IngestManager:
         # the graph drift from the file). Fixable issues are only counted.
         lint_result = self._lint_converted_md(md_path, auto_fix=False)
 
-        # Parse frontmatter
-        post = frontmatter.load(md_path)
-        fm = dict(post.metadata)
+        from okfgraph.components.import_ import parse_source_file
+        from okfgraph.components.roots import resolve_alias_for_path
+        _alias = resolve_alias_for_path(md_path, self.import_mgr.roots) or ""
+        _roots = self.import_mgr.roots
+        _root = _roots[_alias] if _alias else self.import_mgr.bundle_root
+        concept, body, path_cid = parse_source_file(
+            md_path, _root, _alias, identity=self.import_mgr.identity)
+        cid = concept_id or path_cid
 
-        # Determine metadata. Without an explicit concept_id, a file inside
-        # a named root mints that root's namespaced ID (§2.6); outside every
-        # root keeps the legacy bare-stem fallback.
-        if concept_id:
-            cid = concept_id
-        else:
-            from okfgraph.components.import_ import parse_source_file
-            from okfgraph.components.roots import resolve_alias_for_path
-            _alias = resolve_alias_for_path(md_path, self.import_mgr.roots) or ""
-            _roots = self.import_mgr.roots
-            _root = _roots[_alias] if _alias else self.import_mgr.bundle_root
-            cid = parse_source_file(md_path, _root, _alias)[2]
-        t = title or fm.get("title") or md_path.stem
-        desc = description or fm.get("description") or fm.get("summary") or ""
-        file_tags = normalize_tags(fm.get("tags", []))
-        all_tags = list(set((tags or []) + file_tags))
+        data = concept.model_dump()
+        data.pop("embedding", None)
+        data["id"] = cid
+        if title:
+            data["title"] = title
+        if description:
+            data["description"] = description
+        elif not data.get("description"):
+            data["description"] = data.get("summary") or ""
+        if type:
+            data["type"] = type
+        data["tags"] = sorted(set((tags or []) + normalize_tags(data.get("tags"))))
+        data.update(_check_extra(extra))
+        concept = ConceptModel.model_validate(data)
 
-        # Build ConceptModel
-        concept = ConceptModel.model_validate({
-            "id": cid,
-            "title": t,
-            "description": desc,
-            "body": post.content,
-            "type": fm.get("type", "note"),
-            "tags": all_tags,
-        })
+        if materialize:
+            return self._materialize_and_import(concept, body, mode, force,
+                                                lint_result=lint_result)
+
+        inside = False
+        if _root is not None:
+            try:
+                inside = md_path.resolve().is_relative_to(Path(_root).resolve())
+            except (OSError, ValueError):
+                inside = False
 
         # Import via shared single-concept pipeline
         result = self.import_mgr._import_single_concept(
-            concept, post.content, mode, force, base_dir=md_path.parent)
+            concept, body, mode, force, base_dir=md_path.parent,
+            source_file=md_path if inside else None)
 
         return {
             "concept_id": result["concept_id"],
@@ -209,6 +269,73 @@ class IngestManager:
             },
         }
 
+    def _bundle_file_for(self, concept_id: str) -> Path:
+        """Where ``concept_id`` lives as a bundle file (O9 materialize).
+
+        ``@alias/rest`` lands in the named root, anything else in the
+        primary root. File-free routers cannot materialize.
+        """
+        _check_concept_id(concept_id)
+        roots = self.import_mgr.roots
+        if concept_id.startswith("@"):
+            alias, rest = concept_id[1:].split("/", 1)
+            root = roots.get(alias)
+            if root is None:
+                raise OKFError(
+                    "BAD_VALUE", f"unknown root alias @{alias} in concept_id",
+                    fields={"concept_id": concept_id, "roots": sorted(roots)})
+        else:
+            root, rest = self.import_mgr.bundle_root, concept_id
+        if root is None:
+            raise OKFError(
+                "MISSING_PARAM",
+                "materialize needs a bundle root: this router is file-free "
+                "(bundle_root=None)",
+                fields={"materialize": True},
+                remedy="open the router with bundle_root, or omit materialize",
+            )
+        # Under frontmatter identity the id also travels in the file's
+        # frontmatter; the file still lands at the id's path, so people
+        # find it where the id says.
+        return Path(root) / f"{rest}.md"
+
+    def _materialize_and_import(self, concept: ConceptModel, body: str,
+                                mode: str, force: bool,
+                                lint_result=None) -> Dict[str, Any]:
+        """Write ``concept`` as a bundle file, then import that file (O9).
+
+        The single-writer rule: the bundle stays the source of truth and the
+        graph is what importing it produced. Re-materializing the same id
+        overwrites the same file — the same call twice is one concept.
+        """
+        path = self._bundle_file_for(concept.id)
+        fm, _ = concept.export_frontmatter()
+        fm.pop("source_path", None)
+        if self.import_mgr.identity == "frontmatter":
+            raw_id = concept.id.split("/", 1)[1] if concept.id.startswith("@") else concept.id
+            fm["id"] = raw_id
+        else:
+            fm.pop("id", None)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(frontmatter.dumps(frontmatter.Post(body, **fm)) + "\n",
+                        encoding="utf-8")
+        cid = self.import_mgr.import_from_okf(path, mode=mode, force=force)
+        out = {
+            "concept_id": cid,
+            "path": str(path),
+            "materialized": True,
+            "title": concept.title,
+            "tags": concept.tags,
+        }
+        if lint_result is not None:
+            out["lint_issues"] = {
+                "fixed_count": lint_result["fixed_count"],
+                "fixable_count": lint_result["fixable_count"],
+                "unfixable_count": len(lint_result["unfixable"]),
+                "error_count": len(lint_result["errors"]),
+            }
+        return out
+
 
     def _ingest_thoughts_inner(
         self,
@@ -217,8 +344,17 @@ class IngestManager:
         concept_id: str | None,
         tags: list[str] | None,
         force: bool = False,
+        type: str | None = None,
+        extra: Dict[str, Any] | None = None,
+        materialize: bool = False,
     ) -> Dict[str, Any]:
-        """Inner implementation of ingest_thoughts (called under write lock)."""
+        """Inner implementation of ingest_thoughts (called under write lock).
+
+        0.11.0 (O9): ``type`` (default ``thought``) and ``extra`` are stored
+        like frontmatter; an explicit ``concept_id`` upserts (the same call
+        twice is one concept, links into it kept — O1); ``materialize``
+        writes the thought into the bundle and imports the file.
+        """
         import uuid
 
         # Generate concept_id from topic if not provided. Namespaced
@@ -232,20 +368,20 @@ class IngestManager:
             slug = _slugify_topic(topic) or "untitled"
             concept_id = f"thoughts/{slug}/{ts}_{str(uuid.uuid4())[:6]}"
 
-        # Build OKF-compliant markdown
-        header_lines = [
-            "---",
-            f'title: "Thought: {topic}"',
-            "type: thought",
-            "thought_type: reasoning",
-            f"topic: {topic}",
-            f"tags: [thought, reasoning, {topic}]",
-            f"created: {datetime.now().isoformat()}",
-            "---",
-            "",
-            thoughts,
-        ]
-        markdown = "\n".join(header_lines)
+        extra = _check_extra(extra)
+        ctype = type or "thought"
+        # Build OKF-compliant markdown (frontmatter via the YAML dumper, so
+        # extra values with ':' or quotes cannot break the header).
+        meta: Dict[str, Any] = {
+            "title": f"Thought: {topic}",
+            "type": ctype,
+            "thought_type": "reasoning",
+            "topic": topic,
+            "tags": ["thought", "reasoning", topic],
+            "created": datetime.now().isoformat(),
+        }
+        meta.update(extra)
+        markdown = frontmatter.dumps(frontmatter.Post(thoughts, **meta))
 
         # Defensive lint: the LLM-provided thoughts text may contain
         # malformed markdown (trailing spaces, blank lines, etc.).
@@ -269,13 +405,27 @@ class IngestManager:
 
         # Build ConceptModel
         concept = ConceptModel.model_validate({
+            **extra,
             "id": concept_id,
             "title": f"Thought: {topic}",
             "description": f"Reasoning about {topic}",
             "body": markdown,
-            "type": "thought",
+            "type": ctype,
             "tags": all_tags,
         })
+
+        if materialize:
+            body = frontmatter.loads(markdown).content
+            data = concept.model_dump()
+            data.pop("embedding", None)
+            data.update({"body": body, "topic": topic,
+                         "thought_type": "reasoning",
+                         "created": meta["created"]})
+            concept = ConceptModel.model_validate(data)
+            out = self._materialize_and_import(concept, body, "text", force)
+            out.update({"topic": topic, "markdown": markdown,
+                        "lint_issues": lint_result})
+            return out
 
         # Import via shared single-concept pipeline
         result = self.import_mgr._import_single_concept(concept, markdown, "text", force)
@@ -504,6 +654,10 @@ class IngestManager:
         force: bool = False,
         on_page: Callable[[int, int], None] | None = None,
         converter=None,
+        type: str | None = None,
+        extra: Dict[str, Any] | None = None,
+        materialize: bool | None = None,
+        rebuild: str = "auto",
     ) -> Dict[str, Any]:
         """One ingest dispatch (0.10: five spellings merged into one).
 
@@ -513,6 +667,11 @@ class IngestManager:
         kind='thoughts': persist LLM reasoning (thoughts + topic required).
         kind='bib': import one concept per BibTeX entry (bib_path
         required); IDs are ``refs/<key>``, stable across re-imports.
+
+        0.11.0 (O9): ``type`` and ``extra`` (md, thoughts) store a concept
+        type and frontmatter-like fields; ``materialize=True`` writes the
+        markdown into the bundle and imports the file (single-writer rule).
+        ``rebuild`` (O8: auto | defer | force) is the index step afterwards.
 
         File paths that don't exist raise ``FILE_NOT_FOUND``; missing
         required params raise ``MISSING_PARAM``; a passed param the kind
@@ -524,6 +683,7 @@ class IngestManager:
             "topic": topic, "concept_id": concept_id, "title": title,
             "description": description, "tags": tags,
             "output_dir": output_dir, "bib_path": bib_path,
+            "type": type, "extra": extra, "materialize": materialize,
         }
         honours = _INGEST_HONOURS.get(kind)
         if honours is not None:
@@ -548,8 +708,10 @@ class IngestManager:
                     fields={"kind": kind, "md_path": md_path},
                 )
             _require_file(md_path, kind="markdown file")
-            with self._write_lock_ctx():
-                return self._ingest_md_inner(md_path, concept_id, title, description, tags, mode, force)
+            with self._write_lock_ctx(), self.import_mgr.rebuild(rebuild):
+                return self._ingest_md_inner(
+                    md_path, concept_id, title, description, tags, mode, force,
+                    type=type, extra=extra, materialize=bool(materialize))
         if kind == "bib":
             if not bib_path:
                 raise OKFError(
@@ -567,8 +729,10 @@ class IngestManager:
                     "kind='thoughts' requires thoughts and topic",
                     fields={"kind": kind, "thoughts": bool(thoughts), "topic": bool(topic)},
                 )
-            with self._write_lock_ctx():
-                return self._ingest_thoughts_inner(thoughts, topic, concept_id, tags, force)
+            with self._write_lock_ctx(), self.import_mgr.rebuild(rebuild):
+                return self._ingest_thoughts_inner(
+                    thoughts, topic, concept_id, tags, force,
+                    type=type, extra=extra, materialize=bool(materialize))
         if kind == "pdf":
             if not pdf_path:
                 raise OKFError(

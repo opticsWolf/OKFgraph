@@ -147,6 +147,9 @@ class TestLockAndPurge:
         r = _router(tmp_path / "t.db", repo)
         try:
             cid = r.import_file(doc)["concept_id"]
+            # 0.11.0 (O2): import_file records the file's hash, so delete
+            # sees the backing file — remove it first, as for a bundle file.
+            doc.unlink()
             r.delete(cid)
             assert r.purge_deleted(older_than=0)["purged"] == 1
         finally:

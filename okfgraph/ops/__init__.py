@@ -9,5 +9,6 @@ from .admin import AdminOps
 from .export import ExportOps
 from .ingest import IngestOps
 from .query import QueryOps
+from .write import WriteOps
 
-__all__ = ["AdminOps", "ExportOps", "IngestOps", "QueryOps"]
+__all__ = ["AdminOps", "ExportOps", "IngestOps", "QueryOps", "WriteOps"]

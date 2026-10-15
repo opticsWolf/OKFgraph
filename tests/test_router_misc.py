@@ -207,7 +207,11 @@ class TestBrokenLinks:
         router.import_file(p)["concept_id"]
         links = router.list_broken_links()
         assert len(links) >= 1
-        assert any(l["target"] == "missing" for l in links)
+        # 0.11.0: a miss records the source-relative reading of the link
+        # (``./missing.md`` in ``broken_0/`` names ``broken_0/missing``),
+        # plus the link as written for repair.
+        assert any(l["target"] == "broken_0/missing" and l["raw"] == "./missing.md"
+                   for l in links)
 
     def test_repair_links_returns_zero_when_none(self, router):
         """repair_links() returns 0 when there are no broken links."""
@@ -227,23 +231,21 @@ class TestBrokenLinks:
         _write_okf(str(subdir), "source.md", "Source", body)
         router.import_file(Path(subdir) / "source.md")["concept_id"]
 
-        # Broken link should exist — target_id is just the filename stem ("target")
+        # Broken link should exist — recorded source-relative (0.11.0)
         links = router.list_broken_links()
         assert len(links) >= 1
-        assert any(l["target"] == "target" for l in links)
+        assert any(l["target"] == "broken_1/target" for l in links)
 
-        # Now import a concept with ID "target" at the root level
-        # (link extraction strips the path, so target_id is just "target")
+        # Now import a concept with ID "target" at the root level. The
+        # legacy root-relative reading of ``./target.md`` still resolves to
+        # it, and since 0.11.0 the import itself repairs the miss.
         _write_okf(tmp_dir, "target.md", "Target", "Target content")
         router.import_file(Path(tmp_dir) / "target.md")["concept_id"]
-
-        # Repair should fix the link
-        repaired = router.repair_links()["repaired"]
-        assert repaired >= 1
+        assert router.repair_links()["repaired"] == 0  # nothing left
 
         # Broken link should be gone
         remaining = router.list_broken_links()
-        assert not any(l["target"] == "target" for l in remaining)
+        assert not any(l["source"] == "broken_1/source" for l in remaining)
 
         # LINKS_TO relationship should exist
         rows = router.conn.execute("""

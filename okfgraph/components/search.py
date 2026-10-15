@@ -14,6 +14,66 @@ from okfgraph.models import ChunkModel, ConceptModel
 
 logger = logging.getLogger(__name__)
 
+def _as_ts(value: Any, name: str):
+    """``since``/``until`` as a ``datetime`` (ISO string, date or datetime)."""
+    from datetime import date, datetime
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except ValueError:
+        raise OKFError("BAD_VALUE", f"{name} must be an ISO date/time, got {value!r}",
+                       fields={name: value}) from None
+    # Ladybug TIMESTAMP columns are naive; compare in UTC wall time.
+    if dt.tzinfo is not None:
+        from datetime import timezone
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def concept_filter_clauses(
+    params: Dict[str, Any],
+    *,
+    where: Optional[Dict[str, Any]] = None,
+    since: Any = None,
+    until: Any = None,
+    exclude_tags: Optional[List[str]] = None,
+    alias: str = "c",
+) -> List[str]:
+    """Cypher predicates for the 0.11.0 search filters (O7).
+
+    - ``where``: equality on ``extra`` keys. Values compare as *stored*
+      strings — a non-string value is matched in its stored JSON form
+      (``True`` → ``"true"``, ``0.9`` → ``"0.9"``).
+    - ``since`` / ``until``: inclusive / exclusive bounds on ``timestamp``;
+      concepts without a timestamp never match a time bound.
+    - ``exclude_tags``: drop concepts carrying any of these tags.
+
+    Parameters are added to ``params`` under ``_w*``/``_since``/... names.
+    """
+    clauses: List[str] = []
+    for i, (key, value) in enumerate(sorted((where or {}).items())):
+        if not isinstance(key, str) or not key:
+            raise OKFError("BAD_VALUE", f"where keys must be non-empty strings, got {key!r}",
+                           fields={"where": str(key)})
+        stored = value if isinstance(value, str) else json.dumps(value)
+        params[f"_wk{i}"] = key
+        params[f"_wv{i}"] = stored
+        clauses.append(f"list_contains(map_extract({alias}.extra, $_wk{i}), $_wv{i})")
+    if since is not None:
+        params["_since"] = _as_ts(since, "since")
+        clauses.append(f"{alias}.timestamp >= $_since")
+    if until is not None:
+        params["_until"] = _as_ts(until, "until")
+        clauses.append(f"{alias}.timestamp < $_until")
+    if exclude_tags:
+        params["_xtags"] = [str(t) for t in exclude_tags]
+        clauses.append(f"NOT ANY(xt IN $_xtags WHERE xt IN {alias}.tags)")
+    return clauses
+
+
 class SearchEngine:
     def __init__(
         self,
@@ -50,8 +110,14 @@ class SearchEngine:
 
         c = lb.Connection(self._db)
         try:
-            c.execute("LOAD EXTENSION FTS")
-            c.execute("LOAD EXTENSION VECTOR")
+            loader = getattr(self, "_load_extension", None)
+            if loader is not None:
+                # Installed when the router opened; per-connection LOAD only.
+                loader(c, "fts", install=False)
+                loader(c, "vector", install=False)
+            else:
+                c.execute("LOAD EXTENSION FTS")
+                c.execute("LOAD EXTENSION VECTOR")
             res = c.execute(cypher, params)
             return res.rows_as_dict().get_all()
         finally:
@@ -65,8 +131,14 @@ class SearchEngine:
         parent_id: Optional[str] = None,
         limit: int = 10,
         max_chunks_per_doc: int = 3,
+        where: Optional[Dict[str, Any]] = None,
+        since: Any = None,
+        until: Any = None,
+        exclude_tags: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Search chunks using RRF-fused vector + FTS.
+
+        The O7 filters (0.11.0) apply to each chunk's parent concept.
 
         Returns chunk-level results with optional parent concept metadata.
         Applies ``max_chunks_per_doc`` to limit how many chunks from the same
@@ -82,11 +154,14 @@ class SearchEngine:
                 remedy="reopen the router so the vector/fts extensions load",
             )
         query_vec = self.embed_engine._encode(query, task="Query")
+        filtered = any(v for v in (concept_type, tags, parent_id, where,
+                                   since, until, exclude_tags))
+        fetch_k = max(limit * 10, 50) if filtered else limit * 3
 
         # Stage 1: Vector search on chunks
         vec_rows = self._index_rows(
             "CALL QUERY_VECTOR_INDEX('Chunk', 'chunk_embedding', $vec, $k) RETURN node, distance",
-            {"vec": query_vec, "k": limit * 3},
+            {"vec": query_vec, "k": fetch_k},
         )
         vec_scores: Dict[str, float] = {}
         for row in vec_rows:
@@ -99,7 +174,7 @@ class SearchEngine:
         fts_rows = self._index_rows(
             "CALL QUERY_FTS_INDEX('Chunk', 'chunk_fts', $query, top := $k) "
             "RETURN node, score",
-            {"query": query, "k": limit * 3},
+            {"query": query, "k": fetch_k},
         )
         fts_scores: Dict[str, float] = {}
         for row in fts_rows:
@@ -141,6 +216,19 @@ class SearchEngine:
         """
         rows = self.conn.execute(cypher, {"ids": chunk_ids}).rows_as_dict().get_all()
         meta_by_id = {row["ch.id"]: row for row in rows}
+        allowed_parents = None
+        if where or since is not None or until is not None or exclude_tags:
+            fparams: Dict[str, Any] = {
+                "pids": sorted({r["ch.parent_doc_id"] for r in rows
+                                if r.get("ch.parent_doc_id")})}
+            clauses = concept_filter_clauses(
+                fparams, where=where, since=since, until=until,
+                exclude_tags=exclude_tags)
+            allowed_parents = {
+                r["id"] for r in self.conn.execute(
+                    "MATCH (c:Concept) WHERE c.id IN $pids AND "
+                    + " AND ".join(clauses) + " RETURN c.id AS id",
+                    fparams).rows_as_dict().get_all()}
 
         # Assemble results, applying per-doc limit and graph filters
         results: List[Dict[str, Any]] = []
@@ -152,6 +240,8 @@ class SearchEngine:
                 continue
 
             parent_id_val = row["ch.parent_doc_id"]
+            if allowed_parents is not None and parent_id_val not in allowed_parents:
+                continue
 
             # Apply graph filters on parent concept
             if concept_type:
@@ -191,18 +281,28 @@ class SearchEngine:
         return results
 
 
-    def _compute_hub_scores(self, concept_ids: List[str]) -> Dict[str, float]:
-        """Count incoming LINKS_TO edges for each concept.
+    def _compute_hub_scores(self, concept_ids: List[str],
+                            link_kinds: Optional[List[str]] = None) -> Dict[str, float]:
+        """Count distinct concepts linking to each concept.
 
         Higher hub score = more concepts point to this one = more authoritative.
+        Distinct sources (0.11.0): a typed relation beside a body mention is
+        one supporter, not two. ``link_kinds`` (O6) counts only those kinds.
         """
         if not concept_ids:
             return {}
+        if link_kinds:
+            result = self.conn.execute("""
+                MATCH (x:Concept)-[l:LINKS_TO]->(c:Concept)
+                WHERE c.id IN $ids AND l.kind IN $kinds
+                RETURN c.id AS id, count(DISTINCT x) AS cnt
+            """, {"ids": concept_ids, "kinds": list(link_kinds)})
+            return {r["id"]: r["cnt"] for r in result.rows_as_dict().get_all()}
 
         result = self.conn.execute("""
             MATCH (x:Concept)-[:LINKS_TO]->(c:Concept)
             WHERE c.id IN $ids
-            RETURN c.id AS id, count(x) AS cnt
+            RETURN c.id AS id, count(DISTINCT x) AS cnt
         """, {"ids": concept_ids})
         return {r["id"]: r["cnt"] for r in result.rows_as_dict().get_all()}
 
@@ -210,8 +310,14 @@ class SearchEngine:
     # Model-free retrieval: lexical seeds + exact PPR (Phase 1 roundup)
     # ------------------------------------------------------------------
 
-    def _links_adjacency(self) -> Tuple[List[str], List[Tuple[str, str]]]:
+    def _links_adjacency(
+        self, link_kinds: Optional[List[str]] = None,
+    ) -> Tuple[List[str], List[Tuple[str, str]]]:
         """Read the resolved LINKS_TO graph: sorted node ids + directed edges.
+
+        ``link_kinds`` (0.11.0, O6) keeps only edges of those kinds. A pair
+        linked by several kinds counts once, so a typed relation next to a
+        body mention does not double that edge's weight.
 
         Plain (non-index) queries — no FTS/vector extensions involved, so the
         ladybug short-lived-connection workaround is unnecessary here.
@@ -219,14 +325,19 @@ class SearchEngine:
         id_rows = self.conn.execute(
             "MATCH (c:Concept) RETURN c.id AS id"
         ).rows_as_dict().get_all()
-        edge_rows = self.conn.execute(
-            "MATCH (a:Concept)-[:LINKS_TO]->(b:Concept) "
-            "RETURN a.id AS src, b.id AS dst"
-        ).rows_as_dict().get_all()
-        return (
-            sorted(r["id"] for r in id_rows),
-            [(r["src"], r["dst"]) for r in edge_rows],
-        )
+        if link_kinds:
+            edge_rows = self.conn.execute(
+                "MATCH (a:Concept)-[l:LINKS_TO]->(b:Concept) "
+                "WHERE l.kind IN $kinds RETURN a.id AS src, b.id AS dst",
+                {"kinds": list(link_kinds)},
+            ).rows_as_dict().get_all()
+        else:
+            edge_rows = self.conn.execute(
+                "MATCH (a:Concept)-[:LINKS_TO]->(b:Concept) "
+                "RETURN a.id AS src, b.id AS dst"
+            ).rows_as_dict().get_all()
+        edges = sorted({(r["src"], r["dst"]) for r in edge_rows})
+        return sorted(r["id"] for r in id_rows), edges
 
     def _seed_corpus(self) -> List[Dict[str, Any]]:
         """Concept metadata for lexical seeding (reserved index/log excluded)."""
@@ -255,8 +366,16 @@ class SearchEngine:
         tags: Optional[List[str]] = None,
         parent_id: Optional[str] = None,
         seed_k: int = 20,
+        where: Optional[Dict[str, Any]] = None,
+        since: Any = None,
+        until: Any = None,
+        exclude_tags: Optional[List[str]] = None,
+        link_kinds: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Model-free search: lexical seeds → multi-seed exact PPR.
+
+        0.11.0: the O7 filters apply to the ranked set, and ``link_kinds``
+        (O6) restricts the walk to edges of those kinds.
 
         Never touches the embedding model (no ONNX load, no FTS/vector
         extensions): safe on a cold router, deterministic across runs, and a
@@ -268,7 +387,7 @@ class SearchEngine:
         from okfgraph.components.ranking import seed_ranked_ppr
 
         corpus = self._seed_corpus()
-        node_ids, edges = self._links_adjacency()
+        node_ids, edges = self._links_adjacency(link_kinds)
         ranked = seed_ranked_ppr(corpus, edges, query, seed_k=seed_k)
         if not ranked:
             return []
@@ -287,6 +406,9 @@ class SearchEngine:
                 "EXISTS { MATCH (p:Directory {id: $parent})-[:CONTAINS*1..3]->(c) }"
             )
             params["parent"] = parent_id
+        where_clauses += concept_filter_clauses(
+            params, where=where, since=since, until=until,
+            exclude_tags=exclude_tags)
         cypher = f"""
         MATCH (c:Concept)
         WHERE {" AND ".join(where_clauses)}
@@ -543,8 +665,18 @@ class SearchEngine:
         include_chunks: bool = False,
         rank: str = "none",
         hub_weight: float = 0.3,
+        where: Optional[Dict[str, Any]] = None,
+        since: Any = None,
+        until: Any = None,
+        exclude_tags: Optional[List[str]] = None,
+        link_kinds: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Hybrid search: RRF fusion of vector + FTS with optional graph filters.
+
+        0.11.0 filters (O7): ``where`` (equality on ``extra``), ``since`` /
+        ``until`` (``timestamp``), ``exclude_tags``. With any filter set the
+        index stages over-fetch (``max(limit*10, 50)`` instead of
+        ``limit*3``) so filtering does not starve the result.
 
         If ``include_chunks=True``, each result also contains ``matched_chunks``
         — the top chunks from that document matching the query.
@@ -558,8 +690,12 @@ class SearchEngine:
         if rank == "ppr":
             return self.search_with_ppr(
                 query, limit=limit, concept_type=concept_type,
-                tags=tags, parent_id=parent_id,
+                tags=tags, parent_id=parent_id, where=where, since=since,
+                until=until, exclude_tags=exclude_tags, link_kinds=link_kinds,
             )
+        filtered = any(v for v in (concept_type, tags, parent_id, where,
+                                   since, until, exclude_tags))
+        fetch_k = max(limit * 10, 50) if filtered else limit * 3
         if not getattr(self, "_search_available", False):
             raise OKFError(
                 "SEARCH_UNAVAILABLE",
@@ -574,7 +710,7 @@ class SearchEngine:
         # Stage 1: Vector search (ANN)
         vec_rows = self._index_rows(
             "CALL QUERY_VECTOR_INDEX('Concept', 'concept_embedding', $vec, $k) RETURN node, distance",
-            {"vec": query_vec, "k": limit * 3},
+            {"vec": query_vec, "k": fetch_k},
         )
         vec_scores: Dict[str, float] = {}
         for row in vec_rows:
@@ -587,7 +723,7 @@ class SearchEngine:
         fts_rows = self._index_rows(
             "CALL QUERY_FTS_INDEX('Concept', 'concept_fts', $query, top := $k) "
             "RETURN node, score",
-            {"query": query, "k": limit * 3},
+            {"query": query, "k": fetch_k},
         )
         fts_scores: Dict[str, float] = {}
         for row in fts_rows:
@@ -637,6 +773,9 @@ class SearchEngine:
             where_clauses.append(
                 "NOT c.id ENDS WITH 'index' AND NOT c.id ENDS WITH 'log'"
             )
+        where_clauses += concept_filter_clauses(
+            params, where=where, since=since, until=until,
+            exclude_tags=exclude_tags)
 
         cypher = f"""
         MATCH (c:Concept)
@@ -678,7 +817,8 @@ class SearchEngine:
         if rank == "hub" and results:
             # Query-independent authority blend (same formula as chunks):
             # final = (1 - w) * rrf + w * normalized_hub.
-            hub_scores = self._compute_hub_scores([r["id"] for r in results])
+            hub_scores = self._compute_hub_scores([r["id"] for r in results],
+                                                  link_kinds)
             max_hub = max(hub_scores.values()) if hub_scores else 0
             for r in results:
                 hub = hub_scores.get(r["id"], 0)
@@ -869,8 +1009,13 @@ class SearchEngine:
         direction: str = "OUTGOING",
         depth: int = 1,
         node_type: Optional[str] = None,
+        link_kinds: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Navigate graph relationships with whitelisted edges and depth cap."""
+        """Navigate graph relationships with whitelisted edges and depth cap.
+
+        ``link_kinds`` (0.11.0, O6) follows only LINKS_TO edges of those
+        kinds (``mention`` = body links), at every hop of the walk.
+        """
         ALLOWED_RELS = {"CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET"}
         if relationship not in ALLOWED_RELS:
             raise ValueError(f"Invalid relationship. Must be one of {ALLOWED_RELS}")
@@ -884,15 +1029,21 @@ class SearchEngine:
         else:
             target_label = "Concept"
 
+        rel = f"{relationship}*1..{depth}"
+        query_params: Dict[str, Any] = {"start_id": start_id}
+        if link_kinds:
+            if relationship != "LINKS_TO":
+                raise ValueError("link_kinds only applies to LINKS_TO")
+            rel = f"e:{rel} (r, n | WHERE r.kind IN $link_kinds)"
+            query_params["link_kinds"] = list(link_kinds)
         if direction == "OUTGOING":
-            pattern = f"-[{relationship}*1..{depth}]->(target:{target_label})"
+            pattern = f"-[{rel}]->(target:{target_label})"
         elif direction == "INCOMING":
-            pattern = f"<-[{relationship}*1..{depth}]-(target:{target_label})"
+            pattern = f"<-[{rel}]-(target:{target_label})"
         else:  # BOTH
-            pattern = f"-[{relationship}*1..{depth}]-(target:{target_label})"
+            pattern = f"-[{rel}]-(target:{target_label})"
 
         where_clause = ""
-        query_params: Dict[str, Any] = {"start_id": start_id}
         if node_type:
             where_clause = "WHERE target.type = $node_type"
             query_params["node_type"] = node_type
@@ -907,11 +1058,19 @@ class SearchEngine:
         rows = results.rows_as_dict().get_all()
 
         results_list: List[Dict[str, Any]] = []
+        seen_ids = set()
         for row in rows:
             entry: Dict[str, Any] = {}
             for key, val in row.items():
                 prop = key.split(".", 1)[-1]  # strip 'target.' prefix
                 entry[prop] = val
+            # One row per target (0.11.0): two edges to one concept (a body
+            # mention and a typed relation) are one neighbour.
+            tid = entry.get("id")
+            if tid is not None:
+                if tid in seen_ids:
+                    continue
+                seen_ids.add(tid)
             results_list.append(entry)
         return results_list
 

@@ -1,6 +1,6 @@
 # OKF Knowledge Graph — Architecture Specification
 
-**Version**: 6.7 (as-built for okfgraph 0.10.2 — v6.6 surface per `docs/surface-unification-plan.md` plus the v6.6 → v6.7 summary below: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)
+**Version**: 6.8 (as-built for okfgraph 0.11.0 — the findings-store changes in the v6.7 → v6.8 summary below: links survive re-import, per-file change detection, opt-in frontmatter identity, `okf serve` (one owner, many clients), offline extensions, typed relations, filters, typed ingest, producer cursors, MCP write tools; schema v9. Earlier: 6.7 for okfgraph 0.10.2 — v6.6 surface per `docs/surface-unification-plan.md` plus the v6.6 → v6.7 summary below: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)
 **Based on**: Architecture v6.5 (0.8.x–0.9.0 tree)  
 **Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.3.x`, `bobine 0.6.x`, `onnxruntime==1.29.0`
 
@@ -10,7 +10,7 @@
 > they describe an optimum/transformers embedding stack and an in-tree
 > RapidAI ingest engine that no longer exist. This document describes the
 > shipped system: external `embroider` embedding crate, bobine converter
-> seam, MCP ≥ 2.0 with 8 tools over one 24-op vocabulary, consolidated
+> seam, MCP ≥ 2.0 with 11 tools (8 before 0.11.0) over one op vocabulary, consolidated
 > CLI, model-free PPR retrieval. Sections kept verbatim from v5.9 are those whose claims
 > still hold against the 0.2.12 tree; every changed claim below was
 > re-verified against code.
@@ -49,6 +49,61 @@ As-built for okfgraph 0.10.2 (`docs/improvement-planning-0.10.1.md` for the
 | **Positional import** | Bare-stem fallback, silent | **`--bundle-path` as explicit identity root** (pre-validated) + `hierarchy-dropped` warning on the legacy fallback | 0.10.1 A1/A2: silent misplacement |
 | **Pinned trees** | Relative/outside-root `--bundle-path` crashes (`ValueError`) | **Resolve-once + isolated import** (no shared-ledger writes, stable repeats) | 0.10.1 B1 |
 | **Lint skips** | Fully-filtered walk claims `lint-clean (safe to import)` | **Skipped-hidden count + guarded endorsement** | 0.10.1 B2 |
+
+---
+
+## Summary of Changes (v6.7 → v6.8)
+
+As-built for okfgraph 0.11.0 — the findings-store release: OKFgraph as a
+continuously updated store fed by producers and agents (Silk). Spec items
+O1–O12; schema **v8 → v9**. The single-writer rule is unchanged: files are
+written by producers and people (or by an op that writes the file first),
+and only import writes `kb.db`.
+
+| Area | v6.7 (0.10.2) | v6.8 (0.11.0) | Reason |
+|---|---|---|---|
+| **Re-import and links (O1)** | `DETACH DELETE` + `CREATE` dropped links *into* a re-imported concept from unchanged files; a purged target left no trace | **Incoming links captured before the replace and restored after it**, in the same transaction; a purge turns them into `BrokenLink` rows (kind kept) that repair restores when the target returns; every import repairs earlier misses it satisfies | Links from unchanged files were silently lost (1 → 0 across directories) |
+| **Path links (O1)** | `normalize_path_link` stripped `./`/`../` and read every link root-relative | **Source-relative first** (`[t](t.md)` in `findings/a.md` → `findings/t`), then the legacy root-relative reading; a miss records the source-relative target plus the link as written (`BrokenLink.raw`) | The way every Markdown renderer reads a link; old bundles keep resolving |
+| **Change detection (O2)** | A changed directory re-imported every file in it | **Per file inside changed directories**: same bytes *and* concept present → skipped; single-file import/ingest records the file's hash | 1 edit in 51 files re-embedded 51 concepts |
+| **Identity (O3)** | Ids from paths only; `id:` kept as `uid` (wikilink alias) | **`[import] identity = "frontmatter"`** (opt-in): `id:` is the concept id, `source_path` records the file; a move is an update; one id, one file (second file refused, `duplicates` in the report) | Moving a file broke every link into it |
+| **Process ownership (O4)** | One process per db; MCP over stdio = one server per client → `DB_LOCKED` | **`okf serve`** owns the db (MCP over streamable HTTP at `/mcp` + `POST /ops/<op>` JSON); **`OKFClient(url)`**; **`okf-mcp --connect URL`** stdio proxy; the CLI discovers a running owner via `<db>.serve.json` | Silk + MCP clients + CLI on one database |
+| **Extensions (O5)** | `INSTALL vector/fts` downloads on first open; offline → warning, every hybrid search `SEARCH_UNAVAILABLE` | **`[database] extension_dir`** loads both by path, never downloads; **`okf setup extensions [--from DIR]`** fills it; doctor scores missing extensions as an **error** | Offline machines silently lost hybrid search |
+| **Typed relations (O6)** | Body links only, untyped `LINKS_TO` | **`relations: {kind: [targets]}`** frontmatter → `LINKS_TO {kind}`; body links are `mention`; `traverse`/`hub`/`ppr` take `link_kinds`; export round-trips `relations:` | Supersession and support as edges, not strings in `extra` |
+| **Filters (O7)** | `concept_type`, `tags`, `parent_id` | **+ `where` (equality on `extra`), `since`/`until` (`timestamp`), `exclude_tags`**; `[search] exclude_tags` sets a default a call can override with `[]` | State without encoding it as tags |
+| **Index step (O8)** | Every write ended with `_build_search_indexes(rebuild=True)` | **Measured: Ladybug 0.21.2 maintains vector and FTS indexes in place.** The step now only creates missing indexes; `rebuild="auto"\|"defer"\|"force"` on import/ingest ops; **`import_files(paths)`**; `reindex` (force) really drops and recreates | The old rebuild was a swallowed *already exists* — harmless and unneeded |
+| **Ingest (O9)** | `thoughts` always `type: thought`, no extras; md ingest kept 4 frontmatter keys | **`type`, `extra`, `materialize`**; explicit `concept_id` upserts; md ingest keeps all frontmatter; `materialize=True` writes `<concept_id>.md` into the bundle and imports it | Agents write findings the bundle keeps |
+| **Producers (O10)** | Built-in registry; whole tree re-imported | **Entry-point group `okfgraph.producers`**; `produce(..., cursor=)` → `ProducedBundle(cursor, written)`; **`sync(producer, source)`** imports exactly `written` and stores the cursor (`ProducerCursor`, v9) only after the import succeeds | Silk's findings producer reads Macrame's change feed without OKFgraph depending on Macrame |
+| **Write ops (O11)** | `delete` CLI/Python only, refused while a file backs the concept | **`update`, `supersede`** (write the file, then import it) and **`delete(remove_file=True)`** (file → `.okf-trash/<ts>/`, soft delete, `recover_deleted` moves it back); MCP **11 tools** (+ `update`, `supersede`, `delete`) | Agents edit through the bundle, never around it |
+| **Ambiguous names (O12)** | `[[Name]]` claimed by two notes → log warning only | **`BrokenLink {reason: ambiguous, candidates}`**; doctor `ambiguous_link` (warning); lint names the candidates | Visible, fixable |
+| **Schema** | v8 | **v9**: `LINKS_TO.kind` (existing edges `mention`), `BrokenLink.kind/reason/candidates/raw`, `ProducerCursor` | One rung, probe-before-ALTER |
+
+### Design Decisions (v6.8)
+
+| Decision | Rationale |
+|---|---|
+| **Capture-and-restore incoming links inside the import transaction** (not `MERGE`-in-place of the node) | The replace is `DETACH DELETE` + `CREATE` because `MERGE … SET` over indexed columns is quarantined in Ladybug; restoring plain relationships after the `CREATE` keeps that rule and costs one query per batch |
+| **Purge converts incoming links to `BrokenLink`, keeping their kind** | A link is the *source's* belief; deleting the target does not change it. Doctor sees the loss, and `repair_links` restores the edge (with its kind) when the target returns |
+| **Repair on every import** | Link state must not depend on import order (a link written before its target). With no `BrokenLink` rows the pass is one empty query |
+| **Source-relative path links, legacy fallback, `raw` kept on misses** | Correct reading for new bundles without breaking old ones; import and repair resolve the same `raw` text with the same rules, so they cannot disagree |
+| **Per-file detection needs the concept to exist, not just a matching hash** | A concept lost to a purge or a crash must re-import; a hash alone would skip it forever |
+| **Single-file import stores the FileHash but not the directory hash** | Refreshing the directory hash would hide sibling edits the per-file pass has not seen; the next bundle import stores it |
+| **Frontmatter identity is opt-in; path identity unchanged** | Existing bundles keep their ids; `id:` must be a safe relative id or the file fails to parse (never a silent fallback to the path id) |
+| **One id, one file: refuse, never merge** | Merging two files' frontmatter would make the graph depend on walk order; the first file (sorted path) wins, the rest are reported |
+| **`okf serve` serialises every op behind one lock** | Ladybug connections are not shared across threads; writes already queue under the inter-process lock, reads are fast enough that one queue is simpler than a reader pool |
+| **Discovery file + `/health` check, never trusted alone** | A crashed server leaves a stale file; a dead pid or a health answer for another db is ignored |
+| **`extension_dir` set ⇒ never download** | Offline means offline: a missing file is an error naming the directory, not a network attempt that times out |
+| **Typed relations reuse `LINKS_TO` with a `kind` property** | One edge table keeps traversal, PPR, hub scores and export uniform; `mention` is reserved for body links; a pair linked by several kinds counts once in PPR/hub |
+| **No delta-scan search for O8** | The spec's dirty-epoch delta scan solved a problem Ladybug 0.21.2 does not have (indexes update in place, verified across reopen); `defer` therefore never hides a written concept |
+| **Cursor stored after the import succeeds** | A failed import repeats the producer's work instead of skipping it |
+| **Write ops write the file first** | The single-writer rule: the graph is always what importing the bundle produced; graph-only concepts are materialized on first edit |
+| **`delete` moves files to `.okf-trash` (a dot-dir, never walked)** | The 24h recovery covers the file too; graph and bundle agree without a separate `rm` |
+
+**Amended by v6.8** (earlier sections, kept for history): §2's `BrokenLink`
+and `LINKS_TO` DDL gain the v9 columns; the purge steps in §4.5 (Delta
+Detection) no longer delete `BrokenLink` rows *targeting* the purged
+concept and add rows for its incoming links; v5.5's "directory-level
+re-import" is per-file inside changed directories; §6a's MCP surface is 11
+tools (`delete` is on MCP, soft and recoverable).
 
 ---
 
@@ -274,7 +329,17 @@ CREATE NODE TABLE BrokenLink (
     id STRING PRIMARY KEY,
     source_id STRING,
     target_id STRING,
-    timestamp TIMESTAMP
+    timestamp TIMESTAMP,
+    kind STRING,                  -- v9: 'mention' or the relation kind (O6)
+    reason STRING,                -- v9: 'missing' | 'ambiguous' (O12)
+    candidates STRING,            -- v9: JSON ids claiming an ambiguous name
+    raw STRING                    -- v9: the link as written (repair re-reads it)
+);
+
+CREATE NODE TABLE ProducerCursor (  -- v9 (O10)
+    name STRING PRIMARY KEY,      -- producer name, plus ':prefix' when given
+    cursor STRING,
+    updated_at INT64
 );
 
 CREATE NODE TABLE FileHash (
@@ -301,7 +366,10 @@ CREATE REL TABLE CONTAINS (
     FROM Directory TO Concept
 );
 
-CREATE REL TABLE LINKS_TO (FROM Concept TO Concept);
+CREATE REL TABLE LINKS_TO (
+    FROM Concept TO Concept,
+    kind STRING DEFAULT 'mention'   -- v9 (O6): body links 'mention', relations their kind
+);
 
 CREATE REL TABLE INCLUDES_ASSET (FROM Concept TO ImageAsset);
 
@@ -700,7 +768,10 @@ On each `import_bundle()` call, file-level SHA-256 hashes are compared against t
 2. `DETACH DELETE` all `Chunk` nodes (`parent_doc_id = concept_id`)
 3. `DETACH DELETE` the `Concept` node (cascades `LINKS_TO`, `CONTAINS`, `INCLUDES_ASSET`)
 4. For each collected asset: if `ref_count == 0` → `DELETE` (**orphan check** — shared assets survive)
-5. `DELETE` `BrokenLink` entries where concept was source or target
+5. `DELETE` `BrokenLink` entries where the concept was the **source**; since
+   0.11.0 (O1) rows *targeting* it stay, and links *into* it become
+   `BrokenLink` rows (kind kept, `reason: missing`) that `repair_links`
+   restores if the concept returns
 6. `DELETE` `FileHash` entry for this concept
 
 Returns `True` if a concept was found and purged, `False` if not found. All operations are wrapped in a transaction with rollback on failure.
@@ -865,9 +936,9 @@ def repair_links(self, skip_sources: Optional[List[str]] = None) -> dict:
     """
 ```
 
-**Schema**: `BrokenLink` node table with `id` (STRING PRIMARY KEY), `source_id` (STRING), `target_id` (STRING), and `timestamp` (TIMESTAMP).
+**Schema**: `BrokenLink` node table with `id` (STRING PRIMARY KEY), `source_id` (STRING), `target_id` (STRING), and `timestamp` (TIMESTAMP); since v9 (0.11.0) also `kind`, `reason` (`missing` | `ambiguous`), `candidates` (JSON) and `raw` (the link as written).
 
-**Behavior**: During `_insert_concept()`, when a markdown link references a concept not yet in the graph, instead of silently skipping, a `BrokenLink` record is created. After subsequent imports, `repair_links()` can be called to resolve those orphans.
+**Behavior**: During `_insert_concept()`, when a markdown link references a concept not yet in the graph, instead of silently skipping, a `BrokenLink` record is created. Since 0.11.0 every import runs `repair_links()` after its link step, so a miss resolves as soon as its target is imported; calling it by hand remains the recovery path.
 
 ---
 
@@ -1246,7 +1317,7 @@ The MCP server exposes all OKFgraph tools via the [Model Context Protocol](https
 │  └──────────────────────────────────────────────────┘   │
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │           Tool Registry (8 tools)                 │   │
+│  │           Tool Registry (11 tools)                │   │
 │  │                                                   │   │
 │  │  Read (5):  search, read, traverse,              │   │
 │  │             list_images, get_image                │   │

@@ -4,6 +4,92 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.11.0] — Unreleased (draft)
+
+The findings-store release: OKFgraph safe to update continuously from
+producers and agents (Silk). Schema **v8 → v9** (migrates on open). The
+single-writer rule holds: every new write path writes a bundle file and
+imports it. Design record: `docs/architecture.md` "Summary of Changes
+(v6.7 → v6.8)" and its Design Decisions table.
+
+### Added
+- **`okf serve` (O4).** One process owns the database and serves MCP over
+  streamable HTTP (`/mcp`) plus the ops as JSON (`POST /ops/<op>`,
+  `GET /health`), on TCP or a Unix socket. **`OKFClient(url)`** mirrors the
+  router's ops and raises the same `OKFError`s; **`okf-mcp --connect URL`**
+  is a stdio proxy for existing `.mcp.json` setups; the CLI uses a running
+  owner automatically (`<db>.serve.json` + `/health`; opt out with
+  `OKFGRAPH_NO_SERVER=1`).
+- **Offline extensions (O5).** `[database] extension_dir` loads
+  `libvector`/`libfts` by path and never downloads; `okf setup extensions
+  [--from DIR] [--to DIR] [--no-download]` fills and verifies it.
+- **Typed relations (O6).** Frontmatter `relations: {kind: [targets]}`
+  creates `LINKS_TO {kind}` edges (targets by id, path or wiki name); body
+  links are `kind: mention`. `traverse(link_kinds=...)`, `search(rank="hub"
+  | "ppr", link_kinds=...)`; export round-trips `relations:`.
+- **Search filters (O7).** `where={extra_key: value}`, `since`/`until`
+  (on `timestamp`), `exclude_tags`; `[search] exclude_tags` default
+  (e.g. `["superseded"]`), overridden per call (`[]` = everything). CLI
+  `--where K=V --since --until --exclude-tags`; MCP `search` parameters.
+- **Index policy and batch import (O8).** `rebuild="auto"|"defer"|"force"`
+  on `import_bundle`, `import_file`, `import_files`, `ingest`;
+  **`import_files(paths)`** imports a list with one index step (CLI
+  `import FILE FILE ...`).
+- **Typed, idempotent ingest (O9).** `type`, `extra`, `materialize` for
+  `kind="md"|"thoughts"`; an explicit `concept_id` upserts;
+  `materialize=True` writes `<concept_id>.md` into the bundle and imports
+  that file. MCP `ingest` takes the same parameters.
+- **Producer plugins with a cursor (O10).** Entry-point group
+  `okfgraph.producers`; `produce(..., cursor=)` returns
+  `ProducedBundle(cursor, written)`; **`sync(producer, source)`** (CLI
+  `produce --sync`) imports exactly the written files and stores the cursor
+  after the import succeeds. The SQLite producer's cursor is the source
+  file's hash.
+- **Write ops (O11).** `update(concept_id, title=, description=, type=,
+  tags=|add_tags=|remove_tags=, extra=, relations=)` and
+  `supersede(old, new)` edit the bundle file, then import it;
+  `delete(remove_file=True)` moves the file to `.okf-trash/<ts>/` and
+  soft-deletes; `recover_deleted` moves it back. MCP gains `update`,
+  `supersede`, `delete` (11 tools). CLI `okf update`, `okf supersede`,
+  `delete --remove-file`.
+- `[import] identity = "frontmatter"` (O3) — see Changed.
+
+### Changed
+- **Re-import keeps incoming links (O1).** Links into a re-imported
+  concept from unchanged files are restored in the same transaction;
+  purging a concept turns links into it into `BrokenLink` rows (kind kept)
+  instead of dropping them; every import repairs earlier misses it now
+  satisfies (`repair_links` by hand is rarely needed).
+- **Path links read source-relative first (O1).** `[t](t.md)` in
+  `findings/a.md` means `findings/t`; the pre-0.11 root-relative reading is
+  the fallback, so existing bundles keep resolving. A miss records the
+  source-relative target and the link as written (`BrokenLink.raw`).
+- **Per-file change detection (O2).** Inside a changed directory only new
+  or changed files (or files whose concept is missing) re-import;
+  `import_file` and `ingest(kind="md")` on a bundle file record its hash.
+  **Behaviour change:** `import_bundle` returns only the re-imported ids.
+- **Frontmatter identity, opt-in (O3).** With `identity = "frontmatter"` a
+  file's `id:` is its concept id and `source_path` records the file; moving
+  it keeps the concept and its links; two files with one id → the second is
+  refused (`import_bundle` returns `duplicates` and `moved`; lint
+  `duplicate_id`).
+- **Index step (O8).** Measured on Ladybug 0.21.2: vector and FTS indexes
+  are maintained in place, so writes only create missing indexes; `okf
+  reindex` now really drops and recreates them (it silently did nothing
+  before).
+- **Ambiguous wikilinks (O12)** are `BrokenLink {reason: ambiguous,
+  candidates}`; doctor reports `ambiguous_link`, lint names the candidates.
+- `doctor`: missing search extensions are an error (`search_unavailable`,
+  −20), no longer a log line.
+- `list_broken_links()` rows gain `kind`, `reason`, `candidates`, `raw`, `id`.
+- MCP `delete` is exposed (soft, recoverable, destructive-annotated);
+  hard purge stays CLI/Python.
+
+### Migration
+- v8 → v9 on open: `LINKS_TO.kind` (existing edges become `mention`),
+  `BrokenLink.kind/reason/candidates/raw`, new `ProducerCursor` table.
+  Probe-before-ALTER, so an interrupted migration finishes on the next open.
+
 ## [0.10.2] — 2026-10-07
 
 Supersedes the untagged 0.10.1 line: graph-reunification follow-ups

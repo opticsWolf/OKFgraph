@@ -187,6 +187,13 @@ class DeltaDetector:
         current_dir_hashes: Dict[str, Dict] = {}
         changed: List[Path] = []
         changed_dirs: Set[str] = set()
+        # Per-file detection inside changed directories (0.11.0, O2): the
+        # directory hash only says *something* under it changed; the stored
+        # FileHash says *which* file. Loaded lazily — an unchanged tree
+        # never reads it.
+        stored_files: Optional[Dict[str, tuple]] = None
+        live_ids: Optional[Set[str]] = None
+        skipped_unchanged = 0
         for dir_rel, files in dir_files.items():
             dir_path = Path(base) / dir_rel
             if dir_path.exists():
@@ -199,9 +206,22 @@ class DeltaDetector:
             stored_data = stored_dir_hashes.get(dir_rel, {})
             stored_hash = stored_data.get("hash") if stored_data else None
             if dir_hash != stored_hash:
-                # Directory changed — add all files in it
-                changed.extend(files)
                 changed_dirs.add(dir_rel)
+                if stored_files is None:
+                    stored_files = self._owned_file_hashes()
+                    live_ids = self._live_concept_ids(
+                        {cid for _h, cid in stored_files.values() if cid})
+                for fp in files:
+                    rel = str(Path(fp).relative_to(base))
+                    known = stored_files.get(rel)
+                    # Unchanged = same bytes AND its concept is still in
+                    # the graph (a concept lost to a purge or a crash must
+                    # re-import, never be skipped forever).
+                    if (known is not None and known[1] in live_ids
+                            and known[0] == self._file_hash(fp)):
+                        skipped_unchanged += 1
+                        continue
+                    changed.append(fp)
 
         # Detect deleted directories: dirs in stored map but not on disk
         # (a dir left with zero files also vanishes from the walk, which is
@@ -243,12 +263,14 @@ class DeltaDetector:
             for rel_file in sorted(stored_files - current_names):
                 deleted_paths.append(str(Path(dir_rel) / rel_file))
 
-        if changed:
+        if changed or changed_dirs:
             logger.info(
-                "directory-delta: %d changed dir(s), %d changed files out of %d total",
+                "directory-delta: %d changed dir(s), %d changed files out of %d total "
+                "(%d unchanged in changed dirs skipped by file hash)",
                 len(changed_dirs),
                 len(changed),
                 len(source_files),
+                skipped_unchanged,
             )
         else:
             logger.info("directory-delta: no changes detected")
@@ -268,6 +290,103 @@ class DeltaDetector:
         namespaced_deleted = [prefix_key(self.alias, p) for p in deleted_paths]
         return changed, namespaced_deleted, namespaced_dirs
 
+    def _owned_file_hashes(self) -> Dict[str, tuple]:
+        """This detector's FileHash rows: native rel → (hash, concept_id)."""
+        out: Dict[str, tuple] = {}
+        try:
+            rows = self.conn.execute(
+                "MATCH (f:FileHash) RETURN f.path AS p, f.hash AS h, "
+                "f.concept_id AS c"
+            ).rows_as_dict().get_all()
+        except Exception as exc:
+            logger.debug("could not load file hashes: %s", exc)
+            return out
+        for r in rows:
+            native = strip_prefix(self.alias, r["p"])
+            if native is not None:
+                out[native] = (r.get("h"), r.get("c"))
+        return out
+
+    def _live_concept_ids(self, ids: Set[str]) -> Set[str]:
+        """Which of ``ids`` exist as Concept nodes right now."""
+        if not ids:
+            return set()
+        try:
+            rows = self.conn.execute(
+                "MATCH (c:Concept) WHERE c.id IN $ids RETURN c.id AS id",
+                {"ids": sorted(ids)},
+            ).rows_as_dict().get_all()
+        except Exception as exc:
+            logger.debug("could not check concept ids: %s", exc)
+            return set()
+        return {r["id"] for r in rows}
+
+    def store_single_file(self, file_path: Path, concept_id: str,
+                          walk_root: Optional[Path] = None) -> bool:
+        """Record one file's hash after a single-file import (0.11.0, O2).
+
+        ``ingest(kind="md")`` and ``import <file>`` used to leave no hash,
+        so the next bundle import re-embedded the file. Only the FileHash
+        row is written: refreshing the directory hash here would hide
+        sibling edits the per-file pass has not seen yet. The next bundle
+        import finds the directory changed, compares per file, skips this
+        one, and stores the directory hash then.
+
+        Returns False (writes nothing) when suspended, or when the file is
+        not under this detector's tree.
+        """
+        if self._suspended:
+            return False
+        base = Path(walk_root) if walk_root is not None else self.bundle_root
+        if base is None:
+            return False
+        try:
+            rel = Path(file_path).resolve().relative_to(Path(base).resolve())
+        except (ValueError, OSError):
+            return False
+        self._store_file_hashes(
+            {str(rel): self._file_hash(Path(file_path))},
+            concept_ids={str(rel): concept_id},
+        )
+        return True
+
+    def forget_file(self, db_path: str) -> None:
+        """Retire a file's delta bookkeeping without purging its concept.
+
+        Used when a file moved and its concept (frontmatter identity, O3)
+        now lives at another path: drop the old FileHash row and any
+        tombstone, scrub the name from its parent DirHash.files, and drop
+        that DirHash row when nothing is left under it.
+        """
+        if self._suspended:
+            return
+        rows = self.conn.execute(
+            "MATCH (f:FileHash {path: $p}) RETURN f.dir AS d", {"p": db_path},
+        ).rows_as_dict().get_all()
+        parent = (rows[0].get("d") if rows else None) or str(Path(db_path).parent)
+        self.conn.execute("MATCH (f:FileHash {path: $p}) DELETE f", {"p": db_path})
+        self.conn.execute("MATCH (d:DeletedPath {path: $p}) DELETE d", {"p": db_path})
+        dh = self.conn.execute(
+            "MATCH (dh:DirHash {path: $d}) RETURN dh.files AS f", {"d": parent},
+        ).rows_as_dict().get_all()
+        if not dh:
+            return
+        try:
+            files = json.loads(dh[0]["f"] or "[]")
+        except (ValueError, TypeError):
+            return
+        name = Path(db_path).name
+        if name in files:
+            files = [x for x in files if x != name]
+            if files:
+                self.conn.execute(
+                    "MATCH (dh:DirHash {path: $d}) SET dh.files = $f",
+                    {"d": parent, "f": json.dumps(files)},
+                )
+            else:
+                self.conn.execute(
+                    "MATCH (dh:DirHash {path: $d}) DELETE dh", {"d": parent})
+
     def _owned_dir_hashes(self) -> Dict[str, Dict]:
         """This detector's DirHash rows, keyed by native (unprefixed) rel."""
         raw = self._load_directory_hashes()
@@ -279,11 +398,14 @@ class DeltaDetector:
         return out
 
 
-    def _store_file_hashes(self, hashes: Dict[str, str]) -> None:
+    def _store_file_hashes(self, hashes: Dict[str, str],
+                           concept_ids: Optional[Dict[str, str]] = None) -> None:
         """Persist a path→hash mapping in the FileHash table.
 
         Upserts each row so the table always reflects the current state.
-        Also stores the concept_id for each file to enable safe purge.
+        Also stores the concept_id for each file to enable safe purge:
+        path-derived by default, or the explicit ``concept_ids[path]``
+        (frontmatter identity, O3; explicit ingest ids, O2).
         Callers commit only hashes of successfully parsed files, after the
         concept transaction commits (Phase 0 crash-consistency).
         """
@@ -297,7 +419,8 @@ class DeltaDetector:
                 # stored concept_id is the real (namespaced) concept ID —
                 # which purge and the orphan-scrub join against.
                 db_path = prefix_key(self.alias, path)
-                concept_id = str(Path(db_path).with_suffix("")).replace("\\", "/")  # remove .md / .txt suffix, use forward slashes
+                concept_id = (concept_ids or {}).get(path) or str(
+                    Path(db_path).with_suffix("")).replace("\\", "/")  # remove .md / .txt suffix, use forward slashes
                 # Parent DirHash key, computed from the NATIVE rel (exact —
                 # string math on the prefixed path can't tell `@bb/.` apart
                 # from a legacy `@x` row). Purge/orphan-scrub join on this.

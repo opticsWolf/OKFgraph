@@ -51,6 +51,19 @@ class PurgeManager:
 
         self.conn.execute("BEGIN TRANSACTION")
         try:
+            # 0. Links into this concept from others (0.11.0, O1): they are
+            #    still the sources' belief, so they become BrokenLink records
+            #    (kind kept) that doctor reports and repair_links restores if
+            #    the concept comes back — instead of vanishing silently.
+            incoming = self.conn.execute(
+                """
+                MATCH (s:Concept)-[r:LINKS_TO]->(c:Concept {id: $id})
+                WHERE s.id <> $id
+                RETURN s.id AS s, r.kind AS k
+                """,
+                {"id": concept_id},
+            ).rows_as_dict().get_all() or []
+
             # 1. Find and sever INCLUDES_ASSET edges, collecting asset IDs.
             asset_rows = self.conn.execute(
                 """
@@ -97,16 +110,32 @@ class PurgeManager:
                     )
                     logger.debug("purge: deleted orphaned asset %s", aid)
 
-            # 5. Clean up BrokenLink entries where this concept was source
-            #    or target.
+            # 5. Clean up BrokenLink entries this concept was the *source*
+            #    of; records pointing at it stay (their sources still want
+            #    it), and step 0's incoming links join them.
             self.conn.execute(
                 """
                 MATCH (bl:BrokenLink)
-                WHERE bl.source_id = $id OR bl.target_id = $id
+                WHERE bl.source_id = $id
                 DELETE bl
                 """,
                 {"id": concept_id},
             )
+            now = datetime.now()
+            for row in incoming:
+                kind = row.get("k") or "mention"
+                link_id = f"{row['s']}\u2192{concept_id}" + (
+                    "" if kind == "mention" else f"#{kind}")
+                self.conn.execute(
+                    """
+                    MERGE (bl:BrokenLink {id: $lid})
+                    SET bl.source_id = $s, bl.target_id = $t,
+                        bl.timestamp = $ts, bl.kind = $k,
+                        bl.reason = 'missing', bl.candidates = NULL
+                    """,
+                    {"lid": link_id, "s": row["s"], "t": concept_id,
+                     "ts": now, "k": kind},
+                )
 
             # 6. Remove FileHash entry for this concept (capture paths
             #    first — step 7's mirror bookkeeping keys off them). The

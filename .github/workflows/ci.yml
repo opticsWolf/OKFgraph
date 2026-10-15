@@ -38,6 +38,11 @@ jobs:
           tests/test_doctor.py::TestDoctorPure
           tests/test_obsidian.py::TestWikiLinksPure
           tests/test_roundup_cli.py::TestRoundupHelp
+          tests/test_v011_links_delta.py::test_o12_lint_names_the_candidates
+          tests/test_v011_identity_write.py::test_o10_entry_point_producers_are_discovered_and_cannot_shadow_builtins
+          tests/test_v011_serve_offline.py::test_o4_serve_file_lifecycle_and_stale_files_are_ignored
+          tests/test_v011_serve_offline.py::test_o5_setup_reports_what_is_missing
+          tests/test_v011_serve_offline.py::test_o5_settings_refuse_a_missing_extension_dir
           tests/test_mcp_stdio.py
           tests/test_error_paths.py
           tests/test_envelope.py

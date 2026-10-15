@@ -24,11 +24,13 @@ from okfgraph.components.import_ import (
 )
 from okfgraph.components.roots import qualify_alias_link
 from okfgraph.components.links import (
-    build_name_index,
+    build_name_index_full,
     extract_md_links,
     extract_wikilinks,
+    frontmatter_relations,
     is_external,
-    normalize_path_link,
+    resolve_path_link,
+    resolve_relation_target,
     resolve_wiki,
 )
 
@@ -53,8 +55,12 @@ class DiffState:
     broken: Set[Tuple[str, str]] = field(default_factory=set)
 
 
-def _parse_dir(bundle_dir: Path, alias: str = ""):
-    """Parse one tree into (concepts, raw_links, index_concepts)."""
+def _parse_dir(bundle_dir: Path, alias: str = "", identity: str = "path"):
+    """Parse one tree into (concepts, raw_links, index_concepts).
+
+    ``identity`` must match the graph's (0.11.0, O3): a frontmatter-id
+    bundle parsed with path ids would read as wholesale drift.
+    """
     concepts: Dict[str, Dict[str, Any]] = {}
     raw_links: Dict[str, Dict[str, List[str]]] = {}
     index_concepts = []
@@ -62,7 +68,8 @@ def _parse_dir(bundle_dir: Path, alias: str = ""):
                     if is_concept_file(fp) and not in_skipped_dir(fp))
     for fp in files:
         try:
-            concept, body, cid = parse_source_file(fp, Path(bundle_dir), alias)
+            concept, body, cid = parse_source_file(fp, Path(bundle_dir), alias,
+                                                   identity=identity)
         except Exception as e:
             logger.warning("diff: skipping unparsable %s: %s", fp, e)
             continue
@@ -72,8 +79,14 @@ def _parse_dir(bundle_dir: Path, alias: str = ""):
             "type": concept.type,
             "hash": content_hash(body),
         }
+        try:
+            from okfgraph.components.roots import namespaced_id as _nid
+            path_key = _nid(alias, str(fp.relative_to(bundle_dir).with_suffix("")).replace("\\", "/"))
+        except ValueError:
+            path_key = cid
         index_concepts.append({
             "id": cid,
+            "path_key": path_key,
             "title": concept.title,
             "uid": extra.get("uid"),
             "aliases": extra.get("aliases"),
@@ -82,6 +95,7 @@ def _parse_dir(bundle_dir: Path, alias: str = ""):
         raw_links[cid] = {
             "md": extract_md_links(body),
             "wiki": extract_wikilinks(body),
+            "relations": frontmatter_relations(extra.get("relations"))[0],
         }
     return concepts, raw_links, index_concepts
 
@@ -90,17 +104,30 @@ def _resolve_state(concepts, raw_links, index_concepts, aliases=()) -> DiffState
     """Resolve parsed links against the union name index."""
     state = DiffState()
     state.concepts = concepts
-    maps, _ = build_name_index(index_concepts)
+    maps, _, candidates = build_name_index_full(index_concepts)
     known = set(state.concepts)
+    # Frontmatter identity (O3): a path link names the file, whose id differs.
+    path_ids = {c["path_key"]: c["id"] for c in index_concepts
+                if c.get("path_key") and c["path_key"] != c["id"]}
     for cid, links in raw_links.items():
         for raw in links["md"]:
             if is_external(raw):
                 continue
-            target = normalize_path_link(raw.split("#", 1)[0])
-            if target in known:
+            # Same reading as import (0.11.0): source-relative, then the
+            # legacy root-relative form.
+            target, recorded = resolve_path_link(raw, cid, known, path_ids)
+            if target is not None:
                 state.edges.add((cid, target))
             else:
-                state.broken.add((cid, target))
+                state.broken.add((cid, recorded))
+        for _kind, raw in links.get("relations", ()):
+            target, _reason, _c, recorded = resolve_relation_target(
+                qualify_alias_link(raw, aliases), cid, maps, known, candidates,
+                path_ids)
+            if target is not None:
+                state.edges.add((cid, target))
+            else:
+                state.broken.add((cid, recorded))
         for raw in links["wiki"]:
             if not raw or is_external(raw):
                 continue
@@ -112,9 +139,10 @@ def _resolve_state(concepts, raw_links, index_concepts, aliases=()) -> DiffState
     return state
 
 
-def state_of_dir(bundle_dir: Path, alias: str = "", aliases=()) -> DiffState:
+def state_of_dir(bundle_dir: Path, alias: str = "", aliases=(),
+                 identity: str = "path") -> DiffState:
     """Parse a bundle directory into a DiffState (no database, no import)."""
-    concepts, raw_links, index_concepts = _parse_dir(bundle_dir, alias)
+    concepts, raw_links, index_concepts = _parse_dir(bundle_dir, alias, identity)
     own = {alias} if alias else set()
     return _resolve_state(concepts, raw_links, index_concepts, own | set(aliases))
 
@@ -122,8 +150,9 @@ def state_of_dir(bundle_dir: Path, alias: str = "", aliases=()) -> DiffState:
 class DiffManager:
     """Diffs involving the live graph (dir-vs-dir uses ``state_of_dir``)."""
 
-    def __init__(self, conn, roots=None, primary=None):
+    def __init__(self, conn, roots=None, primary=None, identity: str = "path"):
         self.conn = conn
+        self.identity = identity
         # Multi-root drift (§2.8): {alias: Path} + primary tree. {} means
         # legacy single-tree (explicit dir or primary).
         self.roots = {a: Path(p) for a, p in (roots or {}).items()}
@@ -217,7 +246,8 @@ class DiffManager:
             alias = ""
             if self.roots:
                 alias = self._alias_for(bundle_dir)
-            return self.compare(old_state, state_of_dir(bundle_dir, alias))
+            return self.compare(old_state, state_of_dir(
+                bundle_dir, alias, identity=self.identity))
         if not self.roots:
             if self.primary is None:
                 raise ValueError(
@@ -225,7 +255,8 @@ class DiffManager:
                     "opened without bundle_root (file-free mode). Pass an "
                     "explicit directory to drift against."
                 )
-            return self.compare(old_state, state_of_dir(self.primary))
+            return self.compare(old_state, state_of_dir(
+                self.primary, identity=self.identity))
         # Union state: parse every present tree, resolve links once
         # against the combined index (cross-root links are not drift).
         concepts: Dict[str, Dict[str, Any]] = {}
@@ -234,7 +265,7 @@ class DiffManager:
         for alias, root in [("", self.primary)] + list(self.roots.items()):
             if root is None or not Path(root).is_dir():
                 continue  # unmounted ≠ drift
-            c, l, i = _parse_dir(root, alias)
+            c, l, i = _parse_dir(root, alias, self.identity)
             concepts.update(c)
             raw_links.update(l)
             index_concepts.extend(i)

@@ -146,7 +146,9 @@ def test_wire_lists_five_tools(wire):
     result = wire.call("tools/list")
     names = [t["name"] for t in result["tools"]]
     assert names == ["search", "read", "traverse", "ingest", "export_bundle",
-                     "export_concept", "list_images", "get_image"]
+                     "export_concept", "list_images", "get_image",
+                     # 0.11.0 (O11): write tools
+                     "update", "supersede", "delete"]
 
 
 def test_wire_traverse_root_listing(wire):

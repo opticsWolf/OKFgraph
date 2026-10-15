@@ -13,3 +13,15 @@ bundle_root = "."
 
 [database]
 db_path = "kb.db"
+
+# 0.11.0 options (all optional):
+#
+# extension_dir = "~/.local/share/okfgraph/extensions/0.21.0/linux_amd64"
+#     Load Ladybug's vector/fts extensions from here and never download
+#     (offline machines). Fill it with `okf setup extensions`.
+
+[import]
+# identity = "frontmatter"   # a frontmatter `id:` is the concept id (moves keep links)
+
+[search]
+# exclude_tags = ["superseded"]   # hidden unless a search passes exclude_tags

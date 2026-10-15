@@ -11,6 +11,7 @@ reporting findings on them.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,7 +20,12 @@ logger = logging.getLogger(__name__)
 
 # Deduction per finding: (points, cap). Score = max(0, 100 - deductions).
 DEDUCTIONS = {
+    # 0.11.0 (O5): no vector/fts extension = no hybrid search — an error,
+    # not a log line; one finding, a flat 20 points.
+    "search_unavailable": (20, 20),
     "broken_link": (5, 40),
+    # 0.11.0 (O12): a [[name]] several concepts claim resolves to nothing.
+    "ambiguous_link": (3, 15),
     "orphan_hash": (5, 30),
     "orphan": (2, 20),
     "duplicate_title": (3, 15),
@@ -120,12 +126,37 @@ class DoctorManager:
                 "rule": rule, "message": message,
             })
 
+        schema = getattr(self.import_mgr, "schema_mgr", None)
+        if schema is not None and not getattr(schema, "_search_available", True):
+            errs = getattr(schema, "extension_errors", {}) or {}
+            detail = "; ".join(f"{k}: {v}" for k, v in sorted(errs.items()))
+            where = (f"extension_dir {schema.extension_dir}"
+                     if getattr(schema, "extension_dir", None) else
+                     "the Ladybug extension repository")
+            _add("<database>", "error", "search_unavailable",
+                 f"vector/fts extensions not loaded from {where} — hybrid "
+                 f"search is unavailable, only rank='ppr' works ({detail}). "
+                 "Run 'okf setup extensions' and set [database] extension_dir.")
+
         for bl in self.conn.execute(
             "MATCH (bl:BrokenLink) "
-            "RETURN bl.source_id AS source, bl.target_id AS target"
+            "RETURN bl.source_id AS source, bl.target_id AS target, "
+            "bl.kind AS kind, bl.reason AS reason, bl.candidates AS cands"
         ).rows_as_dict().get_all():
-            _add(bl["source"], "error", "broken_link",
-                 f"links to missing concept '{bl['target']}'")
+            kind = bl.get("kind") or "mention"
+            via = "" if kind == "mention" else f" ({kind})"
+            if (bl.get("reason") or "missing") == "ambiguous":
+                try:
+                    cands = json.loads(bl.get("cands") or "[]")
+                except (ValueError, TypeError):
+                    cands = []
+                _add(bl["source"], "warning", "ambiguous_link",
+                     f"link '{bl['target']}'{via} is ambiguous: matches "
+                     f"{', '.join(cands) or 'several concepts'} — use an id "
+                     "or a path link")
+            else:
+                _add(bl["source"], "error", "broken_link",
+                     f"links to missing concept '{bl['target']}'{via}")
 
         # Orphan hashes (0.2.15): FileHash rows whose concept_id matches no
         # Concept and no DeletedConcept — signature of a crashed import that

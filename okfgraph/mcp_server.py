@@ -1,6 +1,6 @@
 """MCP server for the OKF knowledge graph.
 
-Exposes the graph ops as eight Model Context Protocol tools so any
+Exposes the graph ops as eleven Model Context Protocol tools so any
 MCP-compatible client (Claude Desktop, Cursor, Continue, …) can search,
 read, traverse, ingest and export directly. Every tool is a thin adapter
 over the canonical op on :class:`~okfgraph.router.OKFRouter`; results are
@@ -18,6 +18,9 @@ Usage:
     from okfgraph.mcp_server import create_mcp_server
     from okfgraph.settings import Settings
     create_mcp_server(Settings(db_path="./my_graph.db")).run()
+
+    # 0.11.0 (O4): a stdio proxy to one `okf serve` owner
+    okf-mcp --connect unix:///run/okf.sock
 
 Boot flags are the CLI's global flags (one settings table); the server
 also reads ``okfgraph.toml`` and ``OKFGRAPH_*`` env vars. ``db_path`` must
@@ -65,11 +68,19 @@ class GraphContext:
     settings: Optional[Settings] = None
 
 
-def make_lifespan(settings: Settings):
-    """Factory that returns a lifespan async-context-manager for MCPServer."""
+def make_lifespan(settings: Settings, given_router=None):
+    """Factory that returns a lifespan async-context-manager for MCPServer.
+
+    With ``router`` given (0.11.0: ``okf serve``'s locked owner router, or an
+    ``OKFClient`` for ``--connect``), the server uses it and does not close
+    it — its owner does.
+    """
 
     @asynccontextmanager
     async def _lifespan(mcp: MCPServer):
+        if given_router is not None:
+            yield GraphContext(router=given_router, settings=settings)
+            return
         db_path = settings.db_path
         # Default bundle root: the database's parent directory.
         root = settings.bundle_root or str(Path(db_path).parent)
@@ -142,24 +153,33 @@ _EXPORT = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
 # Ingest adds graph content; thoughts mint a new concept per call.
 _INGEST = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
                           idempotentHint=False, openWorldHint=False)
+# 0.11.0 (O11): update/supersede rewrite frontmatter (repeatable);
+# delete moves the file to the trash and soft-deletes (24h recovery).
+_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False,
+                         idempotentHint=True, openWorldHint=False)
+_DELETE = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                          idempotentHint=False, openWorldHint=False)
 
 _FLAVOR = Literal["okf", "obsidian"]
 
 
-def create_mcp_server(settings: Settings) -> MCPServer:
+def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
     """Create an MCP server instance connected to an OKFgraph database.
 
     Args:
         settings: Merged canonical settings (``Settings.load`` or direct
             construction in tests).
+        router: Use this router-shaped object instead of opening one
+            (0.11.0, O4: ``okf serve``'s owner, or an ``OKFClient``).
 
     Returns:
         Configured MCPServer instance.
     """
+    settings = settings or Settings()
     mcp = MCPServer(
         name="OKFgraph MCP Server",
         instructions=INSTRUCTIONS,
-        lifespan=make_lifespan(settings),
+        lifespan=make_lifespan(settings, router),
     )
 
     @mcp.tool(annotations=_RO)
@@ -196,6 +216,11 @@ def create_mcp_server(settings: Settings) -> MCPServer:
                 ),
             ),
         ] = "none",
+        where: Annotated[Optional[dict[str, str]], Field(description="Equality filter on extra frontmatter keys, e.g. {\"jev_category\": \"evidence\"} (concepts; plain chunks path).")] = None,
+        since: Annotated[Optional[str], Field(description="Only concepts with timestamp >= this ISO date/time.")] = None,
+        until: Annotated[Optional[str], Field(description="Only concepts with timestamp < this ISO date/time.")] = None,
+        exclude_tags: Annotated[Optional[list[str]], Field(description="Drop concepts with any of these tags. Omit for the server default (e.g. superseded); [] searches everything.")] = None,
+        link_kinds: Annotated[Optional[list[str]], Field(description="rank='hub'|'ppr': count only these link kinds (mention, supersedes, supports, ...).")] = None,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Search the knowledge graph — start here for any question over stored knowledge.
@@ -221,6 +246,9 @@ def create_mcp_server(settings: Settings) -> MCPServer:
             hub_rerank=hub_rerank,
             hub_weight=hub_weight,
             rank=rank,
+            **{k: v for k, v in (("where", where), ("since", since),
+                                 ("until", until), ("exclude_tags", exclude_tags),
+                                 ("link_kinds", link_kinds)) if v is not None},
         ))
 
     @mcp.tool(annotations=_RO)
@@ -283,6 +311,10 @@ def create_mcp_server(settings: Settings) -> MCPServer:
             Field(description="If set, find the shortest path from start_id to this concept ID instead of walking."),
         ] = None,
         max_path_length: Annotated[int, Field(ge=1, le=10, description="Maximum path length (path mode, with target).")] = 6,
+        link_kinds: Annotated[
+            Optional[list[str]],
+            Field(description="LINKS_TO walk only: follow only these link kinds, e.g. ['supersedes']. Body links are 'mention'."),
+        ] = None,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Navigate graph relationships, browse directories, or connect two concepts.
@@ -300,6 +332,7 @@ def create_mcp_server(settings: Settings) -> MCPServer:
             node_type=node_type,
             target=target,
             max_path_length=max_path_length,
+            **({"link_kinds": link_kinds} if link_kinds is not None else {}),
         ))
 
     @mcp.tool(annotations=_INGEST)
@@ -325,11 +358,15 @@ def create_mcp_server(settings: Settings) -> MCPServer:
             Field(description="PDF converter routing (kind='pdf'). 'never' = fast path, no ONNX."),
         ] = "auto",
         extract_images: Annotated[bool, Field(description="Extract embedded images (kind='pdf').")] = True,
+        type: Annotated[Optional[str], Field(description="Concept type (md/thoughts), e.g. 'decision'. thoughts default to 'thought'.")] = None,
+        extra: Annotated[Optional[dict], Field(description="Extra frontmatter fields (md/thoughts), e.g. {'jev_category': 'evidence', 'relations': {'supersedes': ['finding/x']}}.")] = None,
+        materialize: Annotated[Optional[bool], Field(description="md/thoughts: write the markdown into the bundle at <concept_id>.md, then import that file (the bundle stays the source of truth).")] = None,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Add content to the knowledge graph. Returns the new concept ID(s).
 
         Results: md → {concept_id, chunk_count}; thoughts → {concept_id};
+        an explicit concept_id upserts (the same call twice is one concept);
         pdf → {concept_ids, page_count, ...} (its md_path is a temp file —
         verify with search, not by reading the path). Markdown is
         mordant-linted before import. Missing required params raise
@@ -350,6 +387,8 @@ def create_mcp_server(settings: Settings) -> MCPServer:
             routing_mode=routing_mode,
             extract_images=extract_images,
             batch_size=cfg.batch_size,
+            **{k: v for k, v in (("type", type), ("extra", extra),
+                                 ("materialize", materialize)) if v is not None},
         ))
 
     @mcp.tool(annotations=_EXPORT)
@@ -417,6 +456,52 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         router = _get_router(ctx)
         return _tool_result("get_image", lambda: router.get_image(asset_id))
 
+    @mcp.tool(annotations=_WRITE)
+    def update(
+        concept_id: Annotated[str, Field(description="ID of the concept to edit.")],
+        title: Annotated[Optional[str], Field(description="New title.")] = None,
+        description: Annotated[Optional[str], Field(description="New description.")] = None,
+        type: Annotated[Optional[str], Field(description="New concept type.")] = None,
+        tags: Annotated[Optional[list[str]], Field(description="Replace the tag list (not with add_tags/remove_tags).")] = None,
+        add_tags: Annotated[Optional[list[str]], Field(description="Tags to add.")] = None,
+        remove_tags: Annotated[Optional[list[str]], Field(description="Tags to remove.")] = None,
+        extra: Annotated[Optional[dict], Field(description="Frontmatter keys to set (a null value deletes the key).")] = None,
+        relations: Annotated[Optional[dict], Field(description="Replace the relations mapping, e.g. {'supports': ['docs/ledger']}.")] = None,
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """Edit a concept's frontmatter (never its body). Writes the bundle file, then imports it.
+
+        Returns {concept_id, path, changed}. Unknown IDs raise UNKNOWN_CONCEPT."""
+        router = _get_router(ctx)
+        return _tool_result("update", lambda: router.update(
+            concept_id, title=title, description=description, type=type,
+            tags=tags, add_tags=add_tags, remove_tags=remove_tags,
+            extra=extra, relations=relations,
+        ))
+
+    @mcp.tool(annotations=_WRITE)
+    def supersede(
+        old_id: Annotated[str, Field(description="The concept that is no longer current.")],
+        new_id: Annotated[str, Field(description="The concept that replaces it.")],
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """Record that new_id supersedes old_id: a typed 'supersedes' link on the new
+        concept and the 'superseded' tag on the old one (both files rewritten and imported).
+
+        Superseded concepts drop out of search when the server excludes that tag."""
+        router = _get_router(ctx)
+        return _tool_result("supersede", lambda: router.supersede(old_id, new_id))
+
+    @mcp.tool(annotations=_DELETE)
+    def delete(
+        concept_id: Annotated[str, Field(description="ID of the concept to delete.")],
+        ctx: Context = None,  # type: ignore[assignment]
+    ) -> str:
+        """Soft-delete a concept: its bundle file moves to .okf-trash and the concept is
+        recoverable for 24h (deleted-recover). Returns {concept_id, recoverable_until}."""
+        router = _get_router(ctx)
+        return _tool_result("delete", lambda: router.delete(concept_id, remove_file=True))
+
     return mcp
 
 
@@ -438,6 +523,13 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level (default: INFO).",
     )
+    parser.add_argument(
+        "--connect",
+        metavar="URL",
+        default=None,
+        help="Proxy to a running 'okf serve' (http://HOST:PORT or "
+             "unix:///path) instead of opening the database (0.11.0).",
+    )
     args = parser.parse_args()
 
     # stderr only: stdout is the stdio transport.
@@ -446,6 +538,24 @@ def main():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         stream=sys.stderr,
     )
+
+    if args.connect:
+        from okfgraph.client import OKFClient
+        client = OKFClient(args.connect)
+        try:
+            client.health()
+        except Exception as e:
+            print(f"[ERROR] CONFIG_INVALID: cannot reach okf serve at "
+                  f"{args.connect} ({e}); start it with 'okf serve' or fix --connect",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            settings = Settings.load(cli_args=cli_signal(args))
+        except ValueError as e:
+            print(f"[ERROR] CONFIG_INVALID: {e}", file=sys.stderr)
+            raise SystemExit(2)
+        create_mcp_server(settings, router=client).run(transport="stdio")
+        return
 
     try:
         signal = cli_signal(args)

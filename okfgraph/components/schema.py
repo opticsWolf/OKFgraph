@@ -12,13 +12,22 @@ logger = logging.getLogger(__name__)
 class SchemaManager:
     """Owns schema migrations, meta KV store, and search-index rebuild."""
 
-    SCHEMA_VERSION = 8  # bumped when the on-disk schema changes
+    SCHEMA_VERSION = 9  # bumped when the on-disk schema changes
 
-    def __init__(self, conn, embedding_dim, write_lock_ctx):
+    #: Ladybug extensions hybrid search needs (O5).
+    SEARCH_EXTENSIONS = ("vector", "fts")
+
+    def __init__(self, conn, embedding_dim, write_lock_ctx, extension_dir=None):
         self.conn = conn
         self.embedding_dim = embedding_dim
         self._write_lock_ctx = write_lock_ctx
         self._search_available = False
+        # Offline extensions (0.11.0, O5): a directory holding
+        # lib<ext>.lbug_extension files. When set, extensions load from
+        # there by path and are never downloaded.
+        self.extension_dir = Path(extension_dir).expanduser() if extension_dir else None
+        #: Why search is unavailable, per extension (doctor reads this).
+        self.extension_errors: dict = {}
 
     def _migrate_v1_to_v2(self) -> None:
         """v1 → v2: Add Chunk table, PART_OF rel, Chunk vector/FTS indexes.
@@ -203,6 +212,49 @@ class SchemaManager:
         logger.info("Schema migrated: v7 → v8 (mirror dir keys)")
 
 
+    def _migrate_v8_to_v9(self) -> None:
+        """v8 → v9 (0.11.0): typed links, link diagnostics, producer cursors.
+
+        - ``LINKS_TO.kind`` (O6), existing edges become ``'mention'`` — every
+          edge before 0.11.0 came from a body link.
+        - ``BrokenLink.kind`` / ``reason`` / ``candidates`` / ``raw`` (O6,
+          O12): which relation missed, why (``missing`` | ``ambiguous``),
+          and the link as written, so repair resolves it as import did.
+        - ``ProducerCursor`` (O10): one row per producer name.
+
+        Probe-never-assume: TABLE_INFO decides each ALTER, so a partially
+        migrated file (crash mid-rung) finishes cleanly.
+        """
+        def _cols(table):
+            try:
+                rows = self.conn.execute(
+                    f"CALL TABLE_INFO('{table}') RETURN *"
+                ).rows_as_dict().get_all()
+            except Exception:
+                return None
+            return {r.get("name") for r in rows}
+
+        cols = _cols("LINKS_TO")
+        if cols is not None and "kind" not in cols:
+            self.conn.execute(
+                "ALTER TABLE LINKS_TO ADD kind STRING DEFAULT 'mention'")
+        cols = _cols("BrokenLink")
+        if cols is not None:
+            for col in ("kind", "reason", "candidates", "raw"):
+                if col not in cols:
+                    self.conn.execute(f"ALTER TABLE BrokenLink ADD {col} STRING")
+        self._create_v9_tables()
+        logger.info("Schema migrated: v8 → v9 (typed links, producer cursors)")
+
+    def _create_v9_tables(self) -> None:
+        self.conn.execute("""
+            CREATE NODE TABLE IF NOT EXISTS ProducerCursor (
+                name STRING PRIMARY KEY,
+                cursor STRING,
+                updated_at INT64
+            )
+        """)
+
     _MIGRATIONS = {}
     _MIGRATIONS[1] = _migrate_v1_to_v2
     _MIGRATIONS[2] = _migrate_v2_to_v3
@@ -211,6 +263,7 @@ class SchemaManager:
     _MIGRATIONS[5] = _migrate_v5_to_v6
     _MIGRATIONS[6] = _migrate_v6_to_v7
     _MIGRATIONS[7] = _migrate_v7_to_v8
+    _MIGRATIONS[8] = _migrate_v8_to_v9
 
     def _ensure_schema(self) -> None:
         """Create schema, extensions, and indexes if they don't exist."""
@@ -221,16 +274,20 @@ class SchemaManager:
         # is unreachable), degrade gracefully rather than making the whole
         # router unusable — a search call will then raise a clear error.
         self._search_available = True
-        for ext in ("vector", "fts"):
+        self.extension_errors = {}
+        for ext in self.SEARCH_EXTENSIONS:
             try:
-                self.conn.execute(f"INSTALL {ext};")
-                self.conn.execute(f"LOAD {ext};")
+                self.load_extension(self.conn, ext)
             except Exception as e:
                 self._search_available = False
+                self.extension_errors[ext] = str(e)
                 logger.warning(
                     "Could not load the '%s' extension (%s). Vector/FTS search "
-                    "will be unavailable; ingestion and graph queries still work.",
+                    "will be unavailable; ingestion and graph queries still work.%s",
                     ext, e,
+                    "" if self.extension_dir else
+                    " Run 'okf setup extensions' and set [database] "
+                    "extension_dir for offline machines.",
                 )
 
         self.conn.execute(f"""
@@ -273,8 +330,12 @@ class SchemaManager:
                 FROM Directory TO Concept
             )
         """)
+        # kind (0.11.0, O6): 'mention' for body links, the declared kind
+        # for frontmatter relations (supersedes, supports, ...).
         self.conn.execute("""
-            CREATE REL TABLE IF NOT EXISTS LINKS_TO (FROM Concept TO Concept)
+            CREATE REL TABLE IF NOT EXISTS LINKS_TO (
+                FROM Concept TO Concept, kind STRING DEFAULT 'mention'
+            )
         """)
         self.conn.execute("""
             CREATE REL TABLE IF NOT EXISTS INCLUDES_ASSET (FROM Concept TO ImageAsset)
@@ -300,12 +361,19 @@ class SchemaManager:
         """)
 
         # BrokenLink table — tracks links to concepts not yet imported
+        # kind/reason/candidates/raw (0.11.0, O6/O12): which relation missed,
+        # 'missing' or 'ambiguous', the claiming ids (JSON) when ambiguous,
+        # and the link as written (repair re-resolves it with import's rules).
         self.conn.execute("""
             CREATE NODE TABLE IF NOT EXISTS BrokenLink (
                 id STRING PRIMARY KEY,
                 source_id STRING,
                 target_id STRING,
-                timestamp TIMESTAMP
+                timestamp TIMESTAMP,
+                kind STRING,
+                reason STRING,
+                candidates STRING,
+                raw STRING
             )
         """)
 
@@ -387,6 +455,9 @@ class SchemaManager:
 
         # Run schema migrations if the on-disk version is behind.
         self._run_schema_migrations()
+        # v9 side tables: created after migrations so an old file gains
+        # them in its own rung first; fresh files get them here.
+        self._create_v9_tables()
 
         # When opening a pre-existing DB, the stored embedding column dimension
         # is authoritative (CREATE TABLE IF NOT EXISTS won't have changed it).
@@ -401,6 +472,43 @@ class SchemaManager:
         # written rows become searchable — see _build_search_indexes().
         self._build_search_indexes(rebuild=False)
 
+
+    def extension_file(self, ext: str):
+        """The ``lib<ext>.lbug_extension`` under ``extension_dir``, or None.
+
+        Two layouts are accepted: flat (``DIR/libvector.lbug_extension``,
+        what ``okf setup extensions`` writes) and Ladybug's own cache layout
+        (``DIR/vector/libvector.lbug_extension``), so a copied
+        ``~/.lbdb/extension/<ver>/<platform>`` directory works as-is.
+        """
+        if self.extension_dir is None:
+            return None
+        name = f"lib{ext}.lbug_extension"
+        for cand in (self.extension_dir / name, self.extension_dir / ext / name):
+            if cand.is_file():
+                return cand
+        return None
+
+    def load_extension(self, conn, ext: str, install: bool = True) -> None:
+        """Load one search extension on ``conn`` (0.11.0, O5).
+
+        With ``extension_dir`` set the extension loads by path and a missing
+        file is an error — never a silent download attempt. Without it,
+        Ladybug's own ``INSTALL`` (network, cached under ``~/.lbdb``) runs
+        first, as before. ``LOAD`` is per connection, so short-lived index
+        connections call this too.
+        """
+        if self.extension_dir is not None:
+            path = self.extension_file(ext)
+            if path is None:
+                raise FileNotFoundError(
+                    f"lib{ext}.lbug_extension not found in extension_dir "
+                    f"{self.extension_dir} (run 'okf setup extensions')")
+            conn.execute(f"LOAD EXTENSION '{path.as_posix()}'")
+            return
+        if install:
+            conn.execute(f"INSTALL {ext};")
+        conn.execute(f"LOAD {ext};")
 
     def _adopt_existing_embedding_dim(self) -> None:
         """If the Concept.embedding column already exists, honour its dimension.
@@ -495,57 +603,80 @@ class SchemaManager:
         ]
 
 
+    #: Rebuild policies a write may ask for (0.11.0, O8).
+    REBUILD_POLICIES = ("auto", "defer", "force")
+
     def _build_search_indexes(self, rebuild: bool, force: bool = False) -> bool:
-        """Create (or rebuild) the vector + FTS indexes.
+        """Create missing vector + FTS indexes; with ``force``, recreate them.
 
-        Ladybug's vector/FTS indexes are built over a table's *current*
-        contents; rows inserted after an index is created are not returned by
-        search until the index is rebuilt. Import paths therefore call this with
-        ``rebuild=True`` after data is written.
+        Measured on Ladybug 0.21.2 (0.11.0, O8): both index kinds are
+        maintained **in place** — rows inserted, replaced (``DETACH DELETE``
+        + ``CREATE`` in one transaction) or written after a reopen are
+        returned by ``QUERY_VECTOR_INDEX`` / ``QUERY_FTS_INDEX`` with no
+        rebuild, and creating an index on an empty table works. The pre-0.11
+        "rebuild after every import" was therefore a ``CREATE`` that failed
+        with *already exists* and was swallowed: harmless, and never needed.
 
-        Rebuilds are *change-driven*: when ``rebuild`` is requested we skip the
-        work unless the indexes are actually dirty (``write_epoch >
-        indexed_epoch``), so a no-op import or a redundant call costs nothing.
-        Pass ``force=True`` (the manual ``reindex`` path) to rebuild regardless —
-        e.g. to repair a DB written by an older build whose markers don't exist.
+        So the non-forced path only creates indexes that are missing (a
+        table first created by a migration, a DB opened while the
+        extensions were unavailable) and stamps ``indexed_epoch``. ``force``
+        (``okf reindex``) drops and recreates every index — the recovery
+        path for a file whose index state is damaged; before 0.11 it hit the
+        same swallowed *already exists* and rebuilt nothing.
 
-        ``rebuild=False`` (construction) only creates missing indexes; it never
-        drops, never checks dirty, and never stamps — merely opening a DB should
-        not trigger an O(N) rebuild.
-
-        Returns True if indexes were (re)built, False if skipped.
+        Returns True if any index was created.
         """
         if not getattr(self, "_search_available", False):
             return False
         if rebuild and not force and not self._indexes_dirty():
-            logger.debug("Search indexes already up to date; skipping rebuild.")
+            logger.debug("Search indexes already up to date; skipping.")
             return False
 
-        # Capture the epoch we're about to satisfy *before* building, so the
-        # stamp reflects the data the index was built over.
         target_epoch = self._get_meta("write_epoch")
         built = False
+        drops = {
+            "vector": "CALL DROP_VECTOR_INDEX('{table}', '{name}')",
+            "fts": "CALL DROP_FTS_INDEX('{table}', '{name}')",
+        }
         for table, name, create_sql in self._index_specs():
-            # Ladybug: DROP INDEX leaves stale internal state that prevents
-            # recreation with the same name. Instead, rely on CREATE ... IF
-            # NOT EXISTS semantics (Ladybug silently skips if present).
+            if force:
+                kind = "fts" if "FTS" in create_sql else "vector"
+                try:
+                    self.conn.execute(drops[kind].format(table=table, name=name))
+                except Exception as e:
+                    logger.debug("drop index %s.%s skipped: %s", table, name, e)
             try:
                 self.conn.execute(create_sql)
                 built = True
             except Exception as e:
-                # Already exists (rebuild=False) or table empty — both benign.
+                # Already exists — benign, the index is maintained in place.
                 logger.debug("create index %s.%s skipped: %s", table, name, e)
         if rebuild:
             self._set_meta("indexed_epoch", target_epoch)
         return built
 
+    def after_write(self, policy: str = "auto") -> bool:
+        """Index step every write path ends with (0.11.0, O8).
+
+        ``auto`` creates any missing index and marks the epoch indexed;
+        ``defer`` skips even that (bulk writers that will call
+        ``reindex`` or ``after_write`` once at the end); ``force``
+        recreates every index. Because the indexes are maintained in
+        place, ``defer`` never hides a written concept from search.
+        """
+        if policy not in self.REBUILD_POLICIES:
+            raise ValueError(
+                f"rebuild must be one of {self.REBUILD_POLICIES}, got {policy!r}")
+        if policy == "defer":
+            return False
+        return self._build_search_indexes(rebuild=True, force=(policy == "force"))
 
     def reindex(self, force: bool = True) -> bool:
-        """Rebuild the search indexes on demand (recovery / deferred workflows).
+        """Rebuild the search indexes on demand (recovery).
 
-        Use for a DB built by an older version with stale indexes, after a crash
-        between the data commit and the index build, or when single-file imports
-        deferred rebuilding. Returns True if a rebuild ran.
+        ``force=True`` drops and recreates every index; ``force=False``
+        only creates missing ones when the epoch says writes happened since
+        the last index step. Returns True if anything was created.
         """
         # Acquire write lock (Gap #7b)
         with self._write_lock_ctx():

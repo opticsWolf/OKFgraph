@@ -37,12 +37,12 @@ from okfgraph.components import (
 )
 
 from okfgraph.errors import OKFError
-from okfgraph.ops import AdminOps, ExportOps, IngestOps, QueryOps
+from okfgraph.ops import AdminOps, ExportOps, IngestOps, QueryOps, WriteOps
 
 logger = logging.getLogger(__name__)
 
 
-class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
+class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
     """Routes OKF concepts through a Ladybug graph + vector + FTS database.
 
     Canonical operations (``okfgraph.ops`` mixins) are part of the facade:
@@ -106,6 +106,9 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         wal_mode: bool = False,
         converter=None,
         roots: Optional[Dict[str, str]] = None,
+        extension_dir: Optional[str] = None,
+        identity: str = "path",
+        exclude_tags: Optional[List[str]] = None,
     ):
         """Open (or create) the graph database and wire up all managers.
 
@@ -158,6 +161,16 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
                 ``convert(pdf_path, output_dir, *, on_page=None)`` method
                 returning a ``ConvertedDocument`` works. Per-call override
                 via ``ingest_mgr.ingest("pdf", ...`` converter=...).
+            extension_dir: Directory with ``libvector``/``libfts``
+                ``.lbug_extension`` files (0.11.0, O5). Extensions load from
+                there by path and are never downloaded — offline machines
+                keep hybrid search. ``okf setup extensions`` fills it.
+            identity: ``"path"`` (default) or ``"frontmatter"`` (0.11.0,
+                O3): with ``frontmatter`` a file's frontmatter ``id:`` is
+                its concept id, so moving the file keeps the concept and
+                every link to it.
+            exclude_tags: Tags ``search`` hides unless a call passes its own
+                ``exclude_tags`` (0.11.0, O7) — e.g. ``["superseded"]``.
         """
         from okfgraph.components.embedding import resolve_ort_dylib
         # Resolve first: the native module loads ORT dynamically, so the
@@ -412,8 +425,12 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         # The facade owns the resources (conn, encoder, lock) and injects
         # them into focused component objects.
         self.schema_mgr = SchemaManager(
-            self.conn, self.embedding_dim, self._write_lock_ctx
+            self.conn, self.embedding_dim, self._write_lock_ctx,
+            extension_dir=extension_dir,
         )
+        self.extension_dir = extension_dir
+        self.identity = identity
+        self.exclude_tags = list(exclude_tags or [])
         self.delta_mgr = DeltaDetector(self.conn, self.bundle_root)
         self.purge_mgr = PurgeManager(self.conn, self._write_lock_ctx)
 
@@ -494,12 +511,15 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         # `_search_available` is owned by SchemaManager (set in `_ensure_schema`);
         # SearchEngine needs it to decide whether to raise on unavailable search.
         self.search_engine._search_available = self.schema_mgr._search_available
+        # Short-lived index connections load extensions the same way the
+        # main connection did (O5: by path when extension_dir is set).
+        self.search_engine._load_extension = self.schema_mgr.load_extension
         self.import_mgr = ImportManager(
             self.conn, self.bundle_root, self._write_lock_ctx,
             self.enable_chunking, self.schema_mgr, self.delta_mgr, self.embed_engine,
             self.image_mgr, self.purge_mgr,
             self.encoder.count_tokens, self.max_length,
-            db_path=db_path, roots=self.roots,
+            db_path=db_path, roots=self.roots, identity=identity,
         )
         self.ingest_mgr = IngestManager(
             self._write_lock_ctx, self.bundle_root, self.device,
@@ -508,7 +528,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         self.export_mgr = ExportManager(self.conn, self.search_engine)
         self.doctor_mgr = DoctorManager(self.conn, self.import_mgr)
         self.diff_mgr = DiffManager(
-            self.conn, roots=self.roots, primary=self.bundle_root
+            self.conn, roots=self.roots, primary=self.bundle_root,
+            identity=identity,
         )
 
     # ------------------------------------------------------------------

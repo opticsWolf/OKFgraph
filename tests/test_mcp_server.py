@@ -31,7 +31,9 @@ class TestMCPServer:
             names = [t.name for t in tools]
 
             assert names == ["search", "read", "traverse", "ingest", "export_bundle",
-                            "export_concept", "list_images", "get_image"]
+                            "export_concept", "list_images", "get_image",
+                     # 0.11.0 (O11): write tools
+                     "update", "supersede", "delete"]
 
     def test_read_tools_have_read_only_hint(self):
         """Read-only tools have read_only_hint=True."""

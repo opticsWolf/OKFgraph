@@ -33,8 +33,15 @@ _SEARCH_DEFAULTS: Dict[str, Any] = {
     "hub_rerank": False,
     "hub_weight": 0.3,
     "rank": "none",
+    "where": None,
+    "since": None,
+    "until": None,
+    "exclude_tags": None,
+    "link_kinds": None,
 }
-_FILTERS = frozenset({"concept_type", "tags", "parent_id"})
+_FILTERS = frozenset({"concept_type", "tags", "parent_id",
+                      # 0.11.0 (O7)
+                      "where", "since", "until", "exclude_tags"})
 
 #: What each search path honours. Chunk precedence is hub_rerank > expand
 #: > plain; when hub_rerank wins, expand (and its context_hops) are
@@ -42,8 +49,8 @@ _FILTERS = frozenset({"concept_type", "tags", "parent_id"})
 _HONOURS = {
     "images": frozenset(),
     "concepts:none": _FILTERS | {"include_chunks", "rank"},
-    "concepts:hub": _FILTERS | {"include_chunks", "rank", "hub_weight"},
-    "concepts:ppr": _FILTERS | {"rank"},
+    "concepts:hub": _FILTERS | {"include_chunks", "rank", "hub_weight", "link_kinds"},
+    "concepts:ppr": _FILTERS | {"rank", "link_kinds"},
     "chunks:hub": frozenset({"hub_rerank", "hub_weight", "expand", "context_hops"}),
     "chunks:expand": frozenset({"expand", "context_hops"}),
     "chunks:plain": _FILTERS | {"max_chunks_per_doc"},
@@ -94,6 +101,11 @@ class QueryOps:
         hub_rerank: bool = False,
         hub_weight: float = 0.3,
         rank: str = "none",
+        where: Optional[Dict[str, Any]] = None,
+        since: Any = None,
+        until: Any = None,
+        exclude_tags: Optional[List[str]] = None,
+        link_kinds: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Unified search. ``target`` picks the path:
 
@@ -109,10 +121,20 @@ class QueryOps:
         * ``images`` — text query over image assets (``query``/``limit``
           only).
 
+        0.11.0 filters (O7, concepts and plain chunks): ``where`` (equality
+        on ``extra`` keys, values compared as stored strings), ``since`` /
+        ``until`` (on ``timestamp``), ``exclude_tags``. ``exclude_tags=None``
+        applies the router's configured default (``[search] exclude_tags``);
+        pass ``[]`` to search everything. ``link_kinds`` (O6) limits the
+        graph signal of ``rank='hub'``/``'ppr'`` to those link kinds.
+
         A passed param (non-default) the chosen path ignores is refused
         with ``BAD_VALUE`` naming it — never silently dropped.
         """
         _check_choice("search", "target", target, _TARGETS)
+        if where is not None and not isinstance(where, dict):
+            raise _bad_value("search", "where must be a mapping of extra key -> value",
+                             where=str(where))
         _check_choice("search", "rank", rank, _RANKS)
         if not isinstance(limit, int) or limit < 1:
             raise _bad_value("search", f"limit must be >= 1, got {limit!r}",
@@ -124,6 +146,8 @@ class QueryOps:
             "max_chunks_per_doc": max_chunks_per_doc, "expand": expand,
             "context_hops": context_hops, "hub_rerank": hub_rerank,
             "hub_weight": hub_weight, "rank": rank,
+            "where": where, "since": since, "until": until,
+            "exclude_tags": exclude_tags, "link_kinds": link_kinds,
         }
         passed = [k for k, v in params.items() if v != _SEARCH_DEFAULTS[k]]
 
@@ -154,6 +178,12 @@ class QueryOps:
             )
 
         filt = {k: params[k] for k in _FILTERS if params[k] is not None}
+        if exclude_tags is None:
+            # Configured default (O7): e.g. superseded findings drop out
+            # unless the caller asks for them.
+            default = list(getattr(self, "exclude_tags", None) or [])
+            if default and path != "images":
+                filt["exclude_tags"] = default
         if path == "images":
             return self.image_mgr.search_images_with_text(
                 text_query=query, limit=limit,
@@ -173,6 +203,8 @@ class QueryOps:
                 query=query, limit=limit,
                 max_chunks_per_doc=max_chunks_per_doc, **filt,
             )
+        if link_kinds:
+            filt["link_kinds"] = list(link_kinds)
         return self.search_engine.search_hybrid(
             query=query, limit=limit, include_chunks=include_chunks,
             rank=rank, hub_weight=hub_weight, **filt,
@@ -260,6 +292,7 @@ class QueryOps:
         node_type: Optional[str] = None,
         target: Optional[str] = None,
         max_path_length: int = 6,
+        link_kinds: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Three modes, dispatched once here:
 
@@ -270,8 +303,15 @@ class QueryOps:
           ``relationship``/``direction``/``depth``/``node_type``); an
           unknown ``start_id`` raises ``UNKNOWN_CONCEPT``.
 
+        ``link_kinds`` (0.11.0, O6; walk mode with ``LINKS_TO``) follows
+        only links of those kinds, e.g. ``["supersedes"]``; ``mention`` is
+        the kind of every body link.
+
         Params the chosen mode ignores are refused with ``BAD_VALUE``.
         """
+        if link_kinds is not None and relationship != "LINKS_TO":
+            raise _bad_value("traverse", "link_kinds needs relationship='LINKS_TO'",
+                             link_kinds=list(link_kinds), relationship=relationship)
         _check_choice("traverse", "relationship", relationship, _RELATIONSHIPS)
         _check_choice("traverse", "direction", direction, _DIRECTIONS)
         if not isinstance(depth, int) or depth < 1:
@@ -281,7 +321,8 @@ class QueryOps:
             k for k, v, d in (("relationship", relationship, "CONTAINS"),
                               ("direction", direction, "OUTGOING"),
                               ("depth", depth, 1),
-                              ("node_type", node_type, None))
+                              ("node_type", node_type, None),
+                              ("link_kinds", link_kinds, None))
             if v != d
         ]
         path_passed = ["max_path_length"] if max_path_length != 6 else []
@@ -319,7 +360,8 @@ class QueryOps:
             )
         if not self.search_engine.node_exists(start_id):
             raise _unknown_concept("traverse", "start_id", start_id)
+        kinds = {"link_kinds": list(link_kinds)} if link_kinds else {}
         return self.search_engine.traverse(
             start_id, relationship=relationship, direction=direction,
-            depth=depth, node_type=node_type,
+            depth=depth, node_type=node_type, **kinds,
         )

@@ -74,7 +74,11 @@ class TestDirectoryHash:
         router.close()
 
     def test_modified_file_triggers_directory_import(self, tmp_path):
-        """Modifying one file triggers re-import of all files in that directory."""
+        """Modifying one file re-imports exactly that file (0.11.0, O2).
+
+        Before 0.11 the whole changed directory re-imported; the directory
+        hash now only says *something* changed, the stored FileHash says
+        *which* file."""
         router = self._make_router(str(tmp_path))
         _write_okf(str(tmp_path), "dir_a/a1.md", "Alpha1", "Body of alpha 1.")
         _write_okf(str(tmp_path), "dir_a/a2.md", "Alpha2", "Body of alpha 2.")
@@ -86,13 +90,13 @@ class TestDirectoryHash:
         # Modify a file
         _write_okf(str(tmp_path), "dir_a/a1.md", "Alpha1 Updated", "Modified body of alpha 1.")
 
-        # Import — dir_a files should be re-imported
+        # Import — only the modified file re-imports (O2)
         ids = router.import_mgr.import_bundle()
-        assert len(ids) == 2, f"Expected 2 imported IDs (dir_a files), got {len(ids)}"
+        assert ids == ["dir_a/a1"], f"Expected only dir_a/a1, got {ids}"
         router.close()
 
     def test_new_file_triggers_directory_import(self, tmp_path):
-        """Adding a new file to an existing directory triggers re-import."""
+        """Adding a new file to an existing directory imports that file (O2)."""
         router = self._make_router(str(tmp_path))
         _write_okf(str(tmp_path), "dir_a/a1.md", "Alpha1", "Body of alpha 1.")
 
@@ -103,9 +107,9 @@ class TestDirectoryHash:
         # Add a new file to dir_a
         _write_okf(str(tmp_path), "dir_a/a2.md", "Alpha2", "Body of alpha 2.")
 
-        # Import — dir_a should be re-imported (now has 2 files)
+        # Import — the new file is imported; its unchanged sibling is not (O2)
         ids = router.import_mgr.import_bundle()
-        assert len(ids) == 2, f"Expected 2 imported IDs (dir_a files), got {len(ids)}"
+        assert ids == ["dir_a/a2"], f"Expected only dir_a/a2, got {ids}"
         router.close()
 
     def test_new_directory_triggers_import(self, tmp_path):

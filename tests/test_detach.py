@@ -84,7 +84,7 @@ def _seed(router, tmp):
 class TestSchemaV7:
     def test_fresh_db_is_v7_with_sourceroot(self, env):
         router = env["router"]
-        assert router.schema_mgr._get_meta("schema_version") == 8
+        assert router.schema_mgr._get_meta("schema_version") == 9  # v9 since 0.11.0 (typed links, O6)
         rows = router.conn.execute(
             "CALL TABLE_INFO('SourceRoot') RETURN *"
         ).rows_as_dict().get_all()
@@ -106,7 +106,7 @@ class TestSchemaV7:
         r = OKFRouter(db_path=db_path, bundle_root=str(tmp_path),
                        embedding_dim=512, enable_chunking=False, device="cpu")
         try:
-            assert r.schema_mgr._get_meta("schema_version") == 8
+            assert r.schema_mgr._get_meta("schema_version") == 9  # v9 since 0.11.0 (typed links, O6)
             rows = r.conn.execute(
                 "CALL TABLE_INFO('SourceRoot') RETURN *"
             ).rows_as_dict().get_all()
@@ -152,7 +152,7 @@ class TestSchemaV7:
         r = OKFRouter(db_path=db_path, bundle_root=str(tmp_path),
                        embedding_dim=512, enable_chunking=False, device="cpu")
         try:
-            assert r.schema_mgr._get_meta("schema_version") == 8
+            assert r.schema_mgr._get_meta("schema_version") == 9  # v9 since 0.11.0 (typed links, O6)
             fh = r.conn.execute(
                 "MATCH (f:FileHash) RETURN f.path AS p, f.dir AS d"
             ).rows_as_dict().get_all()

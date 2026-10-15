@@ -91,28 +91,50 @@ class AdminOps:
 
     def import_bundle(self, bundle_path=None, *, batch_size: int = 32,
                       mode: str = "text", prune_missing: bool = False,
-                      force: bool = False, alias=None) -> dict:
+                      force: bool = False, alias=None,
+                      rebuild: str = "auto") -> dict:
         """Import an entire bundle directory (default: every configured root).
 
-        ``alias`` stays Python-only (PDF work-dir namespaces). Returns
-        ``{"concept_ids", "images": {id: count}}``.
+        ``alias`` stays Python-only (PDF work-dir namespaces). ``rebuild``
+        (0.11.0, O8) is the index step: ``auto`` | ``defer`` | ``force``.
+        Returns ``{"concept_ids", "images": {id: count}, "duplicates",
+        "moved"}`` — the last two report frontmatter-identity refusals and
+        moves (O3).
         """
         if bundle_path is not None:
             bundle_path = _require_dir(bundle_path, op="import_bundle",
                                        name="bundle_path")
-        ids = self.import_mgr.import_bundle(
-            bundle_path,
-            batch_size=batch_size,
-            mode=mode,
-            prune_missing=prune_missing,
-            force=force,
-            alias=alias,
-        )
+        with self.import_mgr.rebuild(rebuild):
+            ids = self.import_mgr.import_bundle(
+                bundle_path,
+                batch_size=batch_size,
+                mode=mode,
+                prune_missing=prune_missing,
+                force=force,
+                alias=alias,
+            )
+        images = {cid: len(self.image_mgr.list_images(cid)) for cid in ids}
+        report = self.import_mgr.last_import_report or {}
+        return {"concept_ids": ids, "images": images,
+                "duplicates": list(report.get("duplicates", [])),
+                "moved": list(report.get("moved", []))}
+
+    def import_files(self, paths, *, mode: str = "text", force: bool = False,
+                     identity_root=None, rebuild: str = "auto") -> dict:
+        """Import exactly these files, one index step at the end (0.11.0, O8).
+
+        Returns ``{"concept_ids", "images": {id: count}}``. Missing files
+        raise ``FILE_NOT_FOUND`` before anything is written.
+        """
+        with self.import_mgr.rebuild(rebuild):
+            ids = self.import_mgr.import_files(
+                [Path(p) for p in paths], mode=mode, force=force,
+                identity_root=identity_root)
         images = {cid: len(self.image_mgr.list_images(cid)) for cid in ids}
         return {"concept_ids": ids, "images": images}
 
     def import_file(self, file_path, *, mode: str = "text", force: bool = False,
-                      identity_root=None) -> dict:
+                      identity_root=None, rebuild: str = "auto") -> dict:
         """Import a single OKF file. Missing files raise ``FILE_NOT_FOUND``.
 
         ``identity_root`` (0.10.1 A1) is an explicit hierarchy base for
@@ -129,8 +151,9 @@ class AdminOps:
                 op="import_file",
                 fields={"file_path": str(file_path)},
             )
-        cid = self.import_mgr.import_from_okf(
-            file_path, mode=mode, force=force, identity_root=identity_root)
+        with self.import_mgr.rebuild(rebuild):
+            cid = self.import_mgr.import_from_okf(
+                file_path, mode=mode, force=force, identity_root=identity_root)
         return {"concept_id": cid, "images": len(self.image_mgr.list_images(cid))}
 
     # ------------------------------------------------------------------
@@ -191,12 +214,13 @@ class AdminOps:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def lint(bundle_dir=".") -> dict:
+    def lint(bundle_dir=".", identity: str = "path") -> dict:
         """Pre-import bundle gate; router-free. Errors → ``LINT_ERRORS``
-        with the full report on ``err.data`` (doctor-style outcome)."""
+        with the full report on ``err.data`` (doctor-style outcome).
+        ``identity`` (0.11.0) must match the graph's ``[import] identity``."""
         from okfgraph.components.lint import lint_bundle
         bundle_dir = _require_dir(bundle_dir, op="lint", name="bundle_dir")
-        report = lint_bundle(bundle_dir)
+        report = lint_bundle(bundle_dir, identity=identity)
         if report["errors"]:
             raise OKFError(
                 "LINT_ERRORS",
@@ -218,19 +242,22 @@ class AdminOps:
         unreadable sources raise ``FILE_NOT_FOUND``.
         """
         from okfgraph.components.lint import lint_bundle
-        from okfgraph.components.producers import PRODUCERS, producer_for
-        if source_type not in PRODUCERS:
+        from okfgraph.components.producers import (
+            available_producers, producer_for, run_producer)
+        registry = available_producers()
+        if source_type not in registry:
             raise OKFError(
                 "BAD_VALUE",
                 f"unknown producer {source_type!r}",
                 op="produce",
                 fields={"source_type": source_type,
-                        "available": sorted(PRODUCERS)},
+                        "available": sorted(registry)},
             )
         out = Path(output_dir or ".")
         try:
-            bundle = producer_for(source_type).produce(
-                source_path, out, prefix=prefix, overwrite=overwrite,
+            bundle = run_producer(
+                producer_for(source_type), source_path, out,
+                prefix=prefix, overwrite=overwrite,
             )
         except OKFError:
             raise
@@ -258,6 +285,83 @@ class AdminOps:
             "lint": lint_bundle(out),
         }
 
+    def sync(self, producer: str, source=None, *, output_dir=None,
+             prefix=None, rebuild: str = "auto") -> dict:
+        """Run a producer incrementally and import what it wrote (0.11.0, O10).
+
+        The producer gets the cursor it returned last time (stored per
+        producer name, plus ``:prefix`` when one is given), writes only what
+        changed into ``output_dir`` (default: the bundle root), and exactly
+        ``ProducedBundle.written`` is imported via ``import_files``. The new
+        cursor is stored only after that import succeeds, so a failed run
+        repeats instead of skipping. Returns ``{"producer", "cursor",
+        "written", "concept_ids"}``.
+
+        A producer that predates cursors (no ``written``) has its whole
+        ``<prefix>/`` tree imported each run.
+        """
+        import time as _time
+        from okfgraph.components.import_ import is_concept_file
+        from okfgraph.components.producers import (
+            available_producers, producer_for, run_producer)
+        if producer not in available_producers():
+            raise OKFError("BAD_VALUE", f"unknown producer {producer!r}", op="sync",
+                           fields={"producer": producer,
+                                   "available": sorted(available_producers())})
+        out = Path(output_dir) if output_dir else self.bundle_root
+        if out is None:
+            raise OKFError("MISSING_PARAM",
+                           "sync needs output_dir (or a router bundle_root)",
+                           op="sync", fields={"output_dir": None})
+        key = producer + (f":{prefix}" if prefix else "")
+        rows = self.conn.execute(
+            "MATCH (p:ProducerCursor {name: $n}) RETURN p.cursor AS c",
+            {"n": key}).rows_as_dict().get_all()
+        cursor = rows[0]["c"] if rows else None
+        try:
+            bundle = run_producer(producer_for(producer), source, out,
+                                  prefix=prefix, overwrite=True, cursor=cursor)
+        except FileNotFoundError as exc:
+            raise OKFError("FILE_NOT_FOUND", str(exc), op="sync",
+                           fields={"source": str(source)}) from exc
+        except ValueError as exc:
+            raise OKFError("BAD_VALUE", str(exc), op="sync",
+                           fields={"source": str(source)}) from exc
+        written = list(bundle.written)
+        if not written and bundle.cursor is None:
+            written = sorted((Path(bundle.root) / bundle.prefix).rglob("*.md"))
+        files = [Path(p) for p in written if is_concept_file(Path(p))]
+        ids: list = []
+        if files:
+            ids = self.import_files(files, rebuild=rebuild)["concept_ids"]
+        if bundle.cursor is not None:
+            self.conn.execute(
+                "MERGE (p:ProducerCursor {name: $n}) "
+                "SET p.cursor = $c, p.updated_at = $t",
+                {"n": key, "c": bundle.cursor, "t": int(_time.time())})
+        return {"producer": producer, "cursor": bundle.cursor,
+                "written": [str(p) for p in files], "concept_ids": ids}
+
+    @staticmethod
+    def setup_extensions(target=None, source=None, *, download: bool = True) -> dict:
+        """Fill an offline extension directory (router-free, 0.11.0, O5).
+
+        Returns ``{"target", "copied", "verified", "ok", "toml"}``; point
+        ``[database] extension_dir`` at ``target``. Nothing to copy raises
+        ``FILE_NOT_FOUND`` naming the missing extension(s).
+        """
+        from okfgraph.components.extensions import setup_extensions
+        try:
+            return setup_extensions(
+                Path(target) if target else None,
+                Path(source) if source else None,
+                download=download)
+        except FileNotFoundError as exc:
+            raise OKFError("FILE_NOT_FOUND", str(exc), op="setup_extensions",
+                           fields={"source": str(source) if source else None},
+                           remedy="pass --from DIR holding libvector/libfts "
+                                  ".lbug_extension from an online machine") from exc
+
     def reindex(self, *, if_dirty: bool = False) -> dict:
         """Rebuild search indexes; ``{"rebuilt": bool}``."""
         rebuilt = self.schema_mgr.reindex(force=not if_dirty)
@@ -267,16 +371,20 @@ class AdminOps:
     # delete / soft-delete trio (D2-a)
     # ------------------------------------------------------------------
 
-    def delete(self, concept_id: str) -> dict:
+    def delete(self, concept_id: str, *, remove_file: bool = False) -> dict:
         """Soft-delete one concept (recoverable for 24h, then purge —
         ``deleted-recover`` / ``deleted-purge`` manage the lifecycle).
 
-        Refuses with ``BAD_VALUE`` while a source file that backs the
-        concept still exists — the next ``import --all`` would resurrect
-        it, so graph and bundle must agree first: delete or move the
-        file, then run ``import --all --prune-missing``. Rootless
-        concepts (thoughts, file-less graph contents) delete freely.
-        NOT on MCP (destructive; agents get ``ingest`` only).
+        Without ``remove_file``, refuses with ``BAD_VALUE`` while a source
+        file that backs the concept still exists — the next ``import --all``
+        would resurrect it, so graph and bundle must agree first.
+
+        ``remove_file=True`` (0.11.0, O11 — what the MCP ``delete`` tool
+        uses) keeps graph and bundle in agreement itself: the backing
+        file(s) move to ``<root>/.okf-trash/<ts>/`` (a dot-dir, never
+        walked), the delta bookkeeping for them retires, and the concept
+        is soft-deleted. ``recover_deleted`` moves the files back and
+        re-imports them. Rootless concepts delete freely either way.
         """
         from okfgraph.errors import UsageError, StateError
         concept = self.search_engine.get_by_id(concept_id)
@@ -304,6 +412,10 @@ class AdminOps:
             for existing in self._resolve_file_paths(rel):
                 if existing.exists():
                     alive.append(str(existing))
+        trashed: list = []
+        if alive and remove_file:
+            trashed = self._trash_files(concept_id, rows)
+            alive = []
         if alive:
             raise UsageError(
                 "BAD_VALUE",
@@ -321,6 +433,8 @@ class AdminOps:
                 f"concept '{concept_id}' vanished mid-operation",
                 op="delete",
             )
+        if trashed:
+            self._remember_trash(concept_id, trashed)
         from datetime import datetime, timedelta
         until = datetime.now() + timedelta(
             seconds=self.purge_mgr.SOFT_DELETE_WINDOW)
@@ -328,7 +442,51 @@ class AdminOps:
             "concept_id": concept_id,
             "deleted": True,
             "recoverable_until": until.isoformat(),
+            "trashed_files": [t["trash"] for t in trashed],
         }
+
+    def _trash_files(self, concept_id: str, rows: list) -> list:
+        """Move a concept's backing files into ``.okf-trash`` (O11)."""
+        import time as _time
+        stamp = _time.strftime("%Y%m%dT%H%M%S")
+        moved = []
+        for row in rows:
+            key = str(row.get("p") or "")
+            for src in self._resolve_file_paths(key):
+                if not src.exists():
+                    continue
+                root = None
+                for cand in [self.import_mgr.bundle_root, *self.import_mgr.roots.values()]:
+                    if cand is not None and src.resolve().is_relative_to(Path(cand).resolve()):
+                        root = Path(cand)
+                        break
+                if root is None:
+                    continue
+                rel = src.resolve().relative_to(root.resolve())
+                dst = root / ".okf-trash" / stamp / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                src.rename(dst)
+                alias = (key[1:].split("/", 1)[0] if key.startswith("@") else "")
+                self.import_mgr._detector_for(alias).forget_file(key)
+                moved.append({"source": str(src), "trash": str(dst)})
+        return moved
+
+    def _remember_trash(self, concept_id: str, trashed: list) -> None:
+        """Note trashed files on the DeletedConcept snapshot for recovery."""
+        import json as _json
+        rows = self.conn.execute(
+            "MATCH (d:DeletedConcept {original_id: $id}) "
+            "RETURN d.id AS id, d.snapshot AS s ORDER BY d.deleted_at DESC",
+            {"id": concept_id},
+        ).rows_as_dict().get_all()
+        if not rows:
+            return
+        snap = _json.loads(rows[0]["s"] or "{}")
+        snap["trashed_files"] = trashed
+        self.conn.execute(
+            "MATCH (d:DeletedConcept {id: $id}) SET d.snapshot = $s",
+            {"id": rows[0]["id"], "s": _json.dumps(snap, default=str)},
+        )
 
     def _resolve_file_paths(self, rel: str) -> list:
         """Map a FileHash key (bundle-relative, optionally ``@alias/``
@@ -355,7 +513,25 @@ class AdminOps:
         return self.purge_mgr.list_deleted_concepts()
 
     def recover_deleted(self, concept_id: str) -> dict:
-        """Recover a soft-deleted concept; failure → ``NOT_RECOVERABLE``."""
+        """Recover a soft-deleted concept; failure → ``NOT_RECOVERABLE``.
+
+        0.11.0: files a ``delete(remove_file=True)`` trashed move back and
+        are re-imported (hashes and links current again); a graph-only
+        concept gets its outgoing links re-resolved, and links that other
+        concepts held to it (kept as BrokenLink records, O1) are repaired.
+        """
+        import json as _json
+        rows = self.conn.execute(
+            "MATCH (d:DeletedConcept {original_id: $id}) RETURN d.snapshot AS s "
+            "ORDER BY d.deleted_at DESC",
+            {"id": concept_id},
+        ).rows_as_dict().get_all()
+        trashed = []
+        if rows:
+            try:
+                trashed = _json.loads(rows[0]["s"] or "{}").get("trashed_files") or []
+            except (ValueError, TypeError):
+                trashed = []
         if not self.purge_mgr.recover_deleted(concept_id):
             raise OKFError(
                 "NOT_RECOVERABLE",
@@ -363,7 +539,26 @@ class AdminOps:
                 op="recover_deleted",
                 fields={"concept_id": concept_id},
             )
-        return {"concept_id": concept_id, "recovered": True}
+        restored = []
+        for t in trashed:
+            src, dst = Path(t["trash"]), Path(t["source"])
+            if src.exists() and not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                src.rename(dst)
+                restored.append(str(dst))
+        with self._write_lock_ctx():
+            if restored:
+                for path in restored:
+                    self.import_mgr.import_from_okf(Path(path), force=True)
+            else:
+                concept = self.get_by_id(concept_id)
+                if concept is not None:
+                    self.import_mgr._extract_links_for_concept(
+                        concept_id, concept.body or "",
+                        self.import_mgr._relations_of(concept))
+                self.import_mgr.repair_links()
+        return {"concept_id": concept_id, "recovered": True,
+                "restored_files": restored}
 
     def purge_deleted(self, *, older_than: int = None) -> dict:
         """Permanently delete expired soft-deleted concepts."""

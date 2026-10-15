@@ -27,9 +27,11 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from dataclasses import dataclass
+import hashlib
+import inspect
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Dict, List, Protocol, Tuple
+from typing import ClassVar, Dict, List, Optional, Protocol, Tuple
 
 import yaml
 
@@ -46,6 +48,12 @@ class ProducedBundle:
         files: Number of markdown files written (tables + overview).
         producer: Registry name of the provider (``"sqlite"``).
         source: Display name of the source (e.g. the database filename).
+        cursor: Opaque resume token (0.11.0, O10). OKFgraph stores it per
+            producer and hands it back on the next run, so a producer can
+            write only what changed since. ``None`` = no incremental state.
+        written: Files this run created or rewrote (0.11.0, O10) — exactly
+            what ``okf produce --sync`` / ``router.sync`` imports. Empty
+            when nothing changed since ``cursor``.
     """
 
     root: Path
@@ -53,6 +61,8 @@ class ProducedBundle:
     files: int
     producer: str
     source: str
+    cursor: Optional[str] = None
+    written: Tuple[Path, ...] = field(default_factory=tuple)
 
 
 class SourceProducer(Protocol):
@@ -69,6 +79,7 @@ class SourceProducer(Protocol):
         *,
         prefix: str | None = None,
         overwrite: bool = False,
+        cursor: str | None = None,
     ) -> ProducedBundle:
         """Emit a bundle for ``source`` under ``output_dir/<prefix>/``.
 
@@ -76,6 +87,12 @@ class SourceProducer(Protocol):
         unless ``overwrite`` is true, and return what was written. A source
         the provider cannot read is a clear error (``FileNotFoundError`` /
         ``ValueError``) — never an empty bundle.
+
+        ``cursor`` (0.11.0, O10) is the value this producer returned last
+        time (``None`` on the first run): write only what changed since,
+        list it in ``ProducedBundle.written``, return the new cursor.
+        Producers written before 0.11 (no ``cursor`` parameter) still work:
+        the caller only passes it to producers that accept it.
         """
         ...  # pragma: no cover - protocol stub
 
@@ -171,11 +188,21 @@ class SQLiteProducer:
         *,
         prefix: str | None = None,
         overwrite: bool = False,
+        cursor: str | None = None,
     ) -> ProducedBundle:
         src = Path(source)
         if not src.is_file():
             raise FileNotFoundError(f"SQLite source not found: {src}")
         prefix = prefix or self.output_prefix
+        # Cursor (0.11.0, O10): the source file's content hash. An unchanged
+        # database writes nothing and is imported as nothing.
+        digest = hashlib.sha256(src.read_bytes()).hexdigest()
+        if cursor is not None and cursor == digest:
+            existing = sorted((Path(output_dir) / prefix).rglob("*.md"))
+            return ProducedBundle(
+                root=Path(output_dir), prefix=prefix, files=len(existing),
+                producer=self.name, source=src.name, cursor=digest, written=(),
+            )
         if "/" in prefix or "\\" in prefix or prefix in (".", ".."):
             raise ValueError(f"prefix must be a single directory name, got {prefix!r}")
 
@@ -236,6 +263,7 @@ class SQLiteProducer:
         return ProducedBundle(
             root=Path(output_dir), prefix=prefix, files=len(paths),
             producer=self.name, source=src.name,
+            cursor=digest, written=tuple(paths),
         )
 
     # -- introspection ----------------------------------------------------
@@ -496,20 +524,64 @@ PRODUCERS: Dict[str, type] = {
 }
 
 
+#: Entry-point group third-party producers register under (0.11.0, O10):
+#: ``[project.entry-points."okfgraph.producers"] silk-findings = "silk.okf:FindingsProducer"``
+ENTRY_POINT_GROUP = "okfgraph.producers"
+
+
+def available_producers() -> Dict[str, type]:
+    """Built-in producers plus every ``okfgraph.producers`` entry point.
+
+    Built-ins win a name clash (a plugin cannot shadow ``sqlite``); a plugin
+    that fails to load is logged and skipped, never fatal to the others.
+    """
+    found: Dict[str, type] = {}
+    try:
+        from importlib.metadata import entry_points
+        eps = entry_points(group=ENTRY_POINT_GROUP)
+    except Exception as exc:  # pragma: no cover - broken metadata
+        logger.warning("producer entry points unreadable: %s", exc)
+        eps = []
+    for ep in eps:
+        try:
+            found[ep.name] = ep.load()
+        except Exception as exc:
+            logger.warning("producer plugin %r failed to load: %s", ep.name, exc)
+    found.update(PRODUCERS)
+    return found
+
+
 def producer_for(name: str) -> SourceProducer:
     """Instantiate the registered producer ``name`` (``ValueError`` if unknown)."""
+    registry = available_producers()
     try:
-        return PRODUCERS[name]()
+        return registry[name]()
     except KeyError:
         raise ValueError(
-            f"unknown producer {name!r} (available: {sorted(PRODUCERS)})"
+            f"unknown producer {name!r} (available: {sorted(registry)})"
         ) from None
 
 
+def run_producer(producer: SourceProducer, source, output_dir, *,
+                 prefix=None, overwrite=False, cursor=None) -> ProducedBundle:
+    """Call ``producer.produce`` with ``cursor`` only if it accepts one."""
+    kwargs = {"prefix": prefix, "overwrite": overwrite}
+    try:
+        params = inspect.signature(producer.produce).parameters
+    except (TypeError, ValueError):  # pragma: no cover - builtins/C
+        params = {}
+    if "cursor" in params or any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        kwargs["cursor"] = cursor
+    return producer.produce(source, output_dir, **kwargs)
+
+
 __all__ = [
+    "ENTRY_POINT_GROUP",
     "ProducedBundle",
     "SourceProducer",
     "SQLiteProducer",
     "PRODUCERS",
+    "available_producers",
     "producer_for",
+    "run_producer",
 ]

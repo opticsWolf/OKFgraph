@@ -30,12 +30,14 @@ from okfgraph.components.import_ import (
     parse_source_file,
 )
 from okfgraph.components.links import (
-    build_name_index,
+    build_name_index_full,
     extract_md_links,
     extract_wikilinks,
+    frontmatter_relations,
     is_external,
-    normalize_path_link,
-    resolve_wiki,
+    resolve_path_link,
+    resolve_relation_target,
+    resolve_wiki_detail,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,8 +49,16 @@ def _err(file: str, rule: str, message: str, **extra: Any) -> Dict[str, Any]:
     return item
 
 
-def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
-    """Validate a bundle directory without touching any database or model."""
+def lint_bundle(bundle_dir: str | Path, identity: str = "path") -> Dict[str, Any]:
+    """Validate a bundle directory without touching any database or model.
+
+    0.11.0: ``identity`` matches import (O3) — under ``frontmatter`` two
+    files with one ``id:`` are a ``duplicate_id`` error (import refuses the
+    second). A duplicate ``id:`` is reported under ``path`` identity too:
+    it makes the name ambiguous for ``[[wikilinks]]``. ``relations:`` (O6)
+    are checked like links (``bad_relation``, ``dangling_relation``), and
+    ambiguous names say which concepts claim them (O12).
+    """
     root = Path(bundle_dir)
     files = sorted(fp for fp in root.rglob("*")
                     if is_concept_file(fp) and not in_skipped_dir(fp))
@@ -63,7 +73,7 @@ def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
     for fp in files:
         rel = str(fp.relative_to(root)).replace("\\", "/")
         try:
-            concept, body, cid = parse_source_file(fp, root)
+            concept, body, cid = parse_source_file(fp, root, identity=identity)
         except Exception as e:  # noqa: BLE001 — every failure mode is a finding
             errors.append(_err(rel, "parse", f"{type(e).__name__}: {e}"))
             continue
@@ -83,8 +93,31 @@ def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
                 rel, "missing_title", "no 'title:' frontmatter; will use filename stem"))
         parsed.append((cid, concept, body, rel))
 
+    # One id, one file (O3). Under path identity the ids cannot collide, but
+    # two files sharing a frontmatter id: still make that name ambiguous.
+    seen_ids: Dict[str, str] = {}
+    for cid, concept, _body, rel in parsed:
+        extra = concept.model_extra or {}
+        key = cid if identity == "frontmatter" else extra.get("uid")
+        if not key:
+            continue
+        if key in seen_ids:
+            errors.append(_err(
+                rel, "duplicate_id",
+                f"frontmatter id '{key}' is already used by {seen_ids[key]}"
+                + ("; import refuses this file" if identity == "frontmatter"
+                   else "; [[wikilinks]] to it are ambiguous"),
+                id=key, other=seen_ids[key]))
+        else:
+            seen_ids[key] = rel
+
     # Resolution context mirrors ImportManager: known ids + name index.
     known_ids = {cid for cid, _, _, _ in parsed}
+    path_ids = {}
+    for cid, _concept, _body, rel in parsed:
+        stem = rel.rsplit(".", 1)[0]
+        if stem != cid:
+            path_ids[stem] = cid
     index_entries = []
     for cid, concept, _, _ in parsed:
         extra = concept.model_extra or {}
@@ -94,29 +127,45 @@ def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
             "uid": extra.get("uid"),
             "aliases": extra.get("aliases", extra.get("alias")),
         })
-    maps, _ambiguous = build_name_index(index_entries)
+    maps, _ambiguous, candidates = build_name_index_full(index_entries)
 
-    for cid, _concept, body, rel in parsed:
-        # Same extraction + skip rules as _resolve_body_links: only
-        # *.md-anchored targets match; externals never resolve-or-fail.
+    for cid, concept, body, rel in parsed:
+        # Same extraction + resolution as import: only *.md-anchored targets
+        # match (source-relative, then root-relative); externals never
+        # resolve-or-fail.
         for raw in extract_md_links(body):
             if is_external(raw):
                 continue
-            target = normalize_path_link(raw.split("#", 1)[0])
-            if target not in known_ids:
+            target, recorded = resolve_path_link(raw, cid, known_ids, path_ids)
+            if target is None:
                 errors.append(_err(
                     rel, "dangling_link",
                     "would import as BrokenLink (target has no concept)",
-                    link=raw, target=target or "(empty)"))
+                    link=raw, target=recorded or "(empty)"))
         for raw in extract_wikilinks(body):
             if not raw or is_external(raw):
                 continue
-            if resolve_wiki(raw, maps, known_ids) is None:
+            hit, reason, cands = resolve_wiki_detail(raw, maps, known_ids, candidates)
+            if hit is None:
                 errors.append(_err(
                     rel, "dangling_wikilink",
-                    "would import as BrokenLink (name resolves to nothing; "
-                    "ambiguous names never resolve)",
-                    link=raw))
+                    ("would import as BrokenLink (name is ambiguous: "
+                     f"{', '.join(cands)})") if reason == "ambiguous" else
+                    "would import as BrokenLink (name resolves to nothing)",
+                    link=raw, reason=reason, candidates=cands))
+        pairs, problems = frontmatter_relations(
+            (concept.model_extra or {}).get("relations"))
+        for problem in problems:
+            errors.append(_err(rel, "bad_relation", problem))
+        for kind, raw in pairs:
+            hit, reason, cands, recorded = resolve_relation_target(
+                raw, cid, maps, known_ids, candidates, path_ids)
+            if hit is None:
+                errors.append(_err(
+                    rel, "dangling_relation",
+                    f"relation {kind} would import as BrokenLink ({reason})",
+                    link=raw, kind=kind, reason=reason, candidates=cands,
+                    target=recorded))
 
     errors.sort(key=lambda e: (e["file"], e["rule"], e["message"]))
     warnings.sort(key=lambda w: (w["file"], w["rule"], w["message"]))

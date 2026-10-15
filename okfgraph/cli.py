@@ -12,6 +12,7 @@ first. Results go to stdout, logs to stderr (D5/D6).
 """
 
 import argparse
+import os
 import base64
 import cProfile
 import io
@@ -190,10 +191,24 @@ def _settings(args) -> Settings:
 
 
 def _router(args):
-    """Build an OKFRouter from parsed args (registered for cleanup on exit)."""
+    """Build an OKFRouter from parsed args (registered for cleanup on exit).
+
+    0.11.0 (O4): when an ``okf serve`` owns the database (discovery file
+    next to it, live pid, ``/health`` answering for the same db), the
+    command runs through an :class:`~okfgraph.client.OKFClient` instead —
+    no second process ever opens the file. ``OKFGRAPH_NO_SERVER=1`` opts out.
+    """
     if _INJECTED_ROUTER:
         return _INJECTED_ROUTER[-1]
     settings = _settings(args)
+    if os.environ.get("OKFGRAPH_NO_SERVER") != "1":
+        from okfgraph.client import OKFClient, discover
+        url = discover(settings.db_path)
+        if url:
+            logging.getLogger(__name__).info("using okf serve at %s", url)
+            client = OKFClient(url)
+            _OPEN_ROUTERS.append(client)
+            return client
     try:
         router = OKFRouter(
             db_path=settings.db_path,
@@ -477,6 +492,7 @@ def _import(args):
             mode=mode,
             prune_missing=args.prune_missing,
             force=force,
+            rebuild=args.rebuild,
         )
 
         def render(result):
@@ -533,9 +549,18 @@ def _import(args):
                 remedy="pass --bundle-path DIR containing every FILE, "
                        "or omit it for the legacy fallback")
         identity_root = resolved_base
-    results = [router.import_file(f, mode=mode, force=force,
-                                  identity_root=identity_root)
-               for f in args.files]
+    if len(args.files) > 1:
+        # One index step for the whole list (0.11.0, O8).
+        batch = router.import_files(args.files, mode=mode, force=force,
+                                    identity_root=identity_root,
+                                    rebuild=args.rebuild)
+        results = [{"concept_id": cid, "images": batch["images"].get(cid, 0)}
+                   for cid in batch["concept_ids"]]
+    else:
+        results = [router.import_file(f, mode=mode, force=force,
+                                      identity_root=identity_root,
+                                      rebuild=args.rebuild)
+                   for f in args.files]
 
     def render(results):
         for r in results:
@@ -562,6 +587,7 @@ def _search(args):
         hub_rerank=args.hub_rerank,
         hub_weight=args.hub_weight,
         rank=args.rank,
+        **_search_filters(args),
     )
     if args.target == "images":
         render = _render_images
@@ -571,6 +597,34 @@ def _search(args):
     else:
         render = _render_concepts
     return _out(args, "search", results, render)
+
+
+def _kv_pairs(items, flag):
+    """``KEY=VALUE`` items (repeatable flag) → dict."""
+    out = {}
+    for item in items or ():
+        key, sep, value = str(item).partition("=")
+        if not sep or not key:
+            raise OKFError("BAD_VALUE", f"{flag} must be KEY=VALUE, got {item!r}",
+                           fields={flag: item})
+        out[key] = value
+    return out
+
+
+def _search_filters(args):
+    """0.11.0 (O6/O7) search flags → op kwargs (only those given)."""
+    out = {}
+    where = _kv_pairs(getattr(args, "where", None), "--where")
+    if where:
+        out["where"] = where
+    for name in ("since", "until"):
+        if getattr(args, name, None):
+            out[name] = getattr(args, name)
+    if getattr(args, "exclude_tags", None) is not None:
+        out["exclude_tags"] = _csv(args.exclude_tags) or []
+    if getattr(args, "link_kinds", None):
+        out["link_kinds"] = _csv(args.link_kinds)
+    return out
 
 
 def _traverse(args):
@@ -584,6 +638,7 @@ def _traverse(args):
         node_type=args.node_type,
         target=target,
         max_path_length=args.max_path_length,
+        **({"link_kinds": _csv(args.link_kinds)} if args.link_kinds else {}),
     )
 
     def render(results):
@@ -736,7 +791,9 @@ def _lint(args):
     Router-free (no DB, no model cold-boot). Exit 0 = clean (warnings ok),
     1 = errors (LINT_ERRORS, report still rendered), 2 = not a directory.
     """
-    return _out(args, "lint", OKFRouter.lint(args.dir or "."), _render_lint)
+    return _out(args, "lint",
+                OKFRouter.lint(args.dir or ".", identity=_settings(args).identity),
+                _render_lint)
 
 
 def _produce(args):
@@ -745,6 +802,21 @@ def _produce(args):
     Exit 0 = produced + lint-clean, 1 = produced but lint errors, 2 =
     usage (unknown producer, unreadable source).
     """
+    if args.sync:
+        # 0.11.0 (O10): incremental run with the stored cursor, then import
+        # exactly what the producer wrote.
+        res = _router(args).sync(args.from_, args.source,
+                                 output_dir=args.output_dir, prefix=args.prefix)
+
+        def render_sync(r):
+            print(f"[OK] {r['producer']}: {len(r['written'])} file(s) written, "
+                  f"{len(r['concept_ids'])} concept(s) imported")
+            for cid in r["concept_ids"]:
+                print(f"  {cid}")
+        return _out(args, "sync", res, render_sync)
+    if not args.source:
+        raise OKFError("MISSING_PARAM", "produce needs --source (or --sync)",
+                       op="produce", fields={"source": None})
     result = OKFRouter.produce(
         args.from_, args.source, args.output_dir or ".",
         prefix=args.prefix, overwrite=args.overwrite,
@@ -758,6 +830,60 @@ def _produce(args):
 
     rc = _out(args, "produce", result, render)
     return rc if rc is not None else (0 if result["lint"]["clean"] else 1)
+
+
+def _serve(args):
+    """Own the database and serve it (0.11.0, O4) until interrupted."""
+    from okfgraph.serve import serve
+    settings = _settings(args)
+    print(f"okf serve: {args.listen} owns {settings.db_path} (Ctrl-C to stop)",
+          file=sys.stderr)
+    serve(settings, args.listen)
+    return 0
+
+
+def _setup(args):
+    """``okf setup extensions``: fill an offline extension dir (O5)."""
+    result = OKFRouter.setup_extensions(args.to, args.from_dir,
+                                        download=not args.no_download)
+
+    def render(r):
+        for ext, status in r["verified"].items():
+            print(f"[{'OK' if status == 'ok' else 'ERROR'}] {ext}: "
+                  f"{'loads' if status == 'ok' else status}")
+        print(f"extensions in {r['target']} — add to okfgraph.toml:")
+        print(r["toml"])
+        return 0 if r["ok"] else 1
+
+    return _out(args, "setup_extensions", result, render)
+
+
+def _update(args):
+    """Edit a concept's frontmatter via its bundle file (O11)."""
+    extra = _kv_pairs(args.extra, "--extra")
+    for key in args.unset or ():
+        extra[key] = None
+    result = _router(args).update(
+        args.concept_id, title=args.title, description=args.description,
+        type=args.type, tags=_csv(args.tags), add_tags=_csv(args.add_tags),
+        remove_tags=_csv(args.remove_tags), extra=extra or None,
+    )
+
+    def render(r):
+        if r["changed"]:
+            print(f"[OK] updated {r['concept_id']}: {', '.join(r['changed'])}"
+                  + (f" ({r['path']})" if r["path"] else ""))
+        else:
+            print(f"[OK] {r['concept_id']}: nothing to change")
+
+    return _out(args, "update", result, render)
+
+
+def _supersede(args):
+    """new supersedes old (O11)."""
+    result = _router(args).supersede(args.old_id, args.new_id)
+    return _out(args, "supersede", result,
+                lambda r: print(f"[OK] {r['new']} supersedes {r['old']}"))
 
 
 def _diff(args):
@@ -835,6 +961,13 @@ def _ingest(args):
         def on_page(idx, total):
             print(f"  page {idx + 1}/{total}", end="\r", file=sys.stderr)
 
+    if not isinstance(router, OKFRouter):
+        on_page = None  # a callable cannot cross to an okf serve owner
+    extra = _kv_pairs(args.extra, "--extra")
+    o9 = {k: v for k, v in (("type", args.type),
+                            ("extra", extra or None),
+                            ("materialize", True if args.materialize else None))
+          if v is not None}
     result = router.ingest(
         kind,
         md_path=args.md_path,
@@ -854,7 +987,8 @@ def _ingest(args):
         batch_size=args.batch_size or settings.batch_size,
         prune_missing=args.prune_missing,
         force=args.force,
-        on_page=on_page,
+        **({"on_page": on_page} if on_page is not None else {}),
+        **o9,
     )
     if on_page is not None:
         print(file=sys.stderr)  # end the \r progress line
@@ -955,7 +1089,8 @@ def _deleted_delete(args):
         print("     'okf deleted-recover' undoes it; file-backed concepts "
               "are refused while their source exists.")
 
-    return _out(args, "delete", _router(args).delete(args.concept_id), render)
+    kwargs = {"remove_file": True} if args.remove_file else {}
+    return _out(args, "delete", _router(args).delete(args.concept_id, **kwargs), render)
 
 
 def _deleted_purge(args):
@@ -1196,6 +1331,10 @@ def build_parser():
                    help="Bypass the detached-graph refusal: re-attach when the bundle "
                    "matches the recorded source tree, or acknowledge an explicitly "
                    "addressed file import.")
+    p.add_argument("--rebuild", default="auto", choices=["auto", "defer", "force"],
+                   help="Index step after the import: auto (create missing "
+                   "indexes; they update in place), defer (skip), force "
+                   "(drop + recreate). Default: auto")
 
     p = command("search", "Search concepts, chunks, or images")
     p.add_argument("query", help="Search query")
@@ -1218,6 +1357,15 @@ def build_parser():
                    help="Concepts: ranking — none (RRF order), hub (blend incoming-link "
                    "authority), ppr (model-free lexical-seed PPR, no ONNX load). "
                    "Default: none")
+    p.add_argument("--where", action="append", metavar="KEY=VALUE",
+                   help="Equality filter on an extra frontmatter key (repeatable)")
+    p.add_argument("--since", default=None, help="Only concepts with timestamp >= ISO date")
+    p.add_argument("--until", default=None, help="Only concepts with timestamp < ISO date")
+    p.add_argument("--exclude-tags", default=None, metavar="A,B",
+                   help="Drop concepts carrying any of these tags (default: "
+                   "[search] exclude_tags; pass '' to search everything)")
+    p.add_argument("--link-kinds", default=None, metavar="A,B",
+                   help="--rank hub/ppr: count only these link kinds")
 
     p = command("read", "Read a concept: body, chunks, document, or context")
     p.add_argument("concept_id", help="Concept ID")
@@ -1236,6 +1384,8 @@ def build_parser():
     p.add_argument("--node-type", help="Target node type filter")
     p.add_argument("--target", default=None, help="Find shortest path from start_id to this ID instead of traversing")
     p.add_argument("--max-path-length", type=int, default=6, help="Max path length with --target (default: 6)")
+    p.add_argument("--link-kinds", default=None, metavar="A,B",
+                   help="LINKS_TO walk: follow only these link kinds (mention = body links)")
 
     p = command("ingest", "Add content: markdown file, PDF/Office file, thoughts, or BibTeX")
     p.add_argument("--kind", required=True, choices=["md", "pdf", "thoughts", "bib"],
@@ -1270,6 +1420,13 @@ def build_parser():
                    "from a temp dir).")
     p.add_argument("--no-extract-images", action="store_true",
                    help="Do not extract embedded images (--kind pdf)")
+    p.add_argument("--type", default=None,
+                   help="Concept type (--kind md/thoughts; thoughts default to thought)")
+    p.add_argument("--extra", action="append", metavar="KEY=VALUE",
+                   help="Extra frontmatter field (--kind md/thoughts, repeatable)")
+    p.add_argument("--materialize", action="store_true",
+                   help="Write the markdown into the bundle at <concept-id>.md, "
+                   "then import that file (--kind md/thoughts)")
 
     p = command("export", "Export the bundle (--all) or one concept (--concept-id)")
     p.add_argument("--all", action="store_true", dest="export_all", help="Export entire bundle")
@@ -1302,9 +1459,14 @@ def build_parser():
 
     p = command("produce", "Generate a bundle from a data source")
     p.add_argument("--from", dest="from_", required=True,
-                   help="Producer name (today: sqlite)")
-    p.add_argument("--source", required=True,
+                   help="Producer name (built-in: sqlite; plugins register under "
+                   "the okfgraph.producers entry point)")
+    p.add_argument("--source", default=None,
                    help="Source to read (sqlite: path to the .db file)")
+    p.add_argument("--sync", action="store_true",
+                   help="Incremental: resume from the stored cursor and import "
+                   "exactly the files the producer wrote (default output: the "
+                   "bundle root)")
     p.add_argument("--output-dir", default=None,
                    help="Bundle root to write under (default: .); files go "
                    "to <output-dir>/<prefix>/ so lint + import agree on ids")
@@ -1327,6 +1489,9 @@ def build_parser():
     p = command("delete", "Soft-delete a concept (recoverable for 24h; refuses "
                            "file-backed concepts whose source still exists)")
     p.add_argument("concept_id", help="Concept ID to delete")
+    p.add_argument("--remove-file", action="store_true",
+                   help="Move the backing file(s) to <root>/.okf-trash/ and "
+                   "delete (deleted-recover moves them back)")
     p = command("deleted-purge", "Permanently delete expired soft-deleted concepts")
     p.add_argument("--older-than", type=int, default=None, help="Override recovery window (seconds; 0 purges everything deleted so far)")
 
@@ -1338,6 +1503,38 @@ def build_parser():
     p.add_argument("--force", action="store_true",
                    help="Acknowledge mismatches / untracked files / source-only "
                    "artifacts (WILL-NOT-SURVIVE) and detach anyway")
+
+    p = command("update", "Edit a concept's frontmatter via its bundle file")
+    p.add_argument("concept_id", help="Concept ID")
+    p.add_argument("--title", default=None)
+    p.add_argument("--description", default=None)
+    p.add_argument("--type", default=None)
+    p.add_argument("--tags", default=None, metavar="A,B", help="Replace the tag list")
+    p.add_argument("--add-tags", default=None, metavar="A,B")
+    p.add_argument("--remove-tags", default=None, metavar="A,B")
+    p.add_argument("--extra", action="append", metavar="KEY=VALUE",
+                   help="Set a frontmatter key (repeatable)")
+    p.add_argument("--unset", action="append", metavar="KEY",
+                   help="Delete a frontmatter key (repeatable)")
+
+    p = command("supersede", "Record that NEW supersedes OLD")
+    p.add_argument("old_id", help="The concept no longer current")
+    p.add_argument("new_id", help="The concept replacing it")
+
+    p = command("serve", "Own the database and serve MCP + JSON ops (one owner, many clients)")
+    p.add_argument("--listen", default="127.0.0.1:8765",
+                   help="HOST:PORT or unix:///path/okf.sock (default: 127.0.0.1:8765)")
+
+    p = command("setup", "One-time setup tasks")
+    p.add_argument("what", choices=["extensions"],
+                   help="extensions: copy/download the vector + fts extensions "
+                   "into a local dir for offline use")
+    p.add_argument("--from", dest="from_dir", default=None,
+                   help="Directory holding libvector/libfts .lbug_extension files")
+    p.add_argument("--to", default=None,
+                   help="Target directory (default: ~/.local/share/okfgraph/extensions/...)")
+    p.add_argument("--no-download", action="store_true",
+                   help="Never download; copy from --from or Ladybug's cache only")
 
     p = command("images", "List image assets attached to a concept")
     p.add_argument("concept_id", help="Concept ID")
@@ -1374,6 +1571,11 @@ _COMMANDS = {
     "delete": _deleted_delete,
     "deleted-purge": _deleted_purge,
     "detach": _detach,
+    # 0.11.0
+    "update": _update,
+    "supersede": _supersede,
+    "serve": _serve,
+    "setup": _setup,
 }
 
 

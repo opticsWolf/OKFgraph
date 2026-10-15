@@ -77,6 +77,9 @@ class ConceptModel(BaseModel):
         body = data.pop("body", "")
         data.pop("id", None)
         data.pop("embedding", None)
+        # Graph-side provenance of frontmatter identity (O3): where the file
+        # was found, not something its author wrote.
+        data.pop("source_path", None)
         if "uid" in data:
             data["id"] = data.pop("uid")
         if isinstance(data.get("timestamp"), datetime):

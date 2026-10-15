@@ -76,13 +76,18 @@ class TestDeleteOp:
 
 
 class TestDeleteSurface:
-    def test_not_on_mcp(self):
+    def test_on_mcp_as_destructive_soft_delete(self):
+        """0.11.0 (O11): ``delete`` is an MCP tool — soft, recoverable for
+        24h, and it moves the backing file to ``.okf-trash`` so graph and
+        bundle agree (``remove_file=True``). Annotated destructive."""
         import asyncio
         from okfgraph.settings import Settings
         from okfgraph.mcp_server import create_mcp_server
         srv = create_mcp_server(Settings())
-        tools = [t.name for t in asyncio.run(srv.list_tools())]
-        assert "delete" not in tools
+        tools = {t.name: t for t in asyncio.run(srv.list_tools())}
+        assert "delete" in tools
+        assert tools["delete"].annotations.destructive_hint is True
+        assert "purge_deleted" not in tools  # hard delete stays CLI/Python
 
     def test_cli_verb_parses(self):
         from okfgraph.cli import build_parser

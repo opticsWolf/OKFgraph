@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Set
@@ -17,13 +18,27 @@ from okfgraph.components.roots import (
     resolve_alias_for_path,
 )
 from okfgraph.components.links import (
-    build_name_index,
+    MENTION,
+    build_name_index_full,
     extract_md_links,
     extract_wikilinks,
+    frontmatter_relations,
     is_external,
-    normalize_path_link,
-    resolve_wiki,
+    resolve_path_link,
+    resolve_relation_target,
+    resolve_wiki_detail,
 )
+
+#: One link to record: (source, target_or_None, recorded_target, kind,
+#: reason_or_None, candidate_ids, raw_link). See ``ImportManager._record_links``.
+#: ``raw_link`` is the link exactly as written; a miss keeps it so
+#: ``repair_links`` can re-resolve it with the same rules import used.
+LinkRecord = Tuple[str, Optional[str], str, str, Optional[str], List[str], str]
+
+#: Identity modes (0.11.0, O3): ``path`` (default, ids from file paths) or
+#: ``frontmatter`` (a frontmatter ``id:`` is the concept id).
+IDENTITY_MODES = ("path", "frontmatter")
+_FM_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*(/[A-Za-z0-9_][A-Za-z0-9_.\-]*)*$")
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +166,8 @@ def _require_root(root: Optional[Path], op: str) -> Path:
 
 
 def parse_source_file(
-    file_path: Path, root: Optional[Path], alias: str = ""
+    file_path: Path, root: Optional[Path], alias: str = "",
+    identity: str = "path",
 ) -> Tuple["ConceptModel", str, str]:
     """Parse a .md/.txt source into ``(ConceptModel, body, concept_id)``.
 
@@ -163,6 +179,14 @@ def parse_source_file(
     Multi-root (0.4.0, Phase 2 §2.1): a non-empty ``alias`` namespaces the
     path-derived ID (``@alias/rel``); the outside-root bare-stem fallback
     stays bare — it carries no root relationship.
+
+    Identity (0.11.0, O3): with ``identity="frontmatter"`` a frontmatter
+    ``id:`` *is* the concept id (namespaced per root like a path id), the
+    file's bundle path moves to ``source_path``, and ``uid`` keeps the
+    written id so export writes it back unchanged. Files without ``id:``
+    keep path ids. An ``id:`` that is not a safe relative id (``..``,
+    backslashes, a leading ``@`` or ``/``) is a parse error, never a
+    silent fallback.
     """
     post = frontmatter.load(file_path)
     body = post.content
@@ -195,7 +219,19 @@ def parse_source_file(
     # a wikilink name. Preserve it as ``uid`` (extra MAP): the name index
     # resolves it, and export writes it back as ``id:``.
     fm_id = fm.pop("id", None)
-    if fm_id is not None and str(fm_id) != concept_id:
+    if (identity == "frontmatter" and fm_id is not None
+            and str(fm_id).strip()):
+        raw_id = str(fm_id).strip()
+        if ".." in raw_id.split("/") or not _FM_ID_RE.match(raw_id):
+            raise ValueError(
+                f"frontmatter id {raw_id!r} is not a valid concept id "
+                "(letters, digits, '_', '.', '-' and '/' only; no '..', "
+                "no leading '/' or '@')")
+        concept_id = namespaced_id(alias, raw_id)
+        fm["uid"] = raw_id
+        if rel_path is not None:
+            fm["source_path"] = rel_path.as_posix()
+    elif fm_id is not None and str(fm_id) != concept_id:
         fm["uid"] = str(fm_id)
 
     # Hygiene: never persist credentials hiding in ``resource:`` URIs
@@ -287,8 +323,17 @@ class ImportManager:
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
     def __init__(self, conn, bundle_root, _write_lock_ctx, enable_chunking,
                  schema_mgr, delta_mgr, embed_engine, image_mgr, purge_mgr,
-                 token_counter, context_window=8192, db_path=None, roots=None):
+                 token_counter, context_window=8192, db_path=None, roots=None,
+                 identity: str = "path"):
         self.conn = conn
+        if identity not in IDENTITY_MODES:
+            raise ValueError(
+                f"identity must be one of {IDENTITY_MODES}, got {identity!r}")
+        self.identity = identity
+        #: Index step after writes (O8): "auto" | "defer" | "force".
+        self.rebuild_policy = "auto"
+        #: What the last import refused or moved (O3), for callers/tests.
+        self.last_import_report: Dict[str, Any] = {}
         self.bundle_root = bundle_root
         # Multi-root (0.4.0, Phase 2 §2.1): {alias: resolved Path} for trees
         # beyond the primary bundle_root (validated by the router). {}
@@ -318,6 +363,23 @@ class ImportManager:
         self.embed_engine = embed_engine
         self.image_mgr = image_mgr
         self.purge_mgr = purge_mgr
+
+    @contextmanager
+    def rebuild(self, policy: Optional[str]):
+        """Run writes under an index policy (O8: auto | defer | force)."""
+        if policy is None:
+            yield
+            return
+        if policy not in ("auto", "defer", "force"):
+            raise OKFError(
+                "BAD_VALUE",
+                f"rebuild must be 'auto', 'defer' or 'force', got {policy!r}",
+                fields={"rebuild": policy})
+        prev, self.rebuild_policy = self.rebuild_policy, policy
+        try:
+            yield
+        finally:
+            self.rebuild_policy = prev
 
     def _merge_directory_contains(self, parent_id: str, child_id: str):
         """Create a Directory→Directory CONTAINS edge without crashing Ladybug.
@@ -390,6 +452,11 @@ class ImportManager:
 
 
     def _load_link_index(self):
+        """``(maps, known_ids)`` — see :meth:`_load_link_index_full`."""
+        maps, known, _candidates = self._load_link_index_full()
+        return maps, known
+
+    def _load_link_index_full(self):
         """Load the known-id set + wikilink name index over all concepts.
 
         Single pair of queries feeding every link-resolution site (batch,
@@ -401,9 +468,17 @@ class ImportManager:
             "MATCH (c:Concept) RETURN c.id, c.title, c.extra"
         ).rows_as_dict().get_all()
         concepts = []
+        path_ids: Dict[str, str] = {}
         for r in rows:
             extra = r.get("c.extra") or {}
             entry: Dict[str, Any] = {"id": r["c.id"], "title": r.get("c.title")}
+            src = extra.get("source_path")
+            if src:
+                # Frontmatter identity (O3): the file at source_path is this
+                # concept; path links name files, so map path -> id.
+                alias = r["c.id"][1:].split("/", 1)[0] if r["c.id"].startswith("@") else ""
+                stem = str(Path(src).with_suffix("")).replace("\\", "/")
+                path_ids[namespaced_id(alias, stem)] = r["c.id"]
             for key in ("uid", "aliases", "alias"):
                 val = extra.get(key)
                 if isinstance(val, str) and val.startswith("["):
@@ -414,57 +489,130 @@ class ImportManager:
                 if val is not None:
                     entry[key] = val
             concepts.append(entry)
-        maps, ambiguous = build_name_index(concepts)
+        maps, ambiguous, candidates = build_name_index_full(concepts)
         if ambiguous:
             shown = sorted(ambiguous)[:10]
             logger.warning(
-                "wikilinks: %d ambiguous name(s), resolving to nothing (e.g. %s)",
+                "wikilinks: %d ambiguous name(s), resolving to nothing (e.g. %s)"
+                " — recorded as BrokenLink reason=ambiguous",
                 len(ambiguous), ", ".join(shown),
             )
-        return maps, {c["id"] for c in concepts}
+        self._path_ids = path_ids
+        return maps, {c["id"] for c in concepts}, candidates
 
-    def _record_links(self, links: List[Tuple[str, Optional[str], str]]):
-        """Persist resolved/unresolved ``(source, target_or_None, raw)`` links.
+    def _record_links(self, links: List[LinkRecord]):
+        """Persist resolved and unresolved links (0.11.0: typed, with reasons).
 
-        Resolved targets get ``MERGE (source)-[:LINKS_TO]->(target)``;
-        misses become ``BrokenLink`` records for ``repair_links``/doctor.
+        A hit becomes ``(source)-[:LINKS_TO {kind}]->(target)`` — ``kind``
+        is ``mention`` for body links and the declared kind for frontmatter
+        relations (O6); one edge per kind, idempotent ``MERGE``. A miss
+        becomes a ``BrokenLink`` carrying the kind, the reason
+        (``missing`` | ``ambiguous``, O12) and, when ambiguous, the claiming
+        ids as JSON — so ``okf doctor`` can say why, and ``repair_links``
+        can fix it once the target appears.
         """
-        for source_id, target_id, raw in links:
+        now = datetime.now()
+        for source_id, target_id, recorded, kind, reason, cands, raw in links:
+            kind = kind or MENTION
             if target_id is not None:
                 self.conn.execute("""
                     MATCH (source:Concept {id: $source})
                     MATCH (target:Concept {id: $target})
-                    MERGE (source)-[:LINKS_TO]->(target)
-                """, {"source": source_id, "target": target_id})
+                    MERGE (source)-[:LINKS_TO {kind: $kind}]->(target)
+                """, {"source": source_id, "target": target_id, "kind": kind})
             else:
-                link_id = f"{source_id}\u2192{raw}"
-                now = datetime.now()
+                link_id = f"{source_id}\u2192{recorded}"
+                if kind != MENTION:
+                    link_id += f"#{kind}"
                 self.conn.execute("""
                     MERGE (bl:BrokenLink {id: $id})
-                    SET bl.source_id = $source, bl.target_id = $target, bl.timestamp = $ts
-                """, {"id": link_id, "source": source_id, "target": raw, "ts": now})
+                    SET bl.source_id = $source, bl.target_id = $target,
+                        bl.timestamp = $ts, bl.kind = $kind,
+                        bl.reason = $reason, bl.candidates = $cands,
+                        bl.raw = $raw
+                """, {"id": link_id, "source": source_id, "target": recorded,
+                      "ts": now, "kind": kind, "reason": reason or "missing",
+                      "cands": json.dumps(cands) if cands else None,
+                      "raw": raw})
 
-    def _resolve_body_links(
-        self, source_id: str, body: str, maps, known_ids
-    ) -> List[Tuple[str, Optional[str], str]]:
-        """Resolve one body to ``(source, target_or_None, raw)`` triples.
+    def _resolve_concept_links(
+        self, source_id: str, body: str, relations: Any,
+        maps, known_ids, candidates,
+    ) -> List[LinkRecord]:
+        """Resolve one concept's body links and declared relations.
 
-        Markdown ``](path.md)`` links resolve by path; ``[[wikilinks]]`` by
-        name (uid → alias → title → stem). External URLs are skipped.
+        Markdown ``](path.md)`` links resolve source-relative first, then
+        root-relative (the pre-0.11 reading); ``[[wikilinks]]`` by name
+        (uid → alias → title → stem). Frontmatter ``relations:`` (O6) name
+        targets by id, path or wiki name. External URLs are skipped.
         """
-        out: List[Tuple[str, Optional[str], str]] = []
+        out: List[LinkRecord] = []
         for raw in extract_md_links(body):
             if is_external(raw):
                 continue
-            target = normalize_path_link(raw.split("#", 1)[0])
-            out.append((source_id, target if target in known_ids else None, target))
+            hit, recorded = resolve_path_link(
+                raw, source_id, known_ids, getattr(self, "_path_ids", None))
+            out.append((source_id, hit, recorded, MENTION,
+                        None if hit else "missing", [], raw))
         for raw in extract_wikilinks(body):
             if not raw or is_external(raw):
                 continue
-            out.append((source_id,
-                         resolve_wiki(self._qualify_alias_link(raw),
-                                      maps, known_ids), raw))
+            hit, reason, cands = resolve_wiki_detail(
+                self._qualify_alias_link(raw), maps, known_ids, candidates)
+            out.append((source_id, hit, raw, MENTION, reason, cands, raw))
+        pairs, problems = frontmatter_relations(relations)
+        for problem in problems:
+            logger.warning("relations in %s: %s (skipped)", source_id, problem)
+        for kind, raw in pairs:
+            hit, reason, cands, recorded = resolve_relation_target(
+                self._qualify_alias_link(raw), source_id, maps, known_ids,
+                candidates, getattr(self, "_path_ids", None))
+            out.append((source_id, hit, recorded, kind, reason, cands, raw))
         return out
+
+    @staticmethod
+    def _relations_of(concept) -> Any:
+        """The ``relations:`` frontmatter mapping of a parsed concept."""
+        extra = getattr(concept, "model_extra", None) or {}
+        return extra.get("relations")
+
+    def _clear_outgoing_broken(self, ids: List[str]) -> None:
+        """Drop BrokenLink rows *from* concepts about to be re-linked.
+
+        Their outgoing links are re-resolved from the current body, so an
+        old miss (a link since removed or fixed) must not linger.
+        """
+        if ids:
+            self.conn.execute(
+                "MATCH (bl:BrokenLink) WHERE bl.source_id IN $ids DELETE bl",
+                {"ids": list(ids)},
+            )
+
+    def _capture_incoming(self, ids: List[str]) -> List[Dict[str, Any]]:
+        """Links into ``ids`` from concepts outside ``ids`` (0.11.0, O1).
+
+        Read before a re-import replaces the nodes (``DETACH DELETE`` drops
+        every edge): outgoing links are re-extracted from the new bodies,
+        but nothing else would ever restore links *into* them from files
+        that did not change.
+        """
+        if not ids:
+            return []
+        return self.conn.execute("""
+            MATCH (s:Concept)-[r:LINKS_TO]->(c:Concept)
+            WHERE c.id IN $ids AND NOT s.id IN $ids
+            RETURN s.id AS s, c.id AS c, r.kind AS k
+        """, {"ids": list(ids)}).rows_as_dict().get_all() or []
+
+    def _restore_incoming(self, rows: List[Dict[str, Any]]) -> int:
+        """Re-create captured incoming links; returns how many."""
+        for r in rows:
+            self.conn.execute("""
+                MATCH (s:Concept {id: $s})
+                MATCH (c:Concept {id: $c})
+                MERGE (s)-[:LINKS_TO {kind: $k}]->(c)
+            """, {"s": r["s"], "c": r["c"], "k": r.get("k") or MENTION})
+        return len(rows)
 
     def _qualify_alias_link(self, raw: str) -> str:
         """Rewrite `[[alias/rest]]` → `[[@alias/rest]]` for known aliases.
@@ -480,16 +628,20 @@ class ImportManager:
     def _batch_extract_links(self, parsed: List[Dict[str, Any]]):
         """Extract and create LINKS_TO relationships for a batch of concepts.
 
-        Collects markdown links (by path) and wikilinks (by name) over the
-        batch, resolves against every concept in the graph, and persists
-        hits/misses in bulk via ``_record_links``.
+        Collects markdown links (by path), wikilinks (by name) and declared
+        relations over the batch, resolves against every concept in the
+        graph, and persists hits/misses in bulk via ``_record_links``.
+        Stale misses from these sources are cleared first.
         """
-        maps, known_ids = self._load_link_index()
-        all_links: List[Tuple[str, Optional[str], str]] = []
+        maps, known_ids, candidates = self._load_link_index_full()
+        self._clear_outgoing_broken([item["cid"] for item in parsed])
+        all_links: List[LinkRecord] = []
         for item in parsed:
-            all_links.extend(
-                self._resolve_body_links(item["cid"], item["body"], maps, known_ids)
-            )
+            all_links.extend(self._resolve_concept_links(
+                item["cid"], item["body"],
+                self._relations_of(item["concept"]),
+                maps, known_ids, candidates,
+            ))
         if all_links:
             self._record_links(all_links)
 
@@ -505,6 +657,10 @@ class ImportManager:
         """
         # Collect IDs for bulk delete
         cids = [p["cid"] for p in parsed]
+        # O1: links into these concepts from unchanged files survive the
+        # replacement (read here, restored after the CREATEs below — all
+        # inside the caller's transaction).
+        incoming = self._capture_incoming(cids)
         if cids:
             # Bulk delete existing concepts. Use a bound parameter (never string
             # interpolation) and DETACH DELETE so concepts that already have
@@ -572,6 +728,10 @@ class ImportManager:
                     })
                 """, params)
 
+        restored = self._restore_incoming(incoming)
+        if restored:
+            logger.info("links: kept %d incoming link(s) across re-import", restored)
+
         # Concepts changed -> search indexes are now stale. Bumping inside the
         # caller's transaction means the marker rolls back with the data if the
         # import aborts, keeping dirty-state consistent with what's committed.
@@ -579,14 +739,18 @@ class ImportManager:
             self.schema_mgr._bump_write_epoch()
 
 
-    def _extract_links_for_concept(self, concept_id: str, body: str):
+    def _extract_links_for_concept(self, concept_id: str, body: str,
+                                   relations: Any = None):
         """Extract and create LINKS_TO relationships for a single concept.
 
-        Handles markdown links [text](file.md) by path and [[wikilinks]] by
-        name (uid → alias → title → stem); misses become BrokenLink records.
+        Handles markdown links [text](file.md) by path, [[wikilinks]] by
+        name (uid → alias → title → stem) and declared ``relations`` (O6);
+        misses become BrokenLink records with a reason.
         """
-        maps, known_ids = self._load_link_index()
-        links = self._resolve_body_links(concept_id, body, maps, known_ids)
+        maps, known_ids, candidates = self._load_link_index_full()
+        self._clear_outgoing_broken([concept_id])
+        links = self._resolve_concept_links(
+            concept_id, body, relations, maps, known_ids, candidates)
         if links:
             self._record_links(links)
 
@@ -771,46 +935,16 @@ class ImportManager:
                 source_files, walk_root=root)
             logger.info("directory-delta: %d changed, %d deleted (%.1fs)", len(changed), len(deleted), time.monotonic() - _t1)
 
-        # Record deletions durably: tombstones survive no-purge runs so a
-        # later --purge-deleted still sees them.
-        if deleted:
-            det._record_deletions(deleted)
-
-        # Purge deleted concepts if requested — consumes this run's
-        # detections plus tombstones left by earlier no-purge runs.
-        # Skipped for suspended (work-dir) imports: a temp import must
-        # never tombstone real concepts. Isolated pinned trees skip too.
-        if prune_missing and not det._suspended and not isolated:
-            pending = det._load_pending_deletions()
-            if pending:
-                purged = 0
-                cid_map = det._load_file_hash_concept_ids()
-                for path in pending:
-                    cid = cid_map.get(path)
-                    if cid and self.purge_mgr._purge_concept(cid):
-                        purged += 1
-                    else:
-                        # Stale tombstone (already purged, or wedged with no
-                        # concept): resolve it so it stops re-reporting.
-                        det._clear_deletion(path)
-                logger.info("purged %d deleted concept(s)", purged)
-                if len(pending) > purged:
-                    logger.warning(
-                        "purge: %d tombstone(s) had no matching concept and were cleared",
-                        len(pending) - purged,
-                    )
-
-        if not changed:
-            return []
-        source_files = changed
-
-        # Phase 1: Parse all files. Failures are per-file warnings; failed
-        # files get no hash state so they retry next run (their directories
-        # are dropped from dir_updates in Phase 3b).
+        # Phase 1: Parse changed files (before any deletion bookkeeping, so
+        # a moved file's concept — frontmatter identity, O3 — is known
+        # before its old path could tombstone or purge it). Failures are
+        # per-file warnings; failed files get no hash state so they retry
+        # next run (their directories are dropped from dir_updates in
+        # Phase 3b).
         _t1 = time.monotonic()
         parsed: List[Dict[str, Any]] = []
         failed_files: List[Path] = []
-        for fp in source_files:
+        for fp in changed:
             try:
                 concept, body, cid = self._parse_source_file(fp, root, alias)
                 search_text = f"{concept.title or ''} {concept.description or ''} {concept.body or ''}"
@@ -831,12 +965,74 @@ class ImportManager:
                 len(failed_files),
             )
 
+        # Phase 1b (O3): one concept id, one file. Two changed files
+        # claiming one id keep the first (sorted path order); a file whose
+        # id is already backed by a different file that still exists is a
+        # duplicate too. A FileHash row for the id at a path that no longer
+        # exists is a *move*: the old row retires and nothing is purged.
+        report: Dict[str, Any] = {"duplicates": [], "moved": []}
+        if not isolated:
+            parsed, dup_files, moved_keys = self._resolve_identity_conflicts(
+                parsed, det, root)
+            failed_files.extend(dup_files)
+            report["duplicates"] = [str(f) for f in dup_files]
+            report["moved"] = sorted(moved_keys)
+            if moved_keys:
+                deleted = [d for d in deleted if d not in moved_keys]
+        self.last_import_report = report
+
+        # Record deletions durably: tombstones survive no-purge runs so a
+        # later --purge-deleted still sees them.
+        if deleted:
+            det._record_deletions(deleted)
+
+        # Purge deleted concepts if requested — consumes this run's
+        # detections plus tombstones left by earlier no-purge runs.
+        # Skipped for suspended (work-dir) imports: a temp import must
+        # never tombstone real concepts. Isolated pinned trees skip too.
+        # A concept being (re)imported in this run is never purged: its
+        # tombstone is a move (O3), so it is cleared instead.
+        if prune_missing and not det._suspended and not isolated:
+            pending = det._load_pending_deletions()
+            if pending:
+                purged = 0
+                live = {p["cid"] for p in parsed}
+                cid_map = det._load_file_hash_concept_ids()
+                for path in pending:
+                    cid = cid_map.get(path)
+                    if cid in live:
+                        det.forget_file(path)
+                        continue
+                    if cid and self.purge_mgr._purge_concept(cid):
+                        purged += 1
+                    else:
+                        # Stale tombstone (already purged, or wedged with no
+                        # concept): resolve it so it stops re-reporting.
+                        det._clear_deletion(path)
+                logger.info("purged %d deleted concept(s)", purged)
+                if len(pending) > purged:
+                    logger.warning(
+                        "purge: %d tombstone(s) had no matching concept and were cleared",
+                        len(pending) - purged,
+                    )
+
+        if not changed:
+            # Nothing to import, but the directory hashes are now known to
+            # describe the graph (every file in a changed directory matched
+            # its FileHash, O2): store them so the next run skips the
+            # subtree without re-hashing per file.
+            if not isolated and dir_updates:
+                det._store_directory_hashes(dir_updates)
+            return []
+        source_files = changed
+
+        if parsed:
+            logger.info("parsed %d concept(s)", len(parsed))
+
         # No-op guard: if nothing parsed successfully, do no work (no encode, no
         # transaction, no index rebuild).
         if not parsed:
             return []
-
-        logger.info("parsed %d concept(s)", len(parsed))
 
         # Phase 2: Batch encode (length-bucketed; see _length_bucketed_encode).
         # batch_size drives DB writes; encoding uses small buckets so one
@@ -884,11 +1080,13 @@ class ImportManager:
         # ledger (B1 collision rule).
         if not isolated:
             file_hashes: Dict[str, str] = {}
+            file_cids: Dict[str, str] = {}
             for p in parsed:
                 fp = p["fp"]
                 rel = str(fp.relative_to(root))
                 file_hashes[rel] = det._file_hash(fp)
-            det._store_file_hashes(file_hashes)
+                file_cids[rel] = p["cid"]
+            det._store_file_hashes(file_hashes, concept_ids=file_cids)
             for fp in failed_files:
                 # dir_updates keys are DB (namespaced) keys — pop via the
                 # detector's key space, not the native rel.
@@ -925,10 +1123,14 @@ class ImportManager:
         self._batch_build_directories([p["cid"] for p in parsed])
         logger.info("directories: %d in %.1fs", len(parsed), time.monotonic() - _t1)
 
-        # Phase 5: Batch link extraction
+        # Phase 5: Batch link extraction, then re-resolve other concepts'
+        # misses that these concepts may now satisfy (a link written before
+        # its target existed must not depend on import order).
         _t1 = time.monotonic()
         self._batch_extract_links(parsed)
-        logger.info("links: %d concepts in %.1fs", len(parsed), time.monotonic() - _t1)
+        repaired = self.repair_links()
+        logger.info("links: %d concepts in %.1fs (%d earlier miss(es) repaired)",
+                    len(parsed), time.monotonic() - _t1, repaired)
 
         # Phase 6: Image ingestion (per concept, honouring the selected mode)
         _import_image_errors: List[Tuple[str, Exception]] = []
@@ -946,11 +1148,10 @@ class ImportManager:
             )
         logger.info("images: %d concepts in %.1fs", len(parsed), time.monotonic() - _t1)
 
-        # Phase 7: rebuild vector + FTS indexes once so every concept/image
-        # written above is searchable (indexes reflect table contents at build
-        # time, not subsequent inserts).
+        # Phase 7: bring the search indexes up to date (O8: honours the
+        # caller's rebuild policy — "defer" leaves the delta to search).
         _t1 = time.monotonic()
-        self.schema_mgr._build_search_indexes(rebuild=True)
+        self.schema_mgr.after_write(self.rebuild_policy)
         logger.info("reindex: %.1fs", time.monotonic() - _t1)
 
         # Aggregate failure report
@@ -973,6 +1174,71 @@ class ImportManager:
 
         return [p["cid"] for p in parsed]
 
+
+    def _resolve_identity_conflicts(self, parsed, det, root):
+        """Split parsed files into keep / duplicate, and find moves (O3).
+
+        Returns ``(kept, duplicate_files, moved_db_keys)``:
+
+        - two parsed files with one concept id: the first (sorted path)
+          wins, the rest are duplicates;
+        - a parsed file whose id has a FileHash row at another path:
+          if that file still exists on disk it is a duplicate (refused,
+          never merged); if it is gone, the concept moved — the old row is
+          retired via ``forget_file`` and its key returned so the caller
+          neither tombstones nor purges it.
+
+        Path identity cannot collide (one path, one id), so in practice
+        only frontmatter identity reaches the second and third rules.
+        """
+        from okfgraph.components.roots import strip_prefix
+        kept: List[Dict[str, Any]] = []
+        dups: List[Path] = []
+        moved: Set[str] = set()
+        seen: Dict[str, Path] = {}
+        for item in parsed:
+            cid = item["cid"]
+            if cid in seen:
+                logger.warning(
+                    "duplicate concept id %r: %s refused (already claimed by %s)",
+                    cid, item["fp"], seen[cid])
+                dups.append(item["fp"])
+                continue
+            seen[cid] = item["fp"]
+            kept.append(item)
+        if not kept:
+            return kept, dups, moved
+        rows = self.conn.execute(
+            "MATCH (f:FileHash) WHERE f.concept_id IN $ids "
+            "RETURN f.path AS p, f.concept_id AS c",
+            {"ids": [k["cid"] for k in kept]},
+        ).rows_as_dict().get_all() or []
+        by_cid: Dict[str, List[str]] = {}
+        for r in rows:
+            by_cid.setdefault(r["c"], []).append(r["p"])
+        final: List[Dict[str, Any]] = []
+        for item in kept:
+            my_key = str(item["fp"].relative_to(root))
+            others = []
+            for key in by_cid.get(item["cid"], []):
+                native = strip_prefix(det.alias, key)
+                if native is None or native == my_key:
+                    continue
+                others.append((key, Path(root) / native))
+            live = [str(path) for key, path in others if path.exists()]
+            if live:
+                logger.warning(
+                    "duplicate concept id %r: %s refused (backed by %s)",
+                    item["cid"], item["fp"], ", ".join(live))
+                dups.append(item["fp"])
+                continue
+            for key, _path in others:
+                det.forget_file(key)
+                moved.add(key)
+                logger.info("moved: %s keeps id %r (was %s)",
+                            my_key, item["cid"], key)
+            final.append(item)
+        return final, dups, moved
 
     def _import_chunks_for_concept(self, parsed_item: Dict[str, Any]) -> None:
         """Split, encode, and upsert chunks for a single concept.
@@ -1083,12 +1349,15 @@ class ImportManager:
         mode: "str | IngestMode" = IngestMode.TEXT,
         force: bool = False,
         base_dir: Optional[Path] = None,
+        source_file: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """Import a single concept using the full pipeline (encode, upsert, chunk, etc.).
 
         This is the core shared logic between ingest_md() and ingest_thoughts().
         ``base_dir`` resolves relative image paths (the source file's folder);
-        None falls back to the CWD, then the bundle root.
+        None falls back to the CWD, then the bundle root. ``source_file``
+        (0.11.0, O2) is the bundle file the concept came from: its hash is
+        recorded so the next bundle import does not embed it again.
         """
         mode = IngestMode.coerce(mode)
         # Rootless addressed write: force bypasses the detached refusal,
@@ -1179,8 +1448,14 @@ class ImportManager:
                         pass
                     raise
 
-        # Phase 5: Links
-        self._extract_links_for_concept(concept.id, body)
+        # Phase 5: Links (body + declared relations), then earlier misses
+        # this concept may now satisfy.
+        self._extract_links_for_concept(
+            concept.id, body, self._relations_of(concept))
+        self.repair_links()
+
+        if source_file is not None:
+            self._record_source_hash(Path(source_file), concept.id)
 
         # Phase 6: Images
         # Count assets actually linked (embedded + reused), not the stats
@@ -1193,8 +1468,8 @@ class ImportManager:
         except Exception:
             pass
 
-        # Phase 7: Rebuild indexes
-        self.schema_mgr._build_search_indexes(rebuild=True)
+        # Phase 7: indexes (O8: deferred when the caller asked)
+        self.schema_mgr.after_write(self.rebuild_policy)
 
         return {
             "concept_id": concept.id,
@@ -1240,6 +1515,8 @@ class ImportManager:
         # Atomic upsert
         self.conn.execute("BEGIN TRANSACTION")
         try:
+            # O1: keep links into this concept from other concepts.
+            incoming = self._capture_incoming([concept_id_val])
             self.conn.execute(
                 "MATCH (c:Concept {id: $id}) DETACH DELETE c",
                 {"id": concept_id_val},
@@ -1271,6 +1548,7 @@ class ImportManager:
                         body: $body, embedding: $embedding
                     })
                 """, params)
+            self._restore_incoming(incoming)
             self.schema_mgr._bump_write_epoch()  # concept changed -> indexes dirty
             self.conn.execute("COMMIT")
         except Exception:
@@ -1310,7 +1588,7 @@ class ImportManager:
 
         Delegates to :func:`parse_source_file` (shared with the diff tool).
         """
-        return parse_source_file(file_path, root, alias)
+        return parse_source_file(file_path, root, alias, identity=self.identity)
 
 
     def import_bundle(
@@ -1870,6 +2148,10 @@ class ImportManager:
                         concept_id, resolved_file, _root,
                     )
 
+        # 2.4. One id, one file (O3): refuse a duplicate, retire a move.
+        if _root is not None:
+            self._check_single_identity(concept_id, resolved_file, _alias, Path(_root))
+
         # 2.5. Chunk the body (NEW)
         if self.enable_chunking:
             # Delete old chunks for this document (re-import) — by
@@ -1955,39 +2237,149 @@ class ImportManager:
         self.image_mgr._ingest_concept_images(concept_id, body, resolved_file.parent, mode)
 
         # 6. Extract and create LINKS_TO relationships for this concept
-        self._extract_links_for_concept(concept_id, body)
+        #    (body + declared relations), then repair earlier misses.
+        self._extract_links_for_concept(
+            concept_id, body, self._relations_of(concept))
+        self.repair_links()
 
-        # 7. Rebuild search indexes so this concept (and its images) are
-        #    actually returned by vector/FTS search. Callers importing many
-        #    files one-by-one can pass rebuild_indexes=False and call
-        #    _build_search_indexes(rebuild=True) once at the end.
+        # 6b. O2: record the file's hash so a later bundle import skips it.
+        if _root is not None:
+            self._record_source_hash(resolved_file, concept_id,
+                                     alias=_alias, root=Path(_root))
+
+        # 7. Bring search indexes up to date so this concept (and its
+        #    images) is returned by search. Callers importing many files
+        #    pass rebuild_indexes=False and rebuild once (import_files).
         if rebuild_indexes:
-            self.schema_mgr._build_search_indexes(rebuild=True)
+            self.schema_mgr.after_write(self.rebuild_policy)
 
         return concept_id
 
+    def _check_single_identity(self, concept_id: str, file_path: Path,
+                               alias: str, root: Path) -> None:
+        """Single-file form of :meth:`_resolve_identity_conflicts` (O3)."""
+        from okfgraph.components.roots import strip_prefix
+        det = self._detector_for(alias)
+        if det.bundle_root is not None and _try_resolve(det.bundle_root) != _try_resolve(root):
+            return
+        try:
+            my_key = str(_try_resolve(file_path).relative_to(_try_resolve(root)))
+        except ValueError:
+            return
+        rows = self.conn.execute(
+            "MATCH (f:FileHash {concept_id: $c}) RETURN f.path AS p",
+            {"c": concept_id},
+        ).rows_as_dict().get_all() or []
+        for r in rows:
+            native = strip_prefix(det.alias, r["p"])
+            if native is None or native == my_key:
+                continue
+            other = Path(root) / native
+            if other.exists():
+                raise OKFError(
+                    "BAD_VALUE",
+                    f"duplicate concept id {concept_id!r}: {file_path} refused "
+                    f"(already backed by {other})",
+                    op="import_file",
+                    fields={"concept_id": concept_id, "file": str(file_path),
+                            "backed_by": str(other)},
+                    remedy="give one of the files another id: (one id, one file)",
+                )
+            det.forget_file(r["p"])
+            logger.info("moved: %s keeps id %r (was %s)", my_key, concept_id, r["p"])
+
+    def import_files(
+        self,
+        paths: List[Path],
+        mode: "str | IngestMode" = IngestMode.TEXT,
+        force: bool = False,
+        identity_root: Optional[Path] = None,
+    ) -> List[str]:
+        """Import a list of files, then run the index step once (O8).
+
+        What a producer hands back (``ProducedBundle.written``, O10) is
+        imported exactly — no tree walk, no unrelated files. Missing files
+        are refused before anything is written (``FILE_NOT_FOUND``).
+        """
+        missing = [str(p) for p in paths if not Path(p).is_file()]
+        if missing:
+            raise OKFError(
+                "FILE_NOT_FOUND", f"file(s) not found: {', '.join(missing)}",
+                op="import_files", fields={"files": missing})
+        with self._write_lock_ctx():
+            ids = [
+                self.import_from_okf(Path(p), mode=mode, rebuild_indexes=False,
+                                     force=force, identity_root=identity_root)
+                for p in paths
+            ]
+            self.schema_mgr.after_write(self.rebuild_policy)
+        return ids
+
+    def _record_source_hash(self, file_path: Path, concept_id: str,
+                            alias: Optional[str] = None,
+                            root: Optional[Path] = None) -> bool:
+        """Store one file's FileHash under the detector owning its tree (O2)."""
+        if alias is None:
+            alias = resolve_alias_for_path(_try_resolve(file_path), self.roots) or ""
+        if root is None:
+            root = self.roots.get(alias) if alias else self.bundle_root
+        if root is None:
+            return False
+        det = self._detector_for(alias)
+        if det.bundle_root is not None and _try_resolve(det.bundle_root) != _try_resolve(root):
+            # A pinned foreign tree (identity_root elsewhere): its keys would
+            # collide with the owned ledger — same isolation rule as bundles.
+            return False
+        return det.store_single_file(file_path, concept_id, walk_root=root)
+
 
     def list_broken_links(self) -> List[Dict[str, Any]]:
-        """List all tracked broken links (references to concepts not yet imported)."""
+        """All tracked broken links: references to concepts that do not exist
+        (``reason: missing``) or names that match several (``ambiguous``,
+        with ``candidates``). ``kind`` is ``mention`` for body links, the
+        relation kind otherwise (0.11.0, O6/O12)."""
         result = self.conn.execute("""
             MATCH (bl:BrokenLink)
-            RETURN bl.source_id AS source, bl.target_id AS target, bl.timestamp AS timestamp
-            ORDER BY bl.timestamp
+            RETURN bl.source_id AS source, bl.target_id AS target,
+                   bl.timestamp AS timestamp, bl.kind AS kind,
+                   bl.reason AS reason, bl.candidates AS candidates,
+                   bl.id AS id, bl.raw AS raw
+            ORDER BY bl.timestamp, bl.id
         """)
         rows = result.rows_as_dict().get_all()
-        return [
-            {"source": r["source"], "target": r["target"], "timestamp": r["timestamp"]}
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            cands = r.get("candidates")
+            try:
+                cands = json.loads(cands) if cands else []
+            except (ValueError, TypeError):
+                cands = []
+            out.append({
+                "source": r["source"], "target": r["target"],
+                "timestamp": r["timestamp"],
+                "kind": r.get("kind") or MENTION,
+                "reason": r.get("reason") or "missing",
+                "candidates": cands,
+                "id": r.get("id"),
+                "raw": r.get("raw"),
+            })
+        return out
 
 
     def repair_links(self, skip_sources: Optional[Set[str]] = None) -> int:
         """Attempt to repair broken links by re-checking if targets now exist.
 
         Scans all tracked broken links. A record repairs when its target is
-        now an existing concept id — or when it is a ``[[wikiname]]`` that
-        now resolves to exactly one concept via the name index (uid → alias
-        → title → stem). Ambiguous names are left alone, never guessed.
+        now an existing concept id — or when it is a ``[[wikiname]]`` (or a
+        relation target) that now resolves to exactly one concept via the
+        name index (uid → alias → title → stem). Ambiguous names are left
+        alone, never guessed. The repaired edge keeps the record's kind.
+        Path links are re-read from the link as written (``raw``) with the
+        same rules import uses (0.11.0).
+
+        Every import runs this after its link step (0.11.0), so a link
+        written before its target existed resolves when the target arrives;
+        with no BrokenLink rows it returns at once.
 
         Returns:
             Number of links successfully repaired.
@@ -1996,38 +2388,55 @@ class ImportManager:
         broken = self.list_broken_links()
         if not broken:
             return 0
-        maps, known_ids = self._load_link_index()
+        maps, known_ids, candidates = self._load_link_index_full()
         repaired = 0
         for link in broken:
             source_id = link["source"]
             raw_target = link["target"]
+            kind = link["kind"]
             if source_id in skip_sources:
                 # reviewed:true concepts are never modified (doctor --fix).
                 continue
-            link_id = f"{source_id}→{raw_target}"
-
             if source_id not in known_ids:
                 continue
+            raw_link = link.get("raw") or ""
+            path_hit = None
+            if raw_link and raw_link.split("#", 1)[0].strip().lower().endswith(".md"):
+                # The link as written, read exactly as import reads it
+                # (source-relative, then root-relative, then file → id).
+                path_hit, _rec = resolve_path_link(
+                    raw_link, source_id, known_ids, getattr(self, "_path_ids", None))
             if raw_target in known_ids:
                 target_id = raw_target
+            elif path_hit is not None:
+                target_id = path_hit
             else:
                 # Path-style miss that is really a wikilink, or vice versa:
                 # try name resolution before giving up.
-                target_id = resolve_wiki(raw_target, maps, known_ids)
+                target_id, reason, cands = resolve_wiki_detail(
+                    raw_target, maps, known_ids, candidates)
                 if target_id is None:
+                    if (reason != link["reason"]
+                            or cands != link["candidates"]):
+                        # Still broken, but the reason changed (a second
+                        # note took the title): keep doctor truthful.
+                        self.conn.execute(
+                            "MATCH (bl:BrokenLink {id: $id}) "
+                            "SET bl.reason = $r, bl.candidates = $c",
+                            {"id": link["id"], "r": reason,
+                             "c": json.dumps(cands) if cands else None})
                     continue
 
             self.conn.execute("""
                 MATCH (source:Concept {id: $source})
                 MATCH (target:Concept {id: $target})
-                MERGE (source)-[:LINKS_TO]->(target)
-            """, {"source": source_id, "target": target_id})
+                MERGE (source)-[:LINKS_TO {kind: $kind}]->(target)
+            """, {"source": source_id, "target": target_id, "kind": kind})
             # Remove the BrokenLink record
             self.conn.execute(
                 "MATCH (bl:BrokenLink {id: $id}) DELETE bl",
-                {"id": link_id},
+                {"id": link["id"]},
             )
             repaired += 1
 
         return repaired
-

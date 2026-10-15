@@ -39,7 +39,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 | **Doctor** | `okf doctor`: 0–100 health score (broken/orphan/stale/duplicate-title/missing-description), safe `--fix` that never touches `reviewed: true`, `--strict` CI gate |
 | **Export** | OKF round-trip with See Also / Cited By enrichment + index files, or `--flavor obsidian` (`[[Title]]` wikilinks, no index files, edge-lossless re-import) |
 | **Images** | Caption-based (`mode=text`) or image-content (`mode=optional`/`omni` via the ONNX vision model, needs a text-nano graph; 0.8.0+) content-hash dedup, `okf-asset://` protocol |
-| **MCP** | 8 tools (`search`, `read`, `traverse`, `ingest`, `export_bundle`, `export_concept`, `list_images`, `get_image`), MCP ≥ 2.0 (`MCPServer` + `ToolAnnotations`), stdio transport; success result = envelope, failures = `isError: true` + error envelope (D7) |
+| **MCP** | 11 tools (`search`, `read`, `traverse`, `ingest`, `export_bundle`, `export_concept`, `list_images`, `get_image`, and since 0.11 `update`, `supersede`, `delete`), MCP ≥ 2.0 (`MCPServer` + `ToolAnnotations`), stdio transport — or one shared owner via `okf serve` + `okf-mcp --connect URL`; success result = envelope, failures = `isError: true` + error envelope (D7) |
 | **CLI** | Same 8 core verbs (`search`, `read`, `traverse`, `ingest`, `import`, `export`, `diff`, `doctor`) plus maintenance (`shell`, `lint`, `produce`, `reindex`, `broken-links`, `deleted-*`, `delete`, `images`, `image`, …), global `--json` (D5), slim per-command help, `okfgraph.toml` config |
 | **Skills** | 3 harness-neutral skills (`okfgraph-mcp`, `okfgraph-cli`, `okfgraph-ingest`), `.mcp.json` wiring included |
 
@@ -246,7 +246,7 @@ ops fail fast naming the missing root). Thought IDs are namespaced
 
 ## MCP server
 
-8 tools, MCP ≥ 2.0, stdio transport. Wire once per project with a **stable**
+11 tools, MCP ≥ 2.0, stdio transport. Wire once per project with a **stable**
 database — `--db-path`, `OKFGRAPH_DB_PATH` or `[database] db_path` in
 `okfgraph.toml`; the server refuses to boot without one (`CONFIG_INVALID`,
 exit 2) since a temp dir means amnesia every session. `--bundle-root`
@@ -293,7 +293,7 @@ Harness-neutral skill sources live in `skills/` (Claude Code auto-loads
 ## Architecture
 
 ```
-                ┌──────────── MCP (8 tools) / CLI (8 verbs + maintenance)
+                ┌──────────── MCP (11 tools) / CLI (8 verbs + maintenance)
                 │                        │
           OKFRouter (facade: owns conn, encoder, lock; thin proxies)
                 │
@@ -351,8 +351,8 @@ Key design decisions:
 
 ## API reference (`OKFRouter` ops)
 
-One vocabulary of 24 operations on the facade (mixins `QueryOps`,
-`IngestOps`, `ExportOps`, `AdminOps`); every failure raises
+One vocabulary of operations on the facade (mixins `QueryOps`,
+`IngestOps`, `ExportOps`, `AdminOps`, and since 0.11 `WriteOps`); every failure raises
 `OKFError(code, message, fields?, remedy?)` — `UsageError` (exit 2) for
 caller mistakes, `StateError`/`OutcomeError` (exit 1) for graph state and
 domain outcomes (the class always follows the code). Outcome errors
@@ -362,17 +362,19 @@ on `err.data`. A passed param the chosen path ignores is refused with
 
 | Op | Description |
 |---|---|
-| `search(query, target="concepts", limit?, concept_type?, tags?, parent_id?, include_chunks?, max_chunks_per_doc?, expand?, context_hops?, hub_rerank?, hub_weight?, rank="none"\|"hub"\|"ppr")` | RRF hybrid; `hub` blends authority, `ppr` is model-free; chunk paths: `hub_rerank` > `expand` > plain |
+| `search(query, target="concepts", limit?, concept_type?, tags?, parent_id?, include_chunks?, max_chunks_per_doc?, expand?, context_hops?, hub_rerank?, hub_weight?, rank="none"\|"hub"\|"ppr", where?, since?, until?, exclude_tags?, link_kinds?)` | RRF hybrid; `hub` blends authority, `ppr` is model-free; chunk paths: `hub_rerank` > `expand` > plain. 0.11: `where` = equality on extra keys, `since`/`until` on `timestamp`, `exclude_tags` (default from `[search] exclude_tags`), `link_kinds` for `hub`/`ppr` |
 | `read(concept_id, include="body"\|"chunks"\|"document"\|"context", max_tokens?)` | Concept dict / chunk dicts (no embeddings) / `{"concept_id","markdown"}` / `{incoming_links, outgoing_links, ancestry, siblings}`; or a budgeted `{sections, used, budget, truncated}` |
-| `traverse(start_id, relationship?, direction?, depth?, node_type?, target?, max_path_length?)` | Walk, list (empty id = root), connect |
-| `ingest(kind, …)` | `md` / `pdf` / `thoughts` / `bib`, per-kind params, lint + chunk + embed + link |
-| `import_file(path, mode?) {"concept_id","images"}` / `import_bundle(path?, …, prune_missing?) {"concept_ids","images"}` | Single / whole-bundle delta import |
+| `traverse(start_id, relationship?, direction?, depth?, node_type?, target?, max_path_length?, link_kinds?)` | Walk, list (empty id = root), connect; `link_kinds` (0.11) follows only those `LINKS_TO` kinds (`mention`, `supersedes`, …) |
+| `ingest(kind, …, type?, extra?, materialize?, rebuild?)` | `md` / `pdf` / `thoughts` / `bib`, per-kind params, lint + chunk + embed + link; 0.11: an explicit `concept_id` upserts, `materialize` writes `<concept_id>.md` into the bundle and imports it |
+| `import_file(path, mode?, rebuild?) {"concept_id","images"}` / `import_files(paths, rebuild?) {"concept_ids","images"}` / `import_bundle(path?, …, prune_missing?, rebuild?) {"concept_ids","images","duplicates","moved"}` | Single / list (one index step) / whole-bundle delta import (per-file since 0.11); `rebuild` = `auto`\|`defer`\|`force` |
+| `update(concept_id, title?, description?, type?, tags?\|add_tags?\|remove_tags?, extra?, relations?)` / `supersede(old_id, new_id)` | 0.11 write ops: edit the bundle file's frontmatter, then import it |
+| `sync(producer, source?, output_dir?, prefix?, rebuild?)` / `setup_extensions(target?, source?, download?)` (static) | 0.11: incremental producer run with a stored cursor; fill an offline extension directory |
 | `export_bundle(output_dir, directory_id?, concept_type?, tags?, flavor?) {"concept_ids",…}` / `export_concept(concept_id, output_dir, flavor?) {"path"}` | Both flavors |
 | `list_images(concept_id)` / `get_image(asset_id)` | Image ops (metadata; bytes + base64) |
 | `init() {"db_path","embedding_dim","model_id"}` / `model_info(…)` (static) / `reindex(if_dirty?)` | Schema, cache inspection, index rebuild |
 | `doctor(stale_days?, fix?, strict?) {"report","fixed"}` / `lint(dir)` (static) / `produce(source_type, source_path?, output_dir?, prefix?, overwrite?)` (static) / `diff(old?, new?)` / `diff_dirs(old, new)` (static) | Health, pre-import gate, bundles from sources, structural diff; `strict` findings, lint errors and differences raise outcome errors with the result on `err.data` |
-| `list_deleted()` / `recover_deleted(id)` / `purge_deleted(older_than?)` / `delete(concept_id)` / `detach(bundle_path?, verify?, force?)` | Soft-delete trio + `delete` (refuses file-backed concepts whose source exists — remedy: prune-missing) + mirror lifecycle |
-| `list_broken_links() [{source, target}]` / `repair_links() {"repaired"}` | Unresolved refs; exact-id + unique-name repair |
+| `list_deleted()` / `recover_deleted(id)` / `purge_deleted(older_than?)` / `delete(concept_id, remove_file?)` / `detach(bundle_path?, verify?, force?)` | Soft-delete trio + `delete` (refuses file-backed concepts whose source exists unless `remove_file=True`, which moves the file to `.okf-trash/`; `recover_deleted` moves it back) + mirror lifecycle |
+| `list_broken_links() [{source, target, kind, reason, candidates, raw, id}]` / `repair_links() {"repaired"}` | Unresolved refs (`reason` `missing`\|`ambiguous`); exact-id, path and unique-name repair — also run by every import since 0.11 |
 
 Components remain reachable for advanced use (`search_engine.search_hybrid`,
 `embed_engine.count_tokens`, `export_mgr`, `diff_mgr`, …); the ops are the

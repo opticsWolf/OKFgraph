@@ -15,10 +15,10 @@ dependencies = [
     # 0/12 with the full suite green.
     "ladybug==0.21.2",
     # Embedding engine — external crate (github.com/opticsWolf/embroider).
-    # Floor-pinned >=0.11: the q8 registry tier (Precision::Q8,
-    # TaskSpec.q8) rides 0.11.0; upper-bounded so the model registry
-    # and wheel matrix move together with releases.
-    "embroider>=0.11,<0.12",
+    # Floor-pinned >=0.12: the registry surface (register_task /
+    # load_registry_file, revision pins) rides 0.12.0; upper-bounded
+    # so the model registry and wheel matrix move together with releases.
+    "embroider>=0.12,<0.13",
     "pydantic>=2.0",
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",

@@ -59,7 +59,12 @@ def test_parse_config():
     assert ev.parse_config("cross").search_kwargs("concepts") == {
         "target": "concepts", "rank": "cross"}
     assert ev.parse_config("rrf+dedupe").search_kwargs("concepts") is None
-    for bad in ("bm25", "hub:x", "rrf@q8", "cross@fp16"):
+    c = ev.parse_config("noul")
+    assert (c.base, c.model, c.precision) == ("noul", ev.NOUL_MODELS["decider2b"], "fp32")
+    assert ev.parse_config("noul:laya-ml@q8").model == ev.NOUL_MODELS["laya-ml"]
+    assert ev.parse_config("noul:laya").search_kwargs("chunks") == {
+        "target": "chunks", "rerank": True}
+    for bad in ("bm25", "hub:x", "rrf@q8", "cross@fp16", "noul@fp16"):
         with pytest.raises(ValueError):
             ev.parse_config(bad)
 
@@ -109,6 +114,53 @@ class FakeSession:
         return self.score_batch([(query, doc)])[0]
 
 
+class FakeDecider:
+    """Decider2B-shaped: decide only; P(true) = query-word overlap."""
+    max_length = 2048
+    used_cuda = False
+
+    def __init__(self):
+        self.questions = []
+
+    def count_tokens(self, text):
+        return len(text.split())
+
+    def _decision(self, state, q):
+        self.questions.append(q)
+        query = q[1].split(": ", 1)[1].lower().split()
+        hits = sum(state.lower().split().count(w) for w in query)
+        p = hits / (hits + 1)
+        return ("true" if p >= 0.5 else "false", [("false", 1 - p), ("true", p)],
+                None, max(p, 1 - p), max(p, 1 - p))
+
+    def decide(self, state, questions):
+        return [self._decision(state, q) for q in questions]
+
+
+class FakeLaya(FakeDecider):
+    max_length = 1024
+
+    def __init__(self):
+        super().__init__()
+        self.long = 0
+
+    def predict_long(self, state, questions, window=None, stride=None):
+        self.long += 1
+        return [d + (0.0, 0, 1, 1) for d in self.decide(state, questions)]
+
+
+def test_noul_session_shapes_questions_and_scores():
+    two_b, laya = FakeDecider(), FakeLaya()
+    s2, sl = ev.NoulSession(two_b, "fp32"), ev.NoulSession(laya, "fp32")
+    assert s2.score_batch([("cats", "cats nap"), ("cats", "dogs")]) == [0.5, 0.0]
+    assert two_b.questions[0] == ("noul", ev.NOUL_INSTRUCTIONS.format(query="cats"),
+                                  ev.NOUL_TRUE, ev.NOUL_FALSE)
+    assert sl.score_long("cats", "cats cats") == pytest.approx(2 / 3)
+    assert laya.long == 1 and len(laya.questions[0]) == 3
+    assert s2.score_long("cats", "cats") == 0.5  # no window mode: one decide
+    assert s2.max_length == 2048 - ev.NoulSession.OVERHEAD
+
+
 def test_end_to_end(tmp_path, monkeypatch):
     import embroider
 
@@ -125,6 +177,10 @@ def test_end_to_end(tmp_path, monkeypatch):
     opened = []
     monkeypatch.setattr(embroider.Reranker, "open", staticmethod(
         lambda model, **kw: opened.append((model, kw.get("precision"))) or FakeSession()))
+    monkeypatch.setattr(embroider.Decider2B, "open", staticmethod(
+        lambda model, **kw: opened.append((model, kw.get("max_length"))) or FakeDecider()))
+    monkeypatch.setattr(embroider.LayaDecider, "open", staticmethod(
+        lambda model, **kw: opened.append((model, kw.get("precision"))) or FakeLaya()))
 
     kb = tmp_path / "kb"
     kb.mkdir()
@@ -156,7 +212,8 @@ def test_end_to_end(tmp_path, monkeypatch):
         return router
 
     code = ev.main([str(labels), "--db", str(tmp_path / "kb.db"),
-                    "--configs", "rrf,hub,cross,cross:mmarco@q8,rrf+dedupe",
+                    "--configs", "rrf,hub,cross,cross:mmarco@q8,rrf+dedupe,"
+                    "noul,noul:laya-ml", "--noul-max-length", "1500",
                     "--md", str(md), "--json", str(js)])
     assert code == 0
     report = json.loads(js.read_text(encoding="utf-8"))
@@ -166,7 +223,11 @@ def test_end_to_end(tmp_path, monkeypatch):
     assert by["cross"]["ndcg"] == pytest.approx(1.0)
     assert by["cross"]["long_share"] == 0.0
     assert set(by["cross"]["slices"]) == {"chunks/en", "chunks/de", "concepts/en"}
-    assert opened == [(ev.MODELS["minilm"], None), (ev.MODELS["mmarco"], "q8")]
+    assert opened == [(ev.MODELS["minilm"], "fp32"), (ev.MODELS["mmarco"], "q8"),
+                      (ev.NOUL_MODELS["decider2b"], 1500),
+                      (ev.NOUL_MODELS["laya-ml"], "fp32")]
+    assert by["noul"]["n"] == 3 and by["noul"]["ndcg"] == pytest.approx(1.0)
+    assert not by["noul:laya-ml"]["error"]
     text = md.read_text(encoding="utf-8")
     assert "| `cross:mmarco@q8` | 3 |" in text and "by slice" in text
 

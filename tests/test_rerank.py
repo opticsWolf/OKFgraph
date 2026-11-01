@@ -95,7 +95,7 @@ def env(tmp_path, monkeypatch):
 
 def test_settings_defaults_and_router_kwargs():
     s = Settings()
-    assert s.rerank_model_id == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    assert s.rerank_model_id == "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
     assert (s.rerank_device, s.rerank_precision, s.rerank_top_n) == ("auto", "auto", 30)
     kw = s.router_kwargs()
     assert kw["rerank_top_n"] == 30 and kw["rerank_window"] is None

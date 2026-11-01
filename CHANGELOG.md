@@ -65,8 +65,8 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   always whole: chunks are re-read past the 500-char display cut, concepts
   are scored on their body, long texts in windows (best window wins).
   Settings under `[search]`: `rerank_model_id` (default
-  `cross-encoder/ms-marco-MiniLM-L-6-v2`;
-  `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` for multilingual graphs),
+  `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, multilingual;
+  `cross-encoder/ms-marco-MiniLM-L-6-v2` is smaller and English-only),
   `rerank_device`, `rerank_precision` (`auto` = fp32, or `q8`),
   `rerank_top_n`, `rerank_window` / `rerank_stride`. No reimport, no pins:
   the reranker writes no vectors. Not combined with `recency`. One model
@@ -90,7 +90,9 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   against the first config, p50/p95 latency, the share of texts scored
   in windows, and nDCG per target/language slice (`--md`, `--json`).
   `--copy` works on a copy of the graph; `--offline` uses cached weights
-  only. `scripts/eval_labels_okfgraph.jsonl` is a 28-query starter set
+  only. `noul[:decider2b|laya|laya-ml]` configs try an embroider
+  typed-decision classifier as the reranker (one yes/no question per
+  passage, scored by P(true)). `scripts/eval_labels_okfgraph.jsonl` is a 28-query starter set
   for this repo's own notes. No thresholds or defaults change.
 - **Index policy and batch import (O8).** `rebuild="auto"|"defer"|"force"`
   on `import_bundle`, `import_file`, `import_files`, `ingest`;

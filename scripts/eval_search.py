@@ -25,12 +25,16 @@ is what ``dedupe`` addresses).
 Configs: ``rrf`` (plain RRF), ``hub`` (concepts ``rank='hub'``, chunks
 ``hub_rerank``), ``cross[:MODEL][@PRECISION]`` (cross-encoder rerank;
 MODEL is a registry id or ``minilm`` / ``mmarco``, PRECISION ``fp32`` /
-``q8``), each optionally ``+dedupe`` (chunks only). No thresholds ship
-from this: the report records the numbers a default needs.
+``q8``), ``noul[:MODEL][@PRECISION]`` (an embroider typed-decision
+classifier as the reranker: one yes/no question per passage, scored by
+P(true); MODEL is a registry id or ``decider2b`` / ``laya`` /
+``laya-ml``), each optionally ``+dedupe`` (chunks only). No thresholds
+ship from this: the report records the numbers a default needs.
 """
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import math
 import os
@@ -47,6 +51,15 @@ MODELS = {
     "minilm": "cross-encoder/ms-marco-MiniLM-L-6-v2",
     "mmarco": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
 }
+NOUL_MODELS = {
+    "decider2b": "Mapika/decider-2b",
+    "laya": "convaiinnovations/laya-typed-decisions",
+    "laya-ml": "convaiinnovations/laya-multilingual",
+}
+# The relevance question, as embroider's decider-2b/Laya goldens phrase it.
+NOUL_INSTRUCTIONS = "Does the passage answer the query: {query}"
+NOUL_TRUE = "The passage answers the query."
+NOUL_FALSE = "The passage does not answer the query."
 TARGETS = ("chunks", "concepts")
 
 
@@ -127,10 +140,11 @@ def score_ranking(ids: List[str], relevant: Dict[str, int], k: int) -> Dict[str,
 @dataclass
 class Config:
     name: str
-    base: str                      # rrf | hub | cross
+    base: str                      # rrf | hub | cross | noul
     model: Optional[str] = None
     precision: Optional[str] = None
     dedupe: bool = False
+    max_length: Optional[int] = None   # noul: Decider2B context cap
 
     def search_kwargs(self, target: str) -> Optional[Dict[str, Any]]:
         """Search params for ``target``; None when the config has no
@@ -140,7 +154,7 @@ class Config:
         kw: Dict[str, Any] = {"target": target}
         if self.base == "hub":
             kw.update({"rank": "hub"} if target == "concepts" else {"hub_rerank": True})
-        elif self.base == "cross":
+        elif self.base in ("cross", "noul"):
             kw.update({"rank": "cross"} if target == "concepts" else {"rerank": True})
         if self.dedupe:
             kw["dedupe"] = True
@@ -148,21 +162,26 @@ class Config:
 
 
 def parse_config(spec: str) -> Config:
-    """``rrf`` / ``hub`` / ``cross[:MODEL][@PRECISION]``, optional ``+dedupe``."""
+    """``rrf`` / ``hub`` / ``cross[:MODEL][@PRECISION]`` /
+    ``noul[:MODEL][@PRECISION]``, optional ``+dedupe``."""
     text = spec.strip()
     dedupe = text.endswith("+dedupe")
     if dedupe:
         text = text[: -len("+dedupe")]
     text, at, precision = text.partition("@")
     base, colon, model = text.partition(":")
-    if base not in ("rrf", "hub", "cross") or ((colon or at) and base != "cross"):
+    scored = base in ("cross", "noul")
+    if base not in ("rrf", "hub", "cross", "noul") or ((colon or at) and not scored):
         raise ValueError(f"unknown config {spec!r}")
-    if base != "cross":
+    if not scored:
         return Config(spec.strip(), base, dedupe=dedupe)
     precision = precision or "fp32"
     if precision not in ("fp32", "q8"):
         raise ValueError(f"precision must be fp32 or q8 in {spec!r}")
-    model = MODELS.get(model or "minilm", model)
+    if base == "noul":
+        model = NOUL_MODELS.get(model or "decider2b", model)
+    else:
+        model = MODELS.get(model or "minilm", model)
     return Config(spec.strip(), base, model, precision, dedupe)
 
 
@@ -187,20 +206,81 @@ class CountingReranker:
         return self.inner.score_long(query, doc, window=window, stride=stride)
 
 
-def make_reranker(router, model: str, precision: str):
-    """A lazy cross-encoder session for one config (opened on first use)."""
+class NoulSession:
+    """A typed-decision classifier behind the reranker session interface.
+
+    Each (query, passage) pair is one ``noul`` question over the passage
+    as state; the score is P(true). Laya scores long passages with
+    ``predict_long`` (strongest window); Decider2B has no window mode and
+    truncates the state to its ``max_length``.
+    """
+
+    OVERHEAD = 64  # instructions + criteria tokens on top of query + passage
+
+    def __init__(self, inner, precision: str):
+        self.inner = inner
+        self.precision = precision
+        self.windowed = hasattr(inner, "predict_long")
+
+    @property
+    def used_cuda(self) -> bool:
+        return bool(self.inner.used_cuda)
+
+    @property
+    def max_length(self) -> int:
+        return max(1, int(self.inner.max_length) - self.OVERHEAD)
+
+    def count_tokens(self, text: str) -> int:
+        return self.inner.count_tokens(text)
+
+    def _question(self, query: str):
+        ins = NOUL_INSTRUCTIONS.format(query=query)
+        if self.windowed:
+            return ("noul", ins, NOUL_TRUE)
+        return ("noul", ins, NOUL_TRUE, NOUL_FALSE)
+
+    @staticmethod
+    def _p_true(decision) -> float:
+        return float(dict(decision[1])["true"])
+
+    def score_batch(self, pairs):
+        return [self._p_true(self.inner.decide(doc, [self._question(q)])[0])
+                for q, doc in pairs]
+
+    def score_long(self, query, doc, window=None, stride=None):
+        if not self.windowed:
+            return self.score_batch([(query, doc)])[0]
+        return self._p_true(self.inner.predict_long(
+            doc, [self._question(query)], window=window, stride=stride)[0])
+
+
+def make_reranker(router, config: Config):
+    """A lazy reranker session for one config (opened on first use)."""
     import embroider
 
     from okfgraph.components.embedding import LazyReranker
 
     device = getattr(router.reranker, "_device", "auto")
     cache_dir = getattr(router, "cache_dir", None)
+    model = config.model
+    # Explicit: precision=None means 'auto', which is fp16 on CUDA.
+    precision = config.precision
+    if config.base == "noul":
+        def factory():
+            if "decider-2b" in model:
+                inner = embroider.Decider2B.open(
+                    model, cache_dir=cache_dir, device=device,
+                    max_length=config.max_length, precision=precision)
+            else:
+                inner = embroider.LayaDecider.open(
+                    model, cache_dir=cache_dir, device=device, precision=precision)
+            return NoulSession(inner, config.precision)
+    else:
+        def factory():
+            return embroider.Reranker.open(
+                model, cache_dir=cache_dir, device=device, precision=precision)
     return CountingReranker(LazyReranker(
-        model_id=model, device=device,
-        session_factory=lambda: embroider.Reranker.open(
-            model, cache_dir=cache_dir, device=device,
-            precision=None if precision == "fp32" else precision),
-    ))
+        model_id=model, device=device, session_factory=factory))
 
 
 # ── run ──────────────────────────────────────────────────────────────────
@@ -219,10 +299,10 @@ def run_config(router, config: Config, labels: List[Label], k: int,
     """Every (label, target) under one config; first query warms up."""
     run = Run(config.name)
     rr = None
-    if config.base == "cross":
-        key = (config.model, config.precision)
+    if config.base in ("cross", "noul"):
+        key = (config.base, config.model, config.precision)
         rr = rerankers.get(key) or rerankers.setdefault(
-            key, make_reranker(router, config.model, config.precision))
+            key, make_reranker(router, config))
         router.search_engine.reranker = rr
     jobs = [(lb, t) for lb in labels for t in lb.targets
             if config.search_kwargs(t) is not None]
@@ -368,6 +448,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "(default: rrf,hub,cross)")
     ap.add_argument("--split", default=None, help="only labels with this split")
     ap.add_argument("-k", type=int, default=10, help="cutoff (default: 10)")
+    ap.add_argument("--noul-max-length", type=int, default=2048,
+                    help="Decider2B context cap in tokens; it has no window "
+                    "mode, so longer passages are truncated (default: 2048)")
     ap.add_argument("--offline", action="store_true",
                     help="never download model weights (HF_HUB_OFFLINE=1)")
     ap.add_argument("--json", default=None, help="write the full report here")
@@ -378,13 +461,20 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     labels = load_labels(args.labels, args.split)
     configs = [parse_config(s) for s in args.configs.split(",") if s.strip()]
+    for cfg in configs:
+        if cfg.base == "noul":
+            cfg.max_length = args.noul_max_length
     router = open_router(args.db, args.copy)
     try:
-        rerankers: Dict[tuple, Any] = {}
+        own = router.search_engine.reranker
         runs = []
         for cfg in configs:
             print(f"… {cfg.name}", file=sys.stderr, flush=True)
-            runs.append(run_config(router, cfg, labels, args.k, rerankers))
+            # One session per config, dropped after it: kept sessions (and
+            # their grown CUDA arenas) slowed later configs past CPU speed.
+            runs.append(run_config(router, cfg, labels, args.k, {}))
+            router.search_engine.reranker = own
+            gc.collect()
     finally:
         router.close()
     summary = summarize(runs)

@@ -122,8 +122,8 @@ model=None) -> List[Dict]`, beside `rerank_with_hub_score`:
 ## 4. Settings, dispatch, surfaces
 
 - **Settings** (`settings.py`, validated like `embedding.*`):
-  `rerank.model_id` (default MiniLM-L-6; mMARCO for multilingual
-  graphs), `rerank.device` (`auto`), `rerank.precision` (`auto`),
+  `rerank.model_id` (default mMARCO, decided by the Phase 3 run;
+  MiniLM-L-6 for English-only graphs), `rerank.device` (`auto`), `rerank.precision` (`auto`),
   `rerank.top_n` (candidates rescored, default 30),
   `rerank.window`/`rerank.stride` (`None` = engine defaults).
 - **Dispatch** (`ops/query.py`): `search(..., rerank: bool = False)`
@@ -195,11 +195,19 @@ queries, 43 query×target rows, 7 German) on a copy of this repo's
 - `hub` equals `rrf` here: this graph has no `LINKS_TO` edges.
 - `dedupe` collapsed 19 rows with no metric change; this graph has few
   copied passages, so it cannot decide the default.
-- q8 not measured: the `.onnx.data` weights are not cached.
+- q8 (second run, same labels): MiniLM 0.792 / 0.769, mMARCO 0.815 /
+  0.824 (chunks / concepts), same latency as fp32 when run in a fresh
+  process. The "q8" artifacts are 4-bit `MatMulNBits` (bits=4) — an
+  embroider naming issue, logged under `embroider-findings`.
+- Classifiers as rerankers (`noul` configs, one yes/no question per
+  passage): Decider2B 0.725 at ~3.5 s p50, Laya typed-decisions 0.605
+  (below rrf); Laya multilingual fails to open in embroider. Not pursued.
 
-Not enough to promote anything: the labels were drafted by the
-implementer, not reviewed, and the heldout split is 13 rows. Open:
-reviewed labels, the Macrame graph (links, copied plan sections), q8.
+**Decision (2026-11-01, Q5): mMARCO is the default rerank model.** It
+matches MiniLM on English and is the only one that keeps German results
+near rrf. Rerank stays opt-in; no thresholds ship. Still open: reviewed
+labels, the Macrame graph (links, copied plan sections) for `hub` and
+`dedupe`.
 
 ### Phase 4 — release (0.5 day)
 

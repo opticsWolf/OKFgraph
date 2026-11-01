@@ -135,7 +135,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         extension_dir: Optional[str] = None,
         identity: str = "path",
         exclude_tags: Optional[List[str]] = None,
-        rerank_model_id: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        rerank_model_id: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
         rerank_device: str = "auto",
         rerank_precision: str = "auto",
         rerank_top_n: int = 30,

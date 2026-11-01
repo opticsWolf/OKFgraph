@@ -35,9 +35,10 @@ logger = logging.getLogger(__name__)
 #: (a model switch forces a full reimport, enforced by the model pin).
 DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v5-text-small-retrieval"
 #: Cross-encoder for opt-in search rerank (0.11.0). It writes no vectors,
-#: so switching it needs no reimport. Multilingual graphs:
-#: ``cross-encoder/mmarco-mMiniLMv2-L12-H384-v1``.
-DEFAULT_RERANK_MODEL_ID = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+#: so switching it needs no reimport. Multilingual by default (the
+#: Phase 3 eval: English-only ``cross-encoder/ms-marco-MiniLM-L-6-v2``
+#: lowered German results); that model stays an option for English graphs.
+DEFAULT_RERANK_MODEL_ID = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 
 #: Full Matryoshka ladder, mirroring OKFRouter.ALLOWED_DIMS — the router
 #: warns (not errors) off-ladder, so the settings layer warns the same way.
@@ -172,7 +173,7 @@ SETTINGS = [
     # (rerank=True / rank='cross'); the session opens on first use.
     Setting("rerank_model_id", "str", DEFAULT_RERANK_MODEL_ID, "search",
             "Cross-encoder for search rerank (registry id; "
-            "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 for multilingual graphs)"),
+            "cross-encoder/ms-marco-MiniLM-L-6-v2 is smaller and English-only)"),
     Setting("rerank_device", "str", "auto", "search",
             "Rerank inference device: auto (CUDA when present), cpu or cuda",
             choices=("auto", "cpu", "cuda")),

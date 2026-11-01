@@ -443,7 +443,7 @@ The draft (`dev_0.11.0`) touches the same code as WS1/WS3
 | Q2 | Thought-title uniqueness: per topic (as the report asks) or graph-wide (as wikilink resolution needs)? | per topic, plus a lint warning when a thought title is ambiguous graph-wide |
 | Q3 | Add `okf retitle-thoughts` to rename existing `Thought: <topic>` titles? | yes, CLI-only, `--dry-run` by default |
 | Q4 | WS3 step 1 re-embeds every bundle once after upgrade (directory hashes change meaning). Acceptable in a patch, or skip step 1 and wait for O2? | acceptable, announced in the CHANGELOG |
-| Q5 | Default rerank model: MiniLM-L-6 (English, 52 MB q8) or mMARCO (multilingual, 379 MB q8)? The Macrame/OKFgraph graphs are English, but notes carry German. | decided by §10.1 Phase 3 numbers, not now; MiniLM until then |
+| Q5 | Default rerank model: MiniLM-L-6 (English, 52 MB q8) or mMARCO (multilingual, 379 MB q8)? The Macrame/OKFgraph graphs are English, but notes carry German. | **Decided 2026-11-01: mMARCO** (Phase 3: equal on English, MiniLM lowered German chunk nDCG 0.766 → 0.593) |
 | Q6 | Ladybug 0.22.1 is out (okfgraph pins 0.21.2). Re-probe the §10.3 knobs on 0.22.1 and move the pin within 0.11.0, or keep 0.21.2? | separate spike before 0.11.0 freezes; keep 0.21.2 unless the segfault and FTS probes pass on 0.22.1. **Spiked 2026-11-01** on branch `dev_ladybug-0.22`: unbounded FTS fixed (0.21.2 control crashes, 0.22.1 5/5 clean on a 31k-chunk copy); storage 47 → 49 is one-way; extensions must be installed before an existing graph opens (router now retries). Suite crash-rate comparison decides the move. |
 
 ---

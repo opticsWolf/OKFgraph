@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-%3E%3D3.11-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-green)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-%E2%89%A52.0-purple)](https://modelcontextprotocol.io/)
-[![Ladybug](https://img.shields.io/badge/ladybug-0.21.2-orange)](https://pypi.org/project/ladybug/)
+[![Ladybug](https://img.shields.io/badge/ladybug-0.22.1-orange)](https://pypi.org/project/ladybug/)
 [![Website](https://img.shields.io/badge/website-OKFgraph-blue)](https://opticswolf.github.io/OKFgraph/)
 
 **Ladybug-backed knowledge graph with Rust-driven Jina v5 embeddings, model-free
@@ -31,7 +31,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 | **Embeddings** | Jina v5 (default `…-text-small-retrieval`, `--model-id` selects registry: text-nano) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (default 512, per-model ladder); device `auto` (CUDA→FP16 mirror weights, CPU→FP32, `--precision` pins incl. explicit `int8`); CPU arena off by default (`--cpu-arena`); token ceiling configurable (`--max-length`); model + precision pinned per graph, never mixed. No torch anywhere (0.7.0+) |
 | **Search** | Hybrid RRF fusion (vector + FTS) at concept and chunk granularity; `rank=none\|hub\|ppr` — including **PPR**: lexical seeds → exact Personalized PageRank, zero model load, deterministic |
 | **Read** | Body / chunks / rebuilt document / graph context, with optional **token budgets** (`max_tokens`): self first, then PPR-ranked neighbours, index-first for context |
-| **Storage** | LadybugDB `==0.21.2` (pinned — 0.20.x segfaulted 2nd in-process vector-index builds): graph + vector + FTS in one file |
+| **Storage** | LadybugDB `==0.22.1` (pinned — storage format and extensions move with each minor; see [Upgrading ladybug](#upgrading-ladybug-0221)): graph + vector + FTS in one file |
 | **Links** | Path links (`](doc.md)`) + `[[wikilinks]]` resolved by name (`uid` → `aliases` → `title` → filename stem); ambiguous names never resolve; broken links tracked and repairable |
 | **Import** | Single files, whole bundles (delta-aware: only changed files re-embed, `--prune-missing` drops deleted concepts), markdown / PDF+Office / raw thoughts; mordant lint on the way in; `okf produce` generates bundles from SQLite (`## Observations` + `log.md` changelog) |
 | **PDF** | `DocumentConverter` seam with `BobineConverter` default (routing `auto\|surgical\|always\|never`); bring your own converter, no code changes |
@@ -95,7 +95,7 @@ Skip both extras and point `ORT_DYLIB_PATH` at your onnxruntime 1.29
 library instead — but never rely on bare OS-loader discovery: a stale
 system DLL (e.g. in `System32`) fails the load instead of being used.
 
-Core dependencies are deliberately few: `ladybug==0.21.2`, `embroider>=0.3.2,<0.4`
+Core dependencies are deliberately few: `ladybug==0.22.1`, `embroider>=0.12,<0.13`
 (the shared embedding engine — github.com/opticsWolf/embroider, also used by
 bobine), `onnxruntime==1.29.0` (one pinned ORT binary shared by bobine +
 embroider; `ORT_DYLIB_PATH`-overridable), `mordant`, `mcp>=2.0`, `pydantic`,
@@ -426,7 +426,7 @@ okfgraph/
 
 ## Requirements
 
-Core (`uv sync`): `ladybug==0.21.2`, `embroider>=0.3.2,<0.4` (PyPI wheels,
+Core (`uv sync`): `ladybug==0.22.1`, `embroider>=0.12,<0.13` (PyPI wheels,
 github.com/opticsWolf/embroider), `mordant>=0.9`,
 `mcp>=2.0`, `pydantic>=2`, `pyyaml>=6`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.
@@ -436,6 +436,24 @@ bobine via `ORT_DYLIB_PATH`.
 
 - `--extra pdf`: `bobine>=0.6` (default PDF converter).
 - `--extra dev`: `pytest>=8`.
+
+### Upgrading ladybug (0.22.1)
+
+The first open of a graph under ladybug 0.22 rewrites its storage
+version (47 → 49). **This is one-way:** an okfgraph still on ladybug
+0.21.2 can no longer open that file afterwards ("Database file version:
+49, Current build storage version: 47") — even if the 0.22 process only
+read from it. Before upgrading:
+
+1. Back up each graph file (`kb.db`, plus `kb.db.wal` if present).
+2. Stop every `okf-mcp` server and `okf` process running from an older
+   install on the same graph, and upgrade them together.
+
+ladybug fetches its `vector` and `fts` extensions per version into
+`~/.lbdb/extension/<version>/` (~32 MB from `extension.ladybugdb.com`).
+An existing graph needs them at open time, so the first open after the
+upgrade installs them and retries; offline, it fails with
+`SEARCH_UNAVAILABLE` until one online open has cached them.
 
 ---
 

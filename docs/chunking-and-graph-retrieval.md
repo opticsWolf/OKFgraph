@@ -1508,6 +1508,10 @@ tests/fixtures/
 | Chunking toggle | `--no-chunking` flag vs `--chunk-size 0` | **Both** — flag is clearer |
 | Migration for existing DBs | Auto-migrate or manual? | **Manual** — `reindex` command rebuilds indexes; users re-import for chunks |
 | Chunk deletion on re-import | Delete all old chunks? | **Yes** — `MATCH (c)-[:PART_OF]->(ch:Chunk) DELETE ch` before insert |
+| Neural re-ranker in pipeline | ONNX cross-encoder (Jina/bge, offline) vs API reranker (Cohere/Jina API) vs LLM-as-judge vs none (RRF+hub/PPR only) | **ONNX cross-encoder as optional post-retrieval stage** — retrieve top-N via RRF, rerank top-M behind `rank='rerank'` / `--rerank` flag; cold/model-free paths stay default, API/LLM options out of scope (network + cost) |
+| Result diversity + recency | MMR / duplicate-collapse beyond `max_chunks_per_doc` vs none; `timestamp` decay vs pure text+hub order | **Optional MMR flag + recency boost** — off by default; near-dupe collapse first (cheap), cross-encoder second, recency weight only once `timestamp` coverage is reliable |
+| Post-filter starvation | Over-fetch `limit*3` then filter vs index-level pre-filter vs iterative deepening | **Iterative deepening (or larger over-fetch)** — selective `type/tags/parent_id` currently returns `<limit` when matches fall outside the window; fix in `search_hybrid`/`search_chunks` before any new knob |
+| Graph-constrained / federated search | `near_id`+hops proximity filter vs `NOT` filters vs multi-target (concepts+chunks+images) vs `offset` pagination | **Defer until asked** — `near_id`+hops first (native to a graph), then `exclude_*`/`offset`; `expand` stays post-hoc until then |
 
 ## 14. File Change Summary
 

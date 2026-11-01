@@ -268,3 +268,48 @@ class TestDbLock:
             assert ei.value.remedy
         finally:
             holder.communicate("")
+
+
+_EXT_MISSING = ("IO exception: Failed to load library: ~/.lbdb/extension/"
+                "0.22.0/win_amd64/vector/libvector.lbug_extension which is "
+                "needed by extension: vector.")
+
+
+class TestMissingSearchExtensions:
+    """First open after a ladybug upgrade: the graph's indexes need the
+    new version's extensions before _ensure_schema can INSTALL them."""
+
+    def _flaky_database(self, monkeypatch, *, install_fails=False):
+        import okfgraph.router as router_mod
+
+        real = router_mod.lb.Database
+        calls = []
+
+        # A subclass, not a function: ladybug itself calls class attributes
+        # (Database.get_version) through the module.
+        class Flaky(real):
+            def __init__(self, path, *a, **kw):
+                calls.append(str(path))
+                if path == ":memory:" and install_fails:
+                    raise RuntimeError("IO exception: could not reach extension repository")
+                if path != ":memory:" and calls.count(str(path)) == 1:
+                    raise RuntimeError(_EXT_MISSING)
+                super().__init__(path, *a, **kw)
+
+        monkeypatch.setattr(router_mod.lb, "Database", Flaky)
+        return calls
+
+    def test_installs_then_retries_open(self, tmp_path, monkeypatch):
+        calls = self._flaky_database(monkeypatch)
+        _router(tmp_path).close()
+        db = str(tmp_path / "err.db")
+        assert calls == [db, ":memory:", db]
+
+    def test_unreachable_repository_is_typed(self, tmp_path, monkeypatch):
+        from okfgraph.errors import OKFError
+
+        self._flaky_database(monkeypatch, install_fails=True)
+        with pytest.raises(OKFError) as ei:
+            _router(tmp_path)
+        assert ei.value.code == "SEARCH_UNAVAILABLE"
+        assert "extension.ladybugdb.com" in ei.value.remedy

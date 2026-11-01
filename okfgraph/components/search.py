@@ -41,7 +41,9 @@ class SearchEngine:
         segfaults (multi-threaded scoring, deterministic) on an unbounded
         FTS query whose terms match many rows — seen on a 28k-chunk graph
         for a common word like "index". Any explicit ``top`` avoids it, and
-        RRF only consumes the first ``limit * 3`` hits anyway.
+        RRF only consumes the first ``limit * 3`` hits anyway. 0.22.1 no
+        longer crashes there (probed on a 31k-chunk copy); the bound stays
+        because it is free and keeps older engines safe.
         """
         if self._db is None:
             res = self.conn.execute(cypher, params)

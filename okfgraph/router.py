@@ -42,6 +42,31 @@ from okfgraph.ops import AdminOps, ExportOps, IngestOps, QueryOps
 logger = logging.getLogger(__name__)
 
 
+def _install_search_extensions(db_path, cause: Exception) -> None:
+    """INSTALL vector + fts for this ladybug version without opening the
+    graph (an in-memory db is enough: extensions are cached per user, per
+    ladybug version). Raises SEARCH_UNAVAILABLE when the extension
+    repository cannot be reached — the graph cannot open without them."""
+    logger.info("ladybug %s search extensions missing; installing (%s)",
+                lb.__version__, cause)
+    try:
+        scratch = lb.Database(":memory:")
+        conn = lb.Connection(scratch)
+        for ext in ("vector", "fts"):
+            conn.execute(f"INSTALL {ext};")
+        conn.close()
+        scratch.close()
+    except RuntimeError as exc:
+        raise OKFError(
+            "SEARCH_UNAVAILABLE",
+            f"database {db_path} needs the ladybug {lb.__version__} vector/fts "
+            f"extensions, which could not be installed ({exc})",
+            fields={"db_path": str(db_path)},
+            remedy="connect once to extension.ladybugdb.com so ladybug can "
+                   "cache them under ~/.lbdb/extension/, then retry",
+        ) from None
+
+
 class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
     """Routes OKF concepts through a Ladybug graph + vector + FTS database.
 
@@ -169,7 +194,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         except ImportError:
             raise RuntimeError(
                 "the embroider wheel is required for text embeddings: "
-                "pip install 'embroider>=0.3.2,<0.4'"
+                "pip install 'embroider>=0.12,<0.13'"
             ) from None
         if embedding_dim > 1024:
             raise ValueError(f"embedding_dim must be <= 1024 (model output), got {embedding_dim}")
@@ -192,7 +217,19 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         self.max_length = max_length if max_length is not None else embroider.MAX_LENGTH
 
         try:
-            self.db = lb.Database(db_path)
+            try:
+                self.db = lb.Database(db_path)
+            except RuntimeError as exc:
+                # An existing graph with vector/FTS indexes loads those
+                # extensions at open, from ~/.lbdb/extension/<version>/ —
+                # before _ensure_schema can INSTALL them. The first open
+                # after a ladybug upgrade (0.21 -> 0.22) fails here, so
+                # install through a scratch in-memory db and retry once.
+                msg = str(exc)
+                if "Failed to load library" not in msg or "extension" not in msg:
+                    raise
+                _install_search_extensions(db_path, exc)
+                self.db = lb.Database(db_path)
         except RuntimeError as exc:
             # The database file lock is per process: a second process
             # (okf-mcp, another okf) on the same db is refused by ladybug.

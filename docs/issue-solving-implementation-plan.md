@@ -548,14 +548,14 @@ moves the pin.
    paths; bounds 16–1000; `BAD_VALUE` on `rank='ppr'` (no vector query).
    Settings default `[search] efs` unset. Test: higher `efs` never lowers
    recall@10 against a brute-force oracle on a fixture.
-2. **`find_path` in one query (B8).** Replace the length loop with
+2. **`find_path` in one query (B8).** *Done 2026-11-01 (`SHORTEST`, unknown ends raise).* Replace the length loop with
    `MATCH path = (a)-[:REL*1..N]-(b) … RETURN nodes(path) ORDER BY
    length(path) LIMIT 1`, keeping the 4-relationship whitelist and the
    `node_exists` check that tells "unknown id" from "no path". Delete
    the stale "not supported" comment in `search.py`. Existing traverse
    tests are the regression net; add one timing check on a 1000-node
    chain.
-3. **`SHOW_INDEXES` in doctor (B7).** Info line listing each index (name,
+3. **`SHOW_INDEXES` in doctor (B7).** *Done 2026-11-01.* Info line listing each index (name,
    table, type, and for vector: metric and dimension), plus a
    `missing_index` warning when an expected index is absent. Read-only,
    no score impact. This fits the draft's index policy (O8), which makes
@@ -564,7 +564,7 @@ moves the pin.
 ### 10.4 Order inside 0.11.0
 
 1. Rebase the draft onto 0.10.3 (§8); suite green with cached models.
-2. §10.3 items 2 and 3 (small, no API change).
+2. §10.3 items 2 and 3 (small, no API change). *Done.*
 3. §10.1 Phases 0–2 (rerank, opt-in), then §10.3 item 1 (`efs`, an API
    addition next to `rerank`).
 4. §10.2 near-dupe collapse (opt-in).

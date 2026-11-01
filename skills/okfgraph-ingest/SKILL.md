@@ -28,7 +28,9 @@ re-extracting it from files.
 
 ## MCP: `ingest`
 
-- `kind="thoughts"`: `thoughts` + `topic` (both required). Topic scheme per
+- `kind="thoughts"`: `thoughts` + `topic` (both required). **A thought
+  lives in the graph only, no file: that is the default and the normal
+  case.** Topic scheme per
   project, e.g. `auth-refactor`, `api-design` — consistency makes search work.
   Generated IDs are namespaced `thoughts/<topic>/<ts>_<id>` (virtual — no
   file needed, exports land there later); explicit `concept_id` may use
@@ -49,6 +51,12 @@ re-extracting it from files.
     and titles resolve; misses come back in `unresolved_related` and are
     linked automatically once the target exists.
   Search first to get the ids; don't invent them.
+- **A thought as a file (only when the user asks for one):**
+  `folder="decisions/perf"` writes it to `<folder>/<title>.md` in the
+  bundle and imports that file, in the same call (an untitled thought
+  gets a timestamp name). `"@alias/dir"` targets another root.
+  Not together with `concept_id`; the same title in the same folder
+  updates that file.
 - `kind="md"`: `md_path` (+ optional `concept_id`, `title`, `description`,
   `tags`, `mode`).
 - `kind="bib"`: `bib_path` (+ optional `tags`, applied to every entry).
@@ -75,8 +83,8 @@ re-extracting it from files.
 ## CLI: `okf ingest`
 
 - `--kind thoughts --thoughts TEXT --topic TOPIC [--title T] [--tags a,b]
-  [--related ID ...]` — the last output line is the minted id;
-  `--related` is repeatable
+  [--related ID ...] [--folder DIR]` — the last output line is the minted
+  id; `--related` is repeatable; `--folder` writes `DIR/<title>.md`
 - `okf retitle-thoughts [--topic T] [--apply]` — give thoughts still titled
   `Thought: <topic>` (pre-0.10.3) their first-sentence title; dry run
   unless `--apply`; CLI-only

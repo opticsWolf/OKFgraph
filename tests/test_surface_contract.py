@@ -116,7 +116,7 @@ class TestIngestRefusals:
 
     @pytest.mark.parametrize("kind, kwargs, ignored", [
         ("md", {"md_path": "x.md", "topic": "t"}, ["topic"]),
-        ("thoughts", {"thoughts": "t", "topic": "t", "title": "T"}, ["title"]),
+        ("thoughts", {"thoughts": "t", "topic": "t", "output_dir": "o"}, ["output_dir"]),
         ("pdf", {"pdf_path": "x.pdf", "tags": ["a"]}, ["tags"]),
         ("pdf", {"pdf_path": "x.pdf", "output_dir": "o"}, ["output_dir"]),
     ])

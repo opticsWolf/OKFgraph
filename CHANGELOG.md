@@ -70,6 +70,13 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   that resolve to nothing come back as `unresolved_related` and link
   automatically once they exist. The ingest skill now tells agents to
   write `[[Title]]` links in thought text and pass `related`.
+- **Thoughts into a folder.** `ingest(kind="thoughts", folder="decisions/perf",
+  title="Cache per file")` (CLI `--folder DIR`, MCP `folder`) writes
+  `decisions/perf/cache-per-file.md` into the bundle and imports it, in
+  the same call: `concept_id` + `materialize=True` without naming the
+  file. Untitled thoughts get a timestamp name; `@alias/dir` targets
+  another root; `..`, absolute paths, `concept_id` beside it and
+  `materialize=False` are refused.
 - **Producer plugins with a cursor (O10).** Entry-point group
   `okfgraph.producers`; `produce(..., cursor=)` returns
   `ProducedBundle(cursor, written)`; **`sync(producer, source)`** (CLI
@@ -86,6 +93,16 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
 - `[import] identity = "frontmatter"` (O3) — see Changed.
 
 ### Changed
+- **`traverse(a, target=b)` is one breadth-first query.** `find_path`
+  uses Ladybug's `SHORTEST` path match instead of re-running the match
+  once per length (up to 10 queries, each listing every path). Same
+  edges, same 1–10 cap, same result shape. An unknown `start_id` or
+  `target` now raises `UNKNOWN_CONCEPT` instead of returning `[]`, so
+  `[]` means "no path".
+- **Doctor reports the search indexes.** One `search_index` info line
+  per index (table, type, properties; metric and dimension for vector
+  indexes) and a `missing_index` warning, with no score deduction, for an
+  expected index that is absent. Remedy: `okf reindex`.
 - **Re-import keeps incoming links (O1).** Links into a re-imported
   concept from unchanged files are restored in the same transaction;
   purging a concept turns links into it into `BrokenLink` rows (kind kept)

@@ -1171,39 +1171,24 @@ class SearchEngine:
     ) -> List[Dict[str, Any]]:
         """Find the shortest path between two concepts.
 
-        Uses BFS-style variable-length patterns across allowed edge types.
-        Returns a list of nodes on the path (including start and target)
-        with their id, title, and type.
+        One breadth-first ``SHORTEST`` query over the four whitelisted
+        edge types, either direction. Returns the nodes on the path
+        (start and target included, directories on the way too) with
+        their id, title and type; ``[]`` when there is no path within
+        ``max_path_length`` hops (1–10).
         """
         max_path_length = max(1, min(int(max_path_length), 10))
-        # Ladybug doesn't support MATCH path = ... or [*1..N] (any-rel).
-        # Try increasing path lengths until we find a connection.
-        # Note: Ladybug reserves $end as a parameter name, so use $sid/$eid.
-        for length in range(1, max_path_length + 1):
-            result = self.conn.execute(
-                f"""
-                MATCH (a:Concept {{id: $sid}})-[:CONTAINS|LINKS_TO|PART_OF|INCLUDES_ASSET*1..{length}]-(b:Concept {{id: $eid}})
-                RETURN a.id AS id, a.title AS title, a.type AS type
-                """,
-                {"sid": start_id, "eid": target},
-            )
-            rows = result.rows_as_dict().get_all()
-            if rows:
-                # Found a path at this length — collect all nodes
-                # Re-run to get full path nodes using path variable
-                path_result = self.conn.execute(
-                    f"""
-                    MATCH path = (a:Concept {{id: $sid}})-[:CONTAINS|LINKS_TO|PART_OF|INCLUDES_ASSET*1..{length}]-(b:Concept {{id: $eid}})
-                    WITH path AS p, length(path) AS len
-                    ORDER BY len ASC
-                    LIMIT 1
-                    UNWIND nodes(p) AS node
-                    RETURN node.id AS id, node.title AS title, node.type AS type
-                    """,
-                    {"sid": start_id, "eid": target},
-                )
-                return path_result.rows_as_dict().get_all()
-        return []
+        # Ladybug reserves $end as a parameter name, so use $sid/$eid.
+        result = self.conn.execute(
+            f"""
+            MATCH p = (a:Concept {{id: $sid}})-[:CONTAINS|LINKS_TO|PART_OF|INCLUDES_ASSET* SHORTEST 1..{max_path_length}]-(b:Concept {{id: $eid}})
+            WITH p LIMIT 1
+            UNWIND nodes(p) AS node
+            RETURN node.id AS id, node.title AS title, node.type AS type
+            """,
+            {"sid": start_id, "eid": target},
+        )
+        return result.rows_as_dict().get_all()
 
 
     def traverse(

@@ -417,6 +417,10 @@ class QueryOps:
         if not start_id:
             return self.list_directory("")
         if target is not None:
+            # An unknown end is an error, not "no path".
+            for name, cid in (("start_id", start_id), ("target", target)):
+                if not self.search_engine.node_exists(cid):
+                    raise _unknown_concept("traverse", name, cid)
             return self.search_engine.find_path(
                 start_id=start_id, target=target,
                 max_path_length=max_path_length,

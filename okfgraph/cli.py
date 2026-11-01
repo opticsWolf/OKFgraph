@@ -995,7 +995,8 @@ def _ingest(args):
     o9 = {k: v for k, v in (("type", args.type),
                             ("extra", extra or None),
                             ("materialize", True if args.materialize else None),
-                            ("related", args.related or None))
+                            ("related", args.related or None),
+                            ("folder", args.folder))
           if v is not None}
     result = router.ingest(
         kind,
@@ -1475,6 +1476,10 @@ def build_parser():
     p.add_argument("--related", action="append", metavar="ID",
                    help="Concept this thought is about: a typed 'related' link "
                    "(--kind thoughts, repeatable; id, path or title)")
+    p.add_argument("--folder", default=None, metavar="DIR",
+                   help="Also write the thought as DIR/<title>.md in the bundle "
+                   "and import it (--kind thoughts; default: graph only, no "
+                   "file; @alias/DIR for another root)")
 
     p = command("export", "Export the bundle (--all) or one concept (--concept-id)")
     p.add_argument("--all", action="store_true", dest="export_all", help="Export entire bundle")

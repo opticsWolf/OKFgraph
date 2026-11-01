@@ -22,7 +22,8 @@ _INGEST_HONOURS = {
     "md": frozenset({"md_path", "concept_id", "title", "description", "tags",
                      "type", "extra", "materialize"}),
     "thoughts": frozenset({"thoughts", "topic", "concept_id", "title", "description",
-                           "tags", "type", "extra", "materialize", "related"}),
+                           "tags", "type", "extra", "materialize", "related",
+                           "folder"}),
     "pdf": frozenset({"pdf_path", "output_dir"}),
     # Per-entry IDs come from citation keys, so bib honours only the
     # file-level inputs: one file in, N concepts out.
@@ -101,6 +102,42 @@ def _check_concept_id(concept_id: str) -> None:
             "optional leading @alias/ names a root)",
             fields={"concept_id": concept_id},
         )
+
+
+def _folder_thought_id(folder: str, title: str | None, concept_id: str | None,
+                       materialize: bool | None) -> str:
+    """The concept id a thought gets from ``folder`` (0.11.0).
+
+    ``folder`` is a bundle sub-path (``@alias/...`` for another root); the
+    file name is the title as a slug, else a timestamp + short uuid so
+    untitled thoughts never collide. It replaces ``concept_id`` +
+    ``materialize``, so either one beside it is refused.
+    """
+    import uuid
+
+    if concept_id is not None:
+        raise OKFError(
+            "BAD_VALUE", "folder and concept_id both set where the thought goes",
+            fields={"folder": folder, "concept_id": concept_id},
+            remedy="pass folder (file named from the title) or concept_id, not both")
+    if materialize is False:
+        raise OKFError(
+            "BAD_VALUE", "folder writes a file: it cannot run with materialize=False",
+            fields={"folder": folder, "materialize": False},
+            remedy="drop materialize, or drop folder for a graph-only thought")
+    base = str(folder).strip().replace("\\", "/").strip("/")
+    name = re.sub(r"[^a-z0-9_.\-]+", "-", (title or "").strip().lower()).strip("-._")[:60]
+    if not name:
+        name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{str(uuid.uuid4())[:6]}"
+    cid = f"{base}/{name}" if base else name
+    if (not base or ".." in base.split("/") or str(folder).strip().startswith("/")
+            or not _SAFE_ID_RE.match(cid)):
+        raise OKFError(
+            "BAD_VALUE",
+            f"folder {folder!r} is not a bundle sub-path (letters, digits, '_', "
+            "'.', '-' and '/' only; no '..', not absolute; @alias/ names a root)",
+            fields={"folder": folder})
+    return cid
 
 
 def _slugify_topic(topic: str) -> str:
@@ -858,6 +895,7 @@ class IngestManager:
         materialize: bool | None = None,
         rebuild: str = "auto",
         related: list[str] | None = None,
+        folder: str | None = None,
     ) -> Dict[str, Any]:
         """One ingest dispatch (0.10: five spellings merged into one).
 
@@ -873,7 +911,9 @@ class IngestManager:
         markdown into the bundle and imports the file (single-writer rule).
         ``rebuild`` (O8: auto | defer | force) is the index step afterwards.
         ``related`` (thoughts) links the thought to those concepts as typed
-        ``related`` relations (O6).
+        ``related`` relations (O6). ``folder`` (thoughts) writes the thought
+        as ``<folder>/<title-slug>.md`` in the bundle and imports it: the
+        same as ``concept_id`` + ``materialize=True``, minus naming the file.
 
         File paths that don't exist raise ``FILE_NOT_FOUND``; missing
         required params raise ``MISSING_PARAM``; a passed param the kind
@@ -886,7 +926,7 @@ class IngestManager:
             "description": description, "tags": tags,
             "output_dir": output_dir, "bib_path": bib_path,
             "type": type, "extra": extra, "materialize": materialize,
-            "related": related,
+            "related": related, "folder": folder,
         }
         honours = _INGEST_HONOURS.get(kind)
         if honours is not None:
@@ -932,6 +972,9 @@ class IngestManager:
                     "kind='thoughts' requires thoughts and topic",
                     fields={"kind": kind, "thoughts": bool(thoughts), "topic": bool(topic)},
                 )
+            if folder is not None:
+                concept_id = _folder_thought_id(folder, title, concept_id, materialize)
+                materialize = True
             with self._write_lock_ctx(), self.import_mgr.rebuild(rebuild):
                 return self._ingest_thoughts_inner(
                     thoughts, topic, concept_id, tags, force,

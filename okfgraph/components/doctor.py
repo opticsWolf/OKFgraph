@@ -2,8 +2,9 @@
 
 Generalizes ``broken-links``/``repair-links`` (kept as-is) to a full scan:
 ``broken_link`` (error), ``orphan`` / ``stale`` / ``duplicate_title`` /
-``missing_description`` (warnings), and info-level ``hub_concentration``
-which never affects the score. ``--fix`` applies only unambiguous repairs —
+``missing_description`` / ``missing_index`` (warnings), and info-level
+``hub_concentration`` / ``search_index``
+which never affect the score. ``--fix`` applies only unambiguous repairs —
 ISO timestamp normalization and broken-link re-pointing (exact id or unique
 wikilink name) — and never touches ``reviewed: true`` concepts, while still
 reporting findings on them.
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -219,6 +221,37 @@ class DoctorManager:
              "message": f"'{cid}' has {n} incoming link(s)"}
             for cid, n in indeg
         ]
+
+        # Search indexes (0.11.0, B7): one info line each, and a finding
+        # per expected index that is absent (search silently degrades to
+        # the other source). Only checked while the extensions are loaded:
+        # without them search_unavailable already covers it.
+        if schema is not None and getattr(schema, "_search_available", False):
+            try:
+                present = {
+                    (r["table_name"], r["index_name"]): r
+                    for r in self.conn.execute(
+                        "CALL SHOW_INDEXES() RETURN *").rows_as_dict().get_all()
+                    if r.get("index_name") != "_PK"}
+            except Exception:
+                present = None
+            if present is not None:
+                for (table, name), r in sorted(present.items()):
+                    kind = r.get("index_type") or "?"
+                    detail = ", ".join(r.get("property_names") or [])
+                    if kind == "HNSW":
+                        m = re.search(r"metric := '(\w+)'",
+                                      r.get("index_definition") or "")
+                        detail += (f"; {m.group(1) if m else '?'}, "
+                                   f"dim {getattr(schema, 'embedding_dim', '?')}")
+                    info.append({"rule": "search_index",
+                                 "message": f"index {table}.{name}: {kind} ({detail})"})
+                for table, name, _sql in schema._index_specs():
+                    if (table, name) not in present:
+                        _add("<database>", "warning", "missing_index",
+                             f"search index {table}.{name} is missing — "
+                             "search on that table falls back to one source; "
+                             "run 'okf reindex'")
 
         # Pre-0.7.0 image rows (torch omni route) are stale: their space no
         # longer exists, so the next import re-embeds them by caption.

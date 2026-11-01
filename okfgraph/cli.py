@@ -731,6 +731,23 @@ def _repair_links(args):
                 lambda r: print(f"[OK] repaired {r['repaired']} link(s)"))
 
 
+def _retitle_thoughts(args):
+    def render(r):
+        if not r["plan"]:
+            print("No thoughts with an old 'Thought: <topic>' title.")
+            return
+        for p in r["plan"]:
+            print(f"  {p['concept_id']}: {p['old_title']!r} → {p['new_title']!r}")
+        if r["applied"]:
+            print(f"[OK] retitled {r['count']} thought(s)")
+        else:
+            print(f"Dry run: {r['count']} thought(s) would be retitled "
+                  "(pass --apply to write)")
+
+    result = _router(args).retitle_thoughts(topic=args.topic, apply=args.apply)
+    return _out(args, "retitle_thoughts", result, render)
+
+
 def _lint(args):
     """Pre-import bundle gate: frontmatter + link validation.
 
@@ -1319,6 +1336,11 @@ def build_parser():
     command("shell", "Interactive REPL")
     command("broken-links", "List broken (orphan) links")
     command("repair-links", "Repair broken links by re-checking targets")
+    p = command("retitle-thoughts", "Retitle old 'Thought: <topic>' thoughts by "
+                                    "their first sentence (dry run unless --apply)")
+    p.add_argument("--topic", default=None, help="Only thoughts of this topic")
+    p.add_argument("--apply", action="store_true",
+                   help="Write the new titles (default: list the plan only)")
 
     p = command("reindex", "Rebuild vector + FTS search indexes")
     p.add_argument("--if-dirty", action="store_true",
@@ -1367,6 +1389,7 @@ _COMMANDS = {
     "shell": _shell,
     "broken-links": _broken_links,
     "repair-links": _repair_links,
+    "retitle-thoughts": _retitle_thoughts,
     "diff": _diff,
     "doctor": _doctor,
     "lint": _lint,

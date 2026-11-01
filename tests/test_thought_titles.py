@@ -128,3 +128,45 @@ def test_cli_prints_the_minted_id_last(tmp_path):
     last = out.stdout.strip().splitlines()[-1]
     assert last.startswith("[OK] ingested thought")
     assert last.rsplit(" - ", 1)[1].startswith("thoughts/cli/")
+
+
+# -- retitle-thoughts (Q3) ---------------------------------------------------
+
+def _old_style(router, text, topic, **kw):
+    """A thought as pre-WS2 versions stored it: titled ``Thought: <topic>``."""
+    cid = router.ingest("thoughts", thoughts=text, topic=topic, **kw)["concept_id"]
+    router.conn.execute("MATCH (c:Concept {id: $id}) SET c.title = $t",
+                        {"id": cid, "t": f"Thought: {topic}"})
+    return cid
+
+
+def test_retitle_dry_run_lists_the_plan_and_writes_nothing(router):
+    cid = _old_style(router, "Ladybug storage is one-way. More.", "ladybug")
+    res = router.retitle_thoughts()
+    assert res["applied"] is False and res["count"] == 1
+    assert res["plan"] == [{"concept_id": cid, "topic": "ladybug",
+                            "old_title": "Thought: ladybug",
+                            "new_title": "Ladybug storage is one-way"}]
+    assert router.read(cid)["title"] == "Thought: ladybug"
+
+
+def test_retitle_apply_keeps_id_tags_and_created(router):
+    a = _old_style(router, "Same opening sentence. A.", "loop", tags=["keep"])
+    b = _old_style(router, "Same opening sentence. B.", "loop")
+    other = _old_style(router, "Other topic sentence.", "elsewhere")
+    created = router.read(a, include="body")["body"].split("created: ")[1].split("\n")[0]
+    res = router.retitle_thoughts(topic="loop", apply=True)
+    assert res["applied"] is True and res["count"] == 2
+    assert router.read(a)["title"] == "Same opening sentence"
+    assert router.read(b)["title"] == "Same opening sentence (2)"
+    assert router.read(other)["title"] == "Thought: elsewhere"  # other topic untouched
+    assert "keep" in router.read(a)["tags"]
+    assert f"created: {created}" in router.read(a, include="body")["body"]
+    assert router.retitle_thoughts(topic="loop")["count"] == 0  # idempotent
+
+
+def test_retitle_leaves_deliberate_titles_alone(router):
+    cid = router.ingest("thoughts", thoughts="text", topic="notes",
+                        title="Thought: a deliberate name")["concept_id"]
+    assert router.retitle_thoughts()["count"] == 0
+    assert router.read(cid)["title"] == "Thought: a deliberate name"

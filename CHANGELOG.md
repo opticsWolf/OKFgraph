@@ -58,7 +58,10 @@ commit history, newest first.
   word). A clash gets ` (2)`, ` (3)`. An explicit title that clashes in its
   topic is refused with `BAD_VALUE`, naming the existing id. The CLI prints
   the minted id as the last line. Existing `Thought: <topic>` titles are
-  unchanged; a retitle op is still to do.
+  unchanged until **`okf retitle-thoughts [--topic T] [--apply]`** (CLI-only,
+  dry run by default) gives each the title a new thought would get, keeping
+  its id, tags, description and `created`. Doctor's `duplicate_title`
+  warning now says that `[[title]]` links resolve to neither concept.
 - **Directory change detection covers direct children (R29-G).** A
   directory's hash used to cover its whole subtree, so one nested edit
   queued every ancestor (22 to 38 of 49 files). It now covers the files

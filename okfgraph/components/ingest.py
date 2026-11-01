@@ -249,6 +249,65 @@ class IngestManager:
         return [r["id"] for r in rows
                 if r["id"] != exclude_id and r["id"].startswith(prefix)]
 
+    def retitle_thoughts(self, topic: str | None = None,
+                         apply: bool = False) -> Dict[str, Any]:
+        """Give old-style ``Thought: <topic>`` titles a real one (WS2, Q3).
+
+        Each thought still titled exactly ``Thought: <its topic>`` gets the
+        title a new thought would get: its first sentence, with ``(2)``,
+        ``(3)`` on clashes within the topic. ``topic`` limits the run to one
+        topic. Without ``apply`` nothing is written and the plan is
+        returned; with it, each thought is rewritten under its own id (tags,
+        description and ``created`` kept, re-embedded).
+        """
+        rows = self.import_mgr.conn.execute(
+            "MATCH (c:Concept) WHERE c.type = 'thought' "
+            "AND c.title STARTS WITH 'Thought: ' "
+            "RETURN c.id AS id, c.title AS title, c.description AS description, "
+            "c.tags AS tags, c.body AS body ORDER BY c.id"
+        ).rows_as_dict().get_all() or []
+        plan: list[Dict[str, Any]] = []
+        work: list[Dict[str, Any]] = []
+        planned: Dict[str, set] = {}  # slug -> titles given out in this run
+        for r in rows:
+            post = frontmatter.loads(r["body"] or "")
+            t = str(post.metadata.get("topic") or r["title"][len("Thought: "):])
+            if r["title"] != f"Thought: {t}":
+                continue  # a deliberate title that happens to start that way
+            if topic is not None and t != topic:
+                continue
+            created = post.metadata.get("created")
+            if isinstance(created, str):
+                try:
+                    created = datetime.fromisoformat(created)
+                except ValueError:
+                    created = None
+            if not isinstance(created, datetime):
+                created = None
+            slug = _slugify_topic(t) or "untitled"
+            taken = planned.setdefault(slug, set())
+            base = _auto_thought_title(post.content, t, created or datetime.now())
+            new, n = base, 2
+            while new in taken or self._thought_titles_in_topic(slug, new, r["id"]):
+                new = f"{base} ({n})"
+                n += 1
+            taken.add(new)
+            plan.append({"concept_id": r["id"], "topic": t,
+                         "old_title": r["title"], "new_title": new})
+            work.append({"text": post.content, "topic": t, "id": r["id"],
+                         "tags": [x for x in (r["tags"] or [])
+                                  if x not in ("thought", "reasoning", t)],
+                         "title": new, "description": r["description"],
+                         "created": created})
+        if apply and work:
+            with self._write_lock_ctx():
+                for w in work:
+                    self._ingest_thoughts_inner(
+                        w["text"], w["topic"], w["id"], w["tags"],
+                        title=w["title"], description=w["description"],
+                        created=w["created"])
+        return {"applied": bool(apply), "count": len(plan), "plan": plan}
+
     def _ingest_thoughts_inner(
         self,
         thoughts: str,
@@ -258,11 +317,16 @@ class IngestManager:
         force: bool = False,
         title: str | None = None,
         description: str | None = None,
+        created: datetime | None = None,
     ) -> Dict[str, Any]:
-        """Inner implementation of ingest_thoughts (called under write lock)."""
+        """Inner implementation of ingest_thoughts (called under write lock).
+
+        ``created`` keeps an existing thought's timestamp on a rewrite
+        (retitle); None = now.
+        """
         import uuid
 
-        now = datetime.now()
+        now = created or datetime.now()
         slug = _slugify_topic(topic) or "untitled"
         # Generate concept_id from topic if not provided. Namespaced
         # (``thoughts/<slug>/...``) so a fileless graph exports into a tidy
@@ -303,7 +367,7 @@ class IngestManager:
             "thought_type: reasoning",
             f"topic: {topic}",
             f"tags: [thought, reasoning, {topic}]",
-            f"created: {datetime.now().isoformat()}",
+            f"created: {now.isoformat()}",
             "---",
             "",
             thoughts,

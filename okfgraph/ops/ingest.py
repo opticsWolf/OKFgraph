@@ -19,3 +19,9 @@ class IngestOps:
         full contract: kind={md|pdf|thoughts|bib}, per-kind required params,
         ``auto_import`` (default True), ``prune_missing``, ``force``."""
         return self.ingest_mgr.ingest(kind, **kwargs)
+
+    def retitle_thoughts(self, topic=None, apply=False):
+        """Retitle old ``Thought: <topic>`` thoughts by their first sentence.
+        Dry run unless ``apply=True`` (CLI-only, not an MCP tool). See
+        ``IngestManager.retitle_thoughts``."""
+        return self.ingest_mgr.retitle_thoughts(topic=topic, apply=apply)

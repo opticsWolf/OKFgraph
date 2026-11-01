@@ -1,7 +1,8 @@
 # okfgraph reranker integration — implementation plan
 
 **Status:** Phases 0–2 implemented on `dev_0.11.0` (2026-11-01); Phase 3
-(eval harness) open. Deviations from the text below: `rerank` is not
+harness built (`scripts/eval_search.py`), first run below; promotion
+still open. Deviations from the text below: `rerank` is not
 honoured by `concepts:none` (concepts use `rank='cross'`), and neither
 combines with `recency` (logits have no scale to blend). Target: okfgraph 0.11.0 (minor — new
 opt-in search stage, no behavior change when off). Scheduled in
@@ -172,6 +173,33 @@ and RRF+hub, latency at top_n, and the multilingual slice split
 (weak slices hide in averages). No thresholds ship; the harness
 records the data promotion needs. mMARCO-vs-MiniLM choice for the
 default comes out of this phase, not out of priors.
+
+*First run 2026-11-01* — `scripts/eval_labels_okfgraph.jsonl` (28
+queries, 43 query×target rows, 7 German) on a copy of this repo's
+`kb.db` (40 concepts, 619 chunks), k=10, fp32, CUDA, cached weights:
+
+| config | nDCG chunks | nDCG concepts | p50 ms chunks | p50 ms concepts | windowed texts |
+|---|---|---|---|---|---|
+| rrf | 0.663 | 0.734 | 51 | 45 | — |
+| hub | 0.663 | 0.734 | 43 | 42 | — |
+| cross (MiniLM) | 0.787 | 0.777 | 128 | 880 | 20% |
+| cross:mmarco | 0.814 | 0.818 | 195 | 1434 | 21% |
+| rrf+dedupe | 0.663 | — | 56 | — | — |
+
+- Slices: MiniLM lowers German chunks (0.766 → 0.593); mMARCO nearly
+  holds them (0.735) and wins English like MiniLM (0.84–0.86).
+- Losses: about 15–17 of 43 rows lose against rrf for either model,
+  so the gain is an average, not a uniform lift.
+- Concept `rank='cross'` latency is dominated by `score_long` on long
+  bodies (whole docs up to 58k chars): ~0.9 s (MiniLM) / ~1.4 s (mMARCO).
+- `hub` equals `rrf` here: this graph has no `LINKS_TO` edges.
+- `dedupe` collapsed 19 rows with no metric change; this graph has few
+  copied passages, so it cannot decide the default.
+- q8 not measured: the `.onnx.data` weights are not cached.
+
+Not enough to promote anything: the labels were drafted by the
+implementer, not reviewed, and the heldout split is 13 rows. Open:
+reviewed labels, the Macrame graph (links, copied plan sections), q8.
 
 ### Phase 4 — release (0.5 day)
 

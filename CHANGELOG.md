@@ -83,6 +83,15 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   section copied from a plan into its successor: stored embeddings at
   cosine >= 0.97, so no model call. The kept hit lists the dropped chunk
   ids in `collapsed`. Runs last, after any rerank; off by default.
+- **Search eval harness.** `scripts/eval_search.py LABELS --db DB` runs a
+  JSONL label set (graded concept ids per query, `target`, `lang`,
+  `split`) against configs such as `rrf,hub,cross,cross:mmarco@q8,
+  rrf+dedupe` and reports nDCG/MRR/recall@k, wins/losses per query
+  against the first config, p50/p95 latency, the share of texts scored
+  in windows, and nDCG per target/language slice (`--md`, `--json`).
+  `--copy` works on a copy of the graph; `--offline` uses cached weights
+  only. `scripts/eval_labels_okfgraph.jsonl` is a 28-query starter set
+  for this repo's own notes. No thresholds or defaults change.
 - **Index policy and batch import (O8).** `rebuild="auto"|"defer"|"force"`
   on `import_bundle`, `import_file`, `import_files`, `ingest`;
   **`import_files(paths)`** imports a list with one index step (CLI

@@ -581,5 +581,8 @@ moves the pin.
    test gated on `OKFGRAPH_LIVE_RERANK=1`.
 4. §10.2 near-dupe collapse (opt-in).
 5. §10.1 Phase 3 eval harness: decides the default rerank model (Q5)
-   and whether `dedupe` can default on.
+   and whether `dedupe` can default on. *Harness built 2026-11-01*
+   (`scripts/eval_search.py`, starter labels for this repo); first numbers
+   in `reranker-integration-plan.md` Phase 3. Q5 and the `dedupe`
+   default stay open until reviewed labels and a Macrame run exist.
 6. Release.

@@ -151,10 +151,20 @@ class SearchEngine:
         embedding_dim: int,
         embed_engine,
         db=None,
+        *,
+        reranker=None,
+        rerank_top_n: int = 30,
+        rerank_window: Optional[int] = None,
+        rerank_stride: Optional[int] = None,
     ):
         self.conn = conn
         self.embedding_dim = embedding_dim
         self.embed_engine = embed_engine
+        # Cross-encoder (LazyReranker) for opt-in rerank; None = unavailable.
+        self.reranker = reranker
+        self.rerank_top_n = rerank_top_n
+        self.rerank_window = rerank_window
+        self.rerank_stride = rerank_stride
         # Ladybug Database handle for short-lived index connections
         # (see _index_rows). None = reuse self.conn (legacy/tests).
         self._db = db
@@ -300,6 +310,7 @@ class SearchEngine:
         offset: int = 0,
         recency: Optional[float] = None,
         recency_weight: float = 0.3,
+        rerank: bool = False,
     ) -> List[Dict[str, Any]]:
         """Search chunks using RRF-fused vector + FTS.
 
@@ -307,6 +318,8 @@ class SearchEngine:
         ``near_id`` keeps chunks of concepts within ``hops`` links of it,
         scored exactly (no index window). ``offset`` skips that many
         results: pages are slices of one deterministic ranking.
+        ``rerank`` reorders the filtered top ``rerank_top_n`` by the
+        cross-encoder (see :meth:`rerank_with_cross_encoder`).
 
         Returns chunk-level results with optional parent concept metadata.
         Applies ``max_chunks_per_doc`` to limit how many chunks from the same
@@ -329,7 +342,9 @@ class SearchEngine:
                                    *ofilt.values()))
         # A page-size-independent pool, so every page sees one ranking
         # (and one deepen-or-not decision); the page is sliced out of it.
-        want = max(limit + offset, PAGE_WINDOW)
+        # A rerank pool holds every candidate the cross-encoder rescores.
+        want = max(limit + offset, PAGE_WINDOW,
+                   self.rerank_top_n if rerank else 0)
 
         if within is not None:
             combined = self._rrf_within("Chunk", "chunk_fts", query_vec, query, within)
@@ -337,6 +352,8 @@ class SearchEngine:
                                        want, max_chunks_per_doc, ofilt)
             if recency:
                 self._recency_blend(results, recency, recency_weight, "rrf_score")
+            if rerank:
+                results = self.rerank_with_cross_encoder(results, query)
             return results[offset:offset + limit]
 
         # Vector + FTS over chunks, RRF-fused; a filtered search fetches a
@@ -354,6 +371,8 @@ class SearchEngine:
                                        want, max_chunks_per_doc, ofilt)
         if recency:
             self._recency_blend(results, recency, recency_weight, "rrf_score")
+        if rerank:
+            results = self.rerank_with_cross_encoder(results, query)
         return results[offset:offset + limit]
 
     def _chunk_rows(self, combined, concept_type, tags, parent_id, limit,
@@ -740,12 +759,16 @@ class SearchEngine:
         query: str,
         limit: int = 10,
         hub_weight: float = 0.3,
+        rerank: bool = False,
     ) -> List[Dict[str, Any]]:
         """Search chunks + rerank by graph hub score.
 
         Final score = (1 - hub_weight) * rrf_score + hub_weight * normalized_hub_score.
+        ``rerank`` then lets the cross-encoder reorder the hub-blended
+        top ``rerank_top_n``.
         """
-        raw_results = self.search_chunks(query, limit=limit * 2)
+        pool = max(limit * 2, self.rerank_top_n) if rerank else limit * 2
+        raw_results = self.search_chunks(query, limit=pool)
 
         # Collect unique parent doc IDs
         parent_ids = list({r["parent_doc_id"] for r in raw_results if r["parent_doc_id"]})
@@ -762,6 +785,8 @@ class SearchEngine:
             )
 
         raw_results.sort(key=lambda x: x["final_score"], reverse=True)
+        if rerank:
+            raw_results = self.rerank_with_cross_encoder(raw_results, query)
         return raw_results[:limit]
 
 
@@ -857,6 +882,97 @@ class SearchEngine:
         chunk_results.sort(key=lambda x: x.get("final_score", 0), reverse=True)
         return chunk_results
 
+    def rerank_with_cross_encoder(
+        self,
+        results: List[Dict[str, Any]],
+        query: str,
+        *,
+        top_n: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Reorder the top ``top_n`` results by cross-encoder score (0.11.0).
+
+        Retrieve-then-rerank: only the first ``top_n`` rows (default
+        ``rerank_top_n``) are rescored; the rest keep their order below
+        them. Each rescored row gains ``cross_score`` — the model's native
+        logit, not a probability, never blended with ``rrf_score`` /
+        ``hub_score`` / ``relevance_score`` (those keys stay as they were).
+        Ties break by id.
+
+        Rows with a ``chunk_id`` are chunks; others are concepts. The
+        scored text is always whole: chunk text is re-read from the graph
+        (result rows cut it at 500 chars), a concept is scored on its body
+        (its description when the body is empty). Each text is prefixed
+        ``"<title>: "``. Texts over the model's pair cap are scored in
+        windows, best window wins (``score_long``); the rest go in one
+        batch.
+        """
+        if not results:
+            return results
+        if self.reranker is None:
+            raise OKFError(
+                "SEARCH_UNAVAILABLE", "rerank needs a cross-encoder session; "
+                "this search engine was built without one",
+                remedy="search without rerank, or open the graph through OKFRouter")
+        n = top_n or self.rerank_top_n
+        head, tail = results[:n], results[n:]
+        chunk_ids = [r["chunk_id"] for r in head if r.get("chunk_id")]
+        chunk_text: Dict[str, str] = {}
+        if chunk_ids:
+            for row in self.conn.execute(
+                    "MATCH (ch:Chunk) WHERE ch.id IN $ids "
+                    "RETURN ch.id AS id, ch.chunk_text AS text",
+                    {"ids": chunk_ids}).rows_as_dict().get_all():
+                chunk_text[row["id"]] = row["text"] or ""
+        concept_ids = [r["id"] for r in head if not r.get("chunk_id") and r.get("id")]
+        concept_text: Dict[str, str] = {}
+        if concept_ids:
+            for row in self.conn.execute(
+                    "MATCH (c:Concept) WHERE c.id IN $ids "
+                    "RETURN c.id AS id, c.body AS body, c.description AS d",
+                    {"ids": concept_ids}).rows_as_dict().get_all():
+                concept_text[row["id"]] = row["body"] or row["d"] or ""
+
+        docs = []
+        for r in head:
+            if r.get("chunk_id"):
+                text = chunk_text.get(r["chunk_id"], r.get("chunk_text") or "")
+                title = r.get("parent_title")
+            else:
+                text = concept_text.get(r.get("id"), r.get("description") or "")
+                title = r.get("title")
+            docs.append(f"{title}: {text}" if title else text)
+
+        for r, score in zip(head, self._cross_scores(query, docs)):
+            r["cross_score"] = score
+        head.sort(key=lambda x: (-x["cross_score"], x.get("id") or "",
+                                 x.get("chunk_id") or ""))
+        return head + tail
+
+    def _cross_scores(self, query: str, docs: List[str]) -> List[float]:
+        """Cross-encoder logits for ``(query, doc)`` pairs, in ``docs`` order.
+
+        A doc that fits the pair cap (query + doc + 4 specials) joins one
+        ``score_batch``; a longer one is scored by ``score_long`` so no
+        tail is silently cut.
+        """
+        rr = self.reranker
+        window = self.rerank_window
+        cap = min(rr.max_length, window) if window else rr.max_length
+        q_len = rr.count_tokens(query)
+        scores: List[Optional[float]] = [None] * len(docs)
+        short = []
+        for i, doc in enumerate(docs):
+            if q_len + rr.count_tokens(doc) + 4 > cap:
+                scores[i] = rr.score_long(query, doc, window=window,
+                                          stride=self.rerank_stride)
+            else:
+                short.append(i)
+        if short:
+            batch = rr.score_batch([(query, docs[i]) for i in short])
+            for i, s in zip(short, batch):
+                scores[i] = float(s)
+        return [float(s) for s in scores]
+
 
     def search_hybrid(
         self,
@@ -901,11 +1017,14 @@ class SearchEngine:
         — the top chunks from that document matching the query.
 
         ``rank`` selects post-retrieval ranking: ``"none"`` (RRF order),
-        ``"hub"`` (blend RRF with incoming-link hub score), or ``"ppr"``
-        (model-free lexical-seed PPR — no ONNX load, deterministic).
+        ``"hub"`` (blend RRF with incoming-link hub score), ``"ppr"``
+        (model-free lexical-seed PPR — no ONNX load, deterministic), or
+        ``"cross"`` (0.11.0: the cross-encoder reorders the filtered top
+        ``rerank_top_n``; see :meth:`rerank_with_cross_encoder`).
         """
-        if rank not in ("none", "hub", "ppr"):
-            raise ValueError(f"rank must be 'none', 'hub' or 'ppr', got {rank!r}")
+        if rank not in ("none", "hub", "ppr", "cross"):
+            raise ValueError(
+                f"rank must be 'none', 'hub', 'ppr' or 'cross', got {rank!r}")
         if rank == "ppr":
             return self.search_with_ppr(
                 query, limit=limit, concept_type=concept_type,
@@ -929,9 +1048,10 @@ class SearchEngine:
                  "exclude_tags": exclude_tags, "within": within}
         filtered = any(v for v in (concept_type, tags, parent_id,
                                    *ofilt.values()))
-        # Rank a page-size-independent pool (the hub rerank reorders it),
-        # then slice the page out of it.
-        want = max(limit + offset, PAGE_WINDOW)
+        # Rank a page-size-independent pool (the hub / cross rerank
+        # reorders it), then slice the page out of it.
+        want = max(limit + offset, PAGE_WINDOW,
+                   self.rerank_top_n if rank == "cross" else 0)
 
         if within is not None:
             combined = self._rrf_within("Concept", "concept_fts", query_vec,
@@ -969,6 +1089,8 @@ class SearchEngine:
             results.sort(key=lambda x: (-x["relevance_score"], x["id"]))
         if recency and results:
             self._recency_blend(results, recency, recency_weight, "relevance_score")
+        if rank == "cross":
+            results = self.rerank_with_cross_encoder(results, query)
         results = results[offset:offset + limit]
 
         # Attach chunks to the returned page only

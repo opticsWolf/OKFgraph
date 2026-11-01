@@ -15,7 +15,7 @@ from okfgraph.models import ConceptModel
 __all__ = ["QueryOps"]
 
 _TARGETS = ("concepts", "chunks", "images")
-_RANKS = ("none", "hub", "ppr")
+_RANKS = ("none", "hub", "ppr", "cross")
 _INCLUDES = ("body", "chunks", "document", "context")
 _RELATIONSHIPS = ("CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET")
 _DIRECTIONS = ("OUTGOING", "INCOMING", "BOTH")
@@ -44,6 +44,7 @@ _SEARCH_DEFAULTS: Dict[str, Any] = {
     "offset": 0,
     "recency": None,
     "recency_weight": 0.3,
+    "rerank": False,
 }
 _FILTERS = frozenset({"concept_type", "tags", "parent_id",
                       # 0.11.0 (O7)
@@ -62,9 +63,13 @@ _HONOURS = {
     "concepts:none": _PAGED | {"include_chunks", "rank"},
     "concepts:hub": _PAGED | {"include_chunks", "rank", "hub_weight", "link_kinds"},
     "concepts:ppr": _PAGED | {"rank", "link_kinds"},
-    "chunks:hub": frozenset({"hub_rerank", "hub_weight", "expand", "context_hops"}),
+    # Cross-encoder rerank (0.11.0): no recency — logits have no scale to
+    # blend with (refused with its own message below).
+    "concepts:cross": _PAGED | {"include_chunks", "rank"},
+    "chunks:hub": frozenset({"hub_rerank", "hub_weight", "expand", "context_hops",
+                             "rerank"}),
     "chunks:expand": frozenset({"expand", "context_hops"}),
-    "chunks:plain": _PAGED | {"max_chunks_per_doc"},
+    "chunks:plain": _PAGED | {"max_chunks_per_doc", "rerank"},
 }
 
 
@@ -122,18 +127,20 @@ class QueryOps:
         offset: int = 0,
         recency: Optional[float] = None,
         recency_weight: float = 0.3,
+        rerank: bool = False,
     ) -> List[Dict[str, Any]]:
         """Unified search. ``target`` picks the path:
 
         * ``concepts`` (default) — hybrid vector+FTS via
           ``search_engine.search_hybrid``. Honours the filters
           (``concept_type``/``tags``/``parent_id``) and ``rank``
-          (none|hub|ppr); ``include_chunks`` adds ``matched_chunks`` (not
-          with ``ppr``); ``hub_weight`` only with ``rank='hub'``.
+          (none|hub|ppr|cross); ``include_chunks`` adds ``matched_chunks``
+          (not with ``ppr``); ``hub_weight`` only with ``rank='hub'``.
         * ``chunks`` — chunk-level RRF, path precedence ``hub_rerank`` >
           ``expand`` > plain. ``hub_rerank`` honours ``hub_weight``;
           ``expand`` honours ``context_hops``; plain honours the filters
-          and ``max_chunks_per_doc``.
+          and ``max_chunks_per_doc``. ``rerank`` works on plain and
+          ``hub_rerank`` (after the hub blend).
         * ``images`` — text query over image assets (``query``/``limit``
           only).
 
@@ -157,6 +164,13 @@ class QueryOps:
         recency_weight * 0.5 ** (age / recency)``, age from
         ``effective_at``. Off by default; ``recency_weight`` (0–1, default
         0.3) needs it.
+
+        Cross-encoder rerank (0.11.0, opt-in): ``rerank=True`` (chunks) or
+        ``rank='cross'`` (concepts) rescores the filtered top
+        ``rerank_top_n`` (router setting, default 30) with the configured
+        cross-encoder and reorders them by it; each rescored row gains
+        ``cross_score`` (a native logit, not a probability). The model
+        loads on first use. Not combined with ``recency``.
 
         A passed param (non-default) the chosen path ignores is refused
         with ``BAD_VALUE`` naming it — never silently dropped.
@@ -191,6 +205,19 @@ class QueryOps:
         if recency_weight != _SEARCH_DEFAULTS["recency_weight"] and recency is None:
             raise _bad_value("search", "recency_weight needs recency",
                              recency_weight=recency_weight)
+        if not isinstance(rerank, bool):
+            raise _bad_value("search", f"rerank must be true or false, got {rerank!r}",
+                             rerank=rerank)
+        if rerank and target == "concepts":
+            raise _bad_value(
+                "search", "rerank is for target='chunks'; concepts use rank='cross'",
+                rerank=True, target="concepts")
+        if (rerank or rank == "cross") and recency is not None:
+            # Cross-encoder logits have no scale to blend recency into.
+            raise _bad_value(
+                "search", "recency does not combine with the cross-encoder rerank "
+                "(rerank / rank='cross'); use one or the other",
+                recency=recency, rerank=rerank, rank=rank)
 
         params = {
             "concept_type": concept_type, "tags": tags, "parent_id": parent_id,
@@ -202,6 +229,7 @@ class QueryOps:
             "exclude_tags": exclude_tags, "link_kinds": link_kinds,
             "near_id": near_id, "hops": hops, "offset": offset,
             "recency": recency, "recency_weight": recency_weight,
+            "rerank": rerank,
         }
         passed = [k for k, v in params.items() if v != _SEARCH_DEFAULTS[k]]
 
@@ -210,7 +238,8 @@ class QueryOps:
                 # Most specific refusal first: the historical message.
                 raise _bad_value(
                     "search",
-                    "rank is concepts-only; target='chunks' uses hub_rerank/expand",
+                    "rank is concepts-only; target='chunks' uses "
+                    "hub_rerank/expand/rerank",
                     rank=rank, target="chunks",
                 )
             path = ("chunks:hub" if hub_rerank
@@ -251,9 +280,10 @@ class QueryOps:
             return self.image_mgr.search_images_with_text(
                 text_query=query, limit=limit,
             )
+        cross = {"rerank": True} if rerank else {}
         if path == "chunks:hub":
             return self.search_engine.search_chunks_with_hub_score(
-                query=query, limit=limit, hub_weight=hub_weight,
+                query=query, limit=limit, hub_weight=hub_weight, **cross,
             )
         if path == "chunks:expand":
             return self.search_engine.search_with_context(
@@ -264,7 +294,7 @@ class QueryOps:
         if path == "chunks:plain":
             return self.search_engine.search_chunks(
                 query=query, limit=limit,
-                max_chunks_per_doc=max_chunks_per_doc, **filt,
+                max_chunks_per_doc=max_chunks_per_doc, **cross, **filt,
             )
         if link_kinds:
             filt["link_kinds"] = list(link_kinds)

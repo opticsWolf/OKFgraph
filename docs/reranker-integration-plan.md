@@ -1,6 +1,9 @@
 # okfgraph reranker integration — implementation plan
 
-**Status:** proposed, unimplemented. Target: okfgraph 0.11.0 (minor — new
+**Status:** Phases 0–2 implemented on `dev_0.11.0` (2026-11-01); Phase 3
+(eval harness) open. Deviations from the text below: `rerank` is not
+honoured by `concepts:none` (concepts use `rank='cross'`), and neither
+combines with `recency` (logits have no scale to blend). Target: okfgraph 0.11.0 (minor — new
 opt-in search stage, no behavior change when off). Scheduled in
 `docs/issue-solving-implementation-plan.md` §10.1, which lists the
 changes below against the 0.11.0 draft.

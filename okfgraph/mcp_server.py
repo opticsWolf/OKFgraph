@@ -206,13 +206,15 @@ def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
         hub_rerank: Annotated[bool, Field(description="Chunks: rerank by graph hub score (incoming links). Wins over expand.")] = False,
         hub_weight: Annotated[float, Field(ge=0, le=1, description="Hub weight for hub_rerank (chunks) or rank='hub' (concepts).")] = 0.3,
         rank: Annotated[
-            Literal["none", "hub", "ppr"],
+            Literal["none", "hub", "ppr", "cross"],
             Field(
                 description=(
                     "Concepts only: 'none' = RRF order. 'hub' = blend RRF with "
                     "incoming-link authority. 'ppr' = model-free lexical-seed "
                     "PPR: no ONNX load, deterministic — use when cold, when "
-                    "the model is unavailable, or when the query names topics."
+                    "the model is unavailable, or when the query names topics. "
+                    "'cross' = a cross-encoder rereads the top hits against "
+                    "the query and reorders them (slower; adds cross_score)."
                 ),
             ),
         ] = "none",
@@ -226,14 +228,17 @@ def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
         offset: Annotated[int, Field(description="Skip this many results (paging: offset=limit gets page 2).")] = 0,
         recency: Annotated[Optional[float], Field(description="Favour recent concepts: half-life in days (e.g. 30). Concepts and plain chunks.")] = None,
         recency_weight: Annotated[Optional[float], Field(description="Share of the recency term, 0-1 (default 0.3); needs recency.")] = None,
+        rerank: Annotated[bool, Field(description="Chunks (plain or hub_rerank): a cross-encoder rereads the top hits against the query and reorders them. Slower, more precise; adds cross_score (a raw logit: higher = more relevant, not a probability). Concepts use rank='cross'. Not with recency.")] = False,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Search the knowledge graph — start here for any question over stored knowledge.
 
         Routing: target='concepts' for open-ended questions; 'chunks' for exact
         passages (expand=true adds graph neighborhood, hub_rerank=true ranks by
-        importance); 'images' for image assets. rank='ppr' answers from the
-        link graph alone when the embedder is cold or unavailable. Params the
+        importance, rerank=true reorders by a cross-encoder); 'images' for
+        image assets. rank='ppr' answers from the link graph alone when the
+        embedder is cold or unavailable; rank='cross' reorders concept hits by
+        a cross-encoder. Params the
         chosen path ignores are refused with BAD_VALUE naming them. If you
         already have a concept ID, use read; for related concepts, traverse."""
         router = _get_router(ctx)
@@ -257,6 +262,7 @@ def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
                                  ("hops", hops), ("recency", recency),
                                  ("recency_weight", recency_weight)) if v is not None},
             **({"offset": offset} if offset else {}),
+            **({"rerank": True} if rerank else {}),
         ))
 
     @mcp.tool(annotations=_RO)

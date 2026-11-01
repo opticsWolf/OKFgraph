@@ -135,6 +135,12 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         extension_dir: Optional[str] = None,
         identity: str = "path",
         exclude_tags: Optional[List[str]] = None,
+        rerank_model_id: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        rerank_device: str = "auto",
+        rerank_precision: str = "auto",
+        rerank_top_n: int = 30,
+        rerank_window: Optional[int] = None,
+        rerank_stride: Optional[int] = None,
     ):
         """Open (or create) the graph database and wire up all managers.
 
@@ -197,6 +203,14 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 every link to it.
             exclude_tags: Tags ``search`` hides unless a call passes its own
                 ``exclude_tags`` (0.11.0, O7) — e.g. ``["superseded"]``.
+            rerank_model_id: Cross-encoder for opt-in search rerank
+                (0.11.0; ``rerank=True`` / ``rank='cross'``). Opens on the
+                first rerank only; writes no vectors, so no pins.
+            rerank_device: ``auto`` / ``cpu`` / ``cuda`` for the reranker.
+            rerank_precision: ``auto`` (= fp32), ``fp32`` or ``q8``.
+            rerank_top_n: Candidates the cross-encoder rescores per search.
+            rerank_window / rerank_stride: Token window and step for texts
+                longer than the pair cap (``None`` = embroider defaults).
         """
         from okfgraph.components.embedding import resolve_ort_dylib
         # Resolve first: the native module loads ORT dynamically, so the
@@ -342,6 +356,18 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             )
         self.precision = precision
         self.cpu_arena = cpu_arena
+        if rerank_device not in ("auto", "cpu", "cuda"):
+            raise ValueError(
+                f"rerank_device must be 'auto', 'cpu' or 'cuda', got '{rerank_device}'"
+            )
+        if rerank_precision not in ("auto", "fp32", "q8"):
+            raise ValueError(
+                f"rerank_precision must be 'auto', 'fp32' or 'q8', got "
+                f"'{rerank_precision}'"
+            )
+        if (isinstance(rerank_top_n, bool) or not isinstance(rerank_top_n, int)
+                or rerank_top_n < 1):
+            raise ValueError(f"rerank_top_n must be >= 1, got {rerank_top_n!r}")
         if (model_path is None) != (tokenizer_path is None):
             raise ValueError(
                 "model_path and tokenizer_path must be given together "
@@ -532,6 +558,34 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # Same pre-adoption sync as the text encoder above: the factory
         # reads the adopted dim lazily, the stored dim follows it here.
         self.vision_encoder._truncate_dim = self.embedding_dim
+        # Cross-encoder rerank (0.11.0): opt-in per search, opened on the
+        # first rerank. No compat or pin checks — it writes no vectors.
+        from okfgraph.components.embedding import LazyReranker
+
+        def _report_rerank_open(session) -> None:
+            logger.info(
+                "rerank: %s cuda=%s precision=%s max_length=%s",
+                rerank_model_id, session.used_cuda, session.precision,
+                session.max_length,
+            )
+
+        def _rerank_session_factory():
+            _require_ort()
+            return embroider.Reranker.open(
+                rerank_model_id,
+                cache_dir=cache_dir,
+                device=rerank_device,
+                precision=None if rerank_precision == "auto" else rerank_precision,
+                cpu_arena=self.cpu_arena,
+            )
+
+        self.reranker = LazyReranker(
+            model_id=rerank_model_id,
+            device=rerank_device,
+            session_factory=_rerank_session_factory,
+            on_open=_report_rerank_open,
+        )
+        self.rerank_top_n = rerank_top_n
         self.embed_engine = EmbeddingEngine(
             self.encoder, self.embedding_dim,
             self.device, self.cache_dir, self.model_id,
@@ -546,6 +600,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         )
         self.search_engine = SearchEngine(
             self.conn, self.embedding_dim, self.embed_engine, self.db,
+            reranker=self.reranker, rerank_top_n=rerank_top_n,
+            rerank_window=rerank_window, rerank_stride=rerank_stride,
         )
         # `_search_available` is owned by SchemaManager (set in `_ensure_schema`);
         # SearchEngine needs it to decide whether to raise on unavailable search.

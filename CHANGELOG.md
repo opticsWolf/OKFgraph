@@ -55,6 +55,22 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   `(1 - w) * relevance + w * 0.5 ** (age / DAYS)`, age from
   `effective_at`, `w = recency_weight` (default 0.3). Off by default.
   Concepts (every `rank`) and plain chunks; rows carry `recency_score`.
+- **Cross-encoder rerank (opt-in).** `search(target="chunks", rerank=True)`
+  (CLI `--rerank`; also after `hub_rerank`) and `search(rank="cross")` for
+  concepts let a cross-encoder reread the top hits against the query and
+  reorder them. Off by default: nothing changes, and no model loads,
+  unless a search asks. Only the filtered top `rerank_top_n` (default 30)
+  are rescored; they gain `cross_score` (the model's raw logit, not a
+  probability, never mixed into the other scores). The scored text is
+  always whole: chunks are re-read past the 500-char display cut, concepts
+  are scored on their body, long texts in windows (best window wins).
+  Settings under `[search]`: `rerank_model_id` (default
+  `cross-encoder/ms-marco-MiniLM-L-6-v2`;
+  `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` for multilingual graphs),
+  `rerank_device`, `rerank_precision` (`auto` = fp32, or `q8`),
+  `rerank_top_n`, `rerank_window` / `rerank_stride`. No reimport, no pins:
+  the reranker writes no vectors. Not combined with `recency`. One model
+  load per process, so `okf shell` / `okf serve` keep it warm.
 - **Index policy and batch import (O8).** `rebuild="auto"|"defer"|"force"`
   on `import_bundle`, `import_file`, `import_files`, `ingest`;
   **`import_files(paths)`** imports a list with one index step (CLI

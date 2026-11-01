@@ -48,6 +48,7 @@ Same graph and the same ops as the MCP skill, through `okf` commands.
 | Exact passage inside long documents | `search --target chunks QUERY` |
 | Answer + supporting graph neighborhood | `search --target chunks --expand QUERY` |
 | Importance-ranked chunk hits | `search --target chunks --hub-rerank QUERY` |
+| Most precise order for a hard question (slower) | `search --target chunks --rerank QUERY` or `search --rank cross QUERY` (cross-encoder rereads the top 30; best inside `okf shell` / `okf serve`) |
 | Search one neighbourhood (e.g. the notes around a design doc) | `search --near ID [--hops 1-3] QUERY` (default 2 hops) |
 | Next page of results | `search --offset N QUERY` (pages are exact within the first 25 results) |
 | Prefer recent knowledge (latest decision, current state) | `search --recency 30 QUERY` (half-life in days; `--recency-weight` 0-1, default 0.3) |

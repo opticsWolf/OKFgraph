@@ -494,6 +494,87 @@ class LazyVisionEncoder:
             f"LazyVisionEncoder({self._image_model_id}, "
             f"dim={self._truncate_dim}, {state})"
         )
+
+
+class LazyReranker:
+    """Defers the cross-encoder session open until the first rerank (0.11.0).
+
+    Mirrors `LazyRustEncoder`: `embroider.Reranker.open` — download +
+    session build — waits for the first `score_*` call, so searches that
+    never ask for a rerank never fetch its weights. Failures cache and
+    re-raise (fail-fast once); concurrent first calls open one session.
+    The reranker writes no vectors, so it has no Meta pins.
+    """
+
+    def __init__(self, *, model_id, device, session_factory, on_open=None):
+        self._model_id = model_id
+        self._device = device
+        self._session_factory = session_factory
+        self._on_open = on_open
+        self._lock = threading.Lock()
+        self._session = None
+        self._session_error = None
+        self._open_reported = False
+
+    @property
+    def is_loaded(self) -> bool:
+        """True once the cross-encoder session has been opened."""
+        return self._session is not None
+
+    @property
+    def model_id(self) -> str:
+        return self._model_id
+
+    @property
+    def used_cuda(self) -> bool:
+        """Effective device — opens the session on first access."""
+        return bool(self._get_session().used_cuda)
+
+    @property
+    def max_length(self) -> int:
+        """Pair cap (query + template + document tokens)."""
+        return int(self._get_session().max_length)
+
+    def score_batch(self, pairs):
+        """Native logits for ``[(query, doc), ...]`` (docs past the cap truncate)."""
+        return self._get_session().score_batch(list(pairs))
+
+    def score_long(self, query: str, doc: str, window=None, stride=None) -> float:
+        """Best window score over a document longer than the pair cap."""
+        return float(self._get_session().score_long(
+            query, doc, window=window, stride=stride))
+
+    def count_tokens(self, text: str) -> int:
+        """Token count in the cross-encoder's own tokenizer (no specials)."""
+        return int(self._get_session().count_tokens(text))
+
+    def _get_session(self):
+        session = self._session
+        if session is not None:
+            return session
+        with self._lock:
+            if self._session is not None:
+                return self._session
+            if self._session_error is not None:
+                raise self._session_error
+            try:
+                session = self._session_factory()
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except BaseException as exc:
+                # Same discipline as LazyRustEncoder: pyo3 panics derive
+                # from BaseException and must cache, not retry.
+                self._session_error = exc
+                raise
+            self._session = session
+            if self._on_open is not None and not self._open_reported:
+                self._open_reported = True
+                self._on_open(session)
+            return session
+
+    def __repr__(self) -> str:
+        state = "loaded" if self._session is not None else "cold"
+        return f"LazyReranker({self._model_id}, {state})"
 from okfgraph.errors import OKFError
 
 logger = logging.getLogger(__name__)

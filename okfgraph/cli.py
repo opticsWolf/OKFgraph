@@ -338,13 +338,18 @@ _OUTCOME_RENDERERS = {
 }
 
 
+def _cross(r):
+    """`` cross=<logit>`` when the cross-encoder rescored the row, else ``""``."""
+    return f" cross={r['cross_score']:.3f}" if "cross_score" in r else ""
+
+
 def _render_concepts(results):
     if not results:
         print("No results found.")
         return
     print(f"Found {len(results)} result(s):\n")
     for i, r in enumerate(results, 1):
-        print(f"  {i}. [{r['relevance_score']:.4f}] {r['title']} ({r['type']})")
+        print(f"  {i}. [{r['relevance_score']:.4f}]{_cross(r)} {r['title']} ({r['type']})")
         desc = r.get("description") or ""
         if desc:
             print(f"     {desc[:120]}")
@@ -365,7 +370,7 @@ def _render_chunks(results):
         return
     print(f"Found {len(results)} chunk(s):\n")
     for i, r in enumerate(results, 1):
-        print(f"  {i}. [{r['rrf_score']:.4f}] {r['block_type']} #{r['chunk_index']}")
+        print(f"  {i}. [{r['rrf_score']:.4f}]{_cross(r)} {r['block_type']} #{r['chunk_index']}")
         print(f"     {r.get('chunk_text', '')[:150]}")
         if r.get("parent_title"):
             print(f"     parent: {r['parent_title']}")
@@ -380,7 +385,7 @@ def _render_hub_chunks(results):
     print(f"Found {len(results)} result(s):\n")
     for i, r in enumerate(results, 1):
         print(f"  {i}. [{r['final_score']:.4f}] {r['parent_title']} §{r['chunk_index']}")
-        print(f"     hub={r['hub_score']:.2f} rrf={r['rrf_score']:.4f}")
+        print(f"     hub={r['hub_score']:.2f} rrf={r['rrf_score']:.4f}{_cross(r)}")
         print(f"     {r['chunk_text'][:150]}")
         print()
 
@@ -589,6 +594,7 @@ def _search(args):
         hub_weight=args.hub_weight,
         rank=args.rank,
         **_search_filters(args),
+        **({"rerank": True} if getattr(args, "rerank", False) else {}),
     )
     if args.target == "images":
         render = _render_images
@@ -1387,10 +1393,15 @@ def build_parser():
     p.add_argument("--hub-rerank", action="store_true", help="Chunks: rerank by graph hub score (wins over --expand)")
     p.add_argument("--hub-weight", type=float, default=0.3,
                    help="Hub weight for --hub-rerank or --rank hub (default: 0.3)")
-    p.add_argument("--rank", default="none", choices=["none", "hub", "ppr"],
+    p.add_argument("--rank", default="none", choices=["none", "hub", "ppr", "cross"],
                    help="Concepts: ranking — none (RRF order), hub (blend incoming-link "
-                   "authority), ppr (model-free lexical-seed PPR, no ONNX load). "
+                   "authority), ppr (model-free lexical-seed PPR, no ONNX load), "
+                   "cross (a cross-encoder reorders the top hits; slower). "
                    "Default: none")
+    p.add_argument("--rerank", action="store_true",
+                   help="Chunks (plain or --hub-rerank): a cross-encoder reorders "
+                   "the top hits (slower, more precise; concepts use --rank cross). "
+                   "Keep the model warm with 'okf shell' or 'okf serve'")
     p.add_argument("--where", action="append", metavar="KEY=VALUE",
                    help="Equality filter on an extra frontmatter key (repeatable)")
     p.add_argument("--since", default=None, help="Only concepts dated >= ISO date (authored date, else last content change)")

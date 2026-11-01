@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 #: different weights = different vector space, so the default is frozen
 #: (a model switch forces a full reimport, enforced by the model pin).
 DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v5-text-small-retrieval"
+#: Cross-encoder for opt-in search rerank (0.11.0). It writes no vectors,
+#: so switching it needs no reimport. Multilingual graphs:
+#: ``cross-encoder/mmarco-mMiniLMv2-L12-H384-v1``.
+DEFAULT_RERANK_MODEL_ID = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 #: Full Matryoshka ladder, mirroring OKFRouter.ALLOWED_DIMS — the router
 #: warns (not errors) off-ladder, so the settings layer warns the same way.
@@ -164,6 +168,25 @@ SETTINGS = [
     Setting("exclude_tags", "csv", [], "search",
             "Tags hidden from search unless a call passes exclude_tags "
             "(e.g. superseded)", cli=False, mcp=False),
+    # Cross-encoder rerank (0.11.0): used only when a search asks for it
+    # (rerank=True / rank='cross'); the session opens on first use.
+    Setting("rerank_model_id", "str", DEFAULT_RERANK_MODEL_ID, "search",
+            "Cross-encoder for search rerank (registry id; "
+            "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 for multilingual graphs)"),
+    Setting("rerank_device", "str", "auto", "search",
+            "Rerank inference device: auto (CUDA when present), cpu or cuda",
+            choices=("auto", "cpu", "cuda")),
+    Setting("rerank_precision", "str", "auto", "search",
+            "Rerank weight precision: auto (= fp32), fp32 or q8",
+            choices=("auto", "fp32", "q8")),
+    Setting("rerank_top_n", "int", 30, "search",
+            "Candidates the cross-encoder rescores per search (1..200)"),
+    Setting("rerank_window", "int", None, "search",
+            "Token window for long texts (pair cap; default: the model's)",
+            cli=False, mcp=False),
+    Setting("rerank_stride", "int", None, "search",
+            "Token step between long-text windows (default: half the window)",
+            cli=False, mcp=False),
 ]
 
 
@@ -260,7 +283,13 @@ class Settings:
     batch_size: int = 32
     identity: str = "path"
     exclude_tags: List[str] = field(default_factory=list)
-    roots: Dict[str, str] = field(default_factory=dict)
+    rerank_model_id: str = DEFAULT_RERANK_MODEL_ID
+    rerank_device: str = "auto"
+    rerank_precision: str = "auto"
+    rerank_top_n: int = 30
+    rerank_window: Optional[int] = None
+    rerank_stride: Optional[int] = None
+    roots:Dict[str, str] = field(default_factory=dict)
 
     # ---------------------------------------------------------------- load --
     @classmethod
@@ -393,6 +422,23 @@ class Settings:
                 f"database.extension_dir is not a directory: {self.extension_dir} "
                 "(create it with 'okf setup extensions')")
 
+        if not self.rerank_model_id or "/" not in self.rerank_model_id:
+            errors.append(
+                f"search.rerank_model_id must be 'owner/name', got "
+                f"'{self.rerank_model_id}'")
+        if not 1 <= self.rerank_top_n <= 200:
+            errors.append(
+                f"search.rerank_top_n must be within 1..200, got {self.rerank_top_n}")
+        if self.rerank_window is not None and not 16 <= self.rerank_window <= 8192:
+            errors.append(
+                f"search.rerank_window must be within 16..8192, got "
+                f"{self.rerank_window}")
+        if self.rerank_stride is not None and not (
+                1 <= self.rerank_stride <= (self.rerank_window or 8192)):
+            errors.append(
+                f"search.rerank_stride must be within 1..rerank_window, got "
+                f"{self.rerank_stride}")
+
         return errors, warnings
 
     # ------------------------------------------------------------ outputs --
@@ -420,6 +466,12 @@ class Settings:
             extension_dir=self.extension_dir,
             identity=self.identity,
             exclude_tags=list(self.exclude_tags),
+            rerank_model_id=self.rerank_model_id,
+            rerank_device=self.rerank_device,
+            rerank_precision=self.rerank_precision,
+            rerank_top_n=self.rerank_top_n,
+            rerank_window=self.rerank_window,
+            rerank_stride=self.rerank_stride,
         )
 
 

@@ -449,7 +449,7 @@ class TestRoundupDispatch:
         search = next(t for t in mcp._tool_manager.list_tools() if t.name == "search")
         props = search.parameters["properties"]
         assert props["rank"]["default"] == "none"
-        assert set(props["rank"]["enum"]) == {"none", "hub", "ppr"}
+        assert set(props["rank"]["enum"]) == {"none", "hub", "ppr", "cross"}
 
     def test_search_rank_routes_to_hybrid(self):
         calls = []

@@ -566,7 +566,11 @@ moves the pin.
 1. Rebase the draft onto 0.10.3 (§8); suite green with cached models.
 2. §10.3 items 2 and 3 (small, no API change). *Done.*
 3. §10.1 Phases 0–2 (rerank, opt-in), then §10.3 item 1 (`efs`, an API
-   addition next to `rerank`).
+   addition next to `rerank`). *Phases 0–2 done 2026-11-01:* `LazyReranker`,
+   `[search] rerank_*` settings, `rerank_with_cross_encoder`, `rerank=True`
+   (chunks plain / hub) and `rank='cross'` (concepts) on all surfaces;
+   `rerank` and `recency` are refused together. Stub tests plus one live
+   test gated on `OKFGRAPH_LIVE_RERANK=1`.
 4. §10.2 near-dupe collapse (opt-in).
 5. §10.1 Phase 3 eval harness: decides the default rerank model (Q5)
    and whether `dedupe` can default on.

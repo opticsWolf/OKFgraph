@@ -159,6 +159,12 @@ def serve(settings, listen: str, *, ready: Optional[threading.Event] = None,
     from okfgraph.router import OKFRouter
 
     host, port, uds, url = parse_listen(listen)
+    if uds and os.name == "nt":
+        # asyncio has no Unix-socket server on Windows: serve TCP loopback on
+        # a free port; the discovery file carries the real URL to clients.
+        logger.warning("okf serve: Unix sockets are not supported on Windows; "
+                       "listening on 127.0.0.1 (free port) instead of %s", url)
+        host, port, uds = "127.0.0.1", 0, None
     if uds and Path(uds).exists():
         Path(uds).unlink()
     router = OKFRouter(
@@ -179,6 +185,11 @@ def serve(settings, listen: str, *, ready: Optional[threading.Event] = None,
             threading.Thread(target=_watch, daemon=True).start()
 
         def _started():
+            nonlocal url
+            if not uds:
+                # Port 0 binds a free port: publish the one actually bound.
+                bound = server.servers[0].sockets[0].getsockname()
+                url = f"http://{host or '127.0.0.1'}:{bound[1]}"
             sf.write_text(json.dumps({
                 "url": url, "pid": os.getpid(), "db_path": str(Path(settings.db_path).resolve()),
                 "started_at": int(time.time()),

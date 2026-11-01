@@ -33,7 +33,8 @@ REPO = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def server(tmp_path, stub_encoder):
-    """``okf serve`` on a Unix socket, run on a thread in this process."""
+    """``okf serve`` on a Unix socket (TCP loopback on Windows), run on a
+    thread in this process. The URL comes from the discovery file."""
     kb = tmp_path / "kb"
     write(kb, "a.md", note("Alpha", "alpha zebra"))
     db = tmp_path / "kb.db"
@@ -44,8 +45,9 @@ def server(tmp_path, stub_encoder):
                          kwargs={"ready": ready, "stop": stop}, daemon=True)
     t.start()
     assert ready.wait(60), "okf serve did not start"
+    url = json.loads(serve_file_for(db).read_text(encoding="utf-8"))["url"]
     try:
-        yield {"url": f"unix://{sock}", "db": db, "kb": kb, "tmp": tmp_path}
+        yield {"url": url, "db": db, "kb": kb, "tmp": tmp_path}
     finally:
         stop.set()
         t.join(60)

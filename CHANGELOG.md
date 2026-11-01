@@ -85,6 +85,17 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
 - MCP `delete` is exposed (soft, recoverable, destructive-annotated);
   hard purge stays CLI/Python.
 
+### Fixed
+- `okf serve` on Windows: asyncio has no Unix-socket server there, so a
+  `unix://` listen falls back to TCP loopback on a free port (logged).
+  `<db>.serve.json` now records the port actually bound (also for an
+  explicit `HOST:0`).
+- Server discovery on Windows: the liveness check no longer calls
+  `os.kill(pid, 0)`, which there sends `CTRL_C_EVENT` instead of probing;
+  it queries the process exit code.
+- Import report: `moved` lists bundle paths with forward slashes on
+  Windows (was `evidence\x.md`).
+
 ### Migration
 - v8 → v9 on open: `LINKS_TO.kind` (existing edges become `mention`),
   `BrokenLink.kind/reason/candidates/raw`, new `ProducerCursor` table.

@@ -976,7 +976,8 @@ class ImportManager:
                 parsed, det, root)
             failed_files.extend(dup_files)
             report["duplicates"] = [str(f) for f in dup_files]
-            report["moved"] = sorted(moved_keys)
+            # FileHash keys are OS-native; the report speaks forward slashes.
+            report["moved"] = sorted(k.replace("\\", "/") for k in moved_keys)
             if moved_keys:
                 deleted = [d for d in deleted if d not in moved_keys]
         self.last_import_report = report

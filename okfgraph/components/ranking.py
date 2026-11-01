@@ -93,8 +93,9 @@ def ppr(
     """Exact Personalized PageRank over the undirected link graph.
 
     ``nodes`` need not be sorted (sorted internally); ``directed_edges`` are
-    symmetrized, self-loops dropped. Dangling mass returns to the seed
-    distribution. Unknown start ids raise ``KeyError``.
+    symmetrized, self-loops dropped. A dangling (unlinked) node keeps its
+    own mass, so an isolated seed scores its seed weight. Unknown start ids
+    raise ``KeyError``.
     """
     ids = sorted(set(nodes))
     idx = {nid: i for i, nid in enumerate(ids)}
@@ -129,9 +130,12 @@ def ppr(
         for s, d in ordered:  # fixed order -> deterministic fp
             if p[s] != 0.0:
                 contrib[d] += p[s] / deg[s]
-        dangling = sum(p[i] for i in range(n) if deg[i] == 0)
+        # A dangling node keeps its own mass (an implicit self-loop) rather
+        # than spreading it over the seeds: an unlinked seed — typically a
+        # thought — then scores its seed weight instead of draining into
+        # the linked component (R31-C1).
         nxt = [
-            (1.0 - damping) * seed[i] + damping * (contrib[i] + dangling * seed[i])
+            (1.0 - damping) * seed[i] + damping * (contrib[i] + (p[i] if deg[i] == 0 else 0.0))
             for i in range(n)
         ]
         delta = sum(abs(nxt[i] - p[i]) for i in range(n))  # ascending order

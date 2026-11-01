@@ -99,3 +99,14 @@ class TestPpr:
         got = dict(ppr(["a", "b"], [], ["a"], k=None))
         assert got["a"] == pytest.approx(1.0)
         assert "b" not in got
+
+    def test_isolated_seed_keeps_its_seed_mass(self):
+        # R31-C1: an unlinked top seed (a thought) used to leak its mass
+        # into the linked ring of weaker seeds and fall below all of them.
+        ring = [f"m{i:02d}" for i in range(30)]
+        edges = [(ring[i], ring[(i + 1) % 30]) for i in range(30)]
+        starts = ["t"] + ring[:19]
+        weights = [20.0] + [8.0] * 19
+        got = ppr(["t"] + ring, edges, starts, weights)
+        assert got[0][0] == "t"
+        assert got[0][1] == pytest.approx(20.0 / 172.0)

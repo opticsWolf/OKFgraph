@@ -62,6 +62,11 @@ commit history, newest first.
   dry run by default) gives each the title a new thought would get, keeping
   its id, tags, description and `created`. Doctor's `duplicate_title`
   warning now says that `[[title]]` links resolve to neither concept.
+- **`--rank ppr` surfaces matching thoughts (R31-C1).** A thought has no
+  links, so PPR treated it as dangling and spread its mass over every seed:
+  the strongest lexical match fell below the linked notes it outscored. An
+  unlinked node now keeps its own mass, so an isolated seed scores its seed
+  weight. Rankings over fully linked graphs are unchanged.
 - **Directory change detection covers direct children (R29-G).** A
   directory's hash used to cover its whole subtree, so one nested edit
   queued every ancestor (22 to 38 of 49 files). It now covers the files

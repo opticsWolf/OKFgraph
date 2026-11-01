@@ -361,11 +361,13 @@ def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
         type: Annotated[Optional[str], Field(description="Concept type (md/thoughts), e.g. 'decision'. thoughts default to 'thought'.")] = None,
         extra: Annotated[Optional[dict], Field(description="Extra frontmatter fields (md/thoughts), e.g. {'jev_category': 'evidence', 'relations': {'supersedes': ['finding/x']}}.")] = None,
         materialize: Annotated[Optional[bool], Field(description="md/thoughts: write the markdown into the bundle at <concept_id>.md, then import that file (the bundle stays the source of truth).")] = None,
+        related: Annotated[Optional[list[str]], Field(description="thoughts: ids (or paths/titles) of the concepts this thought is about; stored as typed 'related' links so traverse and rank='hub'|'ppr' see the thought. Unresolved ones come back in unresolved_related.")] = None,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Add content to the knowledge graph. Returns the new concept ID(s).
 
-        Results: md → {concept_id, chunk_count}; thoughts → {concept_id, title};
+        Results: md → {concept_id, chunk_count}; thoughts → {concept_id, title}
+        (+ unresolved_related when related was passed);
         an explicit concept_id upserts (the same call twice is one concept);
         pdf → {concept_ids, page_count, ...} (its md_path is a temp file —
         verify with search, not by reading the path). Markdown is
@@ -388,7 +390,8 @@ def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
             extract_images=extract_images,
             batch_size=cfg.batch_size,
             **{k: v for k, v in (("type", type), ("extra", extra),
-                                 ("materialize", materialize)) if v is not None},
+                                 ("materialize", materialize),
+                                 ("related", related)) if v is not None},
         ))
 
     @mcp.tool(annotations=_EXPORT)

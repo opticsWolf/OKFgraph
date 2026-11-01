@@ -984,7 +984,8 @@ def _ingest(args):
     extra = _kv_pairs(args.extra, "--extra")
     o9 = {k: v for k, v in (("type", args.type),
                             ("extra", extra or None),
-                            ("materialize", True if args.materialize else None))
+                            ("materialize", True if args.materialize else None),
+                            ("related", args.related or None))
           if v is not None}
     result = router.ingest(
         kind,
@@ -1017,6 +1018,8 @@ def _ingest(args):
         elif kind == "thoughts":
             # The id goes last so `tail -1` keeps it (WS2, R31-B). ASCII
             # separator: a redirected stdout on Windows may not encode a dash.
+            for raw in result.get("unresolved_related") or []:
+                print(f"  [WARN] related target not found (kept as a broken link): {raw}")
             print(f"[OK] ingested thought \"{result['title']}\" - {result['concept_id']}")
         elif kind == "bib":
             print(f"[OK] Imported {result['entry_count']} reference(s)")
@@ -1447,6 +1450,9 @@ def build_parser():
     p.add_argument("--materialize", action="store_true",
                    help="Write the markdown into the bundle at <concept-id>.md, "
                    "then import that file (--kind md/thoughts)")
+    p.add_argument("--related", action="append", metavar="ID",
+                   help="Concept this thought is about: a typed 'related' link "
+                   "(--kind thoughts, repeatable; id, path or title)")
 
     p = command("export", "Export the bundle (--all) or one concept (--concept-id)")
     p.add_argument("--all", action="store_true", dest="export_all", help="Export entire bundle")

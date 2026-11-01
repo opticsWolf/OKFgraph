@@ -37,6 +37,18 @@ re-extracting it from files.
   clash in the topic), so `[[that title]]` links reach the thought. An
   explicit title that clashes in its topic is refused (`BAD_VALUE` names
   the existing id).
+- **Link every thought.** A thought with no links is invisible to
+  `traverse` and loses out under `rank="hub"` / `"ppr"`. Two ways, use
+  both:
+  - In the text, write `[[Title]]` (or `[[concept/id]]`) for each concept
+    you reason about, e.g. "`[[Delta detection]]` re-embeds too much".
+    Body links are ordinary `mention` links.
+  - Pass `related=[ids]` for the concepts the thought is about, and for
+    earlier thoughts it builds on. They become typed `related` links
+    (`link_kinds=["related"]` to follow only these). Ids, bundle paths
+    and titles resolve; misses come back in `unresolved_related` and are
+    linked automatically once the target exists.
+  Search first to get the ids; don't invent them.
 - `kind="md"`: `md_path` (+ optional `concept_id`, `title`, `description`,
   `tags`, `mode`).
 - `kind="bib"`: `bib_path` (+ optional `tags`, applied to every entry).
@@ -62,8 +74,9 @@ re-extracting it from files.
 
 ## CLI: `okf ingest`
 
-- `--kind thoughts --thoughts TEXT --topic TOPIC [--title T] [--tags a,b]`
-  — the last output line is the minted id
+- `--kind thoughts --thoughts TEXT --topic TOPIC [--title T] [--tags a,b]
+  [--related ID ...]` — the last output line is the minted id;
+  `--related` is repeatable
 - `okf retitle-thoughts [--topic T] [--apply]` — give thoughts still titled
   `Thought: <topic>` (pre-0.10.3) their first-sentence title; dry run
   unless `--apply`; CLI-only

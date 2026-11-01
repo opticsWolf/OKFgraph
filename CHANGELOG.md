@@ -39,6 +39,13 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   `kind="md"|"thoughts"`; an explicit `concept_id` upserts;
   `materialize=True` writes `<concept_id>.md` into the bundle and imports
   that file. MCP `ingest` takes the same parameters.
+- **Thoughts link to what they are about.** `ingest(kind="thoughts",
+  related=[ids])` (CLI `--related ID`, repeatable; MCP `related`) writes
+  typed `related` links (O6) to those concepts, by id, path or title, so
+  `traverse` walks from a thought and `rank="hub"|"ppr"` see it. Targets
+  that resolve to nothing come back as `unresolved_related` and link
+  automatically once they exist. The ingest skill now tells agents to
+  write `[[Title]]` links in thought text and pass `related`.
 - **Producer plugins with a cursor (O10).** Entry-point group
   `okfgraph.producers`; `produce(..., cursor=)` returns
   `ProducedBundle(cursor, written)`; **`sync(producer, source)`** (CLI

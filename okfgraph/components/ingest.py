@@ -22,7 +22,7 @@ _INGEST_HONOURS = {
     "md": frozenset({"md_path", "concept_id", "title", "description", "tags",
                      "type", "extra", "materialize"}),
     "thoughts": frozenset({"thoughts", "topic", "concept_id", "title", "description",
-                           "tags", "type", "extra", "materialize"}),
+                           "tags", "type", "extra", "materialize", "related"}),
     "pdf": frozenset({"pdf_path", "output_dir"}),
     # Per-entry IDs come from citation keys, so bib honours only the
     # file-level inputs: one file in, N concepts out.
@@ -56,6 +56,39 @@ def _check_extra(extra) -> Dict[str, Any]:
             fields={"reserved": [str(b) for b in bad]},
         )
     return dict(extra)
+
+
+#: Relation kind a thought's ``related`` ids are written under.
+RELATED = "related"
+
+
+def _with_related(extra: Dict[str, Any], related) -> Dict[str, Any]:
+    """Merge ``related`` ids into ``extra["relations"]["related"]``.
+
+    A thought links to the concepts it is about as typed ``related``
+    edges (O6), so traverse can walk from it and PPR/hub see it. Targets
+    resolve like any relation: an id, a path, or a wiki name.
+    """
+    if related is None:
+        return extra
+    if isinstance(related, str) or not isinstance(related, (list, tuple)):
+        raise OKFError("BAD_VALUE", "related must be a list of concept ids",
+                       fields={"related": type(related).__name__})
+    bad = [r for r in related if not isinstance(r, str) or not r.strip()]
+    if bad:
+        raise OKFError("BAD_VALUE", "related entries must be non-empty strings",
+                       fields={"related": [repr(b) for b in bad]})
+    rels = extra.get("relations")
+    if rels is None:
+        rels = {}
+    elif not isinstance(rels, dict):
+        raise OKFError("BAD_VALUE", "extra['relations'] must be a mapping of kind -> targets",
+                       fields={"relations": type(rels).__name__})
+    have = rels.get(RELATED) or []
+    if isinstance(have, str):
+        have = [have]
+    merged = list(dict.fromkeys([*have, *(r.strip() for r in related)]))
+    return {**extra, "relations": {**rels, RELATED: merged}}
 
 
 def _check_concept_id(concept_id: str) -> None:
@@ -468,6 +501,7 @@ class IngestManager:
         extra: Dict[str, Any] | None = None,
         materialize: bool = False,
         created: datetime | None = None,
+        related: list[str] | None = None,
     ) -> Dict[str, Any]:
         """Inner implementation of ingest_thoughts (called under write lock).
 
@@ -475,6 +509,7 @@ class IngestManager:
         like frontmatter; an explicit ``concept_id`` upserts (the same call
         twice is one concept, links into it kept — O1); ``materialize``
         writes the thought into the bundle and imports the file.
+        ``related`` adds typed ``related`` links to those concepts.
         ``created`` keeps an existing thought's timestamp on a rewrite
         (retitle); None = now.
         """
@@ -513,7 +548,7 @@ class IngestManager:
                 title = f"{base} ({n})"
                 n += 1
 
-        extra = _check_extra(extra)
+        extra = _with_related(_check_extra(extra), related)
         ctype = type or "thought"
         # Build OKF-compliant markdown (frontmatter via the YAML dumper, so
         # extra values with ':' or quotes cannot break the header).
@@ -570,12 +605,14 @@ class IngestManager:
             out = self._materialize_and_import(concept, body, "text", force)
             out.update({"topic": topic, "markdown": markdown,
                         "lint_issues": lint_result})
+            if related:
+                out["unresolved_related"] = self._unresolved_related(out["concept_id"])
             return out
 
         # Import via shared single-concept pipeline
         result = self.import_mgr._import_single_concept(concept, markdown, "text", force)
 
-        return {
+        out = {
             "concept_id": result["concept_id"],
             "title": title,
             "topic": topic,
@@ -584,6 +621,19 @@ class IngestManager:
             "markdown": markdown,
             "lint_issues": lint_result,
         }
+        if related:
+            out["unresolved_related"] = self._unresolved_related(result["concept_id"])
+        return out
+
+    def _unresolved_related(self, concept_id: str) -> list[str]:
+        """``related`` targets of ``concept_id`` that resolved to no concept
+        (kept as BrokenLink rows, repaired once the target exists)."""
+        rows = self.import_mgr.conn.execute(
+            "MATCH (bl:BrokenLink) WHERE bl.source_id = $s AND bl.kind = $k "
+            "RETURN bl.raw AS raw ORDER BY bl.raw",
+            {"s": concept_id, "k": RELATED},
+        ).rows_as_dict().get_all()
+        return [r["raw"] for r in rows]
 
     def _lint_converted_md(
         self,
@@ -804,6 +854,7 @@ class IngestManager:
         extra: Dict[str, Any] | None = None,
         materialize: bool | None = None,
         rebuild: str = "auto",
+        related: list[str] | None = None,
     ) -> Dict[str, Any]:
         """One ingest dispatch (0.10: five spellings merged into one).
 
@@ -818,6 +869,8 @@ class IngestManager:
         type and frontmatter-like fields; ``materialize=True`` writes the
         markdown into the bundle and imports the file (single-writer rule).
         ``rebuild`` (O8: auto | defer | force) is the index step afterwards.
+        ``related`` (thoughts) links the thought to those concepts as typed
+        ``related`` relations (O6).
 
         File paths that don't exist raise ``FILE_NOT_FOUND``; missing
         required params raise ``MISSING_PARAM``; a passed param the kind
@@ -830,6 +883,7 @@ class IngestManager:
             "description": description, "tags": tags,
             "output_dir": output_dir, "bib_path": bib_path,
             "type": type, "extra": extra, "materialize": materialize,
+            "related": related,
         }
         honours = _INGEST_HONOURS.get(kind)
         if honours is not None:
@@ -879,7 +933,8 @@ class IngestManager:
                 return self._ingest_thoughts_inner(
                     thoughts, topic, concept_id, tags, force,
                     title=title, description=description,
-                    type=type, extra=extra, materialize=bool(materialize))
+                    type=type, extra=extra, materialize=bool(materialize),
+                    related=related)
         if kind == "pdf":
             if not pdf_path:
                 raise OKFError(

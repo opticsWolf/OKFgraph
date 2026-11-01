@@ -12,13 +12,14 @@ license = "Apache-2.0 OR MIT"
 dependencies = [
     # Pinned: ladybug 0.20.x segfaults building a second in-process vector
     # index (~25% under pytest, Step 6 triage); 0.21.2 runs the same loop
-    # 0/12 with the full suite green.
-    "ladybug==0.21.2",
+    # 0/12 with the full suite green. 0.22.1 re-probed (vector-index loop,
+    # unbounded FTS, 0.21.2 DB copies) before the move.
+    "ladybug==0.22.1",
     # Embedding engine — external crate (github.com/opticsWolf/embroider).
-    # Floor-pinned >=0.3.2: cache_info (model-info, B1-a) needs it; <0.4:
-    # 0.8.x needs embroider 0.3.x (JinaV5Vision) so the
-    # model registry and wheel matrix move together with releases.
-    "embroider>=0.3.2,<0.4",
+    # Floor-pinned >=0.12: the registry surface (register_task /
+    # load_registry_file, revision pins) rides 0.12.0; upper-bounded
+    # so the model registry and wheel matrix move together with releases.
+    "embroider>=0.12,<0.13",
     "pydantic>=2.0",
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",

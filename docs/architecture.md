@@ -2,7 +2,7 @@
 
 **Version**: 6.8 (as-built for okfgraph 0.11.0 — the findings-store changes in the v6.7 → v6.8 summary below: links survive re-import, per-file change detection, opt-in frontmatter identity, `okf serve` (one owner, many clients), offline extensions, typed relations, filters, typed ingest, producer cursors, MCP write tools; schema v9. Earlier: 6.7 for okfgraph 0.10.2 — v6.6 surface per `docs/surface-unification-plan.md` plus the v6.6 → v6.7 summary below: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)
 **Based on**: Architecture v6.5 (0.8.x–0.9.0 tree)  
-**Verified against**: LadybugDB v0.21.2, Python 3.11–3.13, `embroider 0.3.x`, `bobine 0.6.x`, `onnxruntime==1.29.0`
+**Verified against**: LadybugDB v0.22.1, Python 3.11–3.13, `embroider 0.12.x`, `bobine 0.6.x`, `onnxruntime==1.29.0`
 
 > **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
 > `docs/OKF Graph V6.0.md`, `docs/Okfgraph 6.0 amendment.md`,
@@ -15,7 +15,7 @@
 > still hold against the 0.2.12 tree; every changed claim below was
 > re-verified against code.
 
-**Storage**: LadybugDB (v0.21.2) — graph + vector + full-text search.  
+**Storage**: LadybugDB (v0.22.1, storage version 49 — one-way upgrade from 0.21.2's 47) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
 **Embedding Engine**: Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core).  
 **Images**: caption route (`text`) or ONNX vision route (`optional`/`omni` → `vision-onnx` via embroider `JinaV5Vision`, text-nano graphs only) into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0 and replaced by ONNX vision in 0.8.0 — same vector space, no torch anywhere.  
@@ -245,7 +245,7 @@ pip install "okfgraph[cpu]"   # ladybug, embroider, mordant, mcp, … + CPU ORT 
 
 ```toml
 # pyproject.toml (0.8.0) — deliberately few, all pinned or floor-pinned:
-ladybug == 0.21.2            # graph + vector + FTS store (0.20.x segfaulted 2nd in-process vector-index builds — Step 6)
+ladybug == 0.22.1            # graph + vector + FTS store (0.20.x segfaulted 2nd in-process vector-index builds — Step 6; 0.21.2 unbounded FTS)
 embroider >= 0.3, < 0.4      # Jina v5 text + vision embeddings (external Rust/ORT crate, PyPI wheels)
 pillow >= 11                 # caller-side vision decode/resize (core — the vision contract starts at RGB bytes)
 # onnxruntime == 1.29.0 lives in the cpu|gpu extras (exactly one): ONE pinned
@@ -263,7 +263,7 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 > (`LazyRustEncoder`), and explicit air-gapped model paths.
 
 **Verified versions** (0.10.2 tree, re-resolved + full suite green):
-- `ladybug==0.21.2`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider>=0.3.2,<0.4`, `mordant` (Rust GFM parser)
+- `ladybug==0.22.1`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider>=0.12,<0.13`, `mordant` (Rust GFM parser)
 - Single pinned ORT binary shared by bobine + embroider — do not float.
 
 ### PDF conversion (optional — bobine)

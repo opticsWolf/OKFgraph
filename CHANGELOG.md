@@ -90,6 +90,33 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   `BrokenLink.kind/reason/candidates/raw`, new `ProducerCursor` table.
   Probe-before-ALTER, so an interrupted migration finishes on the next open.
 
+## [Unreleased]
+
+### Changed
+- **ladybug 0.21.2 → 0.22.1.** Storage version 47 → 49: the first open
+  under 0.22 upgrades a graph in place, and 0.21.2 can no longer read it
+  afterwards — back up graphs and upgrade every `okf`/`okf-mcp` on the
+  same file together (README "Upgrading ladybug"). Verified on copies of
+  three real graphs (479 / 7.6k / 31k chunks): open, counts, indexes,
+  vector + FTS + PPR search, write + checkpoint.
+- The unbounded-`QUERY_FTS_INDEX` crash (0.21.2, exit 139 on the 31k-chunk
+  copy) is gone in 0.22.1; okfgraph keeps passing `top := k` regardless.
+- Known, not new: an intermittent access violation in
+  `CREATE_VECTOR_INDEX` during router open, pytest-process only (a
+  standalone 150-round loop never crashes). Crash rate over the
+  `test_bibtex`..`test_detach` prefix: 0.21.2 2/3 runs, 0.22.1 1/4 runs
+  (full + prefix). The "Step 6" crash class was not fully retired by 0.21.2.
+- Floor-pinned `embroider>=0.12,<0.13` (registry surface, revision pins,
+  `Reranker`, q8 tier); the missing-embroider hint names it.
+
+### Fixed
+- **First open after a ladybug upgrade.** ladybug loads an existing
+  graph's `vector`/`fts` extensions at open, from a per-version cache —
+  before okfgraph's own `INSTALL` runs — so the open failed with "Failed
+  to load library … libvector.lbug_extension". The router now installs
+  both through an in-memory database and retries once; if the extension
+  repository is unreachable it raises `SEARCH_UNAVAILABLE` with a remedy.
+
 ## [0.10.2] — 2026-10-07
 
 Supersedes the untagged 0.10.1 line: graph-reunification follow-ups

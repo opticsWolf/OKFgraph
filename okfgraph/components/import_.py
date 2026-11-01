@@ -769,6 +769,31 @@ class ImportManager:
                 source_files, walk_root=root)
             logger.info("directory-delta: %d changed, %d deleted (%.1fs)", len(changed), len(deleted), time.monotonic() - _t1)
 
+        # Honest counts (R29-G remedy 3): how many files the directory pass
+        # queued versus how many actually changed. Kept for --json callers.
+        if isolated or det._suspended:
+            self.last_delta_stats = {}
+        else:
+            self.last_delta_stats = det._delta_stats(changed, root)
+            logger.info(
+                "directory-delta: %d changed dir(s) — %d file(s) queued, "
+                "%d actually changed (directory-granular)",
+                self.last_delta_stats["changed_dirs"],
+                self.last_delta_stats["queued"],
+                self.last_delta_stats["actually_changed"],
+            )
+
+        # A file recorded under a concept but gone from disk is either a
+        # rename or a delete. Without --prune-missing nothing is dropped, so
+        # say so once, naming the first few (R29-G').
+        if deleted and not prune_missing and not isolated and not det._suspended:
+            shown = ", ".join(p.replace("\\", "/") for p in deleted[:5])
+            shown += " ..." if len(deleted) > 5 else ""
+            logger.warning(
+                "%d concept(s) have no source file anymore (renamed or deleted?) "
+                "- run 'okf import --all --prune-missing' to drop them: %s",
+                len(deleted), shown)
+
         # Record deletions durably: tombstones survive no-purge runs so a
         # later --purge-deleted still sees them.
         if deleted:

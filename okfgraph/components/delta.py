@@ -53,39 +53,48 @@ class DeltaDetector:
         return hashlib.sha256(file_path.read_bytes()).hexdigest()
 
 
-    def _compute_directory_hash(self, dir_path: Path) -> str:
-        """Compute a combined hash for a directory's contents.
+    @staticmethod
+    def _direct_concept_files(dir_path: Path) -> List[Path]:
+        """Concept files directly inside ``dir_path`` (subfolders excluded).
 
-        Hashes all .md/.txt files in the directory (recursively) sorted by relative path,
-        then hashes the concatenation of all file hashes. Returns a single
-        SHA-256 hex digest that changes if any file in the subtree changes.
+        A directory's hash covers only its direct children (WS3 step 1). A
+        nested edit then invalidates just its own directory, instead of every
+        ancestor, so a one-file edit re-embeds only its own folder's files.
         """
-        file_hashes = []
-        for fp in sorted(dir_path.rglob("*")):
-            if is_concept_file(fp) and not in_skipped_dir(fp):
-                rel = str(fp.relative_to(dir_path))
-                fh = self._file_hash(fp)
-                file_hashes.append((rel, fh))
+        return [
+            fp for fp in sorted(dir_path.iterdir())
+            if fp.is_file() and is_concept_file(fp) and not in_skipped_dir(fp)
+        ]
+
+
+    def _compute_directory_hash(self, dir_path: Path) -> str:
+        """Compute a combined hash for a directory's direct concept files.
+
+        Hashes the .md/.txt files directly in the directory, sorted by name,
+        then hashes the concatenation of their hashes. Returns a single SHA-256
+        hex digest that changes when one of those files changes.
+        """
+        file_hashes = [
+            (fp.name, self._file_hash(fp))
+            for fp in self._direct_concept_files(dir_path)
+        ]
         combined = "|".join(f"{rel}:{fh}" for rel, fh in file_hashes)
         return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
 
     def _compute_directory_hash_with_files(self, dir_path: Path) -> tuple[str, List[str]]:
-        """Compute a combined hash for a directory's contents and return file paths.
+        """Compute a combined hash for a directory's direct files and return their names.
 
-        Returns (hash, [relative_file_paths]) where file_paths can be used to
-        identify deleted files when the directory is removed.
+        Returns (hash, [file_names]). The names are what a removed directory's
+        tombstones are built from.
         """
-        file_hashes = []
-        file_paths = []
-        for fp in sorted(dir_path.rglob("*")):
-            if is_concept_file(fp) and not in_skipped_dir(fp):
-                rel = str(fp.relative_to(dir_path))
-                fh = self._file_hash(fp)
-                file_hashes.append((rel, fh))
-                file_paths.append(rel)
+        file_hashes = [
+            (fp.name, self._file_hash(fp))
+            for fp in self._direct_concept_files(dir_path)
+        ]
         combined = "|".join(f"{rel}:{fh}" for rel, fh in file_hashes)
-        return hashlib.sha256(combined.encode("utf-8")).hexdigest(), file_paths
+        return (hashlib.sha256(combined.encode("utf-8")).hexdigest(),
+                [rel for rel, _ in file_hashes])
 
 
     def _load_directory_hashes(self) -> Dict[str, Dict]:
@@ -505,6 +514,41 @@ class DeltaDetector:
         self.conn.execute("MATCH (m:Meta {key: 'detached'}) DELETE m")
         self.conn.execute("MATCH (m:Meta {key: 'detached_at'}) DELETE m")
         self.conn.execute("MATCH (s:SourceRoot) DELETE s")
+
+
+    def _load_file_hashes(self) -> Dict[str, str]:
+        """Persisted path→content-hash map for this namespace's FileHash rows."""
+        try:
+            rows = self.conn.execute(
+                "MATCH (f:FileHash) RETURN f.path AS p, f.hash AS h"
+            ).rows_as_dict().get_all()
+            if rows:
+                return {r["p"]: r["h"] for r in rows}
+        except Exception as exc:
+            logger.debug("could not load file hashes: %s", exc)
+        return {}
+
+
+    def _delta_stats(self, changed: List[Path], base: Path) -> Dict[str, int]:
+        """How coarse the directory-level delta was, for the log and --json.
+
+        ``queued`` is every file the directory pass sends to import;
+        ``actually_changed`` counts only those whose content differs from the
+        stored FileHash row (or has none). The gap is the cost of
+        directory-granular detection (R29-G). Hashing here is only for the
+        count: nothing is written.
+        """
+        stored = self._load_file_hashes()
+        actual = 0
+        for fp in changed:
+            key = prefix_key(self.alias, str(Path(fp).relative_to(base)))
+            if stored.get(key) != self._file_hash(Path(fp)):
+                actual += 1
+        return {
+            "changed_dirs": len({Path(fp).parent for fp in changed}),
+            "queued": len(changed),
+            "actually_changed": actual,
+        }
 
 
     def _load_file_hash_concept_ids(self) -> Dict[str, str]:

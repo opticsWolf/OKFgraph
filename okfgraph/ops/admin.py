@@ -95,7 +95,9 @@ class AdminOps:
         """Import an entire bundle directory (default: every configured root).
 
         ``alias`` stays Python-only (PDF work-dir namespaces). Returns
-        ``{"concept_ids", "images": {id: count}}``.
+        ``{"concept_ids", "images": {id: count}, "delta": {changed_dirs,
+        queued, actually_changed}}``. ``delta`` describes the last directory
+        pass (empty for isolated or work-dir imports).
         """
         if bundle_path is not None:
             bundle_path = _require_dir(bundle_path, op="import_bundle",
@@ -109,7 +111,8 @@ class AdminOps:
             alias=alias,
         )
         images = {cid: len(self.image_mgr.list_images(cid)) for cid in ids}
-        return {"concept_ids": ids, "images": images}
+        delta = dict(getattr(self.import_mgr, "last_delta_stats", {}) or {})
+        return {"concept_ids": ids, "images": images, "delta": delta}
 
     def import_file(self, file_path, *, mode: str = "text", force: bool = False,
                       identity_root=None) -> dict:

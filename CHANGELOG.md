@@ -52,6 +52,18 @@ commit history, newest first.
   topic is refused with `BAD_VALUE`, naming the existing id. The CLI prints
   the minted id as the last line. Existing `Thought: <topic>` titles are
   unchanged; a retitle op is still to do.
+- **Directory change detection covers direct children (R29-G).** A
+  directory's hash used to cover its whole subtree, so one nested edit
+  queued every ancestor (22 to 38 of 49 files). It now covers the files
+  directly in each folder: a nested edit queues only its own folder.
+  **One-time cost:** every stored directory hash changes meaning, so the
+  first import after upgrading re-embeds each bundle once.
+- **Honest delta counts.** The directory pass logs `N changed dir(s) —
+  Q file(s) queued, A actually changed`, and `okf import --all --json`
+  returns the same numbers under `delta`.
+- **Vanished sources are named (R29-G').** An import without
+  `--prune-missing` that finds a recorded source file gone warns once,
+  listing up to five, and drops nothing.
 
 ## [0.10.2] — 2026-10-07
 

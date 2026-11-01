@@ -32,7 +32,11 @@ re-extracting it from files.
   project, e.g. `auth-refactor`, `api-design` — consistency makes search work.
   Generated IDs are namespaced `thoughts/<topic>/<ts>_<id>` (virtual — no
   file needed, exports land there later); explicit `concept_id` may use
-  `/` namespaces the same way.
+  `/` namespaces the same way. Optional `title` / `description`: with no
+  title the first sentence becomes it (≤ 72 chars; ` (2)`, ` (3)` on a
+  clash in the topic), so `[[that title]]` links reach the thought. An
+  explicit title that clashes in its topic is refused (`BAD_VALUE` names
+  the existing id).
 - `kind="md"`: `md_path` (+ optional `concept_id`, `title`, `description`,
   `tags`, `mode`).
 - `kind="bib"`: `bib_path` (+ optional `tags`, applied to every entry).
@@ -58,7 +62,11 @@ re-extracting it from files.
 
 ## CLI: `okf ingest`
 
-- `--kind thoughts --thoughts TEXT --topic TOPIC [--tags a,b]`
+- `--kind thoughts --thoughts TEXT --topic TOPIC [--title T] [--tags a,b]`
+  — the last output line is the minted id
+- `okf retitle-thoughts [--topic T] [--apply]` — give thoughts still titled
+  `Thought: <topic>` (pre-0.10.3) their first-sentence title; dry run
+  unless `--apply`; CLI-only
 - `--kind md --md-path F [--concept-id ID] [--title T] [--tags a,b]`
 - `--kind bib --bib-path F [--tags a,b]` — one `refs/<key>` concept per entry
 - `--kind pdf --pdf-path F [--routing-mode ...]` — auto-imports by default;

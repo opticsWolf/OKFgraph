@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import uuid
@@ -20,8 +21,8 @@ logger = logging.getLogger(__name__)
 _INGEST_HONOURS = {
     "md": frozenset({"md_path", "concept_id", "title", "description", "tags",
                      "type", "extra", "materialize"}),
-    "thoughts": frozenset({"thoughts", "topic", "concept_id", "tags",
-                           "type", "extra", "materialize"}),
+    "thoughts": frozenset({"thoughts", "topic", "concept_id", "title", "description",
+                           "tags", "type", "extra", "materialize"}),
     "pdf": frozenset({"pdf_path", "output_dir"}),
     # Per-entry IDs come from citation keys, so bib honours only the
     # file-level inputs: one file in, N concepts out.
@@ -166,6 +167,29 @@ def _bib_entry_concept(entry, concept_id: str,
         "tags": all_tags,
     })
     return concept, markdown
+
+
+#: Auto-titles for thoughts are cut to this many characters (WS2).
+THOUGHT_TITLE_MAX = 72
+
+
+def _auto_thought_title(text: str, topic: str, now: datetime) -> str:
+    """Title for a thought with none given: its first sentence.
+
+    Whitespace is collapsed, the sentence is cut at a word boundary to at most
+    :data:`THOUGHT_TITLE_MAX` characters, and trailing ``.!?`` is dropped. If
+    the text has no usable sentence (fewer than three letters or digits), the
+    title is ``<topic> — <YYYY-MM-DD HH:MM>``.
+    """
+    flat = " ".join((text or "").split())
+    m = re.match(r"(.+?[.!?])(?:\s|$)", flat)
+    sentence = (m.group(1) if m else flat).rstrip(".!? ")
+    if sum(ch.isalnum() for ch in sentence) < 3:
+        return f"{topic} — {now:%Y-%m-%d %H:%M}"
+    if len(sentence) > THOUGHT_TITLE_MAX:
+        cut = sentence[:THOUGHT_TITLE_MAX]
+        sentence = cut.rsplit(" ", 1)[0] if " " in cut else cut
+    return sentence
 
 
 class IngestManager:
@@ -337,6 +361,100 @@ class IngestManager:
         return out
 
 
+    def _thought_titles_in_topic(self, slug: str, title: str, exclude_id: str) -> list[str]:
+        """Ids of other thoughts in the topic namespace already titled ``title``.
+
+        Scope is the topic: default ids are ``thoughts/<slug>/...``, so the
+        namespace prefix is the topic. Ids outside it are not compared.
+        """
+        rows = self.import_mgr.conn.execute(
+            "MATCH (c:Concept) WHERE c.title = $t "
+            "RETURN c.id AS id",
+            {"t": title},
+        ).rows_as_dict().get_all() or []
+        prefix = f"thoughts/{slug}/"
+        return [r["id"] for r in rows
+                if r["id"] != exclude_id and r["id"].startswith(prefix)]
+
+    def retitle_thoughts(self, topic: str | None = None,
+                         apply: bool = False) -> Dict[str, Any]:
+        """Give old-style ``Thought: <topic>`` titles a real one (WS2, Q3).
+
+        Each thought still titled exactly ``Thought: <its topic>`` gets the
+        title a new thought would get: its first sentence, with ``(2)``,
+        ``(3)`` on clashes within the topic. ``topic`` limits the run to one
+        topic. Without ``apply`` nothing is written and the plan is
+        returned; with it, each thought is rewritten under its own id (type,
+        tags, description, extra frontmatter and ``created`` kept,
+        re-embedded). A materialized thought (O9) is backed by a bundle
+        file, so it is listed under ``skipped`` instead: edit its file.
+        """
+        rows = self.import_mgr.conn.execute(
+            "MATCH (c:Concept) WHERE c.title STARTS WITH 'Thought: ' "
+            "RETURN c.id AS id, c.title AS title, c.type AS type, "
+            "c.description AS description, c.tags AS tags, c.body AS body "
+            "ORDER BY c.id"
+        ).rows_as_dict().get_all() or []
+        # A FileHash row means the concept came from a bundle file (O9).
+        file_backed = {
+            r["c"] for r in self.import_mgr.conn.execute(
+                "MATCH (f:FileHash) WHERE f.concept_id IN $ids "
+                "RETURN f.concept_id AS c",
+                {"ids": [r["id"] for r in rows]},
+            ).rows_as_dict().get_all()
+        } if rows else set()
+        plan: list[Dict[str, Any]] = []
+        work: list[Dict[str, Any]] = []
+        skipped: list[str] = []
+        planned: Dict[str, set] = {}  # slug -> titles given out in this run
+        for r in rows:
+            post = frontmatter.loads(r["body"] or "")
+            if r["type"] != "thought" and post.metadata.get("thought_type") != "reasoning":
+                continue  # not a thought
+            t = str(post.metadata.get("topic") or r["title"][len("Thought: "):])
+            if r["title"] != f"Thought: {t}":
+                continue  # a deliberate title that happens to start that way
+            if topic is not None and t != topic:
+                continue
+            if r["id"] in file_backed:
+                skipped.append(r["id"])
+                continue
+            created = post.metadata.get("created")
+            if isinstance(created, str):
+                try:
+                    created = datetime.fromisoformat(created)
+                except ValueError:
+                    created = None
+            if not isinstance(created, datetime):
+                created = None
+            slug = _slugify_topic(t) or "untitled"
+            taken = planned.setdefault(slug, set())
+            base = _auto_thought_title(post.content, t, created or datetime.now())
+            new, n = base, 2
+            while new in taken or self._thought_titles_in_topic(slug, new, r["id"]):
+                new = f"{base} ({n})"
+                n += 1
+            taken.add(new)
+            plan.append({"concept_id": r["id"], "topic": t,
+                         "old_title": r["title"], "new_title": new})
+            work.append({"text": post.content, "topic": t, "id": r["id"],
+                         "tags": [x for x in (r["tags"] or [])
+                                  if x not in ("thought", "reasoning", t)],
+                         "title": new, "description": r["description"],
+                         "type": r["type"], "created": created,
+                         "extra": {k: v for k, v in post.metadata.items()
+                                   if k not in _RESERVED_EXTRA
+                                   and k not in ("thought_type", "topic", "created")}})
+        if apply and work:
+            with self._write_lock_ctx():
+                for w in work:
+                    self._ingest_thoughts_inner(
+                        w["text"], w["topic"], w["id"], w["tags"],
+                        title=w["title"], description=w["description"],
+                        type=w["type"], extra=w["extra"], created=w["created"])
+        return {"applied": bool(apply), "count": len(plan), "plan": plan,
+                "skipped": skipped}
+
     def _ingest_thoughts_inner(
         self,
         thoughts: str,
@@ -344,9 +462,12 @@ class IngestManager:
         concept_id: str | None,
         tags: list[str] | None,
         force: bool = False,
+        title: str | None = None,
+        description: str | None = None,
         type: str | None = None,
         extra: Dict[str, Any] | None = None,
         materialize: bool = False,
+        created: datetime | None = None,
     ) -> Dict[str, Any]:
         """Inner implementation of ingest_thoughts (called under write lock).
 
@@ -354,9 +475,13 @@ class IngestManager:
         like frontmatter; an explicit ``concept_id`` upserts (the same call
         twice is one concept, links into it kept — O1); ``materialize``
         writes the thought into the bundle and imports the file.
+        ``created`` keeps an existing thought's timestamp on a rewrite
+        (retitle); None = now.
         """
         import uuid
 
+        now = created or datetime.now()
+        slug = _slugify_topic(topic) or "untitled"
         # Generate concept_id from topic if not provided. Namespaced
         # (``thoughts/<slug>/...``) so a fileless graph exports into a tidy
         # tree later — the namespace is virtual (no file needed) until an
@@ -364,21 +489,41 @@ class IngestManager:
         # the same way. The slug is sanitized to one level: a topic like
         # ``../../evil`` must never become path traversal on export.
         if not concept_id:
-            ts = datetime.now().strftime("%Y%m%d%H%M%S")
-            slug = _slugify_topic(topic) or "untitled"
+            ts = now.strftime("%Y%m%d%H%M%S")
             concept_id = f"thoughts/{slug}/{ts}_{str(uuid.uuid4())[:6]}"
+
+        # Titles are unique per topic (WS2). An explicit title is a name
+        # someone will link to, so a clash is refused, never renamed. An
+        # auto-title gets a (2), (3), … suffix instead.
+        title = (title or "").strip() or None
+        if title:
+            taken = self._thought_titles_in_topic(slug, title, concept_id)
+            if taken:
+                raise OKFError(
+                    "BAD_VALUE",
+                    f"a thought titled {title!r} already exists in topic {topic!r}: {taken[0]}",
+                    fields={"title": title, "topic": topic, "existing_id": taken[0]},
+                    remedy="choose another title, or pass --concept-id "
+                           f"{taken[0]} to update that thought",
+                )
+        else:
+            base = _auto_thought_title(thoughts, topic, now)
+            title, n = base, 2
+            while self._thought_titles_in_topic(slug, title, concept_id):
+                title = f"{base} ({n})"
+                n += 1
 
         extra = _check_extra(extra)
         ctype = type or "thought"
         # Build OKF-compliant markdown (frontmatter via the YAML dumper, so
         # extra values with ':' or quotes cannot break the header).
         meta: Dict[str, Any] = {
-            "title": f"Thought: {topic}",
+            "title": title,
             "type": ctype,
             "thought_type": "reasoning",
             "topic": topic,
             "tags": ["thought", "reasoning", topic],
-            "created": datetime.now().isoformat(),
+            "created": now.isoformat(),
         }
         meta.update(extra)
         markdown = frontmatter.dumps(frontmatter.Post(thoughts, **meta))
@@ -407,8 +552,8 @@ class IngestManager:
         concept = ConceptModel.model_validate({
             **extra,
             "id": concept_id,
-            "title": f"Thought: {topic}",
-            "description": f"Reasoning about {topic}",
+            "title": title,
+            "description": (description or "").strip() or f"Reasoning about {topic}",
             "body": markdown,
             "type": ctype,
             "tags": all_tags,
@@ -432,6 +577,7 @@ class IngestManager:
 
         return {
             "concept_id": result["concept_id"],
+            "title": title,
             "topic": topic,
             "tags": result["tags"],
             "chunk_count": result["chunk_count"],
@@ -732,6 +878,7 @@ class IngestManager:
             with self._write_lock_ctx(), self.import_mgr.rebuild(rebuild):
                 return self._ingest_thoughts_inner(
                     thoughts, topic, concept_id, tags, force,
+                    title=title, description=description,
                     type=type, extra=extra, materialize=bool(materialize))
         if kind == "pdf":
             if not pdf_path:

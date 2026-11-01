@@ -231,7 +231,7 @@ package import itself.
 | `okf import [FILE...] [--all] [--prune-missing] [--mode text] [--force]` | Single files / bulk import, delta-aware (`--force` re-attaches a detached graph); TOML `[[roots]]` (or per-call `--root ALIAS=PATH`) add named roots (`@alias/` IDs, unmounted ≠ deleted, `--prune-missing` skips while any root is absent); `--bundle-path DIR` pins one tree for this call |
 | `okf produce --from sqlite --source DB --output-dir DIR` | Generate a bundle from a data source (one concept per table, FK links, `## Observations` notes, `log.md` changelog); lint pre-flighted, CLI-only |
 | `okf detach [--bundle-path DIR] [--no-verify] [--force]` | End the mirror: the DB becomes the artifact (verify-first; imports refuse without `--force`) |
-| `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf deleted-*`, `okf delete ID` | Setup, cache inspection, REPL, index rebuild, link + soft-delete maintenance (`delete` refuses file-backed concepts while their source exists) |
+| `okf init`, `okf model-info`, `okf shell`, `okf reindex`, `okf broken-links`, `okf repair-links`, `okf retitle-thoughts [--topic T] [--apply]`, `okf deleted-*`, `okf delete ID` | Setup, cache inspection, REPL, index rebuild, link + thought-title + soft-delete maintenance (`delete` refuses file-backed concepts while their source exists) |
 
 Only commands that embed text (`search` except `--rank ppr`, `import`,
 `ingest`) load the model (~30s cold per process); `read`, `traverse`,

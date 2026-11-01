@@ -18,13 +18,14 @@ from okfgraph.components.roots import (
     resolve_alias_for_path,
 )
 from okfgraph.components.links import (
+    SOURCE_EXTS,
     MENTION,
     build_name_index_full,
     extract_md_links,
     extract_wikilinks,
     frontmatter_relations,
     is_external,
-    resolve_path_link,
+    link_target,
     resolve_relation_target,
     resolve_wiki_detail,
 )
@@ -50,9 +51,6 @@ logger = logging.getLogger(__name__)
 # by ``okf produce``, never a concept — reserving it only once the writer
 # exists, per the plan's own warning.
 RESERVED_FILENAMES = frozenset({"index.md", "log.md"})
-
-#: Extensions import (and diff/delta/lint) treat as concept sources.
-SOURCE_EXTS = (".md", ".markdown", ".txt")
 
 #: Directory names never walked for concept sources (0.4.0): tool output,
 #: caches, and dependency trees are graph noise — and can be enormous
@@ -550,7 +548,7 @@ class ImportManager:
         for raw in extract_md_links(body):
             if is_external(raw):
                 continue
-            hit, recorded = resolve_path_link(
+            hit, recorded = link_target(
                 raw, source_id, known_ids, getattr(self, "_path_ids", None))
             out.append((source_id, hit, recorded, MENTION,
                         None if hit else "missing", [], raw))
@@ -981,6 +979,31 @@ class ImportManager:
             if moved_keys:
                 deleted = [d for d in deleted if d not in moved_keys]
         self.last_import_report = report
+
+        # Honest counts (R29-G remedy 3): files the delta pass queued versus
+        # files whose bytes actually changed. Kept for --json callers.
+        if isolated or det._suspended:
+            self.last_delta_stats = {}
+        else:
+            self.last_delta_stats = det._delta_stats(changed, root)
+            logger.info(
+                "directory-delta: %d changed dir(s) — %d file(s) queued, "
+                "%d actually changed",
+                self.last_delta_stats["changed_dirs"],
+                self.last_delta_stats["queued"],
+                self.last_delta_stats["actually_changed"],
+            )
+
+        # A file recorded under a concept but gone from disk (and not a
+        # move, above) is a rename or a delete. Without --prune-missing
+        # nothing is dropped, so say so once, naming the first few (R29-G').
+        if deleted and not prune_missing and not isolated and not det._suspended:
+            shown = ", ".join(p.replace("\\", "/") for p in deleted[:5])
+            shown += " ..." if len(deleted) > 5 else ""
+            logger.warning(
+                "%d concept(s) have no source file anymore (renamed or deleted?) "
+                "- run 'okf import --all --prune-missing' to drop them: %s",
+                len(deleted), shown)
 
         # Record deletions durably: tombstones survive no-purge runs so a
         # later --purge-deleted still sees them.
@@ -2402,10 +2425,10 @@ class ImportManager:
                 continue
             raw_link = link.get("raw") or ""
             path_hit = None
-            if raw_link and raw_link.split("#", 1)[0].strip().lower().endswith(".md"):
+            if raw_link and raw_link.split("#", 1)[0].strip().lower().endswith(SOURCE_EXTS):
                 # The link as written, read exactly as import reads it
                 # (source-relative, then root-relative, then file → id).
-                path_hit, _rec = resolve_path_link(
+                path_hit, _rec = link_target(
                     raw_link, source_id, known_ids, getattr(self, "_path_ids", None))
             if raw_target in known_ids:
                 target_id = raw_target

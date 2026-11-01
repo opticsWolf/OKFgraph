@@ -29,7 +29,7 @@ from okfgraph.components.links import (
     extract_wikilinks,
     frontmatter_relations,
     is_external,
-    resolve_path_link,
+    link_target,
     resolve_relation_target,
     resolve_wiki,
 )
@@ -113,9 +113,7 @@ def _resolve_state(concepts, raw_links, index_concepts, aliases=()) -> DiffState
         for raw in links["md"]:
             if is_external(raw):
                 continue
-            # Same reading as import (0.11.0): source-relative, then the
-            # legacy root-relative form.
-            target, recorded = resolve_path_link(raw, cid, known, path_ids)
+            target, recorded = link_target(raw, cid, known, path_ids)
             if target is not None:
                 state.edges.add((cid, target))
             else:

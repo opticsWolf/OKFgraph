@@ -189,7 +189,8 @@ class DoctorManager:
                 for cid in sorted(ids):
                     others = sorted(i for i in ids if i != cid)
                     _add(cid, "warn", "duplicate_title",
-                         f"title '{title}' also used by {', '.join(others)}")
+                         f"title '{title}' also used by {', '.join(others)} "
+                         f"([[{title}]] links resolve to neither)")
 
         for c in concepts:
             cid = c["id"]

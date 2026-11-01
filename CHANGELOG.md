@@ -119,6 +119,13 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   (full + prefix). The "Step 6" crash class was not fully retired by 0.21.2.
 - Floor-pinned `embroider>=0.12,<0.13` (registry surface, revision pins,
   `Reranker`, q8 tier); the missing-embroider hint names it.
+- **Search rows carry a stable owner key (WS5.3).** Every row from
+  `search` now has the owning concept under `id` in every target and rank.
+  Chunk rows and `chunks:expand` rows also carry `concept_id`, and chunk rows
+  keep `chunk_id`. **Image rows change meaning:** `id` was the asset id and
+  is now the owning concept (`concept_id`, lowest id when shared); the asset
+  id moved to `asset_id`. Consumers that read an image's `id` to fetch it
+  must read `asset_id` instead. Other keys are unchanged.
 
 ### Fixed
 - **First open after a ladybug upgrade.** ladybug loads an existing
@@ -127,6 +134,53 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   to load library … libvector.lbug_extension". The router now installs
   both through an in-memory database and retries once; if the extension
   repository is unreachable it raises `SEARCH_UNAVAILABLE` with a remedy.
+- **Stale `<db>.lock` is removed on close.** fasteners leaves the lock file
+  after every write; `OKFRouter.close()` now unlinks it when no other
+  process holds the lock. A live writer's file is left alone, and doctor's
+  `stale_lock` info still reports a leftover from a crash.
+- **Path links resolve from the source file (R29-A/B/C/D).** `](path.md)`
+  links were read from the bundle root, so `architecture/x` linking
+  `s13.md` pointed at `s13` and broke. They now resolve relative to the
+  source file, with the old root-relative reading as a fallback for bundles
+  that relied on it. Links that leave the bundle are broken, never guessed.
+  Also: `%20` is decoded; `<angle>` targets and `"titles"` parse; code
+  spans and fenced blocks are never read as links; `.txt` and `.markdown`
+  targets count. Broken-link rows record the resolved target.
+  **Existing graphs** are fixed on each concept's next import; for a whole
+  graph run `okf import --all --force`.
+- **Thought titles are unique per topic (R31-A, R31-B).** Every thought
+  used to be titled `Thought: <topic>`, so `[[wikilinks]]` could not reach
+  one. `ingest(kind="thoughts")` now accepts `title` and `description`. With
+  no title, the title is the first sentence (at most 72 characters, cut at a
+  word). A clash gets ` (2)`, ` (3)`. An explicit title that clashes in its
+  topic is refused with `BAD_VALUE`, naming the existing id. The CLI prints
+  the minted id as the last line. Existing `Thought: <topic>` titles are
+  unchanged until **`okf retitle-thoughts [--topic T] [--apply]`** (CLI-only,
+  dry run by default) gives each the title a new thought would get, keeping
+  its id, tags, description and `created`. Doctor's `duplicate_title`
+  warning now says that `[[title]]` links resolve to neither concept.
+- **`--rank ppr` surfaces matching thoughts (R31-C1).** A thought has no
+  links, so PPR treated it as dangling and spread its mass over every seed:
+  the strongest lexical match fell below the linked notes it outscored. An
+  unlinked node now keeps its own mass, so an isolated seed scores its seed
+  weight. Rankings over fully linked graphs are unchanged.
+- **Filtered searches fill `limit` (WS5.4).** `concept_type` / `tags` /
+  `parent_id` filter after the index top-`k`, so selective filters whose
+  matches ranked low returned fewer hits, or none. Filtered concept and
+  chunk searches now fetch `max(limit * 10, 50)` per index and, if still
+  short with a full window, deepen once to `4 × k` (capped at 1000).
+- **Directory change detection covers direct children (R29-G).** A
+  directory's hash used to cover its whole subtree, so one nested edit
+  queued every ancestor (22 to 38 of 49 files). It now covers the files
+  directly in each folder: a nested edit queues only its own folder.
+  **One-time cost:** every stored directory hash changes meaning, so the
+  first import after upgrading re-embeds each bundle once.
+- **Honest delta counts.** The directory pass logs `N changed dir(s) —
+  Q file(s) queued, A actually changed`, and `okf import --all --json`
+  returns the same numbers under `delta`.
+- **Vanished sources are named (R29-G').** An import without
+  `--prune-missing` that finds a recorded source file gone warns once,
+  listing up to five, and drops nothing.
 
 ## [0.10.2] — 2026-10-07
 

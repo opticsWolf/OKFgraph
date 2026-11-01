@@ -98,8 +98,10 @@ class AdminOps:
         ``alias`` stays Python-only (PDF work-dir namespaces). ``rebuild``
         (0.11.0, O8) is the index step: ``auto`` | ``defer`` | ``force``.
         Returns ``{"concept_ids", "images": {id: count}, "duplicates",
-        "moved"}`` — the last two report frontmatter-identity refusals and
-        moves (O3).
+        "moved", "delta": {changed_dirs, queued, actually_changed}}``.
+        ``duplicates`` / ``moved`` report frontmatter-identity refusals and
+        moves (O3); ``delta`` describes the last delta pass (empty for
+        isolated or work-dir imports).
         """
         if bundle_path is not None:
             bundle_path = _require_dir(bundle_path, op="import_bundle",
@@ -115,9 +117,10 @@ class AdminOps:
             )
         images = {cid: len(self.image_mgr.list_images(cid)) for cid in ids}
         report = self.import_mgr.last_import_report or {}
+        delta = dict(getattr(self.import_mgr, "last_delta_stats", {}) or {})
         return {"concept_ids": ids, "images": images,
                 "duplicates": list(report.get("duplicates", [])),
-                "moved": list(report.get("moved", []))}
+                "moved": list(report.get("moved", [])), "delta": delta}
 
     def import_files(self, paths, *, mode: str = "text", force: bool = False,
                      identity_root=None, rebuild: str = "auto") -> dict:

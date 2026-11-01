@@ -35,7 +35,7 @@ from okfgraph.components.links import (
     extract_wikilinks,
     frontmatter_relations,
     is_external,
-    resolve_path_link,
+    link_target,
     resolve_relation_target,
     resolve_wiki_detail,
 )
@@ -136,7 +136,7 @@ def lint_bundle(bundle_dir: str | Path, identity: str = "path") -> Dict[str, Any
         for raw in extract_md_links(body):
             if is_external(raw):
                 continue
-            target, recorded = resolve_path_link(raw, cid, known_ids, path_ids)
+            target, recorded = link_target(raw, cid, known_ids, path_ids)
             if target is None:
                 errors.append(_err(
                     rel, "dangling_link",

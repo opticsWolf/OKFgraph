@@ -11,22 +11,63 @@ from __future__ import annotations
 import posixpath
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+from urllib.parse import unquote
 
-MD_LINK_RE = re.compile(r"\[.*?\]\((.*?\.md)\)")
+#: Source files a concept can come from; link targets must end in one of these.
+SOURCE_EXTS = (".md", ".markdown", ".txt")
+
+# ``[text](target)``, ``[text](<target with spaces>)`` and ``[text](t "title")``.
+# A bare target cannot contain whitespace or ')', so one match never spans two
+# links. Group 1 is the angle-bracket form, group 2 the bare form.
+_MD_LINK_RE = re.compile(
+    r"\[[^\]]*\]\(\s*(?:<([^<>\n]+)>|([^)\s<>]+))(?:\s+\"[^\"]*\")?\s*\)"
+)
 WIKI_RE = re.compile(r"\[\[(.*?)\]\]")
 SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+# Fenced blocks: an opener of 3+ backticks or tildes, closed by the same fence
+# (or the end of the text). Single-line code spans: a backtick run closed by a
+# run of exactly the same length.
+_FENCE_RE = re.compile(
+    r"^( {0,3})(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\2[`~]*[ \t]*$|\Z)",
+    re.M | re.S,
+)
+_CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)[^\n]+?(?<!`)\1(?!`)")
+
+
+def _blank(match: "re.Match[str]") -> str:
+    """Same-length run of spaces (newlines kept), so offsets stay valid."""
+    return re.sub(r"[^\n]", " ", match.group(0))
+
+
+def strip_code(body: str) -> str:
+    """``body`` with fenced blocks and inline code spans blanked out."""
+    return _CODE_SPAN_RE.sub(_blank, _FENCE_RE.sub(_blank, body))
+
+
+def _path_part(raw: str) -> str:
+    """The target without its ``#fragment`` or ``?query``."""
+    return re.split(r"[#?]", raw, maxsplit=1)[0].strip()
 
 
 def extract_md_links(body: str) -> List[str]:
-    """Raw targets of ``[text](target.md)`` links (external URLs included)."""
-    return MD_LINK_RE.findall(body or "")
+    """Raw targets of ``[text](target)`` links that name a source file.
+
+    External URLs are included (callers skip them with :func:`is_external`).
+    Code blocks and code spans are never read as links.
+    """
+    out: List[str] = []
+    for m in _MD_LINK_RE.finditer(strip_code(body or "")):
+        raw = m.group(1) or m.group(2)
+        if _path_part(raw).lower().endswith(SOURCE_EXTS):
+            out.append(raw)
+    return out
 
 
 def extract_wikilinks(body: str) -> List[str]:
     """Raw targets of ``[[target]]`` / ``[[target|display]]`` (display stripped)."""
     return [
         m.split("|", 1)[0].strip()
-        for m in WIKI_RE.findall(body or "")
+        for m in WIKI_RE.findall(strip_code(body or ""))
     ]
 
 
@@ -35,63 +76,73 @@ def is_external(raw: str) -> bool:
     return bool(SCHEME_RE.match((raw.split("#", 1)[0]).strip()))
 
 
-def normalize_path_link(raw: str) -> str:
-    """Map a markdown link target to a concept id (path without extension).
-
-    Legacy, root-relative reading: leading ``./``/``../``/``/`` are stripped,
-    so ``../ev/t.md`` from anywhere means ``ev/t``. Kept as the fallback of
-    :func:`resolve_path_link`, which tries the source-relative reading first.
-    """
+def _legacy_target(raw: str) -> str:
+    """The pre-0.10.3 reading: the target with a substring ``.md`` removed."""
     return raw.lstrip("./").replace("\\", "/").replace(".md", "").lstrip("/")
 
 
-def relative_path_link(raw: str, source_id: str) -> Optional[str]:
-    """The source-relative reading of a markdown link (0.11.0, O1).
+def _candidate_id(raw: str, source_id: str) -> Optional[str]:
+    """Concept id a link points to, judged from the source file's location.
 
-    ``[t](t.md)`` written in ``findings/a.md`` means ``findings/t`` — the
-    way every Markdown renderer resolves it. Returns ``None`` for absolute
-    (``/x.md``) targets and for targets that climb above the bundle root,
-    where only the legacy root-relative reading applies.
+    Decode the path, resolve it against the source's directory (a leading
+    ``/`` means bundle-root-relative), normalise, and drop one source
+    extension. ``None`` when the link leaves the bundle or names nothing.
     """
-    target = (raw or "").split("#", 1)[0].strip().replace("\\", "/")
-    if not target or target.startswith("/"):
+    path = unquote(_path_part(raw)).replace("\\", "/")
+    if not path:
         return None
-    if target.lower().endswith(".md"):
-        target = target[:-3]
-    base = posixpath.dirname(source_id)
-    joined = posixpath.normpath(posixpath.join(base, target)) if base else posixpath.normpath(target)
-    if joined.startswith("..") or joined in (".", ""):
+    if path.startswith("/"):
+        joined = path.lstrip("/")
+    else:
+        joined = posixpath.join(posixpath.dirname(source_id), path)
+    norm = posixpath.normpath(joined) if joined else "."
+    if norm == ".":
         return None
-    return joined
+    for ext in SOURCE_EXTS:
+        if norm.lower().endswith(ext):
+            norm = norm[: -len(ext)]
+            break
+    return norm
 
 
-def resolve_path_link(
+def link_target(
     raw: str, source_id: str, known_ids: Set[str],
     path_ids: Optional[Mapping[str, str]] = None,
 ) -> Tuple[Optional[str], str]:
-    """Resolve a markdown path link to ``(target_or_None, recorded_target)``.
+    """Resolve one markdown link from ``source_id``.
 
-    Order: the source-relative reading, then the legacy root-relative one
-    (:func:`normalize_path_link`), so bundles written against the old rule
-    keep resolving. ``recorded_target`` is what a miss records on its
-    ``BrokenLink``: the source-relative reading when there is one (the
-    file a later import is most likely to create), else the legacy form.
+    Returns ``(concept_id_or_None, target_to_record)``. The first is the id to
+    link to; ``None`` means broken, and the second is the target to store on
+    the broken-link row. The source-relative reading wins. A link that leaves
+    the bundle is broken and never falls back. Otherwise, if the source-relative
+    reading is not a known id, the pre-0.10.3 reading is used when that one is
+    known, so bundles that relied on the root-relative reading keep resolving.
 
     ``path_ids`` maps a file path (without extension) to the concept id of
-    the file there, for bundles where the two differ (frontmatter
-    identity, O3): a Markdown link names a *file*, so it resolves to that
+    the file there, for bundles where the two differ (frontmatter identity,
+    0.11.0 O3): a Markdown link names a *file*, so it resolves to that
     file's concept.
     """
-    rel = relative_path_link(raw, source_id)
-    legacy = normalize_path_link(raw.split("#", 1)[0])
-    for cand in (rel, legacy):
-        if not cand:
+    cand = _candidate_id(raw, source_id)
+    if cand is not None and (cand == ".." or cand.startswith("../")):
+        return None, cand
+    legacy = _legacy_target(_path_part(raw))
+    for reading in (cand, legacy):
+        if not reading:
             continue
-        if cand in known_ids:
-            return cand, cand
-        if path_ids and cand in path_ids:
-            return path_ids[cand], path_ids[cand]
-    return None, rel or legacy
+        if reading in known_ids:
+            return reading, reading
+        if path_ids and reading in path_ids:
+            return path_ids[reading], path_ids[reading]
+    return None, cand if cand is not None else legacy
+
+
+def normalize_path_link(raw: str) -> str:
+    """Deprecated: use :func:`link_target`. Kept for existing imports.
+
+    Gives the pre-0.10.3 reading with no source file and no known-id check.
+    """
+    return _legacy_target(_path_part(raw))
 
 
 def _as_list(value: Any) -> List[str]:
@@ -283,8 +334,8 @@ def resolve_relation_target(
         ref = ref[2:-2].split("|", 1)[0].strip()
     if ref in known_ids:
         return ref, None, [], ref
-    if ref.lower().endswith(".md"):
-        hit, recorded = resolve_path_link(ref, source_id, known_ids, path_ids)
+    if _path_part(ref).lower().endswith(SOURCE_EXTS):
+        hit, recorded = link_target(ref, source_id, known_ids, path_ids)
         if hit is not None:
             return hit, None, [], hit
         return None, "missing", [], recorded

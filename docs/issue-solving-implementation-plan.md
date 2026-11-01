@@ -1,7 +1,11 @@
 # OKFgraph issue-solving implementation plan
 
 **Date:** 2026-11-01 · **Baseline:** `main` at `4d0f352` (okfgraph 0.10.2 +
-embroider `>=0.12,<0.13`) · **Status:** proposed, nothing implemented.
+embroider `>=0.12,<0.13`) · **Status:** 0.10.3 code complete on
+`dev_0.10.3` — WS1, WS2 (+ `retitle-thoughts`, Q3), WS3 step 1, WS4,
+WS5.1 (dangling-seed fix), WS5.3, WS5.4. Still open: Macrame acceptance
+re-runs (§2.3, §4.4), the release gate (§8), the raw-link column (0.11.0
+schema), and the 0.11.0 rebase.
 
 **Also folded in** (§10): `docs/reranker-integration-plan.md`,
 `docs/search-options-analysis.md`, and the open-topic rows of

@@ -30,6 +30,10 @@ commit history, newest first.
   to load library … libvector.lbug_extension". The router now installs
   both through an in-memory database and retries once; if the extension
   repository is unreachable it raises `SEARCH_UNAVAILABLE` with a remedy.
+- **Stale `<db>.lock` is removed on close.** fasteners leaves the lock file
+  after every write; `OKFRouter.close()` now unlinks it when no other
+  process holds the lock. A live writer's file is left alone, and doctor's
+  `stale_lock` info still reports a leftover from a crash.
 
 ## [0.10.2] — 2026-10-07
 

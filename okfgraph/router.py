@@ -15,6 +15,7 @@ Design choices:
 """
 
 import logging
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -256,6 +257,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
         db_path_obj = Path(db_path)
         lock_path = str(db_path_obj.with_suffix(db_path_obj.suffix + ".lock"))
         self._write_lock = InterProcessLock(lock_path)
+        self._lock_path = lock_path
         self._write_lock_timeout = 300  # 5 min timeout for acquire()
         logger.debug("write lock file: %s", lock_path)
 
@@ -583,6 +585,32 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps):
             except Exception:
                 pass
             self._write_lock = None
+            self._remove_idle_lock_file(self._lock_path)
+
+    @staticmethod
+    def _remove_idle_lock_file(lock_path: str) -> None:
+        """Unlink ``<db>.lock`` when no other process holds it (WS4).
+
+        fasteners releases the OS lock but leaves the file behind. Take the
+        lock non-blocking once more: if another process holds it, leave the
+        file alone. Otherwise release and unlink. Windows refuses to delete a
+        file another process still has open, which covers a waiter that opened
+        it in the meantime. Any error leaves the file in place.
+
+        Known race on POSIX: a process that opened the old inode before the
+        unlink can be granted the lock after our release, while a third
+        process creates a new file, so two writers can hold the lock at once.
+        Fixing it needs a different POSIX locking scheme (lock the directory,
+        or a sidecar file that is never unlinked). Accepted for now.
+        """
+        probe = InterProcessLock(lock_path)
+        try:
+            if not probe.acquire(blocking=False):
+                return
+            probe.release()
+            os.unlink(lock_path)
+        except Exception as e:  # noqa: BLE001 - cleanup is best effort
+            logger.debug("lock file cleanup skipped: %s", e)
 
     @contextmanager
     def _write_lock_ctx(self):

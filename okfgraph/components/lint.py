@@ -34,7 +34,7 @@ from okfgraph.components.links import (
     extract_md_links,
     extract_wikilinks,
     is_external,
-    normalize_path_link,
+    link_target,
     resolve_wiki,
 )
 
@@ -102,12 +102,12 @@ def lint_bundle(bundle_dir: str | Path) -> Dict[str, Any]:
         for raw in extract_md_links(body):
             if is_external(raw):
                 continue
-            target = normalize_path_link(raw.split("#", 1)[0])
-            if target not in known_ids:
+            target, recorded = link_target(raw, cid, known_ids)
+            if target is None:
                 errors.append(_err(
                     rel, "dangling_link",
                     "would import as BrokenLink (target has no concept)",
-                    link=raw, target=target or "(empty)"))
+                    link=raw, target=recorded or "(empty)"))
         for raw in extract_wikilinks(body):
             if not raw or is_external(raw):
                 continue

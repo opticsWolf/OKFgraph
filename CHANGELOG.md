@@ -34,6 +34,16 @@ commit history, newest first.
   after every write; `OKFRouter.close()` now unlinks it when no other
   process holds the lock. A live writer's file is left alone, and doctor's
   `stale_lock` info still reports a leftover from a crash.
+- **Path links resolve from the source file (R29-A/B/C/D).** `](path.md)`
+  links were read from the bundle root, so `architecture/x` linking
+  `s13.md` pointed at `s13` and broke. They now resolve relative to the
+  source file, with the old root-relative reading as a fallback for bundles
+  that relied on it. Links that leave the bundle are broken, never guessed.
+  Also: `%20` is decoded; `<angle>` targets and `"titles"` parse; code
+  spans and fenced blocks are never read as links; `.txt` and `.markdown`
+  targets count. Broken-link rows record the resolved target.
+  **Existing graphs** are fixed on each concept's next import; for a whole
+  graph run `okf import --all --force`.
 
 ## [0.10.2] — 2026-10-07
 

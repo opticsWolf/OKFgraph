@@ -17,11 +17,12 @@ from okfgraph.components.roots import (
     resolve_alias_for_path,
 )
 from okfgraph.components.links import (
+    SOURCE_EXTS,
     build_name_index,
     extract_md_links,
     extract_wikilinks,
     is_external,
-    normalize_path_link,
+    link_target,
     resolve_wiki,
 )
 
@@ -35,9 +36,6 @@ logger = logging.getLogger(__name__)
 # by ``okf produce``, never a concept — reserving it only once the writer
 # exists, per the plan's own warning.
 RESERVED_FILENAMES = frozenset({"index.md", "log.md"})
-
-#: Extensions import (and diff/delta/lint) treat as concept sources.
-SOURCE_EXTS = (".md", ".markdown", ".txt")
 
 #: Directory names never walked for concept sources (0.4.0): tool output,
 #: caches, and dependency trees are graph noise — and can be enormous
@@ -456,8 +454,8 @@ class ImportManager:
         for raw in extract_md_links(body):
             if is_external(raw):
                 continue
-            target = normalize_path_link(raw.split("#", 1)[0])
-            out.append((source_id, target if target in known_ids else None, target))
+            target, recorded = link_target(raw, source_id, known_ids)
+            out.append((source_id, target, recorded))
         for raw in extract_wikilinks(body):
             if not raw or is_external(raw):
                 continue

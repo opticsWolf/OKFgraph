@@ -25,6 +25,7 @@ from okfgraph.components.links import (
     build_name_index,
     extract_md_links,
     extract_wikilinks,
+    link_target,
     normalize_path_link,
     resolve_wiki,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "extract_md_links",
     "extract_wikilinks",
     "normalize_path_link",
+    "link_target",
     "resolve_wiki",
     "DiffManager",
     "DiffState",

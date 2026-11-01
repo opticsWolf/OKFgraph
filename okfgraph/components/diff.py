@@ -28,7 +28,7 @@ from okfgraph.components.links import (
     extract_md_links,
     extract_wikilinks,
     is_external,
-    normalize_path_link,
+    link_target,
     resolve_wiki,
 )
 
@@ -96,11 +96,11 @@ def _resolve_state(concepts, raw_links, index_concepts, aliases=()) -> DiffState
         for raw in links["md"]:
             if is_external(raw):
                 continue
-            target = normalize_path_link(raw.split("#", 1)[0])
-            if target in known:
+            target, recorded = link_target(raw, cid, known)
+            if target is not None:
                 state.edges.add((cid, target))
             else:
-                state.broken.add((cid, target))
+                state.broken.add((cid, recorded))
         for raw in links["wiki"]:
             if not raw or is_external(raw):
                 continue

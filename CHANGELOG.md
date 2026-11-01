@@ -67,6 +67,11 @@ commit history, newest first.
   the strongest lexical match fell below the linked notes it outscored. An
   unlinked node now keeps its own mass, so an isolated seed scores its seed
   weight. Rankings over fully linked graphs are unchanged.
+- **Filtered searches fill `limit` (WS5.4).** `concept_type` / `tags` /
+  `parent_id` filter after the index top-`k`, so selective filters whose
+  matches ranked low returned fewer hits, or none. Filtered concept and
+  chunk searches now fetch `max(limit * 10, 50)` per index and, if still
+  short with a full window, deepen once to `4 × k` (capped at 1000).
 - **Directory change detection covers direct children (R29-G).** A
   directory's hash used to cover its whole subtree, so one nested edit
   queued every ancestor (22 to 38 of 49 files). It now covers the files

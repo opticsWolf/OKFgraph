@@ -14,6 +14,31 @@ from okfgraph.models import ChunkModel, ConceptModel
 
 logger = logging.getLogger(__name__)
 
+#: Ceiling for the filtered-search retry (index ``k`` per source).
+FETCH_CAP = 1000
+
+
+def fetch_k(limit: int, filtered: bool) -> int:
+    """Index hits to request per source before post-filtering.
+
+    Unfiltered: ``limit * 3`` (RRF only needs the head). Filtered: a wider
+    window, ``max(limit * 10, 50)``, because a selective filter whose
+    matches rank low would otherwise return fewer than ``limit``.
+    """
+    if not filtered:
+        return limit * 3
+    return min(max(limit * 10, 50), max(FETCH_CAP, limit * 3))
+
+
+def deeper_k(k: int, found: int, limit: int, full: bool) -> Optional[int]:
+    """The one deepening retry: ``4 * k`` (capped) when a filtered search
+    came back short of ``limit`` although an index returned all ``k``
+    hits (so more candidates exist). None = keep what we have."""
+    if found >= limit or not full or k >= FETCH_CAP:
+        return None
+    return min(k * 4, FETCH_CAP)
+
+
 class SearchEngine:
     def __init__(
         self,
@@ -59,6 +84,60 @@ class SearchEngine:
         finally:
             c.close()
 
+    def _rrf_candidates(self, table: str, vec_index: str, fts_index: str,
+                        query_vec, query: str, k: int
+                        ) -> Tuple[List[Tuple[str, float]], bool]:
+        """Vector + FTS top-``k`` over ``table``, fused by RRF (k=60).
+
+        Returns ``(combined, full)``: ids by descending score, and whether
+        either index returned all ``k`` hits (more candidates exist).
+        """
+        vec_rows = self._index_rows(
+            f"CALL QUERY_VECTOR_INDEX('{table}', '{vec_index}', $vec, $k) "
+            "RETURN node, distance",
+            {"vec": query_vec, "k": k},
+        )
+        vec_scores: Dict[str, float] = {}
+        for row in vec_rows:
+            node = row.get("node", {})
+            node_id = node.get("id") if isinstance(node, dict) else None
+            if node_id:
+                vec_scores[node_id] = 1 - row.get("distance", 0)
+
+        # Full-text search (top-k bounded, see _index_rows)
+        fts_rows = self._index_rows(
+            f"CALL QUERY_FTS_INDEX('{table}', '{fts_index}', $query, top := $k) "
+            "RETURN node, score",
+            {"query": query, "k": k},
+        )
+        fts_scores: Dict[str, float] = {}
+        for row in fts_rows:
+            node = row.get("node", {})
+            node_id = node.get("id") if isinstance(node, dict) else None
+            if node_id:
+                fts_scores[node_id] = row.get("score", 0)
+
+        # Reciprocal Rank Fusion (RRF, k=60). Precompute each source's rank
+        # map once (O(n log n)) instead of re-sorting inside the loop.
+        def _rank_map(scores: Dict[str, float]) -> Dict[str, int]:
+            ordered = sorted(scores, key=scores.get, reverse=True)
+            return {cid: i + 1 for i, cid in enumerate(ordered)}
+
+        vec_rank = _rank_map(vec_scores)
+        fts_rank = _rank_map(fts_scores)
+
+        combined: List[Tuple[str, float]] = []
+        for cid in set(vec_scores) | set(fts_scores):
+            score = 0.0
+            if cid in vec_rank:
+                score += 1.0 / (60 + vec_rank[cid])
+            if cid in fts_rank:
+                score += 1.0 / (60 + fts_rank[cid])
+            combined.append((cid, score))
+        combined.sort(key=lambda x: x[1], reverse=True)
+        full = len(vec_rows) >= k or len(fts_rows) >= k
+        return combined, full
+
     def search_chunks(
         self,
         query: str,
@@ -85,50 +164,26 @@ class SearchEngine:
             )
         query_vec = self.embed_engine._encode(query, task="Query")
 
-        # Stage 1: Vector search on chunks
-        vec_rows = self._index_rows(
-            "CALL QUERY_VECTOR_INDEX('Chunk', 'chunk_embedding', $vec, $k) RETURN node, distance",
-            {"vec": query_vec, "k": limit * 3},
-        )
-        vec_scores: Dict[str, float] = {}
-        for row in vec_rows:
-            node = row.get("node", {})
-            node_id = node.get("id") if isinstance(node, dict) else None
-            if node_id:
-                vec_scores[node_id] = 1 - row.get("distance", 0)
+        # Vector + FTS over chunks, RRF-fused; a filtered search fetches a
+        # wider window and deepens once if it still comes back short.
+        filtered = bool(concept_type or tags or parent_id)
+        k = fetch_k(limit, filtered)
+        combined, full = self._rrf_candidates(
+            "Chunk", "chunk_embedding", "chunk_fts", query_vec, query, k)
+        results = self._chunk_rows(combined, concept_type, tags, parent_id,
+                                   limit, max_chunks_per_doc)
+        deeper = deeper_k(k, len(results), limit, full) if filtered else None
+        if deeper:
+            combined, _ = self._rrf_candidates(
+                "Chunk", "chunk_embedding", "chunk_fts", query_vec, query, deeper)
+            results = self._chunk_rows(combined, concept_type, tags, parent_id,
+                                       limit, max_chunks_per_doc)
+        return results
 
-        # Stage 2: Full-text search on chunks (top-k bounded, see _index_rows)
-        fts_rows = self._index_rows(
-            "CALL QUERY_FTS_INDEX('Chunk', 'chunk_fts', $query, top := $k) "
-            "RETURN node, score",
-            {"query": query, "k": limit * 3},
-        )
-        fts_scores: Dict[str, float] = {}
-        for row in fts_rows:
-            node = row.get("node", {})
-            node_id = node.get("id") if isinstance(node, dict) else None
-            if node_id:
-                fts_scores[node_id] = row.get("score", 0)
-
-        # Stage 3: RRF fusion (k=60)
-        def _rank_map(scores: Dict[str, float]) -> Dict[str, int]:
-            ordered = sorted(scores, key=scores.get, reverse=True)
-            return {cid: i + 1 for i, cid in enumerate(ordered)}
-
-        vec_rank = _rank_map(vec_scores)
-        fts_rank = _rank_map(fts_scores)
-
-        combined: List[Tuple[str, float]] = []
-        for cid in set(vec_scores) | set(fts_scores):
-            score = 0.0
-            if cid in vec_rank:
-                score += 1.0 / (60 + vec_rank[cid])
-            if cid in fts_rank:
-                score += 1.0 / (60 + fts_rank[cid])
-            combined.append((cid, score))
-        combined.sort(key=lambda x: x[1], reverse=True)
-
-        # Stage 4: Fetch chunk + parent metadata in bulk
+    def _chunk_rows(self, combined, concept_type, tags, parent_id, limit,
+                    max_chunks_per_doc) -> List[Dict[str, Any]]:
+        """Chunk result rows in RRF order, filtered and capped per doc."""
+        # Fetch chunk + parent metadata in bulk
         chunk_ids = [cid for cid, _ in combined]
         score_by_id = dict(combined)
 
@@ -579,55 +634,49 @@ class SearchEngine:
             )
         query_vec = self.embed_engine._encode(query, task="Query")
 
-        # Stage 1: Vector search (ANN)
-        vec_rows = self._index_rows(
-            "CALL QUERY_VECTOR_INDEX('Concept', 'concept_embedding', $vec, $k) RETURN node, distance",
-            {"vec": query_vec, "k": limit * 3},
-        )
-        vec_scores: Dict[str, float] = {}
-        for row in vec_rows:
-            node = row.get("node", {})
-            node_id = node.get("id") if isinstance(node, dict) else None
-            if node_id:
-                vec_scores[node_id] = 1 - row.get("distance", 0)
+        # Vector + FTS over concepts, RRF-fused; a filtered search fetches a
+        # wider window and deepens once if it still comes back short.
+        filtered = bool(concept_type or tags or parent_id)
+        k = fetch_k(limit, filtered)
+        combined, full = self._rrf_candidates(
+            "Concept", "concept_embedding", "concept_fts", query_vec, query, k)
+        results = self._concept_rows(combined, concept_type, tags, parent_id,
+                                     exclude_reserved, limit)
+        deeper = deeper_k(k, len(results), limit, full) if filtered else None
+        if deeper:
+            combined, _ = self._rrf_candidates(
+                "Concept", "concept_embedding", "concept_fts", query_vec, query, deeper)
+            results = self._concept_rows(combined, concept_type, tags, parent_id,
+                                         exclude_reserved, limit)
 
-        # Stage 2: Full-text search (top-k bounded, see _index_rows)
-        fts_rows = self._index_rows(
-            "CALL QUERY_FTS_INDEX('Concept', 'concept_fts', $query, top := $k) "
-            "RETURN node, score",
-            {"query": query, "k": limit * 3},
-        )
-        fts_scores: Dict[str, float] = {}
-        for row in fts_rows:
-            node = row.get("node", {})
-            node_id = node.get("id") if isinstance(node, dict) else None
-            if node_id:
-                fts_scores[node_id] = row.get("score", 0)
+        # Attach chunks if requested
+        if include_chunks:
+            for r in results:
+                r["matched_chunks"] = self.search_chunks(
+                    query=query, limit=3, parent_id=r["id"])
 
-        # Stage 3: Reciprocal Rank Fusion (RRF, k=60). Precompute each source's
-        # rank map once (O(n log n)) instead of re-sorting inside the loop.
-        def _rank_map(scores: Dict[str, float]) -> Dict[str, int]:
-            ordered = sorted(scores, key=scores.get, reverse=True)
-            return {cid: i + 1 for i, cid in enumerate(ordered)}
+        if rank == "hub" and results:
+            # Query-independent authority blend (same formula as chunks):
+            # final = (1 - w) * rrf + w * normalized_hub.
+            hub_scores = self._compute_hub_scores([r["id"] for r in results])
+            max_hub = max(hub_scores.values()) if hub_scores else 0
+            for r in results:
+                hub = hub_scores.get(r["id"], 0)
+                norm = (hub / max_hub) if max_hub > 0 else 0.0
+                r["hub_score"] = norm
+                r["relevance_score"] = (
+                    (1 - hub_weight) * r["relevance_score"] + hub_weight * norm
+                )
+            results.sort(key=lambda x: x["relevance_score"], reverse=True)
+        return results
 
-        vec_rank = _rank_map(vec_scores)
-        fts_rank = _rank_map(fts_scores)
-
-        combined: List[Tuple[str, float]] = []
-        for cid in set(vec_scores) | set(fts_scores):
-            score = 0.0
-            if cid in vec_rank:
-                score += 1.0 / (60 + vec_rank[cid])
-            if cid in fts_rank:
-                score += 1.0 / (60 + fts_rank[cid])
-            combined.append((cid, score))
-        combined.sort(key=lambda x: x[1], reverse=True)
-
-        # Over-fetch candidates so post-filtering can still fill `limit`.
+    def _concept_rows(self, combined, concept_type, tags, parent_id,
+                      exclude_reserved, limit) -> List[Dict[str, Any]]:
+        """Concept result rows in RRF order, keeping only filter matches."""
         candidate_ids = [cid for cid, _ in combined]
         score_by_id = dict(combined)
 
-        # Stage 4: fetch metadata (and apply graph filters) in a SINGLE query.
+        # Fetch metadata (and apply graph filters) in a SINGLE query.
         where_clauses: List[str] = ["c.id IN $ids"]
         params: Dict[str, Any] = {"ids": candidate_ids}
         if concept_type:
@@ -671,31 +720,9 @@ class SearchEngine:
                 "tags": row["c.tags"],
                 "relevance_score": score_by_id[cid],
             }
-
-            # Attach chunks if requested
-            if include_chunks:
-                chunks = self.search_chunks(
-                    query=query, limit=3, parent_id=cid
-                )
-                result["matched_chunks"] = chunks
-
             results.append(result)
             if len(results) >= limit:
                 break
-
-        if rank == "hub" and results:
-            # Query-independent authority blend (same formula as chunks):
-            # final = (1 - w) * rrf + w * normalized_hub.
-            hub_scores = self._compute_hub_scores([r["id"] for r in results])
-            max_hub = max(hub_scores.values()) if hub_scores else 0
-            for r in results:
-                hub = hub_scores.get(r["id"], 0)
-                norm = (hub / max_hub) if max_hub > 0 else 0.0
-                r["hub_score"] = norm
-                r["relevance_score"] = (
-                    (1 - hub_weight) * r["relevance_score"] + hub_weight * norm
-                )
-            results.sort(key=lambda x: x["relevance_score"], reverse=True)
         return results
 
 

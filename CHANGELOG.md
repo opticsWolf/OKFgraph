@@ -22,6 +22,13 @@ commit history, newest first.
   (full + prefix). The "Step 6" crash class was not fully retired by 0.21.2.
 - Floor-pinned `embroider>=0.12,<0.13` (registry surface, revision pins,
   `Reranker`, q8 tier); the missing-embroider hint names it.
+- **Search rows carry a stable owner key (WS5.3).** Every row from
+  `search` now has the owning concept under `id` in every target and rank.
+  Chunk rows and `chunks:expand` rows also carry `concept_id`, and chunk rows
+  keep `chunk_id`. **Image rows change meaning:** `id` was the asset id and
+  is now the owning concept (`concept_id`, lowest id when shared); the asset
+  id moved to `asset_id`. Consumers that read an image's `id` to fetch it
+  must read `asset_id` instead. Other keys are unchanged.
 
 ### Fixed
 - **First open after a ladybug upgrade.** ladybug loads an existing

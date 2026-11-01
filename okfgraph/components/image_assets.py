@@ -443,13 +443,22 @@ class ImageAssetManager:
                 rows = result.rows_as_dict().get_all()
             finally:
                 c.close()
+        nodes = [row.get("node", {}) for row in rows]
+        owners = self._first_owner_by_asset(
+            [n["id"] for n in nodes if isinstance(n, dict) and n.get("id")])
         out: List[Dict[str, Any]] = []
         for row in rows:
             node = row.get("node", {})
             if not isinstance(node, dict):
                 continue
+            # ``id`` is the owning concept (stable key on every result row);
+            # the asset keeps its own id under ``asset_id``. An orphan asset
+            # has no owner, so id and concept_id are None.
+            owner = owners.get(node.get("id"))
             out.append({
-                "id": node.get("id"),
+                "id": owner,
+                "concept_id": owner,
+                "asset_id": node.get("id"),
                 "file_name": node.get("file_name"),
                 "alt_text": node.get("alt_text"),
                 "embed_route": node.get("embed_route"),
@@ -457,4 +466,27 @@ class ImageAssetManager:
                 "relevance_score": 1 - row.get("distance", 0),
             })
         return out
+
+    def _first_owner_by_asset(self, asset_ids: List[str]) -> Dict[str, str]:
+        """Owning concept per asset: {asset_id: concept_id}.
+
+        An asset shared by several concepts maps to the smallest concept id,
+        so the choice is stable across runs.
+        """
+        if not asset_ids:
+            return {}
+        rows = self.conn.execute(
+            """
+            MATCH (c:Concept)-[:INCLUDES_ASSET]->(i:ImageAsset)
+            WHERE i.id IN $aids
+            RETURN i.id AS aid, c.id AS cid
+            """,
+            {"aids": asset_ids},
+        ).rows_as_dict().get_all()
+        owners: Dict[str, str] = {}
+        for r in rows:
+            current = owners.get(r["aid"])
+            if current is None or r["cid"] < current:
+                owners[r["aid"]] = r["cid"]
+        return owners
 

@@ -400,10 +400,11 @@ def _render_images(results):
         return
     print(f"Found {len(results)} image(s):\n")
     for i, r in enumerate(results, 1):
-        label = r.get("alt_text") or r.get("file_name") or r.get("id")
+        label = r.get("alt_text") or r.get("file_name") or r.get("asset_id")
         print(f"  {i}. [{r['relevance_score']:.4f}] {label} ({r.get('embed_route')})")
         print(f"     file: {r.get('file_name')}")
-        print(f"     id: {r['id']}")
+        print(f"     asset: {r.get('asset_id')}")
+        print(f"     concept: {r.get('concept_id')}")
         print()
 
 

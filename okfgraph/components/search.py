@@ -176,7 +176,11 @@ class SearchEngine:
             chunk_text = row["ch.chunk_text"] or ""
             if len(chunk_text) > 500:
                 chunk_text = chunk_text[:500] + "..."
+            # ``id`` is the owning concept (the stable key every result row
+            # carries); ``chunk_id`` names the chunk itself.
             result: Dict[str, Any] = {
+                "id": parent_id_val,
+                "concept_id": parent_id_val,
                 "chunk_id": cid,
                 "chunk_text": chunk_text,
                 "block_type": row["ch.block_type"],
@@ -400,6 +404,8 @@ class SearchEngine:
             siblings = ctx["siblings"]
 
             enriched.append({
+                "id": parent_id,
+                "concept_id": parent_id,
                 "chunk": chunk,
                 "document": self.get_by_id(parent_id),
                 "incoming_links": incoming[:5],

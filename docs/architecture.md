@@ -977,7 +977,7 @@ def search_chunks(
     """RRF-fused chunk search: vector + FTS at chunk granularity.
     
     Returns list of dicts with keys:
-    - chunk_id, chunk_text, block_type, chunk_index
+    - id, concept_id (owning concept), chunk_id, chunk_text, block_type, chunk_index
     - parent_doc_id, parent_title, parent_type, parent_tags
     - rrf_score
     """

@@ -641,6 +641,8 @@ def _search_filters(args):
         out["recency"] = args.recency
     if getattr(args, "recency_weight", None) is not None:
         out["recency_weight"] = args.recency_weight
+    if getattr(args, "efs", None) is not None:
+        out["efs"] = args.efs
     return out
 
 
@@ -1398,6 +1400,9 @@ def build_parser():
                    "authority), ppr (model-free lexical-seed PPR, no ONNX load), "
                    "cross (a cross-encoder reorders the top hits; slower). "
                    "Default: none")
+    p.add_argument("--efs", type=int, default=None, metavar="N",
+                   help="Vector index search breadth 16-1000 (higher: slower, "
+                   "closer to exact; default: [search] efs, else ladybug's)")
     p.add_argument("--rerank", action="store_true",
                    help="Chunks (plain or --hub-rerank): a cross-encoder reorders "
                    "the top hits (slower, more precise; concepts use --rank cross). "

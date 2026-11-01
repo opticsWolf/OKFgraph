@@ -45,6 +45,7 @@ _SEARCH_DEFAULTS: Dict[str, Any] = {
     "recency": None,
     "recency_weight": 0.3,
     "rerank": False,
+    "efs": None,
 }
 _FILTERS = frozenset({"concept_type", "tags", "parent_id",
                       # 0.11.0 (O7)
@@ -60,16 +61,18 @@ _PAGED = _FILTERS | {"hops", "offset", "recency", "recency_weight"}
 #: superseded rather than refused.
 _HONOURS = {
     "images": frozenset(),
-    "concepts:none": _PAGED | {"include_chunks", "rank"},
-    "concepts:hub": _PAGED | {"include_chunks", "rank", "hub_weight", "link_kinds"},
+    "concepts:none": _PAGED | {"include_chunks", "rank", "efs"},
+    "concepts:hub": _PAGED | {"include_chunks", "rank", "hub_weight", "link_kinds",
+                              "efs"},
+    # PPR seeds lexically: no vector index query, so no efs.
     "concepts:ppr": _PAGED | {"rank", "link_kinds"},
     # Cross-encoder rerank (0.11.0): no recency — logits have no scale to
     # blend with (refused with its own message below).
-    "concepts:cross": _PAGED | {"include_chunks", "rank"},
+    "concepts:cross": _PAGED | {"include_chunks", "rank", "efs"},
     "chunks:hub": frozenset({"hub_rerank", "hub_weight", "expand", "context_hops",
-                             "rerank"}),
+                             "rerank", "efs"}),
     "chunks:expand": frozenset({"expand", "context_hops"}),
-    "chunks:plain": _PAGED | {"max_chunks_per_doc", "rerank"},
+    "chunks:plain": _PAGED | {"max_chunks_per_doc", "rerank", "efs"},
 }
 
 
@@ -128,6 +131,7 @@ class QueryOps:
         recency: Optional[float] = None,
         recency_weight: float = 0.3,
         rerank: bool = False,
+        efs: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Unified search. ``target`` picks the path:
 
@@ -172,6 +176,11 @@ class QueryOps:
         ``cross_score`` (a native logit, not a probability). The model
         loads on first use. Not combined with ``recency``.
 
+        ``efs`` (16–1000; concepts except ``ppr``, plain and hub chunks)
+        widens the vector index search for this call: slower, closer to
+        exact. Unset, the router's ``[search] efs`` applies, else
+        ladybug's default. Not with ``near_id`` (scored exactly anyway).
+
         A passed param (non-default) the chosen path ignores is refused
         with ``BAD_VALUE`` naming it — never silently dropped.
         """
@@ -205,6 +214,14 @@ class QueryOps:
         if recency_weight != _SEARCH_DEFAULTS["recency_weight"] and recency is None:
             raise _bad_value("search", "recency_weight needs recency",
                              recency_weight=recency_weight)
+        if efs is not None and (isinstance(efs, bool) or not isinstance(efs, int)
+                                or not 16 <= efs <= 1000):
+            raise _bad_value("search", f"efs must be an integer 16..1000, got {efs!r}",
+                             efs=efs)
+        if efs is not None and near_id:
+            raise _bad_value(
+                "search", "efs has no effect with near_id: the neighbourhood is "
+                "scored exactly, without the vector index", efs=efs, near_id=near_id)
         if not isinstance(rerank, bool):
             raise _bad_value("search", f"rerank must be true or false, got {rerank!r}",
                              rerank=rerank)
@@ -229,7 +246,7 @@ class QueryOps:
             "exclude_tags": exclude_tags, "link_kinds": link_kinds,
             "near_id": near_id, "hops": hops, "offset": offset,
             "recency": recency, "recency_weight": recency_weight,
-            "rerank": rerank,
+            "rerank": rerank, "efs": efs,
         }
         passed = [k for k, v in params.items() if v != _SEARCH_DEFAULTS[k]]
 
@@ -281,9 +298,12 @@ class QueryOps:
                 text_query=query, limit=limit,
             )
         cross = {"rerank": True} if rerank else {}
+        if efs is not None:
+            filt["efs"] = efs
         if path == "chunks:hub":
             return self.search_engine.search_chunks_with_hub_score(
                 query=query, limit=limit, hub_weight=hub_weight, **cross,
+                **({"efs": efs} if efs is not None else {}),
             )
         if path == "chunks:expand":
             return self.search_engine.search_with_context(

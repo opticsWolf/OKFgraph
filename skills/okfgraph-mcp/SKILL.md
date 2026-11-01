@@ -44,6 +44,7 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 | Search one neighbourhood (e.g. the notes around a design doc) | `search` near_id=ID, hops=1–3 (default 2) |
 | Next page of results | `search` same args, offset=limit (pages are exact within the first 25 results) |
 | Prefer recent knowledge (latest decision, current state) | `search` recency=30 (half-life in days; recency_weight 0–1, default 0.3) |
+| A result you expect is missing (vector near miss) | `search` efs=400 (16–1000; wider index search, slower) |
 | Most precise order for a hard question (slower) | `search` target="chunks", rerank=true, or rank="cross" for concepts (a cross-encoder rereads the top hits; `cross_score` is a raw logit) |
 | Only a time range | `search` since="2026-01-01", until=... (authored date, else last change) |
 | Image assets | `search` target="images"; `list_images` concept_id; `get_image` asset_id |
@@ -74,7 +75,8 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
   `hops` needs `near_id`; `recency_weight` needs `recency`; target="images" takes only
   `query`/`limit`; `rank` is concepts-only. `hub_rerank` wins over
   `expand`. `rerank` is for chunks (plain or `hub_rerank`); concepts use
-  rank="cross"; neither combines with `recency`.
+  rank="cross"; neither combines with `recency`. `efs` is not for
+  rank="ppr", images, `expand` or `near_id`.
 
 ## Conventions
 

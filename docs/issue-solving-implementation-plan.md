@@ -543,7 +543,9 @@ in two documents, or a section copied into a plan and its successor.
 The analysis was probed on ladybug 0.21.2. Re-run its probes first if Q6
 moves the pin.
 
-1. **`efs` passthrough (B3).** `search(…, efs: int | None)`, passed to
+1. **`efs` passthrough (B3).** *Done 2026-11-01 (re-probed on ladybug
+   0.22.1: `efs := $efs` binds; also on `hub_rerank` chunks; refused with
+   `near_id`, which uses no index).* `search(…, efs: int | None)`, passed to
    `QUERY_VECTOR_INDEX` as `efs := $efs` on the concepts and chunks
    paths; bounds 16–1000; `BAD_VALUE` on `rank='ppr'` (no vector query).
    Settings default `[search] efs` unset. Test: higher `efs` never lowers

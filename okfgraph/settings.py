@@ -187,6 +187,10 @@ SETTINGS = [
     Setting("rerank_stride", "int", None, "search",
             "Token step between long-text windows (default: half the window)",
             cli=False, mcp=False),
+    # TOML/env only: `search --efs` is the per-call spelling.
+    Setting("efs", "int", None, "search",
+            "Vector index search breadth, 16..1000 (higher: slower, closer to "
+            "exact; default: ladybug's)", cli=False, mcp=False),
 ]
 
 
@@ -289,6 +293,7 @@ class Settings:
     rerank_top_n: int = 30
     rerank_window: Optional[int] = None
     rerank_stride: Optional[int] = None
+    efs: Optional[int] = None
     roots:Dict[str, str] = field(default_factory=dict)
 
     # ---------------------------------------------------------------- load --
@@ -438,6 +443,8 @@ class Settings:
             errors.append(
                 f"search.rerank_stride must be within 1..rerank_window, got "
                 f"{self.rerank_stride}")
+        if self.efs is not None and not 16 <= self.efs <= 1000:
+            errors.append(f"search.efs must be within 16..1000, got {self.efs}")
 
         return errors, warnings
 
@@ -472,6 +479,7 @@ class Settings:
             rerank_top_n=self.rerank_top_n,
             rerank_window=self.rerank_window,
             rerank_stride=self.rerank_stride,
+            efs=self.efs,
         )
 
 

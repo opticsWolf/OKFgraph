@@ -141,6 +141,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         rerank_top_n: int = 30,
         rerank_window: Optional[int] = None,
         rerank_stride: Optional[int] = None,
+        efs: Optional[int] = None,
     ):
         """Open (or create) the graph database and wire up all managers.
 
@@ -211,6 +212,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             rerank_top_n: Candidates the cross-encoder rescores per search.
             rerank_window / rerank_stride: Token window and step for texts
                 longer than the pair cap (``None`` = embroider defaults).
+            efs: Default vector index search breadth (16..1000) for
+                searches that pass none; ``None`` = ladybug's default.
         """
         from okfgraph.components.embedding import resolve_ort_dylib
         # Resolve first: the native module loads ORT dynamically, so the
@@ -368,6 +371,9 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         if (isinstance(rerank_top_n, bool) or not isinstance(rerank_top_n, int)
                 or rerank_top_n < 1):
             raise ValueError(f"rerank_top_n must be >= 1, got {rerank_top_n!r}")
+        if efs is not None and (isinstance(efs, bool) or not isinstance(efs, int)
+                                or not 16 <= efs <= 1000):
+            raise ValueError(f"efs must be within 16..1000, got {efs!r}")
         if (model_path is None) != (tokenizer_path is None):
             raise ValueError(
                 "model_path and tokenizer_path must be given together "
@@ -602,6 +608,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             self.conn, self.embedding_dim, self.embed_engine, self.db,
             reranker=self.reranker, rerank_top_n=rerank_top_n,
             rerank_window=rerank_window, rerank_stride=rerank_stride,
+            efs=efs,
         )
         # `_search_available` is owned by SchemaManager (set in `_ensure_schema`);
         # SearchEngine needs it to decide whether to raise on unavailable search.

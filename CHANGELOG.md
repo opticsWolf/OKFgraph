@@ -71,6 +71,12 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   `rerank_top_n`, `rerank_window` / `rerank_stride`. No reimport, no pins:
   the reranker writes no vectors. Not combined with `recency`. One model
   load per process, so `okf shell` / `okf serve` keep it warm.
+- **Vector search breadth.** `search(efs=N)` (CLI `--efs N`, MCP `efs`),
+  16–1000, widens the vector index search for that call: slower, finds
+  near misses the default skips. `[search] efs` sets a default; unset,
+  ladybug's own applies. Concepts (not `rank="ppr"`, which uses no vector
+  index) and plain / `hub_rerank` chunks; refused with `near_id`, whose
+  neighbourhood is scored exactly anyway.
 - **Index policy and batch import (O8).** `rebuild="auto"|"defer"|"force"`
   on `import_bundle`, `import_file`, `import_files`, `ingest`;
   **`import_files(paths)`** imports a list with one index step (CLI

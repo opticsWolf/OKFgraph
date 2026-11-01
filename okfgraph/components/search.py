@@ -156,6 +156,7 @@ class SearchEngine:
         rerank_top_n: int = 30,
         rerank_window: Optional[int] = None,
         rerank_stride: Optional[int] = None,
+        efs: Optional[int] = None,
     ):
         self.conn = conn
         self.embedding_dim = embedding_dim
@@ -165,6 +166,9 @@ class SearchEngine:
         self.rerank_top_n = rerank_top_n
         self.rerank_window = rerank_window
         self.rerank_stride = rerank_stride
+        # HNSW search breadth for QUERY_VECTOR_INDEX when a call passes
+        # none ([search] efs); None = ladybug's default.
+        self.efs = efs
         # Ladybug Database handle for short-lived index connections
         # (see _index_rows). None = reuse self.conn (legacy/tests).
         self._db = db
@@ -206,17 +210,24 @@ class SearchEngine:
             c.close()
 
     def _rrf_candidates(self, table: str, vec_index: str, fts_index: str,
-                        query_vec, query: str, k: int
+                        query_vec, query: str, k: int,
+                        efs: Optional[int] = None,
                         ) -> Tuple[List[Tuple[str, float]], bool]:
         """Vector + FTS top-``k`` over ``table``, fused by RRF (k=60).
 
-        Returns ``(combined, full)``: ids by descending score, and whether
-        either index returned all ``k`` hits (more candidates exist).
+        ``efs`` (else the engine default) widens the HNSW search: slower,
+        closer to exact. Returns ``(combined, full)``: ids by descending
+        score, and whether either index returned all ``k`` hits (more
+        candidates exist).
         """
+        efs = efs or self.efs
+        vec_params = {"vec": query_vec, "k": k}
+        if efs:
+            vec_params["efs"] = int(efs)
         vec_rows = self._index_rows(
-            f"CALL QUERY_VECTOR_INDEX('{table}', '{vec_index}', $vec, $k) "
-            "RETURN node, distance",
-            {"vec": query_vec, "k": k},
+            f"CALL QUERY_VECTOR_INDEX('{table}', '{vec_index}', $vec, $k"
+            + (", efs := $efs" if efs else "") + ") RETURN node, distance",
+            vec_params,
         )
         vec_scores: Dict[str, float] = {}
         for row in vec_rows:
@@ -311,6 +322,7 @@ class SearchEngine:
         recency: Optional[float] = None,
         recency_weight: float = 0.3,
         rerank: bool = False,
+        efs: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Search chunks using RRF-fused vector + FTS.
 
@@ -319,7 +331,8 @@ class SearchEngine:
         scored exactly (no index window). ``offset`` skips that many
         results: pages are slices of one deterministic ranking.
         ``rerank`` reorders the filtered top ``rerank_top_n`` by the
-        cross-encoder (see :meth:`rerank_with_cross_encoder`).
+        cross-encoder (see :meth:`rerank_with_cross_encoder`). ``efs``
+        widens the vector index search (see :meth:`_rrf_candidates`).
 
         Returns chunk-level results with optional parent concept metadata.
         Applies ``max_chunks_per_doc`` to limit how many chunks from the same
@@ -360,13 +373,15 @@ class SearchEngine:
         # wider window and deepens once if it still comes back short.
         k = fetch_k(want, filtered)
         combined, full = self._rrf_candidates(
-            "Chunk", "chunk_embedding", "chunk_fts", query_vec, query, k)
+            "Chunk", "chunk_embedding", "chunk_fts", query_vec, query, k,
+            **({"efs": efs} if efs else {}))
         results = self._chunk_rows(combined, concept_type, tags, parent_id,
                                    want, max_chunks_per_doc, ofilt)
         deeper = deeper_k(k, len(results), want, full) if filtered else None
         if deeper:
             combined, _ = self._rrf_candidates(
-                "Chunk", "chunk_embedding", "chunk_fts", query_vec, query, deeper)
+                "Chunk", "chunk_embedding", "chunk_fts", query_vec, query, deeper,
+                **({"efs": efs} if efs else {}))
             results = self._chunk_rows(combined, concept_type, tags, parent_id,
                                        want, max_chunks_per_doc, ofilt)
         if recency:
@@ -760,6 +775,7 @@ class SearchEngine:
         limit: int = 10,
         hub_weight: float = 0.3,
         rerank: bool = False,
+        efs: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Search chunks + rerank by graph hub score.
 
@@ -768,7 +784,7 @@ class SearchEngine:
         top ``rerank_top_n``.
         """
         pool = max(limit * 2, self.rerank_top_n) if rerank else limit * 2
-        raw_results = self.search_chunks(query, limit=pool)
+        raw_results = self.search_chunks(query, limit=pool, efs=efs)
 
         # Collect unique parent doc IDs
         parent_ids = list({r["parent_doc_id"] for r in raw_results if r["parent_doc_id"]})
@@ -995,6 +1011,7 @@ class SearchEngine:
         offset: int = 0,
         recency: Optional[float] = None,
         recency_weight: float = 0.3,
+        efs: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Hybrid search: RRF fusion of vector + FTS with optional graph filters.
 
@@ -1011,7 +1028,8 @@ class SearchEngine:
         half-life in days) blends in how recent each result is; see
         :meth:`_recency_blend`. With any filter set the
         index stages over-fetch and deepen once (``fetch_k``/``deeper_k``)
-        so filtering does not starve the result.
+        so filtering does not starve the result. ``efs`` widens the vector
+        index search (not used by ``ppr`` or ``near_id``, which need none).
 
         If ``include_chunks=True``, each result also contains ``matched_chunks``
         — the top chunks from that document matching the query.
@@ -1063,13 +1081,15 @@ class SearchEngine:
             # fetches a wider window and deepens once if still short.
             k = fetch_k(want, filtered)
             combined, full = self._rrf_candidates(
-                "Concept", "concept_embedding", "concept_fts", query_vec, query, k)
+                "Concept", "concept_embedding", "concept_fts", query_vec, query, k,
+                **({"efs": efs} if efs else {}))
             results = self._concept_rows(combined, concept_type, tags, parent_id,
                                          exclude_reserved, want, ofilt)
             deeper = deeper_k(k, len(results), want, full) if filtered else None
             if deeper:
                 combined, _ = self._rrf_candidates(
-                    "Concept", "concept_embedding", "concept_fts", query_vec, query, deeper)
+                    "Concept", "concept_embedding", "concept_fts", query_vec, query,
+                    deeper, **({"efs": efs} if efs else {}))
                 results = self._concept_rows(combined, concept_type, tags, parent_id,
                                              exclude_reserved, want, ofilt)
 

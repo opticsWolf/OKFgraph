@@ -313,8 +313,8 @@ def create_mcp_server(settings: Settings) -> MCPServer:
         thoughts: Annotated[Optional[str], Field(description="Raw reasoning text (kind='thoughts').")] = None,
         topic: Annotated[Optional[str], Field(description="Topic for kind='thoughts' (required then). Keep a consistent per-project scheme.")] = None,
         concept_id: Annotated[Optional[str], Field(description="Explicit concept ID (md/thoughts). Generated if omitted (thoughts: thoughts/<topic>/<ts>_<id>, a virtual namespace — no file needed). Slashes are namespaces.")] = None,
-        title: Annotated[Optional[str], Field(description="Title override (md only).")] = None,
-        description: Annotated[Optional[str], Field(description="Description override (md only).")] = None,
+        title: Annotated[Optional[str], Field(description="Title override (md/thoughts). A thought title must be unique within its topic; omit it to get the first sentence of the text.")] = None,
+        description: Annotated[Optional[str], Field(description="Description override (md/thoughts).")] = None,
         tags: Annotated[Optional[list[str]], Field(description="Tags to apply (md/thoughts).")] = None,
         mode: Annotated[
             Optional[Literal["text", "optional", "omni"]],
@@ -329,7 +329,7 @@ def create_mcp_server(settings: Settings) -> MCPServer:
     ) -> str:
         """Add content to the knowledge graph. Returns the new concept ID(s).
 
-        Results: md → {concept_id, chunk_count}; thoughts → {concept_id};
+        Results: md → {concept_id, chunk_count}; thoughts → {concept_id, title};
         pdf → {concept_ids, page_count, ...} (its md_path is a temp file —
         verify with search, not by reading the path). Markdown is
         mordant-linted before import. Missing required params raise

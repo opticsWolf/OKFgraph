@@ -863,7 +863,9 @@ def _ingest(args):
         if kind == "md":
             print(f"[OK] Imported {result['concept_id']} ({result['chunk_count']} chunks)")
         elif kind == "thoughts":
-            print(f"[OK] Stored thought {result['concept_id']}")
+            # The id goes last so `tail -1` keeps it (WS2, R31-B). ASCII
+            # separator: a redirected stdout on Windows may not encode a dash.
+            print(f"[OK] ingested thought \"{result['title']}\" - {result['concept_id']}")
         elif kind == "bib":
             print(f"[OK] Imported {result['entry_count']} reference(s)")
             for cid in result["concept_ids"]:
@@ -1246,8 +1248,8 @@ def build_parser():
     p.add_argument("--thoughts", default=None, help="Raw reasoning text (--kind thoughts)")
     p.add_argument("--topic", default=None, help="Topic (--kind thoughts)")
     p.add_argument("--concept-id", default=None, help="Explicit concept ID (--kind md/thoughts; slashes are namespaces; thoughts default to thoughts/<topic>/<ts>_<id>)")
-    p.add_argument("--title", default=None, help="Title override (--kind md)")
-    p.add_argument("--description", default=None, help="Description override (--kind md)")
+    p.add_argument("--title", default=None, help="Title override (--kind md/thoughts; a thought title must be unique in its topic)")
+    p.add_argument("--description", default=None, help="Description override (--kind md/thoughts)")
     p.add_argument("--tags", default=None, help="Comma-separated tags (--kind md/thoughts)")
     p.add_argument("--no-auto-import", action="store_false", dest="auto_import",
                    help="Convert only (--kind pdf): write markdown, skip the import")

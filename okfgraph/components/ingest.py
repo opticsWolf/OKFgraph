@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import uuid
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 #: other one is refused rather than silently dropped.
 _INGEST_HONOURS = {
     "md": frozenset({"md_path", "concept_id", "title", "description", "tags"}),
-    "thoughts": frozenset({"thoughts", "topic", "concept_id", "tags"}),
+    "thoughts": frozenset({"thoughts", "topic", "concept_id", "title", "description", "tags"}),
     "pdf": frozenset({"pdf_path", "output_dir"}),
     # Per-entry IDs come from citation keys, so bib honours only the
     # file-level inputs: one file in, N concepts out.
@@ -126,6 +127,29 @@ def _bib_entry_concept(entry, concept_id: str,
     return concept, markdown
 
 
+#: Auto-titles for thoughts are cut to this many characters (WS2).
+THOUGHT_TITLE_MAX = 72
+
+
+def _auto_thought_title(text: str, topic: str, now: datetime) -> str:
+    """Title for a thought with none given: its first sentence.
+
+    Whitespace is collapsed, the sentence is cut at a word boundary to at most
+    :data:`THOUGHT_TITLE_MAX` characters, and trailing ``.!?`` is dropped. If
+    the text has no usable sentence (fewer than three letters or digits), the
+    title is ``<topic> — <YYYY-MM-DD HH:MM>``.
+    """
+    flat = " ".join((text or "").split())
+    m = re.match(r"(.+?[.!?])(?:\s|$)", flat)
+    sentence = (m.group(1) if m else flat).rstrip(".!? ")
+    if sum(ch.isalnum() for ch in sentence) < 3:
+        return f"{topic} — {now:%Y-%m-%d %H:%M}"
+    if len(sentence) > THOUGHT_TITLE_MAX:
+        cut = sentence[:THOUGHT_TITLE_MAX]
+        sentence = cut.rsplit(" ", 1)[0] if " " in cut else cut
+    return sentence
+
+
 class IngestManager:
     def __init__(self, _write_lock_ctx, bundle_root, device, import_mgr, delta_mgr,
                  converter=None):
@@ -210,6 +234,21 @@ class IngestManager:
         }
 
 
+    def _thought_titles_in_topic(self, slug: str, title: str, exclude_id: str) -> list[str]:
+        """Ids of other thoughts in the topic namespace already titled ``title``.
+
+        Scope is the topic: default ids are ``thoughts/<slug>/...``, so the
+        namespace prefix is the topic. Ids outside it are not compared.
+        """
+        rows = self.import_mgr.conn.execute(
+            "MATCH (c:Concept) WHERE c.type = 'thought' AND c.title = $t "
+            "RETURN c.id AS id",
+            {"t": title},
+        ).rows_as_dict().get_all() or []
+        prefix = f"thoughts/{slug}/"
+        return [r["id"] for r in rows
+                if r["id"] != exclude_id and r["id"].startswith(prefix)]
+
     def _ingest_thoughts_inner(
         self,
         thoughts: str,
@@ -217,10 +256,14 @@ class IngestManager:
         concept_id: str | None,
         tags: list[str] | None,
         force: bool = False,
+        title: str | None = None,
+        description: str | None = None,
     ) -> Dict[str, Any]:
         """Inner implementation of ingest_thoughts (called under write lock)."""
         import uuid
 
+        now = datetime.now()
+        slug = _slugify_topic(topic) or "untitled"
         # Generate concept_id from topic if not provided. Namespaced
         # (``thoughts/<slug>/...``) so a fileless graph exports into a tidy
         # tree later — the namespace is virtual (no file needed) until an
@@ -228,14 +271,34 @@ class IngestManager:
         # the same way. The slug is sanitized to one level: a topic like
         # ``../../evil`` must never become path traversal on export.
         if not concept_id:
-            ts = datetime.now().strftime("%Y%m%d%H%M%S")
-            slug = _slugify_topic(topic) or "untitled"
+            ts = now.strftime("%Y%m%d%H%M%S")
             concept_id = f"thoughts/{slug}/{ts}_{str(uuid.uuid4())[:6]}"
+
+        # Titles are unique per topic (WS2). An explicit title is a name
+        # someone will link to, so a clash is refused, never renamed. An
+        # auto-title gets a (2), (3), … suffix instead.
+        title = (title or "").strip() or None
+        if title:
+            taken = self._thought_titles_in_topic(slug, title, concept_id)
+            if taken:
+                raise OKFError(
+                    "BAD_VALUE",
+                    f"a thought titled {title!r} already exists in topic {topic!r}: {taken[0]}",
+                    fields={"title": title, "topic": topic, "existing_id": taken[0]},
+                    remedy="choose another title, or pass --concept-id "
+                           f"{taken[0]} to update that thought",
+                )
+        else:
+            base = _auto_thought_title(thoughts, topic, now)
+            title, n = base, 2
+            while self._thought_titles_in_topic(slug, title, concept_id):
+                title = f"{base} ({n})"
+                n += 1
 
         # Build OKF-compliant markdown
         header_lines = [
             "---",
-            f'title: "Thought: {topic}"',
+            f"title: {json.dumps(title, ensure_ascii=False)}",
             "type: thought",
             "thought_type: reasoning",
             f"topic: {topic}",
@@ -270,8 +333,8 @@ class IngestManager:
         # Build ConceptModel
         concept = ConceptModel.model_validate({
             "id": concept_id,
-            "title": f"Thought: {topic}",
-            "description": f"Reasoning about {topic}",
+            "title": title,
+            "description": (description or "").strip() or f"Reasoning about {topic}",
             "body": markdown,
             "type": "thought",
             "tags": all_tags,
@@ -282,6 +345,7 @@ class IngestManager:
 
         return {
             "concept_id": result["concept_id"],
+            "title": title,
             "topic": topic,
             "tags": result["tags"],
             "chunk_count": result["chunk_count"],
@@ -568,7 +632,9 @@ class IngestManager:
                     fields={"kind": kind, "thoughts": bool(thoughts), "topic": bool(topic)},
                 )
             with self._write_lock_ctx():
-                return self._ingest_thoughts_inner(thoughts, topic, concept_id, tags, force)
+                return self._ingest_thoughts_inner(
+                    thoughts, topic, concept_id, tags, force,
+                    title=title, description=description)
         if kind == "pdf":
             if not pdf_path:
                 raise OKFError(

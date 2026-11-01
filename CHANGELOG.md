@@ -44,6 +44,14 @@ commit history, newest first.
   targets count. Broken-link rows record the resolved target.
   **Existing graphs** are fixed on each concept's next import; for a whole
   graph run `okf import --all --force`.
+- **Thought titles are unique per topic (R31-A, R31-B).** Every thought
+  used to be titled `Thought: <topic>`, so `[[wikilinks]]` could not reach
+  one. `ingest(kind="thoughts")` now accepts `title` and `description`. With
+  no title, the title is the first sentence (at most 72 characters, cut at a
+  word). A clash gets ` (2)`, ` (3)`. An explicit title that clashes in its
+  topic is refused with `BAD_VALUE`, naming the existing id. The CLI prints
+  the minted id as the last line. Existing `Thought: <topic>` titles are
+  unchanged; a retitle op is still to do.
 
 ## [0.10.2] — 2026-10-07
 

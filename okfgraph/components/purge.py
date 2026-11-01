@@ -14,6 +14,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+#: Graph-kept concept times (0.11.0) carried through a soft delete.
+_TIMES = ("created_at", "updated_at", "effective_at", "content_sig")
+
 class PurgeManager:
     def __init__(self, conn, write_lock_ctx: Callable):
         self.conn = conn
@@ -260,7 +263,9 @@ class PurgeManager:
             RETURN c.id AS id, c.type AS type, c.title AS title,
                    c.description AS description, c.resource AS resource,
                    c.tags AS tags, c.timestamp AS timestamp,
-                   c.body AS body, c.embedding AS embedding, c.extra AS extra
+                   c.body AS body, c.embedding AS embedding, c.extra AS extra,
+                   c.created_at AS created_at, c.updated_at AS updated_at,
+                   c.effective_at AS effective_at, c.content_sig AS content_sig
             """,
             {"id": concept_id},
         ).rows_as_dict().get_all()
@@ -281,6 +286,7 @@ class PurgeManager:
                 "body": concept_data.get("body", ""),
                 "embedding": concept_data.get("embedding", []),
                 "extra": concept_data.get("extra", {}),
+                **{k: concept_data.get(k) for k in _TIMES},
             },
             default=str,
         )
@@ -373,6 +379,8 @@ class PurgeManager:
             "timestamp": snap.get("timestamp"),
             "body": snap.get("body", ""),
             "embedding": snap.get("embedding", []),
+            # Pre-0.11.0 snapshots have no times: recover as null.
+            **{k: snap.get(k) for k in _TIMES},
         }
         if extra_keys:
             params["extra_keys"] = extra_keys
@@ -383,6 +391,8 @@ class PurgeManager:
                     description: $description, resource: $resource,
                     tags: $tags, timestamp: $timestamp,
                     body: $body, embedding: $embedding,
+                    created_at: $created_at, updated_at: $updated_at,
+                    effective_at: $effective_at, content_sig: $content_sig,
                     extra: MAP($extra_keys, $extra_values)
                 })
             """, params)
@@ -392,7 +402,9 @@ class PurgeManager:
                     id: $id, type: $type, title: $title,
                     description: $description, resource: $resource,
                     tags: $tags, timestamp: $timestamp,
-                    body: $body, embedding: $embedding
+                    body: $body, embedding: $embedding,
+                    created_at: $created_at, updated_at: $updated_at,
+                    effective_at: $effective_at, content_sig: $content_sig
                 })
             """, params)
 

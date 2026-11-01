@@ -625,6 +625,16 @@ def _search_filters(args):
         out["exclude_tags"] = _csv(args.exclude_tags) or []
     if getattr(args, "link_kinds", None):
         out["link_kinds"] = _csv(args.link_kinds)
+    if getattr(args, "near", None):
+        out["near_id"] = args.near
+    if getattr(args, "hops", None) is not None:
+        out["hops"] = args.hops
+    if getattr(args, "offset", None):
+        out["offset"] = args.offset
+    if getattr(args, "recency", None) is not None:
+        out["recency"] = args.recency
+    if getattr(args, "recency_weight", None) is not None:
+        out["recency_weight"] = args.recency_weight
     return out
 
 
@@ -1382,13 +1392,25 @@ def build_parser():
                    "Default: none")
     p.add_argument("--where", action="append", metavar="KEY=VALUE",
                    help="Equality filter on an extra frontmatter key (repeatable)")
-    p.add_argument("--since", default=None, help="Only concepts with timestamp >= ISO date")
-    p.add_argument("--until", default=None, help="Only concepts with timestamp < ISO date")
+    p.add_argument("--since", default=None, help="Only concepts dated >= ISO date (authored date, else last content change)")
+    p.add_argument("--until", default=None, help="Only concepts dated < ISO date")
     p.add_argument("--exclude-tags", default=None, metavar="A,B",
                    help="Drop concepts carrying any of these tags (default: "
                    "[search] exclude_tags; pass '' to search everything)")
     p.add_argument("--link-kinds", default=None, metavar="A,B",
                    help="--rank hub/ppr: count only these link kinds")
+    p.add_argument("--near", default=None, metavar="ID",
+                   help="Only results within --hops links of this concept "
+                   "(either direction; concepts and plain chunks)")
+    p.add_argument("--hops", type=int, default=None,
+                   help="Radius for --near, 1-3 (default: 2)")
+    p.add_argument("--offset", type=int, default=0,
+                   help="Skip this many results (paging; default: 0)")
+    p.add_argument("--recency", type=float, default=None, metavar="DAYS",
+                   help="Favour recent concepts: half-life in days (e.g. 30)")
+    p.add_argument("--recency-weight", type=float, default=None,
+                   help="Share of the recency term with --recency, 0-1 "
+                   "(default: 0.3)")
 
     p = command("read", "Read a concept: body, chunks, document, or context")
     p.add_argument("concept_id", help="Concept ID")

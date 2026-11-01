@@ -24,6 +24,12 @@ def normalize_tags(value: Any) -> List[str]:
     return [str(value)]
 
 
+#: Concept columns the graph keeps itself (okfgraph.components.timestamps):
+#: never written to frontmatter, and the stored column wins over a
+#: frontmatter key of the same name.
+GRAPH_TIMES = ("created_at", "updated_at", "effective_at", "content_sig")
+
+
 class ConceptModel(BaseModel):
     """OKF concept with support for arbitrary frontmatter keys."""
 
@@ -80,6 +86,9 @@ class ConceptModel(BaseModel):
         # Graph-side provenance of frontmatter identity (O3): where the file
         # was found, not something its author wrote.
         data.pop("source_path", None)
+        # Graph-kept times (0.11.0) belong to this graph, not the file.
+        for key in GRAPH_TIMES:
+            data.pop(key, None)
         if "uid" in data:
             data["id"] = data.pop("uid")
         if isinstance(data.get("timestamp"), datetime):

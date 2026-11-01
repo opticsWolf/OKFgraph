@@ -1,7 +1,8 @@
 """WS5.4: a filtered search fills ``limit`` even when its matches rank low.
 
-200 concepts, the 3 with ``type: decision`` ranked last by the (stubbed)
-index fusion. The unfiltered window (``limit * 3``) never reaches them; the
+400 concepts, the 3 with ``type: decision`` ranked last by the (stubbed)
+index fusion. The unfiltered window (``limit * 3``, ``limit`` counted from
+``PAGE_WINDOW``) never reaches them; the
 filtered window is wider and deepens once, so all 3 come back.
 """
 
@@ -12,7 +13,7 @@ import pytest
 from okfgraph.components import search as S
 from okfgraph.router import OKFRouter
 
-N = 200
+N = 400
 DECISIONS = [f"n{i:03d}" for i in range(N - 3, N)]
 
 
@@ -77,9 +78,12 @@ def ranked(router, monkeypatch):
 
 
 def test_fetch_window_rules():
-    assert S.fetch_k(10, filtered=False) == 30
-    assert S.fetch_k(3, filtered=True) == 50
-    assert S.fetch_k(20, filtered=True) == 200
+    # Small limits share the PAGE_WINDOW (25) window, so pages are exact.
+    assert S.fetch_k(10, filtered=False) == 75
+    assert S.fetch_k(40, filtered=False) == 120
+    assert S.fetch_k(3, filtered=True) == 250
+    assert S.fetch_k(20, filtered=True) == 250
+    assert S.fetch_k(30, filtered=True) == 300
     assert S.fetch_k(500, filtered=True) == 1500  # never below the unfiltered window
     assert S.deeper_k(50, found=0, limit=3, full=True) == 200
     assert S.deeper_k(50, found=3, limit=3, full=True) is None   # filled
@@ -90,16 +94,16 @@ def test_fetch_window_rules():
 def test_concepts_filter_reaches_low_ranked_matches(router, ranked):
     hits = router.search_engine.search_hybrid("quokka", concept_type="decision", limit=3)
     assert sorted(h["id"] for h in hits) == DECISIONS
-    assert ranked == [50, 200]  # widened window, then one deepening retry
+    assert ranked == [250, 1000]  # widened window, then one deepening retry
 
 
 def test_chunks_filter_reaches_low_ranked_matches(router, ranked):
     hits = router.search_engine.search_chunks("quokka", concept_type="decision", limit=3)
     assert sorted(h["id"] for h in hits) == DECISIONS
-    assert len(ranked) == 2 and ranked[0] == 50
+    assert len(ranked) == 2 and ranked[0] == 250
 
 
 def test_unfiltered_search_keeps_the_narrow_window(router, ranked):
     hits = router.search_engine.search_hybrid("quokka", limit=5)
     assert len(hits) == 5
-    assert ranked == [15]
+    assert ranked == [75]

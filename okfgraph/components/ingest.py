@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict
 
@@ -592,6 +592,9 @@ class IngestManager:
             "body": markdown,
             "type": ctype,
             "tags": all_tags,
+            # Dated by when it was first written (kept on a rewrite), in
+            # the naive-UTC form every TIMESTAMP column uses.
+            "timestamp": now.astimezone(timezone.utc).replace(tzinfo=None),
         })
 
         if materialize:

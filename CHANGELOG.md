@@ -31,6 +31,30 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   (on `timestamp`), `exclude_tags`; `[search] exclude_tags` default
   (e.g. `["superseded"]`), overridden per call (`[]` = everything). CLI
   `--where K=V --since --until --exclude-tags`; MCP `search` parameters.
+- **Neighbourhood search and paging.** `search(near_id=ID, hops=1..3)`
+  (default 2; CLI `--near ID --hops N`) keeps results within that many
+  links of a concept, either direction, itself included. The
+  neighbourhood is scored exactly against stored embeddings, so a small
+  one is never starved by the index window. `offset=N` (CLI `--offset`)
+  skips results. Concepts (every `rank`) and plain chunks.
+- **Exact pages.** Every search ranks at least `PAGE_WINDOW` (25) rows
+  and RRF ties break by id, so pages within the first 25 results are
+  exact slices of one ranking, in any process. The index window grows
+  accordingly (unfiltered 30 → 75 hits per index at `limit=10`,
+  filtered 100 → 250), and `rank="hub"` reranks that 25-row pool, so a
+  well-linked concept from ranks 11–25 can now reach the top 10.
+- **Every concept has a date.** The graph keeps `created_at` (first
+  import; kept across re-imports), `updated_at` (the last import that
+  changed body or frontmatter, by content hash, not file mtime) and
+  `effective_at`: the authored date when the frontmatter has one
+  (`timestamp`, else `updated` / `date` / `created`, the Obsidian
+  conventions), otherwise `updated_at`. `read` shows them; export never
+  writes them. Thoughts are dated by when they were first written.
+- **Recency boost.** `search(recency=DAYS)` (CLI `--recency 30`) blends
+  how recent each result is into its order:
+  `(1 - w) * relevance + w * 0.5 ** (age / DAYS)`, age from
+  `effective_at`, `w = recency_weight` (default 0.3). Off by default.
+  Concepts (every `rank`) and plain chunks; rows carry `recency_score`.
 - **Index policy and batch import (O8).** `rebuild="auto"|"defer"|"force"`
   on `import_bundle`, `import_file`, `import_files`, `ingest`;
   **`import_files(paths)`** imports a list with one index step (CLI
@@ -102,11 +126,20 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   it queries the process exit code.
 - Import report: `moved` lists bundle paths with forward slashes on
   Windows (was `evidence\x.md`).
+- `since` / `until` matched only concepts with a frontmatter `timestamp:`
+  (few have one); they now read `effective_at`, so every concept is in
+  range of a time filter.
+- A YAML date in frontmatter (`date: 2024-01-02`) failed the import
+  (not JSON-serializable); it is stored as an ISO string.
 
 ### Migration
 - v8 → v9 on open: `LINKS_TO.kind` (existing edges become `mention`),
   `BrokenLink.kind/reason/candidates/raw`, new `ProducerCursor` table.
   Probe-before-ALTER, so an interrupted migration finishes on the next open.
+- v9 → v10 on open: `Concept.created_at/updated_at/effective_at/content_sig`.
+  Existing concepts get the migration time as created/updated (nothing
+  older is known) and `effective_at` from their authored date if any.
+  `rank="ppr"` now also returns a slice of a 25-row pool, like the others.
 
 ## [Unreleased]
 

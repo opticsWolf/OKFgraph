@@ -10,21 +10,29 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from okfgraph.errors import OKFError
-from okfgraph.models import ChunkModel, ConceptModel
+from okfgraph.models import GRAPH_TIMES, ChunkModel, ConceptModel
 
 logger = logging.getLogger(__name__)
 
 #: Ceiling for the filtered-search retry (index ``k`` per source).
 FETCH_CAP = 1000
 
+#: Result rows every search ranks at least. The index window and the hub
+#: rerank are computed for ``max(offset + limit, PAGE_WINDOW)`` rows, so
+#: pages inside the first ``PAGE_WINDOW`` results are exact slices of one
+#: ranking (a window that grew with the page would re-rank the head).
+PAGE_WINDOW = 25
+
 
 def fetch_k(limit: int, filtered: bool) -> int:
     """Index hits to request per source before post-filtering.
 
-    Unfiltered: ``limit * 3`` (RRF only needs the head). Filtered: a wider
-    window, ``max(limit * 10, 50)``, because a selective filter whose
-    matches rank low would otherwise return fewer than ``limit``.
+    ``limit`` counts from ``PAGE_WINDOW`` up. Unfiltered: ``limit * 3``
+    (RRF only needs the head). Filtered: a wider window,
+    ``max(limit * 10, 50)``, because a selective filter whose matches
+    rank low would otherwise return fewer than ``limit``.
     """
+    limit = max(limit, PAGE_WINDOW)
     if not filtered:
         return limit * 3
     return min(max(limit * 10, 50), max(FETCH_CAP, limit * 3))
@@ -65,6 +73,7 @@ def concept_filter_clauses(
     since: Any = None,
     until: Any = None,
     exclude_tags: Optional[List[str]] = None,
+    within: Optional[List[str]] = None,
     alias: str = "c",
 ) -> List[str]:
     """Cypher predicates for the 0.11.0 search filters (O7).
@@ -72,9 +81,12 @@ def concept_filter_clauses(
     - ``where``: equality on ``extra`` keys. Values compare as *stored*
       strings — a non-string value is matched in its stored JSON form
       (``True`` → ``"true"``, ``0.9`` → ``"0.9"``).
-    - ``since`` / ``until``: inclusive / exclusive bounds on ``timestamp``;
-      concepts without a timestamp never match a time bound.
+    - ``since`` / ``until``: inclusive / exclusive bounds on
+      ``effective_at`` (the authored date, else when the content last
+      changed; :mod:`okfgraph.components.timestamps`).
     - ``exclude_tags``: drop concepts carrying any of these tags.
+    - ``within``: keep only these concept ids (the ``near_id``
+      neighbourhood).
 
     Parameters are added to ``params`` under ``_w*``/``_since``/... names.
     """
@@ -89,14 +101,47 @@ def concept_filter_clauses(
         clauses.append(f"list_contains(map_extract({alias}.extra, $_wk{i}), $_wv{i})")
     if since is not None:
         params["_since"] = _as_ts(since, "since")
-        clauses.append(f"{alias}.timestamp >= $_since")
+        clauses.append(f"{alias}.effective_at >= $_since")
     if until is not None:
         params["_until"] = _as_ts(until, "until")
-        clauses.append(f"{alias}.timestamp < $_until")
+        clauses.append(f"{alias}.effective_at < $_until")
     if exclude_tags:
         params["_xtags"] = [str(t) for t in exclude_tags]
         clauses.append(f"NOT ANY(xt IN $_xtags WHERE xt IN {alias}.tags)")
+    if within is not None:
+        params["_within"] = list(within)
+        clauses.append(f"{alias}.id IN $_within")
     return clauses
+
+
+#: Largest ``hops`` a ``near_id`` search accepts; 3 hops already reaches
+#: most of a well-linked graph.
+MAX_HOPS = 3
+
+
+def _rrf_fuse(vec_scores: Dict[str, float],
+              fts_scores: Dict[str, float]) -> List[Tuple[str, float]]:
+    """Reciprocal Rank Fusion (k=60) of two score maps, best first.
+
+    Ties break by id, so the order is the same in every process (paging
+    with ``offset`` relies on it).
+    """
+    def _rank_map(scores: Dict[str, float]) -> Dict[str, int]:
+        ordered = sorted(scores, key=lambda c: (-scores[c], c))
+        return {cid: i + 1 for i, cid in enumerate(ordered)}
+
+    vec_rank = _rank_map(vec_scores)
+    fts_rank = _rank_map(fts_scores)
+    combined: List[Tuple[str, float]] = []
+    for cid in set(vec_scores) | set(fts_scores):
+        score = 0.0
+        if cid in vec_rank:
+            score += 1.0 / (60 + vec_rank[cid])
+        if cid in fts_rank:
+            score += 1.0 / (60 + fts_rank[cid])
+        combined.append((cid, score))
+    combined.sort(key=lambda x: (-x[1], x[0]))
+    return combined
 
 
 class SearchEngine:
@@ -183,26 +228,60 @@ class SearchEngine:
             if node_id:
                 fts_scores[node_id] = row.get("score", 0)
 
-        # Reciprocal Rank Fusion (RRF, k=60). Precompute each source's rank
-        # map once (O(n log n)) instead of re-sorting inside the loop.
-        def _rank_map(scores: Dict[str, float]) -> Dict[str, int]:
-            ordered = sorted(scores, key=scores.get, reverse=True)
-            return {cid: i + 1 for i, cid in enumerate(ordered)}
-
-        vec_rank = _rank_map(vec_scores)
-        fts_rank = _rank_map(fts_scores)
-
-        combined: List[Tuple[str, float]] = []
-        for cid in set(vec_scores) | set(fts_scores):
-            score = 0.0
-            if cid in vec_rank:
-                score += 1.0 / (60 + vec_rank[cid])
-            if cid in fts_rank:
-                score += 1.0 / (60 + fts_rank[cid])
-            combined.append((cid, score))
-        combined.sort(key=lambda x: x[1], reverse=True)
         full = len(vec_rows) >= k or len(fts_rows) >= k
-        return combined, full
+        return _rrf_fuse(vec_scores, fts_scores), full
+
+    def _near_ids(self, near_id: str, hops: int) -> List[str]:
+        """``near_id`` and every concept within ``hops`` LINKS_TO edges of
+        it, either direction, any link kind."""
+        rows = self.conn.execute(
+            f"MATCH (s:Concept {{id: $id}})-[:LINKS_TO*1..{int(hops)}]-(c:Concept) "
+            "RETURN DISTINCT c.id AS id",
+            {"id": near_id},
+        ).rows_as_dict().get_all()
+        return sorted({near_id, *(r["id"] for r in rows)})
+
+    def _rrf_within(self, table: str, fts_index: str, query_vec, query: str,
+                    within: List[str]) -> List[Tuple[str, float]]:
+        """RRF over a known neighbourhood instead of the index top-k.
+
+        A ``near_id`` neighbourhood is small and may sit far down the
+        global ranking, so post-filtering the index window would starve
+        it. Every member is scored exactly against its stored embedding
+        (chunks: those of member concepts); the FTS index adds keyword
+        ranks for the members among its top ``FETCH_CAP`` hits.
+        """
+        dim = int(self.embedding_dim)
+        if table == "Chunk":
+            match = "MATCH (n:Chunk) WHERE n.parent_doc_id IN $ids"
+        else:
+            match = "MATCH (n:Concept) WHERE n.id IN $ids"
+        rows = self.conn.execute(
+            f"{match} AND n.embedding IS NOT NULL RETURN n.id AS id, "
+            f"array_cosine_similarity(n.embedding, CAST($vec AS FLOAT[{dim}])) AS s",
+            {"ids": list(within), "vec": list(query_vec)},
+        ).rows_as_dict().get_all()
+        vec_scores = {r["id"]: r["s"] for r in rows}
+        if table == "Chunk":
+            members = set(vec_scores)
+            if len(members) < len(within):
+                members |= {r["id"] for r in self.conn.execute(
+                    "MATCH (n:Chunk) WHERE n.parent_doc_id IN $ids RETURN n.id AS id",
+                    {"ids": list(within)}).rows_as_dict().get_all()}
+        else:
+            members = set(within)
+        fts_rows = self._index_rows(
+            f"CALL QUERY_FTS_INDEX('{table}', '{fts_index}', $query, top := $k) "
+            "RETURN node, score",
+            {"query": query, "k": FETCH_CAP},
+        )
+        fts_scores: Dict[str, float] = {}
+        for row in fts_rows:
+            node = row.get("node", {})
+            node_id = node.get("id") if isinstance(node, dict) else None
+            if node_id in members:
+                fts_scores[node_id] = row.get("score", 0)
+        return _rrf_fuse(vec_scores, fts_scores)
 
     def search_chunks(
         self,
@@ -216,10 +295,18 @@ class SearchEngine:
         since: Any = None,
         until: Any = None,
         exclude_tags: Optional[List[str]] = None,
+        near_id: Optional[str] = None,
+        hops: int = 2,
+        offset: int = 0,
+        recency: Optional[float] = None,
+        recency_weight: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Search chunks using RRF-fused vector + FTS.
 
         The O7 filters (0.11.0) apply to each chunk's parent concept.
+        ``near_id`` keeps chunks of concepts within ``hops`` links of it,
+        scored exactly (no index window). ``offset`` skips that many
+        results: pages are slices of one deterministic ranking.
 
         Returns chunk-level results with optional parent concept metadata.
         Applies ``max_chunks_per_doc`` to limit how many chunks from the same
@@ -235,35 +322,48 @@ class SearchEngine:
                 remedy="reopen the router so the vector/fts extensions load",
             )
         query_vec = self.embed_engine._encode(query, task="Query")
+        within = self._near_ids(near_id, hops) if near_id else None
         ofilt = {"where": where, "since": since, "until": until,
-                 "exclude_tags": exclude_tags}
+                 "exclude_tags": exclude_tags, "within": within}
         filtered = any(v for v in (concept_type, tags, parent_id,
                                    *ofilt.values()))
+        # A page-size-independent pool, so every page sees one ranking
+        # (and one deepen-or-not decision); the page is sliced out of it.
+        want = max(limit + offset, PAGE_WINDOW)
+
+        if within is not None:
+            combined = self._rrf_within("Chunk", "chunk_fts", query_vec, query, within)
+            results = self._chunk_rows(combined, concept_type, tags, parent_id,
+                                       want, max_chunks_per_doc, ofilt)
+            if recency:
+                self._recency_blend(results, recency, recency_weight, "rrf_score")
+            return results[offset:offset + limit]
 
         # Vector + FTS over chunks, RRF-fused; a filtered search fetches a
         # wider window and deepens once if it still comes back short.
-        k = fetch_k(limit, filtered)
+        k = fetch_k(want, filtered)
         combined, full = self._rrf_candidates(
             "Chunk", "chunk_embedding", "chunk_fts", query_vec, query, k)
         results = self._chunk_rows(combined, concept_type, tags, parent_id,
-                                   limit, max_chunks_per_doc, ofilt)
-        deeper = deeper_k(k, len(results), limit, full) if filtered else None
+                                   want, max_chunks_per_doc, ofilt)
+        deeper = deeper_k(k, len(results), want, full) if filtered else None
         if deeper:
             combined, _ = self._rrf_candidates(
                 "Chunk", "chunk_embedding", "chunk_fts", query_vec, query, deeper)
             results = self._chunk_rows(combined, concept_type, tags, parent_id,
-                                       limit, max_chunks_per_doc, ofilt)
-        return results
+                                       want, max_chunks_per_doc, ofilt)
+        if recency:
+            self._recency_blend(results, recency, recency_weight, "rrf_score")
+        return results[offset:offset + limit]
 
     def _chunk_rows(self, combined, concept_type, tags, parent_id, limit,
                     max_chunks_per_doc, ofilt) -> List[Dict[str, Any]]:
         """Chunk result rows in RRF order, filtered and capped per doc.
 
-        ``ofilt`` holds the O7 filters (where/since/until/exclude_tags),
-        applied to each chunk's parent concept.
+        ``ofilt`` holds the O7 filters (where/since/until/exclude_tags)
+        and the ``near_id`` neighbourhood (``within``), applied to each
+        chunk's parent concept.
         """
-        where, since, until, exclude_tags = (
-            ofilt["where"], ofilt["since"], ofilt["until"], ofilt["exclude_tags"])
         # Fetch chunk + parent metadata in bulk
         chunk_ids = [cid for cid, _ in combined]
         score_by_id = dict(combined)
@@ -280,13 +380,11 @@ class SearchEngine:
         rows = self.conn.execute(cypher, {"ids": chunk_ids}).rows_as_dict().get_all()
         meta_by_id = {row["ch.id"]: row for row in rows}
         allowed_parents = None
-        if where or since is not None or until is not None or exclude_tags:
-            fparams: Dict[str, Any] = {
-                "pids": sorted({r["ch.parent_doc_id"] for r in rows
-                                if r.get("ch.parent_doc_id")})}
-            clauses = concept_filter_clauses(
-                fparams, where=where, since=since, until=until,
-                exclude_tags=exclude_tags)
+        fparams: Dict[str, Any] = {
+            "pids": sorted({r["ch.parent_doc_id"] for r in rows
+                            if r.get("ch.parent_doc_id")})}
+        clauses = concept_filter_clauses(fparams, **ofilt)
+        if clauses:
             allowed_parents = {
                 r["id"] for r in self.conn.execute(
                     "MATCH (c:Concept) WHERE c.id IN $pids AND "
@@ -347,6 +445,34 @@ class SearchEngine:
                 break
         return results
 
+
+    def _recency_blend(self, results: List[Dict[str, Any]], half_life: float,
+                       weight: float, score_key: str) -> None:
+        """Reorder ``results`` in place by relevance blended with recency.
+
+        ``relevance_score = (1 - weight) * score / max_score
+        + weight * 0.5 ** (age_days / half_life)``, where age counts from
+        the (parent) concept's ``effective_at``. Each row gains
+        ``recency_score`` (the decay term); ties break by id.
+        """
+        from okfgraph.components.timestamps import recency_decay, utc_now
+
+        if not results:
+            return
+        ids = sorted({r["id"] for r in results if r.get("id")})
+        eff = {row["id"]: row["t"] for row in self.conn.execute(
+            "MATCH (c:Concept) WHERE c.id IN $ids "
+            "RETURN c.id AS id, c.effective_at AS t",
+            {"ids": ids}).rows_as_dict().get_all()}
+        now = utc_now()
+        top = max((r.get(score_key) or 0.0) for r in results)
+        for r in results:
+            decay = recency_decay(eff.get(r.get("id")), now, half_life)
+            rel = (r.get(score_key) or 0.0) / top if top > 0 else 0.0
+            r["recency_score"] = decay
+            r["relevance_score"] = (1 - weight) * rel + weight * decay
+        results.sort(key=lambda x: (-x["relevance_score"],
+                                    x["id"] or "", x.get("chunk_id") or ""))
 
     def _compute_hub_scores(self, concept_ids: List[str],
                             link_kinds: Optional[List[str]] = None) -> Dict[str, float]:
@@ -438,11 +564,17 @@ class SearchEngine:
         until: Any = None,
         exclude_tags: Optional[List[str]] = None,
         link_kinds: Optional[List[str]] = None,
+        near_id: Optional[str] = None,
+        hops: int = 2,
+        offset: int = 0,
+        recency: Optional[float] = None,
+        recency_weight: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Model-free search: lexical seeds → multi-seed exact PPR.
 
         0.11.0: the O7 filters apply to the ranked set, and ``link_kinds``
-        (O6) restricts the walk to edges of those kinds.
+        (O6) restricts the walk to edges of those kinds. ``near_id`` keeps
+        concepts within ``hops`` links of it; ``offset`` skips results.
 
         Never touches the embedding model (no ONNX load, no FTS/vector
         extensions): safe on a cold router, deterministic across runs, and a
@@ -475,7 +607,8 @@ class SearchEngine:
             params["parent"] = parent_id
         where_clauses += concept_filter_clauses(
             params, where=where, since=since, until=until,
-            exclude_tags=exclude_tags)
+            exclude_tags=exclude_tags,
+            within=self._near_ids(near_id, hops) if near_id else None)
         cypher = f"""
         MATCH (c:Concept)
         WHERE {" AND ".join(where_clauses)}
@@ -500,9 +633,11 @@ class SearchEngine:
                 "tags": row["c.tags"],
                 "relevance_score": score_by_id[cid],
             })
-            if len(results) >= limit:
+            if len(results) >= max(limit + offset, PAGE_WINDOW):
                 break
-        return results
+        if recency:
+            self._recency_blend(results, recency, recency_weight, "relevance_score")
+        return results[offset:offset + limit]
 
 
     def get_context(self, concept_id: str, cap: int = 10) -> Dict[str, Any]:
@@ -739,11 +874,26 @@ class SearchEngine:
         until: Any = None,
         exclude_tags: Optional[List[str]] = None,
         link_kinds: Optional[List[str]] = None,
+        near_id: Optional[str] = None,
+        hops: int = 2,
+        offset: int = 0,
+        recency: Optional[float] = None,
+        recency_weight: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Hybrid search: RRF fusion of vector + FTS with optional graph filters.
 
+        ``near_id`` keeps concepts within ``hops`` links of it (either
+        direction, any kind), scored exactly over that neighbourhood
+        instead of the index window. ``offset`` skips that many results:
+        each page is a slice of one deterministic ranking of
+        ``max(offset + limit, PAGE_WINDOW)`` rows, so pages within the
+        first ``PAGE_WINDOW`` results are exact; deeper pages may shift
+        slightly, since the index window grows with them.
+
         0.11.0 filters (O7): ``where`` (equality on ``extra``), ``since`` /
-        ``until`` (``timestamp``), ``exclude_tags``. With any filter set the
+        ``until`` (``effective_at``), ``exclude_tags``. ``recency`` (a
+        half-life in days) blends in how recent each result is; see
+        :meth:`_recency_blend`. With any filter set the
         index stages over-fetch and deepen once (``fetch_k``/``deeper_k``)
         so filtering does not starve the result.
 
@@ -761,11 +911,9 @@ class SearchEngine:
                 query, limit=limit, concept_type=concept_type,
                 tags=tags, parent_id=parent_id, where=where, since=since,
                 until=until, exclude_tags=exclude_tags, link_kinds=link_kinds,
+                near_id=near_id, hops=hops, offset=offset,
+                recency=recency, recency_weight=recency_weight,
             )
-        ofilt = {"where": where, "since": since, "until": until,
-                 "exclude_tags": exclude_tags}
-        filtered = any(v for v in (concept_type, tags, parent_id,
-                                   *ofilt.values()))
         if not getattr(self, "_search_available", False):
             raise OKFError(
                 "SEARCH_UNAVAILABLE",
@@ -776,26 +924,34 @@ class SearchEngine:
                 remedy="reopen the router so the vector/fts extensions load",
             )
         query_vec = self.embed_engine._encode(query, task="Query")
+        within = self._near_ids(near_id, hops) if near_id else None
+        ofilt = {"where": where, "since": since, "until": until,
+                 "exclude_tags": exclude_tags, "within": within}
+        filtered = any(v for v in (concept_type, tags, parent_id,
+                                   *ofilt.values()))
+        # Rank a page-size-independent pool (the hub rerank reorders it),
+        # then slice the page out of it.
+        want = max(limit + offset, PAGE_WINDOW)
 
-        # Vector + FTS over concepts, RRF-fused; a filtered search fetches a
-        # wider window and deepens once if it still comes back short.
-        k = fetch_k(limit, filtered)
-        combined, full = self._rrf_candidates(
-            "Concept", "concept_embedding", "concept_fts", query_vec, query, k)
-        results = self._concept_rows(combined, concept_type, tags, parent_id,
-                                     exclude_reserved, limit, ofilt)
-        deeper = deeper_k(k, len(results), limit, full) if filtered else None
-        if deeper:
-            combined, _ = self._rrf_candidates(
-                "Concept", "concept_embedding", "concept_fts", query_vec, query, deeper)
+        if within is not None:
+            combined = self._rrf_within("Concept", "concept_fts", query_vec,
+                                        query, within)
             results = self._concept_rows(combined, concept_type, tags, parent_id,
-                                         exclude_reserved, limit, ofilt)
-
-        # Attach chunks if requested
-        if include_chunks:
-            for r in results:
-                r["matched_chunks"] = self.search_chunks(
-                    query=query, limit=3, parent_id=r["id"])
+                                         exclude_reserved, want, ofilt)
+        else:
+            # Vector + FTS over concepts, RRF-fused; a filtered search
+            # fetches a wider window and deepens once if still short.
+            k = fetch_k(want, filtered)
+            combined, full = self._rrf_candidates(
+                "Concept", "concept_embedding", "concept_fts", query_vec, query, k)
+            results = self._concept_rows(combined, concept_type, tags, parent_id,
+                                         exclude_reserved, want, ofilt)
+            deeper = deeper_k(k, len(results), want, full) if filtered else None
+            if deeper:
+                combined, _ = self._rrf_candidates(
+                    "Concept", "concept_embedding", "concept_fts", query_vec, query, deeper)
+                results = self._concept_rows(combined, concept_type, tags, parent_id,
+                                             exclude_reserved, want, ofilt)
 
         if rank == "hub" and results:
             # Query-independent authority blend (same formula as chunks):
@@ -810,7 +966,16 @@ class SearchEngine:
                 r["relevance_score"] = (
                     (1 - hub_weight) * r["relevance_score"] + hub_weight * norm
                 )
-            results.sort(key=lambda x: x["relevance_score"], reverse=True)
+            results.sort(key=lambda x: (-x["relevance_score"], x["id"]))
+        if recency and results:
+            self._recency_blend(results, recency, recency_weight, "relevance_score")
+        results = results[offset:offset + limit]
+
+        # Attach chunks to the returned page only
+        if include_chunks:
+            for r in results:
+                r["matched_chunks"] = self.search_chunks(
+                    query=query, limit=3, parent_id=r["id"])
         return results
 
     def _concept_rows(self, combined, concept_type, tags, parent_id,
@@ -1225,7 +1390,10 @@ class SearchEngine:
             else v
             for k, v in extra.items()
         }
+        times = {k: data[k] for k in GRAPH_TIMES if data.get(k) is not None}
         data.update(extra_decoded)
+        data.update(times)
         data.pop("extra", None)
+        data.pop("content_sig", None)  # change detection only
         return ConceptModel.model_validate(data)
 

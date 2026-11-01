@@ -217,10 +217,15 @@ def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
             ),
         ] = "none",
         where: Annotated[Optional[dict[str, str]], Field(description="Equality filter on extra frontmatter keys, e.g. {\"jev_category\": \"evidence\"} (concepts; plain chunks path).")] = None,
-        since: Annotated[Optional[str], Field(description="Only concepts with timestamp >= this ISO date/time.")] = None,
-        until: Annotated[Optional[str], Field(description="Only concepts with timestamp < this ISO date/time.")] = None,
+        since: Annotated[Optional[str], Field(description="Only concepts dated >= this ISO date/time (authored date, else last content change).")] = None,
+        until: Annotated[Optional[str], Field(description="Only concepts dated < this ISO date/time.")] = None,
         exclude_tags: Annotated[Optional[list[str]], Field(description="Drop concepts with any of these tags. Omit for the server default (e.g. superseded); [] searches everything.")] = None,
         link_kinds: Annotated[Optional[list[str]], Field(description="rank='hub'|'ppr': count only these link kinds (mention, supersedes, supports, ...).")] = None,
+        near_id: Annotated[Optional[str], Field(description="Only results within `hops` links of this concept (either direction, itself included); concepts and plain chunks. Use it to search one neighbourhood, e.g. the notes around a design doc.")] = None,
+        hops: Annotated[Optional[int], Field(description="Radius for near_id, 1-3 (default 2).")] = None,
+        offset: Annotated[int, Field(description="Skip this many results (paging: offset=limit gets page 2).")] = 0,
+        recency: Annotated[Optional[float], Field(description="Favour recent concepts: half-life in days (e.g. 30). Concepts and plain chunks.")] = None,
+        recency_weight: Annotated[Optional[float], Field(description="Share of the recency term, 0-1 (default 0.3); needs recency.")] = None,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
         """Search the knowledge graph — start here for any question over stored knowledge.
@@ -248,7 +253,10 @@ def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
             rank=rank,
             **{k: v for k, v in (("where", where), ("since", since),
                                  ("until", until), ("exclude_tags", exclude_tags),
-                                 ("link_kinds", link_kinds)) if v is not None},
+                                 ("link_kinds", link_kinds), ("near_id", near_id),
+                                 ("hops", hops), ("recency", recency),
+                                 ("recency_weight", recency_weight)) if v is not None},
+            **({"offset": offset} if offset else {}),
         ))
 
     @mcp.tool(annotations=_RO)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from okfgraph.components.search import MAX_HOPS
 from okfgraph.errors import OKFError
 from okfgraph.models import ConceptModel
 
@@ -38,22 +39,32 @@ _SEARCH_DEFAULTS: Dict[str, Any] = {
     "until": None,
     "exclude_tags": None,
     "link_kinds": None,
+    "near_id": None,
+    "hops": 2,
+    "offset": 0,
+    "recency": None,
+    "recency_weight": 0.3,
 }
 _FILTERS = frozenset({"concept_type", "tags", "parent_id",
                       # 0.11.0 (O7)
-                      "where", "since", "until", "exclude_tags"})
+                      "where", "since", "until", "exclude_tags",
+                      # 0.11.0: graph neighbourhood
+                      "near_id"})
+#: Paging, the neighbourhood radius and the recency boost ride with the
+#: filters.
+_PAGED = _FILTERS | {"hops", "offset", "recency", "recency_weight"}
 
 #: What each search path honours. Chunk precedence is hub_rerank > expand
 #: > plain; when hub_rerank wins, expand (and its context_hops) are
 #: superseded rather than refused.
 _HONOURS = {
     "images": frozenset(),
-    "concepts:none": _FILTERS | {"include_chunks", "rank"},
-    "concepts:hub": _FILTERS | {"include_chunks", "rank", "hub_weight", "link_kinds"},
-    "concepts:ppr": _FILTERS | {"rank", "link_kinds"},
+    "concepts:none": _PAGED | {"include_chunks", "rank"},
+    "concepts:hub": _PAGED | {"include_chunks", "rank", "hub_weight", "link_kinds"},
+    "concepts:ppr": _PAGED | {"rank", "link_kinds"},
     "chunks:hub": frozenset({"hub_rerank", "hub_weight", "expand", "context_hops"}),
     "chunks:expand": frozenset({"expand", "context_hops"}),
-    "chunks:plain": _FILTERS | {"max_chunks_per_doc"},
+    "chunks:plain": _PAGED | {"max_chunks_per_doc"},
 }
 
 
@@ -106,6 +117,11 @@ class QueryOps:
         until: Any = None,
         exclude_tags: Optional[List[str]] = None,
         link_kinds: Optional[List[str]] = None,
+        near_id: Optional[str] = None,
+        hops: int = 2,
+        offset: int = 0,
+        recency: Optional[float] = None,
+        recency_weight: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Unified search. ``target`` picks the path:
 
@@ -123,10 +139,24 @@ class QueryOps:
 
         0.11.0 filters (O7, concepts and plain chunks): ``where`` (equality
         on ``extra`` keys, values compared as stored strings), ``since`` /
-        ``until`` (on ``timestamp``), ``exclude_tags``. ``exclude_tags=None``
+        ``until`` (on ``effective_at``: the authored date, else when the
+        content last changed), ``exclude_tags``. ``exclude_tags=None``
         applies the router's configured default (``[search] exclude_tags``);
         pass ``[]`` to search everything. ``link_kinds`` (O6) limits the
         graph signal of ``rank='hub'``/``'ppr'`` to those link kinds.
+
+        ``near_id`` (concepts and plain chunks) keeps results within
+        ``hops`` (1–3, default 2) LINKS_TO edges of that concept, either
+        direction, the concept itself included; the neighbourhood is
+        scored exactly, so a small one is never starved by the index
+        window. ``offset`` skips that many results (paging; ties break
+        by id, so pages are stable across processes).
+
+        ``recency`` (concepts and plain chunks; a half-life in days) blends
+        recency into the order: ``(1 - recency_weight) * relevance +
+        recency_weight * 0.5 ** (age / recency)``, age from
+        ``effective_at``. Off by default; ``recency_weight`` (0–1, default
+        0.3) needs it.
 
         A passed param (non-default) the chosen path ignores is refused
         with ``BAD_VALUE`` naming it — never silently dropped.
@@ -139,6 +169,28 @@ class QueryOps:
         if not isinstance(limit, int) or limit < 1:
             raise _bad_value("search", f"limit must be >= 1, got {limit!r}",
                              limit=limit)
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise _bad_value("search", f"offset must be >= 0, got {offset!r}",
+                             offset=offset)
+        if (not isinstance(hops, int) or isinstance(hops, bool)
+                or not 1 <= hops <= MAX_HOPS):
+            raise _bad_value("search", f"hops must be 1..{MAX_HOPS}, got {hops!r}",
+                             hops=hops)
+        if hops != _SEARCH_DEFAULTS["hops"] and not near_id:
+            raise _bad_value("search", "hops needs near_id", hops=hops)
+        if recency is not None and (
+                isinstance(recency, bool) or not isinstance(recency, (int, float))
+                or not recency > 0):
+            raise _bad_value("search", f"recency must be a half-life in days > 0, "
+                             f"got {recency!r}", recency=recency)
+        if (isinstance(recency_weight, bool)
+                or not isinstance(recency_weight, (int, float))
+                or not 0 <= recency_weight <= 1):
+            raise _bad_value("search", f"recency_weight must be 0..1, got "
+                             f"{recency_weight!r}", recency_weight=recency_weight)
+        if recency_weight != _SEARCH_DEFAULTS["recency_weight"] and recency is None:
+            raise _bad_value("search", "recency_weight needs recency",
+                             recency_weight=recency_weight)
 
         params = {
             "concept_type": concept_type, "tags": tags, "parent_id": parent_id,
@@ -148,6 +200,8 @@ class QueryOps:
             "hub_weight": hub_weight, "rank": rank,
             "where": where, "since": since, "until": until,
             "exclude_tags": exclude_tags, "link_kinds": link_kinds,
+            "near_id": near_id, "hops": hops, "offset": offset,
+            "recency": recency, "recency_weight": recency_weight,
         }
         passed = [k for k, v in params.items() if v != _SEARCH_DEFAULTS[k]]
 
@@ -177,7 +231,16 @@ class QueryOps:
                 remedy="drop the ignored params or use a path that honours them",
             )
 
+        if near_id and self.get_by_id(near_id) is None:
+            raise _unknown_concept("search", "near_id", near_id)
         filt = {k: params[k] for k in _FILTERS if params[k] is not None}
+        if near_id:
+            filt["hops"] = hops
+        if offset:
+            filt["offset"] = offset
+        if recency is not None:
+            filt["recency"] = float(recency)
+            filt["recency_weight"] = float(recency_weight)
         if exclude_tags is None:
             # Configured default (O7): e.g. superseded findings drop out
             # unless the caller asks for them.

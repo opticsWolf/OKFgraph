@@ -134,4 +134,4 @@ class TestChunkSearch:
         assert len(fts) == 2
         for cypher, params in fts:
             assert "top := $k" in cypher
-            assert params["k"] == 12
+            assert params["k"] == 75  # fetch_k: PAGE_WINDOW (25) * 3

@@ -13,6 +13,7 @@ import frontmatter
 from okfgraph.errors import OKFError
 from okfgraph.models import ConceptModel
 from okfgraph.images import IngestMode
+from okfgraph.components.timestamps import extra_value, stamp, utc_now
 from okfgraph.components.roots import (
     namespaced_id,
     resolve_alias_for_path,
@@ -644,6 +645,55 @@ class ImportManager:
             self._record_links(all_links)
 
 
+    def _prev_stamps(self, ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Stored times + content sig of ``ids``, read before a re-import
+        replaces the nodes (``created_at`` survives the replacement)."""
+        if not ids:
+            return {}
+        rows = self.conn.execute("""
+            MATCH (c:Concept) WHERE c.id IN $ids
+            RETURN c.id AS id, c.created_at AS created_at,
+                   c.updated_at AS updated_at, c.content_sig AS content_sig
+        """, {"ids": list(ids)}).rows_as_dict().get_all() or []
+        return {r["id"]: r for r in rows}
+
+    def _create_concept_node(self, concept: ConceptModel, body: str, cid: str,
+                             embedding: Any, prev: Optional[Dict[str, Any]],
+                             now: datetime) -> None:
+        """CREATE one Concept node: core columns, ``extra`` MAP for every
+        other frontmatter key, and the graph-kept times
+        (:mod:`okfgraph.components.timestamps`)."""
+        data = concept.model_dump(exclude={"embedding"})
+        times = stamp(data, body, prev, now)
+        data.pop("body", None)
+        data.pop("id", None)
+        timestamp = data.pop("timestamp", None)
+        params: Dict[str, Any] = {
+            "id": cid,
+            "type": data.pop("type"),
+            "title": data.pop("title", None),
+            "description": data.pop("description", None),
+            "resource": data.pop("resource", None),
+            "tags": data.pop("tags", []),
+            "timestamp": (timestamp.isoformat() if isinstance(timestamp, datetime)
+                          else timestamp),
+            "body": body,
+            "embedding": embedding,
+            **times,
+        }
+        extra = {k: extra_value(v) for k, v in data.items()}
+        columns = """id: $id, type: $type, title: $title,
+                description: $description, resource: $resource,
+                tags: $tags, timestamp: $timestamp,
+                body: $body, embedding: $embedding,
+                created_at: $created_at, updated_at: $updated_at,
+                effective_at: $effective_at, content_sig: $content_sig"""
+        if extra:
+            params["extra_keys"] = list(extra.keys())
+            params["extra_values"] = list(extra.values())
+            columns += ",\n                extra: MAP($extra_keys, $extra_values)"
+        self.conn.execute(f"CREATE (c:Concept {{{columns}}})", params)
+
     def _batch_upsert_concepts(
         self,
         parsed: List[Dict[str, Any]],
@@ -659,6 +709,7 @@ class ImportManager:
         # replacement (read here, restored after the CREATEs below — all
         # inside the caller's transaction).
         incoming = self._capture_incoming(cids)
+        prev = self._prev_stamps(cids)
         if cids:
             # Bulk delete existing concepts. Use a bound parameter (never string
             # interpolation) and DETACH DELETE so concepts that already have
@@ -669,62 +720,10 @@ class ImportManager:
                 {"ids": cids},
             )
 
-        # Create all concepts
+        now = utc_now()
         for item, emb in zip(parsed, all_embeddings):
-            concept = item["concept"]
-            body = item["body"]
-            concept_id_val = item["cid"]
-            all_data = concept.model_dump()
-            all_data.pop("body", None)
-            all_data.pop("id", None)
-            all_data.pop("embedding", None)  # embedding is passed separately, must not leak into extra MAP
-
-            core = {
-                "type": all_data.pop("type"),
-                "title": all_data.pop("title", None),
-                "description": all_data.pop("description", None),
-                "resource": all_data.pop("resource", None),
-                "tags": all_data.pop("tags", []),
-                "timestamp": all_data.pop("timestamp", None),
-            }
-
-            extra = {
-                k: json.dumps(v) if not isinstance(v, str) else v
-                for k, v in all_data.items()
-            }
-            extra_keys = list(extra.keys())
-            extra_values = list(extra.values())
-
-            if isinstance(core["timestamp"], datetime):
-                core["timestamp"] = core["timestamp"].isoformat()
-
-            params: Dict[str, Any] = {
-                "id": concept_id_val,
-                "body": body,
-                "embedding": emb,
-                **core,
-            }
-            if extra_keys:
-                params["extra_keys"] = extra_keys
-                params["extra_values"] = extra_values
-                self.conn.execute("""
-                    CREATE (c:Concept {
-                        id: $id, type: $type, title: $title,
-                        description: $description, resource: $resource,
-                        tags: $tags, timestamp: $timestamp,
-                        body: $body, embedding: $embedding,
-                        extra: MAP($extra_keys, $extra_values)
-                    })
-                """, params)
-            else:
-                self.conn.execute("""
-                    CREATE (c:Concept {
-                        id: $id, type: $type, title: $title,
-                        description: $description, resource: $resource,
-                        tags: $tags, timestamp: $timestamp,
-                        body: $body, embedding: $embedding
-                    })
-                """, params)
+            self._create_concept_node(item["concept"], item["body"], item["cid"],
+                                      emb, prev.get(item["cid"]), now)
 
         restored = self._restore_incoming(incoming)
         if restored:
@@ -1512,66 +1511,18 @@ class ImportManager:
         concept_id_val: str,
     ) -> str:
         """Internal helper: upsert a single concept into the graph."""
-        all_data = concept.model_dump()
-        embedding_vec = all_data.pop("embedding", None)
-        all_data.pop("body", None)
-        all_data.pop("id", None)
-
-        core = {
-            "type": all_data.pop("type"),
-            "title": all_data.pop("title", None),
-            "description": all_data.pop("description", None),
-            "resource": all_data.pop("resource", None),
-            "tags": all_data.pop("tags", []),
-            "timestamp": all_data.pop("timestamp", None),
-        }
-
-        extra = {
-            k: json.dumps(v) if not isinstance(v, str) else v
-            for k, v in all_data.items()
-        }
-        extra_keys = list(extra.keys())
-        extra_values = list(extra.values())
-
-        if isinstance(core["timestamp"], datetime):
-            core["timestamp"] = core["timestamp"].isoformat()
-
         # Atomic upsert
         self.conn.execute("BEGIN TRANSACTION")
         try:
             # O1: keep links into this concept from other concepts.
             incoming = self._capture_incoming([concept_id_val])
+            prev = self._prev_stamps([concept_id_val]).get(concept_id_val)
             self.conn.execute(
                 "MATCH (c:Concept {id: $id}) DETACH DELETE c",
                 {"id": concept_id_val},
             )
-            params: Dict[str, Any] = {
-                "id": concept_id_val,
-                "body": body_text,
-                "embedding": embedding_vec,
-                **core,
-            }
-            if extra_keys:
-                params["extra_keys"] = extra_keys
-                params["extra_values"] = extra_values
-                self.conn.execute("""
-                    CREATE (c:Concept {
-                        id: $id, type: $type, title: $title,
-                        description: $description, resource: $resource,
-                        tags: $tags, timestamp: $timestamp,
-                        body: $body, embedding: $embedding,
-                        extra: MAP($extra_keys, $extra_values)
-                    })
-                """, params)
-            else:
-                self.conn.execute("""
-                    CREATE (c:Concept {
-                        id: $id, type: $type, title: $title,
-                        description: $description, resource: $resource,
-                        tags: $tags, timestamp: $timestamp,
-                        body: $body, embedding: $embedding
-                    })
-                """, params)
+            self._create_concept_node(concept, body_text, concept_id_val,
+                                      concept.embedding, prev, utc_now())
             self._restore_incoming(incoming)
             self.schema_mgr._bump_write_epoch()  # concept changed -> indexes dirty
             self.conn.execute("COMMIT")

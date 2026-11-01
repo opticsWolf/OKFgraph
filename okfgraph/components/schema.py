@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class SchemaManager:
     """Owns schema migrations, meta KV store, and search-index rebuild."""
 
-    SCHEMA_VERSION = 9  # bumped when the on-disk schema changes
+    SCHEMA_VERSION = 10  # bumped when the on-disk schema changes
 
     #: Ladybug extensions hybrid search needs (O5).
     SEARCH_EXTENSIONS = ("vector", "fts")
@@ -246,6 +246,47 @@ class SchemaManager:
         self._create_v9_tables()
         logger.info("Schema migrated: v8 → v9 (typed links, producer cursors)")
 
+    def _migrate_v9_to_v10(self) -> None:
+        """v9 → v10 (0.11.0): graph-kept concept times.
+
+        ``created_at`` / ``updated_at`` / ``effective_at`` / ``content_sig``
+        on Concept (:mod:`okfgraph.components.timestamps`). Existing
+        concepts get the migration time as created/updated (nothing older
+        is known; file mtimes are not trusted), and ``effective_at`` from
+        their authored date where they have one.
+        """
+        from okfgraph.components.timestamps import authored_time, utc_now
+
+        try:
+            rows = self.conn.execute(
+                "CALL TABLE_INFO('Concept') RETURN *").rows_as_dict().get_all()
+        except Exception:
+            return  # no Concept table yet: _ensure_schema creates it whole
+        cols = {r.get("name") for r in rows}
+        for col, typ in (("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
+                         ("effective_at", "TIMESTAMP"), ("content_sig", "STRING")):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE Concept ADD {col} {typ}")
+        now = utc_now()
+        self.conn.execute(
+            "MATCH (c:Concept) WHERE c.created_at IS NULL "
+            "SET c.created_at = $now, c.updated_at = $now", {"now": now})
+        authored = 0
+        for r in self.conn.execute(
+                "MATCH (c:Concept) WHERE c.effective_at IS NULL "
+                "RETURN c.id AS id, c.timestamp AS timestamp, c.extra AS extra"
+        ).rows_as_dict().get_all():
+            ts = authored_time({**(r.get("extra") or {}), "timestamp": r.get("timestamp")})
+            if ts is not None:
+                self.conn.execute(
+                    "MATCH (c:Concept {id: $id}) SET c.effective_at = $ts",
+                    {"id": r["id"], "ts": ts})
+                authored += 1
+        self.conn.execute(
+            "MATCH (c:Concept) WHERE c.effective_at IS NULL "
+            "SET c.effective_at = c.updated_at")
+        logger.info("Schema migrated: v9 → v10 (concept times; %d authored)", authored)
+
     def _create_v9_tables(self) -> None:
         self.conn.execute("""
             CREATE NODE TABLE IF NOT EXISTS ProducerCursor (
@@ -264,6 +305,7 @@ class SchemaManager:
     _MIGRATIONS[6] = _migrate_v6_to_v7
     _MIGRATIONS[7] = _migrate_v7_to_v8
     _MIGRATIONS[8] = _migrate_v8_to_v9
+    _MIGRATIONS[9] = _migrate_v9_to_v10
 
     def _ensure_schema(self) -> None:
         """Create schema, extensions, and indexes if they don't exist."""
@@ -301,7 +343,11 @@ class SchemaManager:
                 timestamp TIMESTAMP,
                 body STRING,
                 embedding FLOAT[{self.embedding_dim}],
-                extra MAP(STRING, STRING)
+                extra MAP(STRING, STRING),
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP,
+                effective_at TIMESTAMP,
+                content_sig STRING
             )
         """)
         self.conn.execute("""

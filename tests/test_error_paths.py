@@ -97,7 +97,7 @@ class TestSchemaErrors:
         del conn
         r = OKFRouter(db_path=db_path, bundle_root=str(tmp_path),
                        embedding_dim=512, enable_chunking=False, device="cpu")
-        assert r.schema_mgr._get_meta("schema_version") == 9  # v9 since 0.11.0 (typed links, O6)
+        assert r.schema_mgr._get_meta("schema_version") == 10  # v10 since 0.11.0 (concept times)
         # The migrated table supports the full lifecycle.
         (tmp_path / "m.md").write_text("# M\n\nBody.\n", encoding="utf-8")
         # import_bundle embeds via the batch path; both must stay stubbed so
@@ -131,7 +131,7 @@ class TestSchemaErrors:
         del conn
         r = OKFRouter(db_path=db_path, bundle_root=str(tmp_path),
                        embedding_dim=512, enable_chunking=False, device="cpu")
-        assert r.schema_mgr._get_meta("schema_version") == 9  # v9 since 0.11.0 (typed links, O6)
+        assert r.schema_mgr._get_meta("schema_version") == 10  # v10 since 0.11.0 (concept times)
         (tmp_path / "m.md").write_text("# M\n\nBody.\n", encoding="utf-8")
         monkeypatch.setattr(r.embed_engine, "_encode", lambda text, task="Document": [0.0] * 512)
         monkeypatch.setattr(r.embed_engine, "_encode_batch", lambda texts, task="Document": [[0.0] * 512 for _ in texts])

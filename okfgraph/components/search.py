@@ -23,6 +23,10 @@ FETCH_CAP = 1000
 #: ranking (a window that grew with the page would re-rank the head).
 PAGE_WINDOW = 25
 
+#: ``dedupe=True`` drops a chunk whose embedding has at least this cosine
+#: to a higher-ranked kept chunk (the same passage in two documents).
+DEDUPE_COSINE = 0.97
+
 
 def fetch_k(limit: int, filtered: bool) -> int:
     """Index hits to request per source before post-filtering.
@@ -323,6 +327,7 @@ class SearchEngine:
         recency_weight: float = 0.3,
         rerank: bool = False,
         efs: Optional[int] = None,
+        dedupe: bool = False,
     ) -> List[Dict[str, Any]]:
         """Search chunks using RRF-fused vector + FTS.
 
@@ -333,6 +338,8 @@ class SearchEngine:
         ``rerank`` reorders the filtered top ``rerank_top_n`` by the
         cross-encoder (see :meth:`rerank_with_cross_encoder`). ``efs``
         widens the vector index search (see :meth:`_rrf_candidates`).
+        ``dedupe`` collapses near-identical chunks after everything else
+        (see :meth:`collapse_near_duplicates`).
 
         Returns chunk-level results with optional parent concept metadata.
         Applies ``max_chunks_per_doc`` to limit how many chunks from the same
@@ -356,8 +363,11 @@ class SearchEngine:
         # A page-size-independent pool, so every page sees one ranking
         # (and one deepen-or-not decision); the page is sliced out of it.
         # A rerank pool holds every candidate the cross-encoder rescores.
+        # A dedupe pool is twice the page, so collapsed rows leave enough
+        # behind to fill it.
         want = max(limit + offset, PAGE_WINDOW,
-                   self.rerank_top_n if rerank else 0)
+                   self.rerank_top_n if rerank else 0,
+                   2 * (limit + offset) if dedupe else 0)
 
         if within is not None:
             combined = self._rrf_within("Chunk", "chunk_fts", query_vec, query, within)
@@ -367,6 +377,8 @@ class SearchEngine:
                 self._recency_blend(results, recency, recency_weight, "rrf_score")
             if rerank:
                 results = self.rerank_with_cross_encoder(results, query)
+            if dedupe:
+                results = self.collapse_near_duplicates(results)
             return results[offset:offset + limit]
 
         # Vector + FTS over chunks, RRF-fused; a filtered search fetches a
@@ -388,7 +400,50 @@ class SearchEngine:
             self._recency_blend(results, recency, recency_weight, "rrf_score")
         if rerank:
             results = self.rerank_with_cross_encoder(results, query)
+        if dedupe:
+            results = self.collapse_near_duplicates(results)
         return results[offset:offset + limit]
+
+    def collapse_near_duplicates(
+        self,
+        results: List[Dict[str, Any]],
+        threshold: float = DEDUPE_COSINE,
+    ) -> List[Dict[str, Any]]:
+        """Drop chunks that repeat a higher-ranked one (0.11.0, opt-in).
+
+        Walks ``results`` in order; a chunk whose stored embedding has
+        cosine >= ``threshold`` to an already kept chunk is dropped, and
+        its ``chunk_id`` is appended to that kept row's ``collapsed`` list
+        (the highest-ranked match). Only rows with ``collapsed`` gain the
+        key. Uses stored vectors: no model call, one pairwise query.
+        Chunks without an embedding never collapse.
+        """
+        ids = [r["chunk_id"] for r in results if r.get("chunk_id")]
+        if len(ids) < 2:
+            return results
+        near: Dict[str, set] = {}
+        for row in self.conn.execute(
+                "MATCH (a:Chunk), (b:Chunk) WHERE a.id IN $ids AND b.id IN $ids "
+                "AND a.id < b.id AND a.embedding IS NOT NULL "
+                "AND b.embedding IS NOT NULL "
+                "WITH a.id AS a, b.id AS b, "
+                "array_cosine_similarity(a.embedding, b.embedding) AS s "
+                "WHERE s >= $t RETURN a, b",
+                {"ids": ids, "t": float(threshold)}).rows_as_dict().get_all():
+            near.setdefault(row["a"], set()).add(row["b"])
+            near.setdefault(row["b"], set()).add(row["a"])
+        if not near:
+            return results
+        kept: List[Dict[str, Any]] = []
+        for r in results:
+            cid = r.get("chunk_id")
+            twin = next((k for k in kept if k.get("chunk_id") in near.get(cid, ())),
+                        None)
+            if twin is None:
+                kept.append(r)
+            else:
+                twin.setdefault("collapsed", []).append(cid)
+        return kept
 
     def _chunk_rows(self, combined, concept_type, tags, parent_id, limit,
                     max_chunks_per_doc, ofilt) -> List[Dict[str, Any]]:
@@ -776,14 +831,18 @@ class SearchEngine:
         hub_weight: float = 0.3,
         rerank: bool = False,
         efs: Optional[int] = None,
+        dedupe: bool = False,
     ) -> List[Dict[str, Any]]:
         """Search chunks + rerank by graph hub score.
 
         Final score = (1 - hub_weight) * rrf_score + hub_weight * normalized_hub_score.
         ``rerank`` then lets the cross-encoder reorder the hub-blended
-        top ``rerank_top_n``.
+        top ``rerank_top_n``; ``dedupe`` collapses near-identical chunks
+        last.
         """
         pool = max(limit * 2, self.rerank_top_n) if rerank else limit * 2
+        if dedupe:
+            pool = max(pool, limit * 4)
         raw_results = self.search_chunks(query, limit=pool, efs=efs)
 
         # Collect unique parent doc IDs
@@ -803,6 +862,8 @@ class SearchEngine:
         raw_results.sort(key=lambda x: x["final_score"], reverse=True)
         if rerank:
             raw_results = self.rerank_with_cross_encoder(raw_results, query)
+        if dedupe:
+            raw_results = self.collapse_near_duplicates(raw_results)
         return raw_results[:limit]
 
 

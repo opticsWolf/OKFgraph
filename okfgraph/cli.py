@@ -343,6 +343,12 @@ def _cross(r):
     return f" cross={r['cross_score']:.3f}" if "cross_score" in r else ""
 
 
+def _print_collapsed(r):
+    """List the near-duplicates ``dedupe`` folded into this hit."""
+    if r.get("collapsed"):
+        print(f"     also in: {', '.join(r['collapsed'])}")
+
+
 def _render_concepts(results):
     if not results:
         print("No results found.")
@@ -375,6 +381,7 @@ def _render_chunks(results):
         if r.get("parent_title"):
             print(f"     parent: {r['parent_title']}")
         print(f"     id: {r['chunk_id']}")
+        _print_collapsed(r)
         print()
 
 
@@ -387,6 +394,7 @@ def _render_hub_chunks(results):
         print(f"  {i}. [{r['final_score']:.4f}] {r['parent_title']} §{r['chunk_index']}")
         print(f"     hub={r['hub_score']:.2f} rrf={r['rrf_score']:.4f}{_cross(r)}")
         print(f"     {r['chunk_text'][:150]}")
+        _print_collapsed(r)
         print()
 
 
@@ -595,6 +603,7 @@ def _search(args):
         rank=args.rank,
         **_search_filters(args),
         **({"rerank": True} if getattr(args, "rerank", False) else {}),
+        **({"dedupe": True} if getattr(args, "dedupe", False) else {}),
     )
     if args.target == "images":
         render = _render_images
@@ -1403,6 +1412,9 @@ def build_parser():
     p.add_argument("--efs", type=int, default=None, metavar="N",
                    help="Vector index search breadth 16-1000 (higher: slower, "
                    "closer to exact; default: [search] efs, else ladybug's)")
+    p.add_argument("--dedupe", action="store_true",
+                   help="Chunks (plain or --hub-rerank): drop passages that repeat "
+                   "a higher-ranked hit (cosine >= 0.97)")
     p.add_argument("--rerank", action="store_true",
                    help="Chunks (plain or --hub-rerank): a cross-encoder reorders "
                    "the top hits (slower, more precise; concepts use --rank cross). "

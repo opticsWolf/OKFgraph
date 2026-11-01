@@ -77,6 +77,12 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   ladybug's own applies. Concepts (not `rank="ppr"`, which uses no vector
   index) and plain / `hub_rerank` chunks; refused with `near_id`, whose
   neighbourhood is scored exactly anyway.
+- **Near-duplicate collapse (opt-in).** `search(target="chunks",
+  dedupe=True)` (CLI `--dedupe`, MCP `dedupe`; plain and `hub_rerank`
+  chunks) drops a passage that repeats a higher-ranked hit, such as a
+  section copied from a plan into its successor: stored embeddings at
+  cosine >= 0.97, so no model call. The kept hit lists the dropped chunk
+  ids in `collapsed`. Runs last, after any rerank; off by default.
 - **Index policy and batch import (O8).** `rebuild="auto"|"defer"|"force"`
   on `import_bundle`, `import_file`, `import_files`, `ingest`;
   **`import_files(paths)`** imports a list with one index step (CLI

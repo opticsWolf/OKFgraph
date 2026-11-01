@@ -229,6 +229,7 @@ def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
         recency: Annotated[Optional[float], Field(description="Favour recent concepts: half-life in days (e.g. 30). Concepts and plain chunks.")] = None,
         recency_weight: Annotated[Optional[float], Field(description="Share of the recency term, 0-1 (default 0.3); needs recency.")] = None,
         efs: Annotated[Optional[int], Field(ge=16, le=1000, description="Vector index search breadth 16-1000 (higher: slower, finds near misses the default skips). Concepts (not ppr) and chunks (plain, hub_rerank); not with near_id.")] = None,
+        dedupe: Annotated[bool, Field(description="Chunks (plain or hub_rerank): drop a passage that repeats a higher-ranked one (same text in two documents); the kept hit lists the dropped chunk ids in collapsed.")] = False,
         rerank: Annotated[bool, Field(description="Chunks (plain or hub_rerank): a cross-encoder rereads the top hits against the query and reorders them. Slower, more precise; adds cross_score (a raw logit: higher = more relevant, not a probability). Concepts use rank='cross'. Not with recency.")] = False,
         ctx: Context = None,  # type: ignore[assignment]
     ) -> str:
@@ -265,6 +266,7 @@ def create_mcp_server(settings: Optional[Settings], router=None) -> MCPServer:
                                  ("efs", efs)) if v is not None},
             **({"offset": offset} if offset else {}),
             **({"rerank": True} if rerank else {}),
+            **({"dedupe": True} if dedupe else {}),
         ))
 
     @mcp.tool(annotations=_RO)

@@ -528,6 +528,12 @@ Chunk results often contain the same passage twice: the same paragraph
 in two documents, or a section copied into a plan and its successor.
 `max_chunks_per_doc` caps repeats per document, not across documents.
 
+*Done 2026-11-01:* `collapse_near_duplicates`, one pairwise
+`array_cosine_similarity` query over the result pool (no numpy, ~40 ms
+for 120 chunks); also on `hub_rerank` chunks; the pool doubles so
+collapsed rows still fill the page. Recency shipped separately (concept
+times, schema v10), so the coverage line below is moot.
+
 - After fusion (and after rerank, when on), drop a chunk whose embedding
   has cosine ≥ 0.97 to a higher-ranked kept chunk. Vectors are already
   stored, so this costs no model call, at most `limit × limit` dot

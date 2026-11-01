@@ -46,6 +46,7 @@ _SEARCH_DEFAULTS: Dict[str, Any] = {
     "recency_weight": 0.3,
     "rerank": False,
     "efs": None,
+    "dedupe": False,
 }
 _FILTERS = frozenset({"concept_type", "tags", "parent_id",
                       # 0.11.0 (O7)
@@ -70,9 +71,9 @@ _HONOURS = {
     # blend with (refused with its own message below).
     "concepts:cross": _PAGED | {"include_chunks", "rank", "efs"},
     "chunks:hub": frozenset({"hub_rerank", "hub_weight", "expand", "context_hops",
-                             "rerank", "efs"}),
+                             "rerank", "efs", "dedupe"}),
     "chunks:expand": frozenset({"expand", "context_hops"}),
-    "chunks:plain": _PAGED | {"max_chunks_per_doc", "rerank", "efs"},
+    "chunks:plain": _PAGED | {"max_chunks_per_doc", "rerank", "efs", "dedupe"},
 }
 
 
@@ -132,6 +133,7 @@ class QueryOps:
         recency_weight: float = 0.3,
         rerank: bool = False,
         efs: Optional[int] = None,
+        dedupe: bool = False,
     ) -> List[Dict[str, Any]]:
         """Unified search. ``target`` picks the path:
 
@@ -181,6 +183,11 @@ class QueryOps:
         exact. Unset, the router's ``[search] efs`` applies, else
         ladybug's default. Not with ``near_id`` (scored exactly anyway).
 
+        ``dedupe`` (plain and hub chunks, opt-in) drops a chunk that
+        repeats a higher-ranked one (stored embeddings, cosine >= 0.97);
+        the kept row lists the dropped ``chunk_id`` values in ``collapsed``.
+        It runs last, after any rerank.
+
         A passed param (non-default) the chosen path ignores is refused
         with ``BAD_VALUE`` naming it — never silently dropped.
         """
@@ -222,6 +229,9 @@ class QueryOps:
             raise _bad_value(
                 "search", "efs has no effect with near_id: the neighbourhood is "
                 "scored exactly, without the vector index", efs=efs, near_id=near_id)
+        if not isinstance(dedupe, bool):
+            raise _bad_value("search", f"dedupe must be true or false, got {dedupe!r}",
+                             dedupe=dedupe)
         if not isinstance(rerank, bool):
             raise _bad_value("search", f"rerank must be true or false, got {rerank!r}",
                              rerank=rerank)
@@ -246,7 +256,7 @@ class QueryOps:
             "exclude_tags": exclude_tags, "link_kinds": link_kinds,
             "near_id": near_id, "hops": hops, "offset": offset,
             "recency": recency, "recency_weight": recency_weight,
-            "rerank": rerank, "efs": efs,
+            "rerank": rerank, "efs": efs, "dedupe": dedupe,
         }
         passed = [k for k, v in params.items() if v != _SEARCH_DEFAULTS[k]]
 
@@ -298,6 +308,8 @@ class QueryOps:
                 text_query=query, limit=limit,
             )
         cross = {"rerank": True} if rerank else {}
+        if dedupe:
+            cross["dedupe"] = True
         if efs is not None:
             filt["efs"] = efs
         if path == "chunks:hub":

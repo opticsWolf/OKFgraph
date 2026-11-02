@@ -639,14 +639,41 @@ jump for a 2× width — the signature of **quadratic attention in the ONNX
 definition** on long single rows (the token budget allows ≤16K-token
 bins, so multi-K-token rows pay attention²). So the tooling is
 innocent; the cost is natively superlinear per long row.
-**Fix directions** (needs a decision): (a) re-export / patch the graph
-with flash or a chunked attention op (embroider-side, §model work); **or**
-(b) clamp the import-side row width — e.g. a `max_seq`-aware
-`[import] token_budget` around 2–4K tokens so buckets stay under the
-coupling knee (`max_length` already truncates at 8K tokens; lowering the
-code-side budget is one line + settings), trading forward count for
-linear behavior; (c) gate the budget off the loaded ORT device (CUDA
-tolerates long rows, CPU should clamp).
+**Layer split (2026-11-02 code read — constrains every fix below):**
+two encode layers share the one Rust encoder. (1) **Concept vectors**
+encode each concept's `search_text` (title + body + metadata) — row width
+unbounded per doc, truncated only at the model's `max_length` (8192
+tokens), inside the 16384-token bucketed loop: the only layer shaped by
+the knee. (2) **Chunk vectors** encode heading/overlap payloads from
+`_split_into_chunks`, capped by `_cap_chunk_budget` at `chunk_size`
+(default 512) tokens — under the knee by construction, one un-bucketed
+`_encode_batch` per concept. The lone chunk-layer exception: an
+*unsplittable* single block (e.g. a base64 wall in one fence) is emitted
+alone, and its only backstop warning fires at 90 % of the context window
+(~7.4K tokens) — *above* the knee — so a pathological fenced blob can
+still put a knee-sized row into a *chunk*.
+
+**Fix directions** (needs a decision; corrected — the earlier "(b)
+token-budget clamp" **cannot** fix long docs, because
+`_token_bucketed_encode` never splits a text: an over-budget doc forms
+its own bin and the row width is unchanged):
+(a) re-export / patch the graph with flash or a chunked attention op
+(embroider-side, §model work) — the clean cure, vectors identical.
+(b″) derive the concept vector by **pooling its existing chunk
+embeddings** (chunks are already computed for chunk search — no
+attention² work added); semantic shift away from last-token pooling, so
+it needs a pin/version marker, a re-embed policy, and maintainer
+sign-off. (b-interim) clamp only the concept-row width (encode
+`search_text` at `max_length ≈ 2–4K` on CPU) — smallest blast radius,
+same semantic-shift caveat. (c) device-aware: CUDA keeps long rows, CPU
+falls back to (b-interim).
+Chunker hardening side-note: cap the *unsplittable-block* chunk row
+below the knee (truncate + warn) instead of the current context-window
+warning that sits above it.
+Residual (unproven): the ≥28-min silent post-upsert phase observed on
+2026-11-02 sits inside the chunk encode/write region, which logs only
+after all concepts finish (`chunk: %d concepts in %.1fs`) — add
+per-concept phase logging when this area is next touched.
 
 On the hermetic gate env (CPU ort wheel), a fresh Macrame-scale import
 shows per-bucket encode deltas growing ~2× per bucket (13 s → 25 s → 43 s

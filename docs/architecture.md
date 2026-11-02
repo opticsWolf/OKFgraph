@@ -20,7 +20,7 @@
 **Embedding Engine**: Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core).  
 **Images**: caption route (`text`) or ONNX vision route (`optional`/`omni` → `vision-onnx` via embroider `JinaV5Vision`, text-nano graphs only) into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0 and replaced by ONNX vision in 0.8.0 — same vector space, no torch anywhere.  
 **Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
-**Search Modes**: Hybrid (RRF fusion, vector + FTS, `rank=none|hub|ppr|cross`; `cross` and chunk `rerank=True` reorder the top hits by an opt-in cross-encoder), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
+**Search Modes**: Hybrid (RRF fusion, vector + FTS, `rank=none|hub|ppr|cross`; `cross` and chunk `rerank=True` reorder the top hits by an opt-in cross-encoder (default model `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, Q5 Phase 3: parity with MiniLM on English, better on German), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
 
 ---
 

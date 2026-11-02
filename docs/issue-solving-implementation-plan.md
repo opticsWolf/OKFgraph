@@ -200,7 +200,13 @@ Macrame topic alone). Offer a one-time maintenance op, e.g.
 `okf retitle-thoughts [--topic T] [--dry-run]`, that applies rule 2/3 to
 thoughts whose title is still the old `Thought: <topic>` form. It is a
 write over many concepts, so it defaults to `--dry-run` output and is
-CLI-only (not MCP). See open question Q3.
+CLI-only (not MCP). See open question Q3. *Status: BUILT — landed with
+the WS2 work (`IngestManager.retitle_thoughts`, CLI `okf
+retitle-thoughts [--topic T] [--apply]`, dry-run default; per-topic
+collision suffixes, deliberate-title guard, file-backed thoughts
+listed as skipped; tests `test_thought_titles.py:133-171`). My
+2026-11-02 status list wrongly carried it as "unbuilt" — carried only
+on the plan text, never verified. Retracted.*
 
 ### 3.3 Tests
 

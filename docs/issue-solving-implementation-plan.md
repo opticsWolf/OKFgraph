@@ -686,8 +686,14 @@ and both `OKFGRAPH_MAX_LENGTH=2048` (env, clean CWD) and `[embedding]
 max_length = 2048` (TOML) reach `Settings.load() == 2048` and the
 crate: a session opened with `max_length=2048` reports
 `session.max_length() == 2048` and truncates rows (see the probe
-numbers below). On Macrame re-acceptance, set `max_length = 2048`
-in okfgraph.toml for CPU-only hosts.
+numbers below). **Decision 2026-11-02 (user): the cut is DEFERRED.**
+`[embedding] max_length` stays an available opt-in knob — no default,
+no Macrame acceptance config sets it, and the quality cost of the cut
+(lost forward-pass tails — see the A/B numbers above) stays
+un-quantified until someone measures it via the eval harness. Consequence:
+a CPU-only Macrame-scale import stays in the multi-hour regime
+until (a) or (b″) lands or a working CUDA route is cleared; the
+acceptance lane needs GPU-env (or a cleared CUDA story) to run.
 
 **Probe-confirmed numbers (`.okf-suite-1102/probe_pinclash.py`, gate
 venv):** the same 10961-char (~2.7K-token) text encodes in

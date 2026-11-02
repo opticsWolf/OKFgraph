@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Set
 
 import frontmatter
+from okfgraph.components.embedding import _truncate_to_token_budget
 from okfgraph.errors import OKFError
 from okfgraph.models import ConceptModel
 from okfgraph.images import IngestMode
@@ -1292,7 +1293,26 @@ class ImportManager:
 
         # Compute overlap payloads for embedding
         payloads = self.embed_engine._compute_overlap_payloads(chunks)
+        # Row-cap hardening (Q8, 2026-11-02): an *unsplittable* chunk (the
+        # single-giant-word / base64-blob fallback in _cap_chunk_budget) is
+        # emitted at full length, so its embedding ROW can exceed the layer's
+        # design cap (chunk_size tokens) — the only chunk-layer path that can
+        # reach the CPU attention knee. Clamp that row at budget tokens, keep
+        # the stored chunk_text full (payload enrichment is embedding-only).
         texts = [p["text"] for p in payloads]
+        for i, (payload, chunk) in enumerate(zip(payloads, chunks)):
+            if self.token_counter(chunk["chunk_text"]) > self.chunk_size:
+                clamped, n = _truncate_to_token_budget(
+                    payload["text"], self.chunk_size, self.token_counter)
+                if clamped != payload["text"]:
+                    payload["text"] = clamped
+                    texts[i] = clamped
+                    logger.warning(
+                        "chunk %s exceeds %d tokens and cannot be split "
+                        "(unsplittable block); its embedding payload was "
+                        "truncated to %d tokens — stored text stays full",
+                        payload["chunk_id"], self.chunk_size, n,
+                    )
 
         # --- Context-window warning (Gap #14a) ---
         ctx_window = self.context_window

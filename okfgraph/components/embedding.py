@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 import mordant
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 #: Suffix marking post-split continuation pieces (0.5.1 chunk cap).
 #: A mordant block larger than ``chunk_size`` words is subdivided into
@@ -21,6 +21,41 @@ from typing import Any, Dict, List, Optional
 #: inter-block delimiter. Stored as-is (plain STRING column, no schema
 #: change); consumers compare against the base type via _base_block_type.
 CONTINUATION_SUFFIX = "+"
+
+
+def _truncate_to_token_budget(
+    text: str,
+    budget: int,
+    count_fn,  # Callable[[str], int]
+    max_passes: int = 6,
+) -> Tuple[str, int]:
+    """Return ``(truncated_text, actual_tokens)`` with ``actual_tokens <= budget``.
+
+    Pure; used for paths that must cap an embedding ROW width at token
+    granularity without a tokeniser truncate API (the JSQ8 path: an
+    unsplittable chunk payload that exceeds the layer's design row cap —
+    "truncated + warned, stored text stays full"). A first cut is
+    proportional to the measured chars-per-token rate; each pass
+    re-measures the cut and converges geometrically, so the trailing
+    re-measure costs O(passes × budget) tokens of tokenisation, never
+    O(n_tokens) per pass. The cut point is pulled back to the last word
+    boundary so rows never end mid-word, at the cost of a few tokens.
+    """
+    seen = count_fn(text)
+    if seen <= budget or not text:
+        return text, seen
+    for _ in range(max_passes):
+        cut = max(1, int(len(text) * budget / max(seen, 1)))
+        cut = min(cut, len(text) - 1)
+        # Prefer a word boundary at/before the cut if any exists there.
+        ws = text.rfind(" ", 0, cut)
+        if ws > 0 and cut - ws < cut // 2:
+            cut = ws + (1 if cut < len(text) - 1 else 0)
+        text = text[:cut]
+        seen = count_fn(text)
+        if seen <= budget:
+            break
+    return text.rstrip(), seen
 
 
 def _base_block_type(block_type: str) -> str:

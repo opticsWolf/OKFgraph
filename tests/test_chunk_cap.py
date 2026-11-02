@@ -277,3 +277,39 @@ def test_reconstruct_precap_graph_unchanged(tmp_path):
         assert r.embed_engine.reconstruct_document("doc") == body
     finally:
         r.close()
+
+
+# ---- Q8 row-cap hardening (2026-11-02) -------------------------------------
+# The unsplittable-block path (base64 wall / single giant word) is the one
+# chunk-layer path that can exceed the layer's design row cap (chunk_size
+# tokens) and reach the CPU attention knee. The hardening clamps that
+# chunk's EMBEDDING payload at budget tokens; stored chunk_text stays full.
+
+
+def test_truncate_helper_small_text_passthrough():
+    from okfgraph.components.embedding import _truncate_to_token_budget
+
+    text, n = _truncate_to_token_budget("short text", 100, CHARS)
+    assert (text, n) == ("short text", len("short text"))
+
+
+def test_truncate_helper_converges_to_budget():
+    from okfgraph.components.embedding import _truncate_to_token_budget
+
+    text = "word " * 2000  # CHARS: 1 char == 1 "token"; budget in chars
+    truncated, n = _truncate_to_token_budget(text, 500, CHARS)
+    assert n <= 500
+    assert text.startswith(truncated.strip())
+    assert len(truncated) > 100  # not collapsed to nothing
+
+
+def test_truncate_helper_keeps_word_boundaries():
+    from okfgraph.components.embedding import _truncate_to_token_budget
+
+    words = [f"w{i}" for i in range(2000)]
+    text = " ".join(words)
+    truncated, n = _truncate_to_token_budget(text, 500, WORDS)
+    assert n <= 500 and n >= 480  # converged near the budget
+    listed = truncated.split()
+    assert listed == words[:len(listed)]  # whole words only, right order
+    assert truncated.endswith(listed[-1])  # no partial trailing word

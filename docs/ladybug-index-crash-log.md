@@ -82,6 +82,34 @@ A scratch bisect workflow (`full-diag.yml`, deleted after diagnosis) on
   cancel. Suite runtime measured at **<4 min incl. test_detach.py** when
   not killed externally.
 
+## Graph-rot watch: ladybug issue #1092 — non-ASCII thought ingest refuses (2026-11-02)
+
+Encountered tonight while trying to `ingest` the session's thought
+payloads into the reachable dogfood graph server-side:
+
+- **ASCII-only thought ingest works**; any payload containing
+  non-ASCII characters (en-dashes, ×, ≥, é… — i.e. most real notes)
+  refuses with ladybug runtime error `#1092`: *"Detected a stale
+  string primary-key hash index entry (issue #1092): this index was
+  built by v0.20.x or earlier and misplaces non-ASCII keys under the
+  curate string hash."*
+- **Remedy (runs on the graph-owner's side):** for an FTS index
+  `CALL DROP_FTS_INDEX` then `CALL CREATE_FTS_INDEX`; for a table
+  with a non-ASCII STRING primary key, recreate the table. Until
+  then, non-ASCII human notes cannot persist via ingest on that
+  graph.
+- **Interim affordance:** the same payloads exist as md files under
+  `thoughts/<topic>/…` (gitignored local folder; 2026-11-02 batch =
+  encode-perf ×3, okfgraph-bugs ×2, okfgraph-cin, retrieval-eval,
+  macrame-acceptance, ladybug-index-crash), so the live-graph
+  session can ingest them *after* the reindex, with the clean
+  originals as source of truth.
+- Family check: this is a data-integrity/encoding-index issue, NOT a
+  member of the post-upsert slow-crawl family (§Occurrences) nor of
+  the in-process-ONNX second-runtime collision (§Separately
+  observed). One ASCII probe concept used for the test was deleted
+  after the run (recoverable 24 h, no trashed files).
+
 ## Ingest payloads for the live graph (paste for `kind=thoughts`)
 
 Topic `ladybug-index-crash`, tags `watch`, `occurrence`:

@@ -34,6 +34,16 @@ Issue IDs below are prefixed with their report (`R29-A` = issue A of the
 Checked against `main` and against the unmerged `dev_0.11.0` draft
 (`5d04e03`, one commit, 2026-10-16).
 
+**Banner (2026-11-02, full-audit): the table below is the *historical*
+snapshot. Every WS1–WS5 item in it is now LANDED and code-verified**
+(WS1 = released in 0.10.3; WS2/WS3/WS5 = landed on this branch with
+tests — see each section's status marker; WS4 = doctor
+`stale_lock` diagnostic, info-only per decision). The residual open
+work = §8 release lane (0.11.0 bump/tag), the §2.3/§4.4 acceptance
+re-runs, the dedupe default (§10.2), and the Q8 decision in §11.
+Search-knob parity (§10.3: `efs`, `find_path`) verified wired into
+search/CLI/MCP tonight.
+
 | ID | Issue | Status on `main` | In `dev_0.11.0` draft? | Plan |
 |---|---|---|---|---|
 | R07-A | positional `import` flattens IDs to bare stems | **fixed in 0.10.2** (A1/A2: `--bundle-path` is an identity root, `hierarchy-dropped` warning) | — | none |

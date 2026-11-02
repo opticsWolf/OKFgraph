@@ -1,11 +1,15 @@
 # OKFgraph issue-solving implementation plan
 
-**Date:** 2026-11-01 · **Baseline:** `main` at `4d0f352` (okfgraph 0.10.2 +
-embroider `>=0.12,<0.13`) · **Status:** 0.10.3 code complete on
-`dev_0.10.3` — WS1, WS2 (+ `retitle-thoughts`, Q3), WS3 step 1, WS4,
-WS5.1 (dangling-seed fix), WS5.3, WS5.4. Still open: Macrame acceptance
-re-runs (§2.3, §4.4), the release gate (§8), the raw-link column (0.11.0
-schema), and the 0.11.0 rebase.
+**Date:** 2026-11-01 (status refreshed 2026-11-02) · **Baseline:** `main` at
+`4d0f352` (okfgraph 0.10.2 + embroider `>=0.12,<0.13`) · **Status:** 0.10.3
+code complete and merged into `dev_0.11.0` (`00e50bc`); 0.10.3 never
+released — PyPI latest is our 0.10.2, so its scope ships in 0.11.0. The
+0.11.0 rebase is done via that merge (ladybug 0.22.1, embroider 0.12);
+mMARCO rerank default landed (`f94e506`), Windows serve/move fix
+(`9a714d3`), starter labels reviewed (`7be3628`). Still open: Macrame
+acceptance re-runs (§2.3, §4.4; first partials in §11), the release gate
+(§8), the raw-link column (0.11.0 schema), and the CI `full.yml` weekly
+cancel.
 
 **Also folded in** (§10): `docs/reranker-integration-plan.md`,
 `docs/search-options-analysis.md`, and the open-topic rows of
@@ -583,6 +587,41 @@ moves the pin.
 5. §10.1 Phase 3 eval harness: decides the default rerank model (Q5)
    and whether `dedupe` can default on. *Harness built 2026-11-01*
    (`scripts/eval_search.py`, starter labels for this repo); first numbers
-   in `reranker-integration-plan.md` Phase 3. Q5 and the `dedupe`
-   default stay open until reviewed labels and a Macrame run exist.
+   in `reranker-integration-plan.md` Phase 3. *Labels reviewed 2026-11-02*
+   (all 32 referenced ids resolve; q20/q26 gained plan-doc grade-1s;
+   split is 18 dev / 10 heldout; cross-language pairs q07/q25 and
+   q09/q24 straddle the split — disclose in reports). Q5 decided
+   (`f94e506`: mMARCO); the `dedupe` default stays open pending a
+   Macrame run.
 6. Release.
+
+---
+
+## 11. Acceptance re-run log
+
+### 2026-11-02 — first attempt (partials only; fresh import uncompleted)
+
+Scratch DB, `dev_0.11.0` working tree. The fresh-import baseline halted
+suspected-crash (see `docs/ladybug-index-crash-log.md`), so the §2.3/§4.4
+gates remain officially **unmeasured**; what the partial runs did show:
+
+- **Starting-state honesty §4.4:** an `--all` import against a *copy*
+  restored on the prior baseline ran its delta pass with true counts
+  (`directory-delta: 1 changed dir(s), 10 changed files out of 205 total
+  (12 unchanged in changed dirs skipped by file hash)` → `10 queued,
+  10 actually changed`, `imported 0 concept(s)`). Baseline numbers (queued
+  16 vs 38, 0.11.0 → 1) still need a completed fresh import plus a timed
+  single-`architecture/` edit.
+- **Broken links §2.3 (stale rows — cannot validate WS1):** on the restorable
+  baseline, `broken-links` reported 65 rows (down from the 71 of R29, not the
+  WS1 gate of 2). `repair-links` fixed 27 (65 → 38); all 38 remaining are
+  `kind=mention` rows **stamped 2026-10-05** with the R29-D fingerprints
+  (`Macrame%20Road%20to%201.0`, over-capture fragments like `24] Wilson
+  Lin…](http`, benchmark-number soup, mermaid keywords) plus R29-A/B
+  path-link survivors. Stale rows predate WS1 and say nothing about it.
+  Gate: count broken links on a **fresh** import only.
+- **Side finding for WS dedupe/retrieval:** `ikat/examples/bench-layout/`
+  ships same-stem `.md` + `.txt` pairs (≥3 files); the `.txt` variant is
+  refused as a duplicate id with a pointing warning. Correct behaviour —
+  recorded so a future archive import of that folder isn't mistaken for a bug.
+  Same error can hide real dupes elsewhere: watch for it on fresh imports.

@@ -669,11 +669,50 @@ same semantic-shift caveat. (c) device-aware: CUDA keeps long rows, CPU
 falls back to (b-interim).
 Chunker hardening side-note: cap the *unsplittable-block* chunk row
 below the knee (truncate + warn) instead of the current context-window
-warning that sits above it.
-Residual (unproven): the ≥28-min silent post-upsert phase observed on
-2026-11-02 sits inside the chunk encode/write region, which logs only
-after all concepts finish (`chunk: %d concepts in %.1fs`) — add
-per-concept phase logging when this area is next touched.
+warning that sits above it. *Landed 2026-11-02 (`389bffb`):*
+`_truncate_to_token_budget` copies the Q8 rules to the chunk layer —
+only the *unsplittable-block* payload (whose base chunk text alone
+exceeds `chunk_size`) is clamped, the stored text stays full; unit tests
+in `test_chunk_cap.py`.
+
+**(b-interim) needs no code** — `[embedding] max_length` already exists
+as a Setting (help text already warns: raising it changes long-doc
+vectors, reimport). Caveat revised: the clamp must be **graph-uniform**
+(a per-device clamp would make the same pinned graph diverge across
+hosts — a vector-space bug, not a knob). Env wiring gap found the same
+day: the env layer never reads `OKFGRAPH_MAX_LENGTH` (`_from_env` has no
+max_length branch), so environment-driven clamps silently ignore the
+value — wire it or document TOML-only. On Macrame re-acceptance, set
+`max_length = 2048` in okfgraph.toml for CPU-only hosts.
+
+**Two more fresh-findings of 2026-11-02 (acceptance prep):**
+1. **Dot-ancestor bundle roots are broken**: a bundle under a dot-directory
+   (e.g. `…/OKFgraph/.okf-accept-1102/tree`) walks as *all* files in
+   "hidden/tool dirs" (54/54 skipped; delta = "no changes") — the hidden-skip
+   check reads dot-ancestors, not just path components under the root.
+   Same tree imports fine from a non-dot scratch dir. Fix direction: anchor
+   the dot-check at the bundle root (B1/B2 family). The symptom also
+   explains why repo-local scratch imports never encode.
+2. **In-process ONNX-DLL collision surfaces as hard aborts, not halts**:
+   a direct `embroider.JinaV5.open` probe (after `import okfgraph`, which
+   imports ladybug) aborted with the ort crate refusing a dylib that
+   reports `version_str=1.17.1` while the installed wheel is 1.29 —
+   i.e. ladybug's own in-process ONNX beats the crate's resolver. Suspect
+   the same second-runtime collision the plan pinned as the 0.20.x
+   in-process segfault story. Real okf CLI runs consistently load the
+   right DLL (doctor prints 1.29), so this is probe/pathology-adjacent,
+   but it belongs on the in-process-ORT watch list.
+
+Residual (upgraded to suspect by today's clamped-run pattern):
+unclamped import buckets 1–7 cost 60–90 s at ≤2741-token rows while rows
+>8192 tokens (truncated to 8192) settle at a flat ~17.8 s — i.e. **the
+flat zone = one fixed row-shape, the slow zone = per-bull-shaped re-plan**
+("per new shape ≈ 35–90 s"), which explains the Macrame “doubling” as
+shape-count, not just attention. Clamping to 2048 should have flattened
+bucket 1 as well (Settings verified 2048-loaded) but did not — open
+question: whether the row truncation is applied before or after padding
+in `encode_batch`. Next quick probe: two same-width texts, one compared
+across `max_length=2048` vs default in one process.
 
 On the hermetic gate env (CPU ort wheel), a fresh Macrame-scale import
 shows per-bucket encode deltas growing ~2× per bucket (13 s → 25 s → 43 s

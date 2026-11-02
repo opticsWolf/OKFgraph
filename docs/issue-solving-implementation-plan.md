@@ -313,7 +313,17 @@ Keep doctor's `stale_lock` info as the safety net for crashed processes.
 
 ## 6. WS5 — search behaviour (R31-C1, R31-C2, R31-D)
 
-### 6.1 `--rank ppr` and thoughts (R31-C1) — investigate first
+**STATUS (2026-11-02 code-verified): all four items LANDED with the
+0.11.0 draft** — §6.1 probe fixture + fix (`tests/test_ppr_thoughts.py`,
+a matching thought ranks first), §6.2 `okf serve` + `okf shell`
+(README + skill), §6.3 stable keys + parametrized test
+(`tests/test_stable_result_keys.py`), §6.4 `fetch_k`/`deeper_k`
+widening + one deepening retry (`search.py:31,46`, tests
+`test_filtered_search_depth.py`). My 2026-11-02 open lists carried
+§6.1–6.4 as backlog without code checks — all covered by
+draft/testing. Closed.
+
+### 6.1 `--rank ppr` and thoughts (R31-C1) — investigate first — LANDED
 
 **Unverified.** Likely mechanisms, to be checked in this order:
 

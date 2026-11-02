@@ -638,7 +638,52 @@ moves the pin.
 
 ## 11. Acceptance re-run log
 
-### 2026-11-02 — first attempt (partials only; fresh import uncompleted)
+### 2026-11-03 — REAL acceptance on the correct tree, GPU lane (§2.3 + §4.4 GATES)
+
+Lane: working copy of `D:/User/Documents/Python/Macrame/docs`
+(4.1 MB, 53 md of 56 files) at a non-dot scratch path; scratch DB
+(temp dir); okf CLI from the **dev .venv** (onnxruntime-gpu 1.29.0)
+with **`OKFGRAPH_DEVICE=cuda` explicitly** — fp16/im 3090; the
+devoted wheel's `device=auto` CUDA auto-probe hang (py-spy verified)
+was bypassed by the explicit request. **Working CUDA route proven
+end-to-end (cold open + fp16 encode + graphs +links).**
+
+- **§4.4 fresh import: COMPLETED — 420.9 s total** (54 concepts):
+  concept encode **51.7 s** (34 buckets; rows up to 1.51M chars
+  truncated at 8192 tokens — GPU pays linear), upsert 0.8 s, links
+  14.3 s (5 repaired), **chunk phase 353.9 s**. *Surprise:* on GPU the
+  **chunk layer is the dominant cost (~6.5 s per concept)** — the same
+  "per-new-shape / per-call overhead" family, not attention² (rows are
+  capped at 512 tokens). Recorded as the new Q8 datapoint.
+- **§4.4 delta honesty + single-edit timed:** append one line to one
+  file → `1 changed dir(s), 1 changed files out of 54 total (15
+  unchanged … skipped by file hash)` → `1 file(s) queued, 1 actually
+  changed` → **11.7 s end-to-end**, `encode: 1 texts`, `kept 9
+  incoming link(s) across re-import`. R29-era 16-vs-38 re-embed →
+  **§1** per the 0.11.0 target.
+- **§2.3 broken links on the fresh import: 71 → 7** (old stale 65/38
+  rows bypassed entirely). The 7 = **6 × `../`-style links escaping
+  the bundle** (the R29-E family the plan scopes "fix in Macramé" —
+  honest "left the bundle" classification) + **1 × misspelled in-tree
+  path** (`docs/Macrame Road to 1.0` where no `docs/` dir exists —
+  editorial). The plan's predicted "2" was a forecast; the measured
+  residue is all Macramé-authoring, none is an okfgraph-defect class.
+- **public-api is no longer an orphan** (fresh-import orphans = 5
+  unrelated release-note-style docs).
+- **§10.2 dedupe default measurement (the item 5 input):** 6
+  tree-native chunk queries × 10 slots with/without `--dedupe`:
+  **1 collapse in 60 slots** ("Jacquard plan"; 1 dropped row), top-3
+  identical between runs, pages stayed full (pool doubling works).
+  Combined with the reviewed-labels eval (−0.015 nDCG / +0.01 recall):
+  **default stays OFF**, opt-in via `--dedupe` / `dedupe=True`; the
+  feature is documented as for near-dup-rich corpora.
+
+Scratch artifacts (repro-ready):
+`C:\Users\Main\AppData\Local\Temp\okf-accept-gpu\`
+(tree/ = working copy, db/graph.db, import1.log, import2.log,
+the six dedupe-probe query pairs).
+
+### 2026-11-02 — first attempt (partials only; fresh import uncompleted; WRONG tree — Macrame_docs = the R31 research bundle — reclassified as pre-acceptance findings)
 
 Scratch DB, `dev_0.11.0` working tree. The fresh-import baseline halted
 suspected-crash (see `docs/ladybug-index-crash-log.md`), so the §2.3/§4.4

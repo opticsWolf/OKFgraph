@@ -3,8 +3,11 @@
 # delete after diagnosis. Dispatch: gh workflow run full-diag.yml --ref dev_0.11.0
 name: full-diag
 
+# A push to dev_0.11.0 fires it (workflow files don't need to be on the
+# default branch to run from a push). Keep the branch scoping tight.
 on:
-  workflow_dispatch:
+  push:
+    branches: [dev_0.11.0]
 
 permissions:
   contents: read

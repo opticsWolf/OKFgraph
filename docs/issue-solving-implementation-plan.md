@@ -625,3 +625,20 @@ gates remain officially **unmeasured**; what the partial runs did show:
   refused as a duplicate id with a pointing warning. Correct behaviour —
   recorded so a future archive import of that folder isn't mistaken for a bug.
   Same error can hide real dupes elsewhere: watch for it on fresh imports.
+
+### Q8 (open) — Macrame-scale encode slowdown on CPU wheels (perf-fit, not a halt)
+
+On the hermetic gate env (CPU ort wheel), a fresh Macrame-scale import
+shows per-bucket encode deltas growing ~2× per bucket (13 s → 25 s → 43 s
+→ 93 s, 126 buckets) — projected multi-hour import. Small scale knows
+nothing of it: 12 buckets (800–2720 chars) import in **33.4 s**, and the
+fixed-size micro-benchmark (1024/4096/8192 chars, cold+warm) is identical
+between the CPU and GPU ort wheels (~1–6 s per doc). So the effect is
+**scale-gated** (growths with bucket count / cumulative token volume),
+not per-document and not wheel-specific. Quick re-eval (≈1 min):
+`probe10`-style bundle = 12 files, sizes `800 + i*160` chars, one
+`import_bundle(None)`, expect low tens of seconds; the Macrame gap opens
+only in the multi-hundred-bucket regime. Fix direction: per-bucket
+overhead trimming (token-bucket loop / ORT intra-op threads / `cpu_arena`)
+— perf work, not release-blocking for the 0.11.0 serial gate, but it
+blocks **CPU-only hosts** from usable Macrame-scale imports.

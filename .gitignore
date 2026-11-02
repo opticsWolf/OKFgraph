@@ -241,3 +241,7 @@ kb.db.wal
 # untracked: CWD-first lookup means a repo-root TOML shadows test
 # fixtures and silently re-pins the working database.
 okfgraph.toml
+
+# kb.db bundle files the okfgraph update tool writes for thoughts
+# (the graph is the record, never commit)
+/thoughts/

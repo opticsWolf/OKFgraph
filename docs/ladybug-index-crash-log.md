@@ -37,6 +37,21 @@ recurring slow-path/hang-suspect, no evidence yet of a hard crash.**
 Reproducing cleanly needs a long foreground run; next opportunity is the
 Macrame acceptance baseline (implementation plan §11).
 
+### 2026-11-02 10:38–10:43 UTC — CPU-wheel A/B probe ( inconclusive, new datum )
+
+Same fresh import under the **hermetic gate venv** (`uv sync --frozen
+--extra dev --extra pdf --extra cpu`, i.e. the shipped CPU wheel, Ladybedbug
+same 0.22.1): the run never reached the post-upsert phase — encode itself
+slowed geometrically (bucket deltas 13 s → 25 s → 43 s → 93 s, roughly
+doubling per bucket; bucket 5 = 8,300 chars in 93 s ≈ 90 chars/s) and was
+halted by operator before encode would finish. So the post-upsert
+slow-crawl question stays undecided under the CPU wheel, but the run adds
+a separate datum: **CPU-wheel encode on this box is drastically slower
+than the GPU-wheel venv's encode** (195 texts ≈ 170 s total there vs
+>>30 min pace here). Next probe should bisect encoder open (threads/
+`cpu_arena`) vs the long-text bucketing path — off the watch list, it is a
+performance-fit issue, not a halting issue.
+
 ### Verification runs kept honest
 
 The 2026-10-31 22:41/22:44 crash-dir files in

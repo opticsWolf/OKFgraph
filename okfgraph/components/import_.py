@@ -337,7 +337,8 @@ class ImportManager:
     SUPPORTED_SOURCE_EXTS = (".md", ".markdown", ".txt")
     def __init__(self, conn, bundle_root, _write_lock_ctx, enable_chunking,
                  schema_mgr, delta_mgr, embed_engine, image_mgr, purge_mgr,
-                 token_counter, context_window=8192, db_path=None, roots=None,
+                 token_counter, context_window=8192, chunk_size=512,
+                 chunk_overlap=40, db_path=None, roots=None,
                  identity: str = "path"):
         self.conn = conn
         if identity not in IDENTITY_MODES:
@@ -371,6 +372,11 @@ class ImportManager:
         # encoder (count_tokens); no transformers tokenizer exists anymore.
         self.token_counter = token_counter
         self.context_window = context_window
+        # Chunk-layer row budget for the unsplittable-block clamp (Q8,
+        # 2026-11-02): the same settings the chunker splits at, so the
+        # layer's cap is read from the same source, not re-invented.
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
         self.enable_chunking = enable_chunking
         self.schema_mgr = schema_mgr
         self.delta_mgr = delta_mgr
@@ -1278,6 +1284,31 @@ class ImportManager:
             final.append(item)
         return final, dups, moved
 
+    def _clamp_unsplittable_payloads(self, payloads, chunks):
+        """Row-cap hardening (Q8, 2026-11-02): an *unsplittable* chunk (the
+        single-giant-word / base64-blob fallback in ``_cap_chunk_budget``) is
+        emitted at full length, so its embedding ROW can exceed the layer's
+        design cap (``chunk_size`` tokens) — the only chunk-layer path that
+        can reach the CPU attention knee. Clamp that row at budget tokens,
+        keep the stored ``chunk_text`` full (payload enrichment is
+        embedding-only). Returns the payload texts after clamping.
+        """
+        texts = [p["text"] for p in payloads]
+        for i, (payload, chunk) in enumerate(zip(payloads, chunks)):
+            if self.token_counter(chunk["chunk_text"]) > self.chunk_size:
+                clamped, n = _truncate_to_token_budget(
+                    payload["text"], self.chunk_size, self.token_counter)
+                if clamped != payload["text"]:
+                    payload["text"] = clamped
+                    texts[i] = clamped
+                    logger.warning(
+                        "chunk %s exceeds %d tokens and cannot be split "
+                        "(unsplittable block); its embedding payload was "
+                        "truncated to %d tokens — stored text stays full",
+                        payload["chunk_id"], self.chunk_size, n,
+                    )
+        return texts
+
     def _import_chunks_for_concept(self, parsed_item: Dict[str, Any]) -> None:
         """Split, encode, and upsert chunks for a single concept.
 
@@ -1307,26 +1338,7 @@ class ImportManager:
 
         # Compute overlap payloads for embedding
         payloads = self.embed_engine._compute_overlap_payloads(chunks)
-        # Row-cap hardening (Q8, 2026-11-02): an *unsplittable* chunk (the
-        # single-giant-word / base64-blob fallback in _cap_chunk_budget) is
-        # emitted at full length, so its embedding ROW can exceed the layer's
-        # design cap (chunk_size tokens) — the only chunk-layer path that can
-        # reach the CPU attention knee. Clamp that row at budget tokens, keep
-        # the stored chunk_text full (payload enrichment is embedding-only).
-        texts = [p["text"] for p in payloads]
-        for i, (payload, chunk) in enumerate(zip(payloads, chunks)):
-            if self.token_counter(chunk["chunk_text"]) > self.chunk_size:
-                clamped, n = _truncate_to_token_budget(
-                    payload["text"], self.chunk_size, self.token_counter)
-                if clamped != payload["text"]:
-                    payload["text"] = clamped
-                    texts[i] = clamped
-                    logger.warning(
-                        "chunk %s exceeds %d tokens and cannot be split "
-                        "(unsplittable block); its embedding payload was "
-                        "truncated to %d tokens — stored text stays full",
-                        payload["chunk_id"], self.chunk_size, n,
-                    )
+        texts = self._clamp_unsplittable_payloads(payloads, chunks)
 
         # --- Context-window warning (Gap #14a) ---
         ctx_window = self.context_window
@@ -1446,7 +1458,7 @@ class ImportManager:
             if chunks:
                 # Compute overlap payloads for embedding
                 payloads = self.embed_engine._compute_overlap_payloads(chunks)
-                texts = [p["text"] for p in payloads]
+                texts = self._clamp_unsplittable_payloads(payloads, chunks)
                 embeddings = self.embed_engine._encode_batch(texts, task="Document")
 
                 self.conn.execute("BEGIN TRANSACTION")
@@ -2176,7 +2188,7 @@ class ImportManager:
             if chunks:
                 # Compute overlap payloads for embedding
                 payloads = self.embed_engine._compute_overlap_payloads(chunks)
-                texts = [p["text"] for p in payloads]
+                texts = self._clamp_unsplittable_payloads(payloads, chunks)
                 embeddings = self.embed_engine._encode_batch(texts, task="Document")
 
                 self.conn.execute("BEGIN TRANSACTION")

@@ -621,6 +621,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             self.enable_chunking, self.schema_mgr, self.delta_mgr, self.embed_engine,
             self.image_mgr, self.purge_mgr,
             self.encoder.count_tokens, self.max_length,
+            chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap,
             db_path=db_path, roots=self.roots, identity=identity,
         )
         self.ingest_mgr = IngestManager(

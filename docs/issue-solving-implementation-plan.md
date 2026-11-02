@@ -313,15 +313,28 @@ Keep doctor's `stale_lock` info as the safety net for crashed processes.
 
 ## 6. WS5 — search behaviour (R31-C1, R31-C2, R31-D)
 
-**STATUS (2026-11-02 code-verified): all four items LANDED with the
-0.11.0 draft** — §6.1 probe fixture + fix (`tests/test_ppr_thoughts.py`,
-a matching thought ranks first), §6.2 `okf serve` + `okf shell`
-(README + skill), §6.3 stable keys + parametrized test
-(`tests/test_stable_result_keys.py`), §6.4 `fetch_k`/`deeper_k`
-widening + one deepening retry (`search.py:31,46`, tests
-`test_filtered_search_depth.py`). My 2026-11-02 open lists carried
-§6.1–6.4 as backlog without code checks — all covered by
-draft/testing. Closed.
+**STATUS (2026-11-02 code-verified, tests green): all four items LANDED
+with the 0.11.0 draft** — §6.1 probe fixture + fix
+(`tests/test_ppr_thoughts.py`, a matching thought ranks first), §6.2
+`okf serve` + `okf shell` (README + skill), §6.3 stable keys +
+parametrized test (`tests/test_stable_result_keys.py`), §6.4
+`fetch_k`/`deeper_k` widening + one deepening retry
+(`search.py`, tests `test_filtered_search_depth.py`). My 2026-11-02
+open lists carried §6.1–6.4 as backlog without code checks — retracted.
+**Same evening, honesty note:** running those three test files
+surfaced **5 reds — a real regression from the Q8 hardening commit
+(`389bffb`)**: the unsplittable-payload clamp read `self.chunk_size`,
+which the real `ImportManager` never held (only test stubs set it), so
+every chunked import emitted ``'ImportManager' object has no attribute
+'chunk_size'`` (400/400 concepts without chunks). Fixed the same
+evening (`7a97b02`/this commit): chunk settings plumbed router →
+`ImportManager(chunk_size=…, chunk_overlap=…)` (kw defaults keep
+fixture callers working), and the clamp factored into
+`_clamp_unsplittable_payloads`, now applied on **all three**
+overlap-payload paths (34 tests green + 63 import-neighbor tests
+re-green in the gate venv). Process note: the first "closed" claim
+was pushed with `&& pytest | tail` masking pytest's exit code — never
+push a status marker before the check's real exit code is visible.
 
 ### 6.1 `--rank ppr` and thoughts (R31-C1) — investigate first — LANDED
 
@@ -725,7 +738,7 @@ row-counts per bucket plus first-shape costs, not re-plans of
 varying pads.
 
 **Three fresh-findings of 2026-11-02 (acceptance prep; all closed or
-fixed in `…in this commit series…`):**
+fixed in `a7d2570`/`57e9797`):**
 1. **Dot-ancestor bundle roots are broken → FIXED.** A bundle under a
    dot-directory (e.g. `…/OKFgraph/.okf-accept-1102/tree`) walked as
    *all* files in "hidden/tool dirs" (54/54 skipped; delta = "no

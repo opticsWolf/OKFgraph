@@ -65,7 +65,8 @@ def _parse_dir(bundle_dir: Path, alias: str = "", identity: str = "path"):
     raw_links: Dict[str, Dict[str, List[str]]] = {}
     index_concepts = []
     files = sorted(fp for fp in Path(bundle_dir).rglob("*")
-                    if is_concept_file(fp) and not in_skipped_dir(fp))
+                    if is_concept_file(fp)
+                    and not in_skipped_dir(fp, root=Path(bundle_dir)))
     for fp in files:
         try:
             concept, body, cid = parse_source_file(fp, Path(bundle_dir), alias,

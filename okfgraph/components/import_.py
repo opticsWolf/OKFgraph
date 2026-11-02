@@ -65,11 +65,25 @@ SKIP_DIR_NAMES = frozenset({
 })
 
 
-def in_skipped_dir(fp: Path) -> bool:
-    """True when any path component is a skipped directory."""
+def in_skipped_dir(fp: Path, root: Optional[Path] = None) -> bool:
+    """True when any component *under* ``root`` is a skipped directory.
+
+    Dot-folders and tool dirs inside a bundle stay hidden by design
+    (``.git``, ``.obsidian``, ``node_modules``, ...), but ancestors of
+    the bundle root itself must never count: a bundle stored at
+    ``…/.okf-scratch/tree`` imports like any other tree. With ``root``
+    the check is anchored there; ``None`` (legacy callers) inspects the
+    absolute path as before.
+    """
+    parts = fp.parts
+    if root is not None:
+        try:
+            parts = fp.relative_to(Path(root)).parts
+        except ValueError:
+            return in_skipped_dir(fp)
     return any(
         part.startswith(".") or part in SKIP_DIR_NAMES
-        for part in fp.parts
+        for part in parts
     )
 
 
@@ -103,7 +117,7 @@ def count_skipped_concept_files(root: Path) -> int:
     skipped = 0
     for fp in walker:
         try:
-            if fp.is_file() and in_skipped_dir(fp):
+            if fp.is_file() and in_skipped_dir(fp, root=root):
                 if (fp.suffix.lower() in SOURCE_EXTS
                         and fp.name.lower() not in RESERVED_FILENAMES):
                     skipped += 1
@@ -859,7 +873,7 @@ class ImportManager:
         candidates = sorted(
             fp for fp in root.rglob("*")
             if fp.is_file() and fp.suffix.lower() in SOURCE_EXTS
-            and not in_skipped_dir(fp)
+            and not in_skipped_dir(fp, root=root)
         )
         source_files = [fp for fp in candidates if is_concept_file(fp)]
         if len(source_files) != len(candidates):
@@ -1962,7 +1976,7 @@ class ImportManager:
         candidates = sorted(
             fp for fp in root.rglob("*")
             if fp.is_file() and fp.suffix.lower() in SOURCE_EXTS
-            and not in_skipped_dir(fp)
+            and not in_skipped_dir(fp, root=root)
         )
         concept_files = [fp for fp in candidates if is_concept_file(fp)]
         report["file_count"] = report.get("file_count", 0) + len(concept_files)

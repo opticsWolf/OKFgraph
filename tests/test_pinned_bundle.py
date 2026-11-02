@@ -98,20 +98,32 @@ class TestPinnedBundlePath:
 
 
 class TestLintSkippedDirs:
+    # Root-anchored skip rule (2026-11-02): dot/tool dirs *inside* the
+    # bundle stay hidden; the bundle root's own ancestors never count —
+    # a bundle stored under `…/.okf-scratch/tree` lints clean and imports.
     def test_dot_dir_reports_skipped(self, tmp_path):
-        dot = tmp_path / ".merge-tmp" / "thoughts" / "topic"
+        bundle = tmp_path / "bundle"
+        dot = bundle / ".merge-tmp" / "thoughts" / "topic"
         _write_okf(dot / "hidden.md", "Hidden")
-        report = lint_bundle(tmp_path / ".merge-tmp")
+        report = lint_bundle(bundle)
         assert report["files"] == 0
         assert report["skipped_hidden"] == 1
         assert report["clean"] is True  # no errors — but see render guard
 
+    def test_dot_ancestors_of_root_do_not_hide(self, tmp_path):
+        tree = tmp_path / ".merge-tmp" / "thoughts" / "topic"
+        _write_okf(tree / "visible.md", "Visible")
+        report = lint_bundle(tmp_path / ".merge-tmp")
+        assert report["files"] == 1
+        assert report["skipped_hidden"] == 0
+
     def test_render_withholds_safe_claim(self, tmp_path, capsys):
         from okfgraph.cli import _render_lint
 
-        dot = tmp_path / ".merge-tmp" / "thoughts" / "topic"
+        bundle = tmp_path / "bundle"
+        dot = bundle / ".merge-tmp" / "thoughts" / "topic"
         _write_okf(dot / "hidden.md", "Hidden")
-        _render_lint(lint_bundle(tmp_path / ".merge-tmp"))
+        _render_lint(lint_bundle(bundle))
         out = capsys.readouterr().out
         assert "skipped 1 file(s) in hidden/tool dirs" in out
         assert "safe to import" not in out

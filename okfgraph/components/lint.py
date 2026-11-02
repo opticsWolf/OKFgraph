@@ -61,7 +61,8 @@ def lint_bundle(bundle_dir: str | Path, identity: str = "path") -> Dict[str, Any
     """
     root = Path(bundle_dir)
     files = sorted(fp for fp in root.rglob("*")
-                    if is_concept_file(fp) and not in_skipped_dir(fp))
+                    if is_concept_file(fp)
+                    and not in_skipped_dir(fp, root=root))
     # B2: count what the shared skip rule hid so a fully-filtered walk can
     # say so instead of reporting 0 files as clean silence.
     skipped_hidden = count_skipped_concept_files(root)

@@ -679,40 +679,61 @@ in `test_chunk_cap.py`.
 as a Setting (help text already warns: raising it changes long-doc
 vectors, reimport). Caveat revised: the clamp must be **graph-uniform**
 (a per-device clamp would make the same pinned graph diverge across
-hosts — a vector-space bug, not a knob). Env wiring gap found the same
-day: the env layer never reads `OKFGRAPH_MAX_LENGTH` (`_from_env` has no
-max_length branch), so environment-driven clamps silently ignore the
-value — wire it or document TOML-only. On Macrame re-acceptance, set
-`max_length = 2048` in okfgraph.toml for CPU-only hosts.
+hosts — a vector-space bug, not a knob). *Probes 2026-11-02 evening:
+the clamp plumb is fully wired* — `_from_env` is table-driven over all
+SETTINGS rows (the earlier "env wiring gap" was a misread; retracted),
+and both `OKFGRAPH_MAX_LENGTH=2048` (env, clean CWD) and `[embedding]
+max_length = 2048` (TOML) reach `Settings.load() == 2048` and the
+crate: a session opened with `max_length=2048` reports
+`session.max_length() == 2048` and truncates rows (see the probe
+numbers below). On Macrame re-acceptance, set `max_length = 2048`
+in okfgraph.toml for CPU-only hosts.
 
-**Two more fresh-findings of 2026-11-02 (acceptance prep):**
-1. **Dot-ancestor bundle roots are broken**: a bundle under a dot-directory
-   (e.g. `…/OKFgraph/.okf-accept-1102/tree`) walks as *all* files in
-   "hidden/tool dirs" (54/54 skipped; delta = "no changes") — the hidden-skip
-   check reads dot-ancestors, not just path components under the root.
-   Same tree imports fine from a non-dot scratch dir. Fix direction: anchor
-   the dot-check at the bundle root (B1/B2 family). The symptom also
-   explains why repo-local scratch imports never encode.
-2. **In-process ONNX-DLL collision surfaces as hard aborts, not halts**:
-   a direct `embroider.JinaV5.open` probe (after `import okfgraph`, which
-   imports ladybug) aborted with the ort crate refusing a dylib that
-   reports `version_str=1.17.1` while the installed wheel is 1.29 —
-   i.e. ladybug's own in-process ONNX beats the crate's resolver. Suspect
-   the same second-runtime collision the plan pinned as the 0.20.x
-   in-process segfault story. Real okf CLI runs consistently load the
-   right DLL (doctor prints 1.29), so this is probe/pathology-adjacent,
-   but it belongs on the in-process-ORT watch list.
+**Probe-confirmed numbers (`.okf-suite-1102/probe_pinclash.py`, gate
+venv):** the same 10961-char (~2.7K-token) text encodes in
+**15.96 s** single / **106.2 s** for a 6-row batch (≈17.7 s/row) at
+`max_length=2048`, vs **24.81 s** single / **139.0 s** batch (≈23.2
+s/row) at the default 8192 — the row truncates at 2048 and both rows
+and batchs are linear-in-rows (per-row B costs +50 % at 2.7K tokens =
+the knee's onset; A sits at the predicted ~2K-token rate). So
+*truncation happens before padding* (the earlier open question is
+resolved affirmative); the clamped import's flat ~17.8 s buckets
+= one truncated row shape, and its slow buckets 1–4 = bigger
+row-counts per bucket plus first-shape costs, not re-plans of
+varying pads.
 
-Residual (upgraded to suspect by today's clamped-run pattern):
-unclamped import buckets 1–7 cost 60–90 s at ≤2741-token rows while rows
->8192 tokens (truncated to 8192) settle at a flat ~17.8 s — i.e. **the
-flat zone = one fixed row-shape, the slow zone = per-bull-shaped re-plan**
-("per new shape ≈ 35–90 s"), which explains the Macrame “doubling” as
-shape-count, not just attention. Clamping to 2048 should have flattened
-bucket 1 as well (Settings verified 2048-loaded) but did not — open
-question: whether the row truncation is applied before or after padding
-in `encode_batch`. Next quick probe: two same-width texts, one compared
-across `max_length=2048` vs default in one process.
+**Three fresh-findings of 2026-11-02 (acceptance prep; all closed or
+fixed in `…in this commit series…`):**
+1. **Dot-ancestor bundle roots are broken → FIXED.** A bundle under a
+   dot-directory (e.g. `…/OKFgraph/.okf-accept-1102/tree`) walked as
+   *all* files in "hidden/tool dirs" (54/54 skipped; delta = "no
+   changes"), because `in_skipped_dir` inspected the file's absolute
+   `parts`, so the *root's own dot-ancestors* counted. Same tree imports
+   fine from a non-dot scratch path. Fix: `in_skipped_dir(fp, root)`
+   relativizes to the walk root (import/delta/diff/lint call sites
+   passed; default unchanged for legacy callers); dot/tool dirs
+   *inside* the bundle stay hidden by design (tests:
+   `tests/test_skip_dirs.py`, the two B2 lint tests updated to the
+   root-anchored contract).
+2. **The "in-process ONNX collision" is a stale System32 DLL — CLOSED.**
+   A direct `embroider.JinaV5.open` probe (after `import okfgraph`, no
+   Router constructed in the process) aborted with the ort crate
+   refusing a dylib reporting `version_str=1.17.1` while the wheel is
+   1.29. Root cause, probe-verified: `C:/Windows/System32\nonnxruntime.dll`
+   exists on this machine with FileVersion **1.17.260613** (an old,
+   Germanium-era build) and a bare-name `LoadLibrary("onnxruntime.dll")`
+   finds System32 before PATH — so any consumer that init ort without
+   okfgraph's resolver hits it. NOT an in-process ladybug collision
+   (ladybug was never loaded in the probe), and NOT related to the
+   0.20.x in-process segfault story. okfgraph already guards: `Router
+   __init__` → `resolve_ort_dylib()` sets `ORT_DYLIB_PATH` to the pip
+   wheel's DLL explicitly (fail-fast contract intact); embroider exposes
+   `configure_runtime(dylib_path, dll_dirs)` for anyone else. Optional
+   hardening: call `resolve_ort_dylib()` at okfgraph import time so even
+   direct-crate consumers in a host process get the pin — not landed.
+3. **Row truncation is honored before padding — proven.** The A/B probe
+   above settles the earlier open question; clamp wiring works from env
+   and TOML; watch-list item retired.
 
 On the hermetic gate env (CPU ort wheel), a fresh Macrame-scale import
 shows per-bucket encode deltas growing ~2× per bucket (13 s → 25 s → 43 s

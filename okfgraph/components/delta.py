@@ -63,7 +63,8 @@ class DeltaDetector:
         """
         return [
             fp for fp in sorted(dir_path.iterdir())
-            if fp.is_file() and is_concept_file(fp) and not in_skipped_dir(fp)
+            if fp.is_file() and is_concept_file(fp)
+            and not in_skipped_dir(fp, root=dir_path)
         ]
 
 
@@ -267,7 +268,7 @@ class DeltaDetector:
             current_names = {
                 str(fp.relative_to(dir_path))
                 for fp in sorted(dir_path.rglob("*"))
-                if is_concept_file(fp) and not in_skipped_dir(fp)
+                if is_concept_file(fp) and not in_skipped_dir(fp, root=dir_path)
             }
             for rel_file in sorted(stored_files - current_names):
                 deleted_paths.append(str(Path(dir_rel) / rel_file))

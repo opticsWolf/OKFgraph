@@ -628,6 +628,19 @@ gates remain officially **unmeasured**; what the partial runs did show:
 
 ### Q8 (open) — Macrame-scale encode slowdown on CPU wheels (perf-fit, not a halt)
 
+*Update 2026-11-02 (probe 2):* the session-accumulation hypothesis is
+**dead**. In one warm session: `big1=11.4s, 30×small=6.7s,
+big2_after_smalls=5.4s, big-pair=11.1s` — prior volume does not slow a
+subsequent big encode; the per-batch (2×big) cost is exactly 2×
+single-big. The doubling lives in the **bucket-loop / encoder bridge
+across many buckets of one import** (per-call overhead that scales with
+cumulative bucket count or data volume), not in the session. Next step:
+mine the Macrame A/B log for the *per-bucket* shape beyond bucket 5
+(it was operator-halted at 93s on the 5th), then either (a) profile one
+long import with per-call wall stamps, or (b) test whether 30–60-bucket
+imports (quick-scale) already show flat vs growing deltas — current
+12-bucket probe was flat (33.4s total).
+
 On the hermetic gate env (CPU ort wheel), a fresh Macrame-scale import
 shows per-bucket encode deltas growing ~2× per bucket (13 s → 25 s → 43 s
 → 93 s, 126 buckets) — projected multi-hour import. Small scale knows

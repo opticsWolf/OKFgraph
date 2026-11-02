@@ -628,18 +628,25 @@ gates remain officially **unmeasured**; what the partial runs did show:
 
 ### Q8 (open) — Macrame-scale encode slowdown on CPU wheels (perf-fit, not a halt)
 
-*Update 2026-11-02 (probe 2):* the session-accumulation hypothesis is
-**dead**. In one warm session: `big1=11.4s, 30×small=6.7s,
-big2_after_smalls=5.4s, big-pair=11.1s` — prior volume does not slow a
-subsequent big encode; the per-batch (2×big) cost is exactly 2×
-single-big. The doubling lives in the **bucket-loop / encoder bridge
-across many buckets of one import** (per-call overhead that scales with
-cumulative bucket count or data volume), not in the session. Next step:
-mine the Macrame A/B log for the *per-bucket* shape beyond bucket 5
-(it was operator-halted at 93s on the 5th), then either (a) profile one
-long import with per-call wall stamps, or (b) test whether 30–60-bucket
-imports (quick-scale) already show flat vs growing deltas — current
-12-bucket probe was flat (33.4s total).
+*Update 2026-11-02 (probes 2–3b): root cause identified. Session
+accumulation is dead (probe 2: `big1=11.4s, 30×small=6.7s,
+big2_after=5.4s, big-pair=11.1s` — volume-independent, perfectly linear
+within a batch). Probe 2b (scale bundle) reproduces on the real import
+path with a **single 16K-char doc = 134 s** as one bucket. Probe 3b pins
+the law in the direct path: rows of 4000/8000/16000 chars took
+**9.5 / 12.8 / 40.2 s** — linear to ~2K tokens, then an ~8× superlinear
+jump for a 2× width — the signature of **quadratic attention in the ONNX
+definition** on long single rows (the token budget allows ≤16K-token
+bins, so multi-K-token rows pay attention²). So the tooling is
+innocent; the cost is natively superlinear per long row.
+**Fix directions** (needs a decision): (a) re-export / patch the graph
+with flash or a chunked attention op (embroider-side, §model work); **or**
+(b) clamp the import-side row width — e.g. a `max_seq`-aware
+`[import] token_budget` around 2–4K tokens so buckets stay under the
+coupling knee (`max_length` already truncates at 8K tokens; lowering the
+code-side budget is one line + settings), trading forward count for
+linear behavior; (c) gate the budget off the loaded ORT device (CUDA
+tolerates long rows, CPU should clamp).
 
 On the hermetic gate env (CPU ort wheel), a fresh Macrame-scale import
 shows per-bucket encode deltas growing ~2× per bucket (13 s → 25 s → 43 s

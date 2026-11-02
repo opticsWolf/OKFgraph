@@ -239,3 +239,46 @@ no reindex, no pin changes.
   justification, not smuggled in here.
 - Thresholds, auto-enable, or default-on rerank — none ship without
   Phase 3 evidence.
+
+---
+
+## 8. Phase 3 record — decision eval on reviewed labels (2026-11-02)
+
+`scripts/eval_search.py scripts/eval_labels_okfgraph.jsonl --db kb.db --copy`,
+hermetic gate env (frozen lockfile, CPU ort wheel). Label fixes from the
+2026-11-02 review ride along (all 32 ids resolve; split 18 dev / 10
+heldout). The db is pinned `precision=fp16` (CUDA-era import), so the
+session opened at fp16 on CPU — the crate warns >40×-slower emulated
+fp16, which shows in latency; *quality* numbers are unaffected.
+
+Decision numbers (mMARCO is the 0.11.0 default; eval reruns are confirmatory):
+
+| config | nDCG@10 | MRR | recall | chunks/de | chunks/en | concepts/de | concepts/en |
+|---|---|---|---|---|---|---|---|
+| `rrf` (baseline) | 0.673 | 0.747 | 0.795 | 0.767 | 0.621 | 0.607 | 0.737 |
+| `hub` | 0.673 | 0.747 | 0.795 | 0.767 | 0.621 | 0.607 | 0.737 |
+| `cross` (MiniLM) | 0.776 | 0.883 | 0.864 | **0.596** | 0.843 | 0.619 | 0.818 |
+| `cross:mmarco` | **0.808** | **0.903** | **0.897** | 0.734 | 0.832 | **0.726** | **0.840** |
+| `rrf+dedupe` (chunks only) | 0.658 | 0.724 | 0.804 | 0.767 | 0.621 | — | — |
+
+Read:
+
+- **mMARCO wins overall** on reviewed labels (nDCG +0.135 over hybrid,
+  +0.032 over MiniLM; recall +0.10 over hybrid); German chunks stay
+  healthy (0.734) where MiniLM collapses to 0.596 — the exact failure
+  Q5 recorded (0.766 → 0.593, now 0.767 → 0.596 on reviewed labels).
+- German *concepts* jump 0.607 → 0.726 with mMARCO — the multilingual
+  reranker helps where the baseline is weakest.
+- `hub` ≡ `rrf` here (link-sparse graph: hub weights add nothing) —
+  matches the Macrame kb.db observation; the advantage should only
+  materialise on link-dense graphs.
+- `+dedupe` collapsed 21 near-duplicate chunks and *traded* ~0.015
+  nDCG/MRR for +0.01 recall on this label set — a defaults decision
+  (§10.4 item 5) still pending the Macrame acceptance run.
+- Latency: mMARCO p50 5.1 s / p95 35 s at emulated-fp16-CPU; on fp32
+  host/qsate be decisive later. No thresholds; rerank stays opt-in.
+
+Harness note: `open_router` now reads the db's precision pin (Meta
+`embedding_precision`) and opens the session with it, so evals run
+against fp16-pinned graphs without the fail-closed refusal recorded in
+the first attempt of this run.

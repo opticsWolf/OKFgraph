@@ -47,6 +47,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from okfgraph.components.embedding import PRECISION_META_KEY
+
 MODELS = {
     "minilm": "cross-encoder/ms-marco-MiniLM-L-6-v2",
     "mmarco": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
@@ -425,7 +427,11 @@ def markdown(summary: Dict[str, Any], meta: Dict[str, Any]) -> str:
 
 
 def open_router(db: str, copy: bool):
-    """Open ``db`` (or a temp copy of it, WAL included)."""
+    """Open ``db`` (or a temp copy of it, WAL included), adopting the db's
+    precision pin. A fp16-pinned graph (created by a CUDA host) meeting a
+    CPU-wheel ``auto`` session resolves to fp32, which the fail-closed pin
+    rightly refuses — so read the pin first and pass it explicitly."""
+    import ladybug as lb
     from okfgraph.router import OKFRouter
 
     if copy:
@@ -434,7 +440,34 @@ def open_router(db: str, copy: bool):
         if Path(db + ".wal").exists():
             shutil.copy2(db + ".wal", tmp / (Path(db).name + ".wal"))
         db = str(tmp / Path(db).name)
-    return OKFRouter(db_path=db, bundle_root=str(Path(db).parent))
+    precision = None
+    try:
+        # Read the pin through a short-lived handle; release it fully
+        # (incl. GC on Windows, where the file lock lingers) before the
+        # router opens the same file with a write lock.
+        import gc
+
+        handle = lb.Database(db)
+        conn = lb.Connection(handle)
+        try:
+            rows = conn.execute(
+                f"MATCH (m:Meta {{key: '{PRECISION_META_KEY}'}}) "
+                "RETURN m.value AS v"
+            ).rows_as_dict().get_all()
+            if rows:
+                precision = {16: "fp16", 32: "fp32"}.get(rows[0]["v"])
+        finally:
+            conn.close()
+            del conn, handle
+            gc.collect()
+            time.sleep(0.3)
+    except Exception:
+        precision = None  # no pin / unreadable: let resolution decide
+    if precision:
+        print(f"… adopting db precision pin: {precision}", file=sys.stderr,
+              flush=True)
+    return OKFRouter(db_path=db, bundle_root=str(Path(db).parent),
+                     precision=precision or "auto")
 
 
 def main(argv: Optional[List[str]] = None) -> int:

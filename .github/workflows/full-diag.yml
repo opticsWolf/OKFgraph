@@ -1,0 +1,74 @@
+# Diagnostic scratch workflow — bisect why full.yml dies ~14s into test_detach.py.
+# Each job runs ONE ingredient delta of full.yml. Never a release gate;
+# delete after diagnosis. Dispatch: gh workflow run full-diag.yml --ref dev_0.11.0
+name: full-diag
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  a-baseline-fast-env:
+    # ci.yml clone: dev extra only, bare pytest, no model cache.
+    name: A dev-only + bare pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --extra dev
+      - run: uv run --frozen pytest -q -p no:cacheprovider
+
+  b-full-yml-markers:
+    # full.yml suite selection, fast-env: is it the marker filter?
+    name: B dev-only + 'not slow'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --extra dev
+      - run: uv run --frozen pytest -m "not slow" -q -p no:cacheprovider
+
+  c-only-detach:
+    # the file alone
+    name: C dev-only + test_detach.py only
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --extra dev
+      - run: uv run --frozen pytest tests/test_detach.py -q -p no:cacheprovider
+
+  d-extras-none-cache:
+    # extras + cache, keeping bare pytest
+    name: D dev+pdf+cpu + HF cache + bare pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ runner.os }}-v1
+      - run: uv sync --frozen --extra dev --extra pdf --extra cpu
+      - run: uv run --frozen pytest -m "not slow" -q -p no:cacheprovider
+
+  e-stop-before-detach:
+    # full.yml shape, but stop right before the file that dies
+    name: E dev+pdf+cpu, suite up to test_delta
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ runner.os }}-v1
+      - run: uv sync --frozen --extra dev --extra pdf --extra cpu
+      - run: uv run --frozen pytest -m "not slow" -q -p no:cacheprovider --ignore=tests/test_detach.py

@@ -4,13 +4,15 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [0.11.0] — Unreleased (draft)
+## [0.11.0] — 2026-11-03
 
 The findings-store release: OKFgraph safe to update continuously from
-producers and agents (Silk). Schema **v8 → v9** (migrates on open). The
-single-writer rule holds: every new write path writes a bundle file and
-imports it. Design record: `docs/architecture.md` "Summary of Changes
-(v6.7 → v6.8)" and its Design Decisions table.
+producers and agents (Silk). Schema **v8 → v10** in two migrating steps
+(typed links · link diagnostics · producer cursors, then graph-kept
+concept times for recency; both run on first open). The single-writer
+rule holds: every new write path writes a bundle file and imports it.
+Design record: `docs/architecture.md` "Summary of Changes (v6.7 →
+v6.8)" and its Design Decisions table.
 
 ### Added
 - **`okf serve` (O4).** One process owns the database and serves MCP over
@@ -132,6 +134,10 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
 - `[import] identity = "frontmatter"` (O3) — see Changed.
 
 ### Changed
+- **bobine floor 0.6 → 0.7; stacks ride 0.7.5.** The PDF/Office converter
+  lane now pairs with the 0.7.x era (TexTeller fp32 default, fp16 decode
+  fix); okfgraph's API floor stays `bobine.model_status()` (0.6+).
+  Lock refreshed; the published-stack tables follow the lock.
 - **`traverse(a, target=b)` is one breadth-first query.** `find_path`
   uses Ladybug's `SHORTEST` path match instead of re-running the match
   once per length (up to 10 queries, each listing every path). Same
@@ -244,6 +250,20 @@ imports it. Design record: `docs/architecture.md` "Summary of Changes
   targets count. Broken-link rows record the resolved target.
   **Existing graphs** are fixed on each concept's next import; for a whole
   graph run `okf import --all --force`.
+
+### Known (recorded, not fixed)
+- **CPU encode costs on long documents (Q8).** Very long single rows pay
+  quadratic attention once past ~2–4K tokens — the token-bucket loop never
+  splits a text, and each new padded row width re-plans the ONNX graph.
+  Chunk rows are capped (512 tokens) and unaffected; concept rows of
+  multi-K-token docs dominate wall time. `[embedding] max_length` exists
+  as an opt-in clamp (raising it re-computes vectors); the cut stays off
+  by default. Chunk-layer per-call overhead (~6.5 s per concept even on
+  CUDA) is the next perf target. Fix candidates on file.
+- **GPU wheel `device=auto` hangs on Windows** during the CUDA auto-probe
+  (py-spy: `_open_session`). Pin `--device cuda` (or `cpu`) explicitly;
+  explicit requests open fine — the whole 0.11.0 acceptance lane ran on
+  CUDA/fp16 this way.
 - **Thought titles are unique per topic (R31-A, R31-B).** Every thought
   used to be titled `Thought: <topic>`, so `[[wikilinks]]` could not reach
   one. `ingest(kind="thoughts")` now accepts `title` and `description`. With

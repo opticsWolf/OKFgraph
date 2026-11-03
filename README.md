@@ -68,6 +68,14 @@ other. Vectors made on CPU (FP32) and GPU (FP16) cannot share one graph
 (the precision pin refuses it), so pick before the first import or plan
 a reimport.
 
+> **Windows GPU note:** on the `[gpu]` wheel, `--device auto` can stall
+> at model load while probing CUDA. Pin the device explicitly —
+> `--device cuda` (GPU) or `--device cpu` — which opens a session
+> normally (`OKFGRAPH_DEVICE=cuda` works the same). Recursive probes
+> also refuse stale `onnxruntime.dll` copies in `C:\Windows\System32`:
+> if a direct probe aborts with a version mismatch, okfgraph's own
+> resolver already pins the wheel's DLL.
+
 **PyPI**
 
 ```bash
@@ -436,7 +444,7 @@ Plus exactly one ORT provider: `okfgraph[cpu]` (`onnxruntime==1.29.0`)
 or `okfgraph[gpu]` (`onnxruntime-gpu[cuda,cudnn]==1.29.0`) — shared with
 bobine via `ORT_DYLIB_PATH`.
 
-- `--extra pdf`: `bobine>=0.6` (default PDF converter).
+- `--extra pdf`: `bobine>=0.7` (default PDF converter; 0.7.5 pinned in the lock).
 - `--extra dev`: `pytest>=8`.
 
 ### Upgrading ladybug (0.22.1)

@@ -262,14 +262,14 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 > (`resolve_ort_dylib()` → `ORT_DYLIB_PATH`), lazy session lifecycle
 > (`LazyRustEncoder`), and explicit air-gapped model paths.
 
-**Verified versions** (0.10.2 tree, re-resolved + full suite green):
+**Verified versions** (0.11.0 tree, re-resolved + full suite green):
 - `ladybug==0.22.1`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider>=0.12,<0.13`, `mordant` (Rust GFM parser)
 - Single pinned ORT binary shared by bobine + embroider — do not float.
 
 ### PDF conversion (optional — bobine)
 
 ```bash
-pip install "okfgraph[pdf]"   # bobine>=0.6: PDF/Office/text → Markdown engine
+pip install "okfgraph[pdf]"   # bobine>=0.7: PDF/Office/text → Markdown engine
 ```
 
 PDF conversion runs through the `bobine` Rust engine behind the

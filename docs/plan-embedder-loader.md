@@ -338,7 +338,21 @@ engine-independent; only their *row caps* read `count()`.
      correctly; official safetensors conversions are part of any real
      adoption). Also recorded: long pair inputs need `-ub 1024` (the
      512-token physical batch 500-errors on ~657-token chunks).
-  8. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
+  8. **Phase 1 slice 1 = the seam, landed** (2026-11-05, `ead53ab`).
+     `ExternalEmbedEngine` (OpenAI-shaped `/embeddings`, `EngineSpec`, the
+     client-side Matryoshka slice+renorm fallback, one-shot heuristic-
+     counter warning, endpoint normalization `<base>/v1/embeddings`),
+     settings rows `[embedding] backend/endpoint_url/api_key_env/
+     embed_family/embed_pooling/embed_prefixes/embed_max_tokens/
+     embed_counter` with checks + `router_kwargs` spray, `OKFRouter(
+     embed_backend="external")` wiring (crate optional on this lane, pin
+     plumbing via `encoder.precision`), offline stub-server tests
+     (13 green) and a live smoke through LM Studio's llama.cpp nomic
+     lane: end-to-end `ingest` + `search` with the family-contract lane
+     live (nomic prefixes, heuristic counter, MRL fallback logged once).
+     Remaining Phase-1 scope: the `reembed` op (W3), `count` port upgrades
+     (W4), `ops/embed` (W5), reranker seam (W9).
+  9. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
      the crate default family, nomic-v1.5 as the reference external
      embedder contract (datum 6), bge-reranker-v2-m3 as the reference
      external rerank contract (datum 7), mmarco cross-encoder stays the

@@ -271,8 +271,9 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # the compat default 8192; 1..=32768 (Qwen3 position ceiling).
         # Long-doc vectors change when the limit is raised — reimport fully
         # after changing it, don't mix limits in one graph.
-        model_max_tokens = getattr(embroider, "MODEL_MAX_TOKENS", None)
-        default_max = getattr(embroider, "MAX_LENGTH", 8192)
+        _emb = self.embroider  # None on the external lane, crate otherwise
+        model_max_tokens = getattr(_emb, "MODEL_MAX_TOKENS", None)
+        default_max = getattr(_emb, "MAX_LENGTH", 8192)
         if embed_backend == "external" and model_max_tokens is None:
             model_max_tokens = max(embed_max_tokens, 32768)
             default_max = max(embed_max_tokens, 32768)
@@ -377,7 +378,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # with "unknown image model" instead of AttributeError.
         if image_model_id is None:
             image_model_id = getattr(
-                embroider, "VISION_NANO_MODEL",
+                self.embroider, "VISION_NANO_MODEL",
                 "jina-v5-omni-nano-retrieval-vision",
             )
         self.image_model_id = image_model_id
@@ -560,7 +561,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # adopted dim lazily (above), but its stored dim/reporting must
         # agree too — same pattern as search_engine._search_available below.
         # (The vision encoder's stored dim is synced where it is built.)
-        self.encoder._truncate_dim = self.embedding_dim
+        if embed_backend != "external":
+            self.encoder._truncate_dim = self.embedding_dim
         # Vision session (0.8.0): same laziness as text — compat and pins
         # run inside the factory, so text-only graphs never pay for them.
         # No explicit-files path: vision opens by registry id only.

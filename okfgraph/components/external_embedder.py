@@ -83,7 +83,7 @@ class ExternalEmbedEngine:
                  counter: str = "heuristic", api_key_env: str = "",
                  timeout: float = 120.0, batch_size: int = 32):
         import os
-        self.endpoint_url = endpoint_url.rstrip("/")
+        self.endpoint_url = self._normalize_endpoint(endpoint_url)
         self.endpoint_model = model_id      # the wire-side model field
         self.model_id = model_id            # the pin value (same string v1)
         self.family = family
@@ -114,6 +114,20 @@ class ExternalEmbedEngine:
         self._renorm_fallback = False   # the server refused `dimensions`
         self._counter_warned = False
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _normalize_endpoint(url: str) -> str:
+        """Base endpoint → the exact ``<base>/embeddings`` wire below.
+
+        Accepts ``http://host:port``, ``.../v1`` or ``.../v1/embeddings``;
+        llama.cpp and LM Studio/OpenAI servers all mount under ``/v1``.
+        """
+        base = url.rstrip("/")
+        if base.endswith("/embeddings"):
+            base = base[: -len("/embeddings")]
+        if not base.endswith("/v1"):
+            base = base + "/v1"
+        return base
 
     # ── crate-shape surface ───────────────────────────────────────────────
     @property

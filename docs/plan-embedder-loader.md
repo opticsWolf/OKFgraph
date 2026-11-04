@@ -1,6 +1,8 @@
 # Plan: the embedder-loader seam (`docs/plan-embedder-loader.md`)
 
-**Status:** draft v1, 2026-11-03 — first workstream of the 0.12 line.
+**Status:** draft v2, 2026-11-05 — embedder seam + reranker seam,
+updated for embroider 0.13.0 (EmbeddingGemma 2).
+First workstream of the 0.12 line.
 **Supersedes in scope:** the `plan-http-embedder` thought (the same lane,
 re-scoped from "HTTP backend" to "loader seam" after reading Weave Silk's
 loader surface — the HTTP endpoint is one consumer of the seam, not the
@@ -10,7 +12,9 @@ seam itself).
 okf_graph.py` (all read 2026-11-03); okfgraph `components/embedding.py`
 (PRECISION_META_KEY, MODEL_META_KEY, `LazyRustEncoder`), `router.py`
 (`_open_session`, ImportManager wiring), Q8 layer-split facts (`docs/
-issue-solving-implementation-plan.md` §11).
+issue-solving-implementation-plan.md` §11); embroider 0.13.0 CHANGELOG
++ `src/jina.rs`/`src/acquire.rs` (EmbeddingGemma 2 family branch — the
+in-crate precedent for declared pooling/prefixes).
 
 ---
 
@@ -37,6 +41,39 @@ router accepts, so embeddings can come from
 
 Everything else — chunking, budgets, pins, reembed, the Q8 hardening —
 stays exactly as is, re-targeted to whatever engine sits behind the seam.
+
+## 1a. embroider 0.13.0 — the in-crate family branch (read 2026-11-05)
+
+`google/embeddinggemma-2` joins the builtin registry: `native_dim 768`,
+`max_tokens 8192`, MRL ladder `128/256/512/768`, fp32 from the
+`onnx-community` export (pin `daa72c5`, `onnx/model.onnx` + sidecar),
+fp16 from the `opticsWolf/embeddinggemma-2-onnx-fp16` mirror (pin
+`296b2a6`, CUDA-only, CPU parity 2.1e-4), `int8: None`. `JinaV5` gains a
+per-id family branch: **mean pooling** + **Gemma prompts**
+(`task: search result | query:` / `title: none | text:`); every other id
+keeps the frozen last-token + `Query:`/`Document:` contract. Gemma runs
+take empty `[0,512]` multimodal feature feeds and read the native
+`sentence_embedding` head (projection + L2 in-graph).
+
+Two consequences for this plan:
+
+1. **The crate is the reference implementation of the seam's honesty
+   rules.** `pooling_for(id)` / `gemma_prefixed()` is precisely the
+   `EngineSpec.pooling` / `prefixes` pattern — declared per id inside the
+   engine, not probed by callers. The external seam generalizes this to
+   engines the crate does not own. W1's fixtures should mirror the crate's
+   family-branch shape so both lanes stay legible.
+2. **Adoption in okfgraph is a floor bump, not a feature:** okfgraph has
+   no per-model registry of its own. `model_id` is a free string that the
+   crate resolves (`DEFAULT_MODEL_ID` stays text-small; the registry
+   comment is explicit — *adding models never moves existing graphs*).
+   Bump `embroider>=0.13` + ORT 1.31.1 (+gpu) extras in pyproject, verify
+   the pin/refusal tests pass unchanged, add an EmbeddingGemma-2 row to
+   the eval plan (it is a crate-family candidate, so Phase 0 can measure
+   it on the reviewed labels with zero new plumbing). Pages/stack rows
+   follow. EmbeddingGemma 2 is therefore **not** an external-loader
+   consumer — it widens the default lane; worth keeping the two apart in
+   every doc and release note.
 
 ## 2. The external surface to cover (what Weave/Silk gives and expects)
 
@@ -164,6 +201,7 @@ engine-independent; only their *row caps* read `count()`.
 
 - **W1 `EmbedEngine` protocol + `ExternalEmbedEngine`** (HTTP transport
   first: batch request, per-row timeout, size cap, no retries inside).
+  Fixture engines mirror the crate's family-branch shape (§1a).
 - **W2 settings + validation + `router_kwargs`** + init-time cross-check
   (dim vs matryoshka ladder; `MODEL_META_KEY`/`backend` pin read).
 - **W3 pins/refusals:** pin-on-write unchanged (session's first embed
@@ -183,6 +221,25 @@ engine-independent; only their *row caps* read `count()`.
   `backend`, `family`, `endpoint_url`; the node maps its pool server and
   `embedder_for(handle)` onto the new settings; pins warnings on every
   evaluation (already coded) keep working unchanged.
+- **W9 reranker seam (same treatment, second stage).** The reranker is
+  currently `LazyReranker` → `embroider.Reranker` (mMARCO mMiniLM cross-
+  encoder, `rerank_model_id` default, its own `rerank_device`, no pins —
+  it writes no vectors). The seam extends the same protocol shape to the
+  scoring stage: a `RerankEngine` perception of `score_batch(pairs) ->
+  logits`, `score_long(q, doc)`, `count(text)`, plus a stage scheduling
+  spec (`family`, `model_id`, `pair_cap`, `precision identity`). The
+  external transport is the standard rerank wire (`POST /v1/rerank` with
+  `{model, query, documents, top_n}` → `{results: [{index, score}]}`),
+  which Silk's pool can front with llama.cpp's reranking support or any
+  TEI-shaped server — the same `endpoint_url` + pool-header pattern as
+  the embedder. `LazyReranker` keeps the fallback rule: the external
+  engine failing its first score disables rerank for the session (rerank
+  = an optional half; keyword+vector search still answers). Settings:
+  `[rerank] backend = "embroider" | "external"` with the same field
+  shapes the embedder grew (W2). No graph pins (rerank scores are
+  order-only); a *model identity* note lands in `search_meta`-style
+  provenance only. Silk gains `OkfSpec.rerank_backend` and maps its pool
+  the same way (W8 extension).
 
 ## 7. Phases
 
@@ -191,7 +248,14 @@ engine-independent; only their *row caps* read `count()`.
   Qwen3-Embedding-0.6B GGUF (llama.cpp `llama-server`, `/embeddings`).
   Run the reviewed-labels harness (`scripts/eval_search.py`) against the
   ONNX baseline on the same copy DB. Datum = nDCG/MRR/recall deltas per
-  family. Decide Phase-1 defaults from numbers, not vibes.
+  family. Decide Phase-1 defaults from numbers, not vibes. Same pass
+  measures **EmbeddingGemma 2** as a crate-family candidate (no external
+  plumbing — one rerun of the harness with `model_id` flipped; its matryoshka
+  ladder is honest at 512, the graph's current dim) and one
+  reranker lane on llama.cpp's reranking route (mMiniLM-class pair scorer
+  or a bge-reranker GGUF if available) to size the rerank seam's latency.
+  The current mMARCO baseline to beat: nDCG 0.808 / MRR 0.903 /
+  recall 0.897 (0.11.0 eval, `5edb2f5`).
 - **Phase 1 — the seam:** W1–W5 + tests, HTTP backend only.
 - **Phase 2 — Silk integration:** W8 + docs; default answer for Weave is
   the HTTP backend (their node is out-of-process by design).
@@ -209,6 +273,8 @@ engine-independent; only their *row caps* read `count()`.
 | ELQ4 | `backend` value names: `embroider`/`external` vs `onnx`/`external`? | `embroider`/`external` (names the supplier, not the implement) |
 | ELQ5 | Ship `ops/embed` in the same release as the seam? | yes (small; `_HONOURS`-guarded) |
 | ELQ6 | Silk lane default: HTTP first or in-process injection first? | HTTP (matches Silk's out-of-process node decree) |
+| ELQ7 | Rerank wire shape: `/v1/rerank` top_n-only, or also expose raw pairwise `/score`? | `/v1/rerank` only; `score_long` rides pair re-scoring |
+| ELQ8 | Rerank provenance: which record keeps the model identity for nDCG audits? | `search_meta`-style note on the op response, no new Meta node |
 
 ## 9. Non-goals
 

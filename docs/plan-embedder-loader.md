@@ -377,9 +377,11 @@ engine-independent; only their *row caps* read `count()`.
       guard), caps = 256 texts / 1 MiB, refusals = BAD_VALUE. Both ops
       are CLI/HTTP (`OPS` tuple + client proxy); MCP keeps search/read.
       W5 smoke: serve route + stub endpoint, dim 256 round-trip \\\\
-      `renormalised=True`. Remaining Phase-1 scope: docs (W7), budget-
-      fence tests under the heuristic counter (W6 tail), Silk wiring
-      (W8), reranker seam (W9).
+      `renormalised=True`. **W7 landed** (`8fc2afc`): `okf reembed
+      [--dry-run]` CLI, README ops/maintenance rows, CHANGELOG 0.12
+      section, architecture settings note, CLI skill row. Remaining
+      Phase-1 scope: budget-fence tests under the heuristic counter
+      (W6 tail), Silk wiring (W8), reranker seam (W9).
   9. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
      the crate default family, nomic-v1.5 as the reference external
      embedder contract (datum 6), bge-reranker-v2-m3 as the reference

@@ -121,6 +121,33 @@ SETTINGS = [
     Setting("device", "str", "auto", "embedding",
             "Inference device: auto (CUDA when present), cpu or cuda",
             choices=("auto", "cpu", "cuda")),
+    Setting("backend", "str", "embroider", "embedding",
+            "Embedding engine: 'embroider' (the crate, ONNX in this "
+            "process) or 'external' (an OpenAI-shaped /embeddings HTTP "
+            "endpoint that owns its own model)",
+            choices=("embroider", "external")),
+    Setting("endpoint_url", "str", "", "embedding",
+            "External engine base URL, e.g. http://127.0.0.1:8931 "
+            "(required for backend='external')"),
+    Setting("api_key_env", "str", "", "embedding",
+            "Name of the env var carrying the external endpoint's bearer "
+            "key (optional)"),
+    Setting("embed_family", "str", "", "embedding",
+            "Declared family id for an external engine, e.g. 'nomic-v1.5' "
+            "(required for backend='external')"),
+    Setting("embed_pooling", "str", "mean", "embedding",
+            "Declared pooling identity of the external engine:",
+            choices=("mean", "last", "cls")),
+    Setting("embed_prefixes", "str", "none", "embedding",
+            "External per-task prefixes: 'none', a built-in family name "
+            "(nomic-v1.5), or 'Query=search_query:|Document=search_document:' "
+            "pairs"),
+    Setting("embed_max_tokens", "int", 32768, "embedding",
+            "The external engine's true input token ceiling"),
+    Setting("embed_counter", "str", "heuristic", "embedding",
+            "Where external token counts come from (heuristic is approximate "
+            "and logs once)",
+            choices=("heuristic", "tokenizer", "gguf-meta")),
     Setting("precision", "str", "auto", "embedding",
             "Weight precision: auto follows device (CUDA->FP16, CPU->FP32); "
             "int8 explicit only, needs a measured artifact",
@@ -274,6 +301,14 @@ class Settings:
     model_id: str = DEFAULT_MODEL_ID
     device: str = "auto"
     precision: str = "auto"
+    backend: str = "embroider"
+    endpoint_url: str = ""
+    api_key_env: str = ""
+    embed_family: str = ""
+    embed_pooling: str = "mean"
+    embed_prefixes: str = "none"
+    embed_max_tokens: int = 32768
+    embed_counter: str = "heuristic"
     image_model_id: Optional[str] = None
     image_precision: str = "auto"
     cpu_arena: bool = False
@@ -415,6 +450,23 @@ class Settings:
         if self.cache_dir and not Path(self.cache_dir).is_absolute():
             errors.append("embedding.cache_dir must be an absolute path")
 
+        if self.backend == "external":
+            if not self.endpoint_url.lower().startswith(("http://", "https://")):
+                errors.append(
+                    "embedding.endpoint_url must be an http(s) URL for "
+                    "backend='external'")
+            if not self.embed_family or "/" in self.embed_family:
+                errors.append(
+                    "embedding.embed_family must be a short declared name "
+                    "for backend='external'")
+            if not 64 <= self.embed_max_tokens <= 1048576:
+                errors.append(
+                    "embedding.embed_max_tokens must be within 64..1048576")
+        elif self.endpoint_url or self.embed_family:
+            errors.append(
+                "embedding.endpoint_url/embed_family are external-backend "
+                "settings — set embedding.backend='external' or drop them")
+
         if not 1 <= self.batch_size <= 256:
             errors.append("import.batch_size must be between 1 and 256")
         if not 64 <= self.chunk_size <= 8192:
@@ -458,6 +510,14 @@ class Settings:
             model_id=self.model_id,
             embedding_dim=self.embedding_dim,
             max_length=self.max_length,
+            embed_backend=self.backend,
+            endpoint_url=self.endpoint_url,
+            api_key_env=self.api_key_env,
+            embed_family=self.embed_family,
+            embed_pooling=self.embed_pooling,
+            embed_prefixes=self.embed_prefixes,
+            embed_max_tokens=self.embed_max_tokens,
+            embed_counter=self.embed_counter,
             cache_dir=self.cache_dir,
             device=self.device,
             precision=self.precision,

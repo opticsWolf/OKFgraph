@@ -142,8 +142,24 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         rerank_window: Optional[int] = None,
         rerank_stride: Optional[int] = None,
         efs: Optional[int] = None,
+        embed_backend: str = "embroider",
+        endpoint_url: str = "",
+        api_key_env: str = "",
+        embed_family: str = "",
+        embed_pooling: str = "mean",
+        embed_prefixes: str = "none",
+        embed_max_tokens: int = 32768,
+        embed_counter: str = "heuristic",
     ):
         """Open (or create) the graph database and wire up all managers.
+
+        Args:
+            embed_backend: "embroider" (default, the crate) or "external"
+                (an OpenAI-shaped /embeddings HTTP endpoint owns the model
+                and this process owns none of the ONNX). External open
+                requires endpoint_url + embed_family; vectors are pinned
+                by family:model like any other space and reopened with a
+                different family refuses.
 
         Args:
             db_path: Path to the Ladybug database file.
@@ -219,14 +235,28 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # Resolve first: the native module loads ORT dynamically, so the
         # shared runtime choice must be fixed before importing it. Imported
         # here (not lazily below) so validation above can read its constants.
-        self.ort_dylib = resolve_ort_dylib()
+        # With backend='external' the crate is optional: the graph's only
+        # requirement then is the HTTP endpoint it is about to talk to.
+        self.ort_dylib = None
+        self.embroider = None
         try:
-            import embroider
+            self.ort_dylib = resolve_ort_dylib()
+        except Exception:  # noqa: BLE001 — external backend never needs ort
+            if embed_backend != "external":
+                raise
+            logger.warning(
+                "backend='external': no ONNX runtime resolved (fine — the "
+                "embeddings live behind %s)", endpoint_url or "the endpoint"  )
+        try:
+            import embroider as _embroider
         except ImportError:
-            raise RuntimeError(
-                "the embroider wheel is required for text embeddings: "
-                "pip install 'embroider>=0.12,<0.13'"
-            ) from None
+            if embed_backend != "external":
+                raise RuntimeError(
+                    "the embroider wheel is required for text embeddings: "
+                    "pip install 'embroider>=0.12,<0.13'"
+                ) from None
+            _embroider = None
+        self.embroider = _embroider
         if embedding_dim > 1024:
             raise ValueError(f"embedding_dim must be <= 1024 (model output), got {embedding_dim}")
         if embedding_dim < 32:
@@ -241,11 +271,18 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # the compat default 8192; 1..=32768 (Qwen3 position ceiling).
         # Long-doc vectors change when the limit is raised — reimport fully
         # after changing it, don't mix limits in one graph.
-        if max_length is not None and not 1 <= max_length <= embroider.MODEL_MAX_TOKENS:
+        model_max_tokens = getattr(embroider, "MODEL_MAX_TOKENS", None)
+        default_max = getattr(embroider, "MAX_LENGTH", 8192)
+        if embed_backend == "external" and model_max_tokens is None:
+            model_max_tokens = max(embed_max_tokens, 32768)
+            default_max = max(embed_max_tokens, 32768)
+        elif model_max_tokens is None:
+            model_max_tokens = 32768
+        if max_length is not None and not 1 <= max_length <= model_max_tokens:
             raise ValueError(
-                f"max_length must be within 1..={embroider.MODEL_MAX_TOKENS}, got {max_length}"
+                f"max_length must be within 1..={model_max_tokens}, got {max_length}"
             )
-        self.max_length = max_length if max_length is not None else embroider.MAX_LENGTH
+        self.max_length = max_length if max_length is not None else default_max
 
         try:
             try:
@@ -400,7 +437,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 enforce_model_pin,
                 enforce_precision_pin,
             )
-            pinned = enforce_precision_pin(self.conn, encoder.precision)
+            pin_precision = getattr(encoder, "precision", None) or self.precision
+            pinned = enforce_precision_pin(self.conn, pin_precision)
             # Model pin (fail-closed, 0.6.0): different weights live in
             # different spaces — a model switch forces a fresh reimport.
             # Explicit local files bypass the registry (model_id is the
@@ -442,7 +480,13 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             if hint:
                 raise OKFError("NO_ORT_RUNTIME", hint)
 
-        if explicit_files:
+        if embed_backend == "external":
+            _open_session = None       # the external engine owns its session
+            def session_factory():     # pragma: no cover - never called
+                raise RuntimeError(
+                    "backend='external': the embed engine is the HTTP "
+                    "client, not a crate session")
+        elif explicit_files:
             def _open_session():
                 return embroider.JinaV5.open_files(
                     str(model_path),
@@ -483,14 +527,15 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             # PanicException, a BaseException) propagate raw and are cached
             # by LazyRustEncoder.
             return _open_session()
-        self.encoder = LazyRustEncoder(
-            model_id=model_id,
-            truncate_dim=embedding_dim,
-            device=rust_device,
-            session_factory=session_factory,
-            tokenizer_factory=tokenizer_factory,
-            on_open=_report_encoder_open,
-        )
+        if embed_backend != "external":
+            self.encoder = LazyRustEncoder(
+                model_id=model_id,
+                truncate_dim=embedding_dim,
+                device=rust_device,
+                session_factory=session_factory,
+                tokenizer_factory=tokenizer_factory,
+                on_open=_report_encoder_open,
+            )
 
         # ── Component wiring (Phase 1-3 refactor) ───────────────────
         # The facade owns the resources (conn, encoder, lock) and injects
@@ -592,6 +637,19 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             on_open=_report_rerank_open,
         )
         self.rerank_top_n = rerank_top_n
+        if embed_backend == "external":
+            from okfgraph.components.external_embedder import engine_from_settings
+            self.encoder = engine_from_settings(
+                backend="external", model_id=self.model_id,
+                embedding_dim=self.embedding_dim,
+                endpoint_url=endpoint_url, api_key_env=api_key_env,
+                embed_family=embed_family, embed_pooling=embed_pooling,
+                embed_prefixes=embed_prefixes,
+                embed_max_tokens=embed_max_tokens,
+                embed_counter=embed_counter,
+            )
+        else:
+            self.encoder = None  # set below with the crate lane
         self.embed_engine = EmbeddingEngine(
             self.encoder, self.embedding_dim,
             self.device, self.cache_dir, self.model_id,

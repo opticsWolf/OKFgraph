@@ -206,7 +206,12 @@ engine-independent; only their *row caps* read `count()`.
   (dim vs matryoshka ladder; `MODEL_META_KEY`/`backend` pin read).
 - **W3 pins/refusals:** pin-on-write unchanged (session's first embed
   writes what `spec()` says); `enforce_backend_pin` mirrors
-  `enforce_precision_pin`; `reembed` re-pins from `spec()`.
+  `enforce_precision_pin`; `reembed` re-pins from `spec()`. **Note
+  (verified 2026-11-05): okfgraph 0.11.0 has no `reembed` op** — Silk's
+  `OkfGraph.reembed()` (`okf_graph.py`) already calls `POST /ops/reembed`,
+  so shipping W3's op is a live host-compat fix, not a nicety. The pin
+  storage split (numeric `Meta` vs string `MetaText`) is also now a
+  confirmed harness fact (`eval_search.py` had to adopt both).
 - **W4 counting port** (three `counter` sources; heuristic flagged).
 - **W5 `POST /ops/embed`** (small, unlocks the inverse lane: Silk's ledger
   riding okfgraph's own pinned encoder; `_HONOURS` guarded).

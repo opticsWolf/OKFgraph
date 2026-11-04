@@ -133,6 +133,30 @@ def test_per_call_dim_when_endpoint_ignores_dimensions(tmp_path):
         _EHandler.honour_dimensions = True
 
 
+def test_budget_fences_hold_under_heuristic_counter(tmp_path):
+    """W6 tail: the greedy token bins respect the budget even when the
+    counting source is the external engine's heuristic (len/4, floor 8)."""
+    r = _router(tmp_path)
+    eng = r.encoder                                  # external, heuristic
+    texts = [("token %d " % i) * (1 + (i * 37) % 60) for i in range(50)]
+    counts = [eng.count_tokens(t) for t in texts]
+    assert min(counts) >= 8                          # the declared floor
+    from okfgraph.components.import_ import _token_bucketed_encode
+    bins = []
+    def encode_fn(bucket):
+        bins.append(list(bucket))
+        return [_det(t, 64) for t in bucket]
+    out = _token_bucketed_encode(
+        texts, 4, encode_fn, None, 512, eng.count_tokens)
+    assert len(out) == len(texts)
+    assert all(v is not None for v in out)           # every row embedded
+    assert sorted(b for idx in bins for b in idx) == sorted(texts)
+    pos = {t: i for i, t in enumerate(texts)}
+    for idx in bins:
+        assert len(idx) <= 4                         # batch cap
+        assert sum(counts[pos[t]] for t in idx) <= 512    # budget fence holds
+
+
 def test_refusals(tmp_path):
     r = _router(tmp_path)
     with pytest.raises(ValueError):                     # no empty list

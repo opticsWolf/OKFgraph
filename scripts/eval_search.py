@@ -47,7 +47,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from okfgraph.components.embedding import PRECISION_META_KEY
+from okfgraph.components.embedding import (MODEL_META_KEY,
+                                           PRECISION_META_KEY)
 
 MODELS = {
     "minilm": "cross-encoder/ms-marco-MiniLM-L-6-v2",
@@ -426,7 +427,7 @@ def markdown(summary: Dict[str, Any], meta: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def open_router(db: str, copy: bool):
+def open_router(db: str, model_arg: Optional[str] = None, copy: bool = False):
     """Open ``db`` (or a temp copy of it, WAL included), adopting the db's
     precision pin. A fp16-pinned graph (created by a CUDA host) meeting a
     CPU-wheel ``auto`` session resolves to fp32, which the fail-closed pin
@@ -441,33 +442,48 @@ def open_router(db: str, copy: bool):
             shutil.copy2(db + ".wal", tmp / (Path(db).name + ".wal"))
         db = str(tmp / Path(db).name)
     precision = None
+    model = None
     try:
-        # Read the pin through a short-lived handle; release it fully
+        # Read the pins through a short-lived handle; release it fully
         # (incl. GC on Windows, where the file lock lingers) before the
         # router opens the same file with a write lock.
         import gc
 
         handle = lb.Database(db)
         conn = lb.Connection(handle)
-        try:
+        try:  # adopt both pins: an eval must meet the graph in its own space
             rows = conn.execute(
                 f"MATCH (m:Meta {{key: '{PRECISION_META_KEY}'}}) "
                 "RETURN m.value AS v"
             ).rows_as_dict().get_all()
             if rows:
                 precision = {16: "fp16", 32: "fp32"}.get(rows[0]["v"])
+            rows = conn.execute(
+                f"MATCH (m:MetaText {{key: '{MODEL_META_KEY}'}}) "
+                "RETURN m.value AS v"
+            ).rows_as_dict().get_all()
+            if rows:
+                model = rows[0]["v"]
         finally:
             conn.close()
             del conn, handle
             gc.collect()
             time.sleep(0.3)
     except Exception:
-        precision = None  # no pin / unreadable: let resolution decide
+        pass  # no pins / unreadable: let resolution decide
     if precision:
         print(f"… adopting db precision pin: {precision}", file=sys.stderr,
               flush=True)
-    return OKFRouter(db_path=db, bundle_root=str(Path(db).parent),
-                     precision=precision or "auto")
+    if model:
+        print(f"… adopting db model pin: {model}", file=sys.stderr, flush=True)
+    elif model_arg:
+        model = model_arg
+    kwargs: dict = {"db_path": db,
+                    "bundle_root": str(Path(db).parent),
+                    "precision": precision or "auto"}
+    if model:  # omit the kwarg entirely when unprovided: router defaults it
+        kwargs["model_id"] = model
+    return OKFRouter(**kwargs)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -481,6 +497,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "(default: rrf,hub,cross)")
     ap.add_argument("--split", default=None, help="only labels with this split")
     ap.add_argument("-k", type=int, default=10, help="cutoff (default: 10)")
+    ap.add_argument("--model-id", default=None,
+                    help="embed model id when the graph has no model pin")
     ap.add_argument("--noul-max-length", type=int, default=2048,
                     help="Decider2B context cap in tokens; it has no window "
                     "mode, so longer passages are truncated (default: 2048)")
@@ -497,7 +515,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     for cfg in configs:
         if cfg.base == "noul":
             cfg.max_length = args.noul_max_length
-    router = open_router(args.db, args.copy)
+    router = open_router(args.db, args.model_id, args.copy)
     try:
         own = router.search_engine.reranker
         runs = []

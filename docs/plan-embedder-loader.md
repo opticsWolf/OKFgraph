@@ -248,19 +248,52 @@ engine-independent; only their *row caps* read `count()`.
 
 ## 7. Phases
 
-- **Phase 0 — decision data (bounded, quick-eval rules):** stand up two
-  last-token-pooling embedders Silk already trusts: jina-v3 GGUF and
-  Qwen3-Embedding-0.6B GGUF (llama.cpp `llama-server`, `/embeddings`).
-  Run the reviewed-labels harness (`scripts/eval_search.py`) against the
-  ONNX baseline on the same copy DB. Datum = nDCG/MRR/recall deltas per
-  family. Decide Phase-1 defaults from numbers, not vibes. Same pass
-  measures **EmbeddingGemma 2** as a crate-family candidate (no external
-  plumbing — one rerun of the harness with `model_id` flipped; its matryoshka
-  ladder is honest at 512, the graph's current dim) and one
-  reranker lane on llama.cpp's reranking route (mMiniLM-class pair scorer
-  or a bge-reranker GGUF if available) to size the rerank seam's latency.
-  The current mMARCO baseline to beat: nDCG 0.808 / MRR 0.903 /
-  recall 0.897 (0.11.0 eval, `5edb2f5`).
+- **Phase 0 — decision data (bounded, quick-eval rules) — DONE
+  2026-11-05 (first slice).** Evidence: `.okf-suite-1102/phase0-embedder/`
+  (reports + the surgical-reembed probe). Findings:
+
+  1. **The reviewed-labels harness needed pin adoption** — the model pin
+     lives under a *separate node label* (`MetaText`, not `Meta`) and the
+     router refuses an explicit `model_id=None`; the harness now adopts
+     both pins and accepts `--model-id` (`26b2388`).
+  2. **Fresh-repo-import evals of the okfgraph labels collapse to
+     ~0.12–0.14 for every config, both models** — the labels' concept ids
+     (`reports/…`, `thoughts/…`) exist only in the dogfood ledger, not in
+     a repo-tree import. Model-vs-model on a fresh import is a tie
+     (gemma2 0.131 vs jina 0.130 rrf) but versus the recorded 0.808 it is
+     meaningless. **Lanes for model comparison must re-embed the same
+     graph, not re-import the corpus.**
+  3. **The `reembed` op is implementable as a bounded probe**: drop the
+     two vector indexes (`DROP_VECTOR_INDEX` after `LOAD EXTENSION
+     vector`), SET the embeddings row by row with the new engine, recreate
+     the indexes with the schema lane's exact DDL, re-pin `MetaText
+     embedding_model`. Whole dogfood copy (46 concepts + 637 chunks) took
+     **11.8 s on CUDA fp16**. HNSW dropped/recreated cleanly; FTS stayed
+     untouched. This probe is W3's blueprint (the op version must do the
+     same inside one transaction and refuse multi-tenant shapes the probe
+     ignores, e.g. image tables).
+  4. **EmbeddingGemma 2 verdict (dogfood copy re-embed @512, CUDA fp16):
+     at-or-above the text-small baseline on every vector row**, hub row
+     bit-identical (lexical, model-free — the calibration proof):
+
+     | config | gemma2@512 | jina-small@512 (0.11.0 record) |
+     |---|---|---|
+     | rrf | 0.673 / 0.746 / 0.766 | 0.673 / 0.747 / 0.795 |
+     | hub | 0.673 (identical — model-free) | 0.673 |
+     | cross | 0.775 / 0.887 / 0.872 | 0.776 / 0.883 / 0.864 |
+     | cross:mmarco | **0.821 / 0.921 / 0.917** | 0.808 / 0.903 / 0.897 |
+
+     (nDCG / MRR / recall.) The gemma2 lane also scores ~0.10 s/concept
+     encode on CUDA vs ~0.30 s for jina-v5-small — the fp16 mirror is
+     574 MB and already in the hub cache.
+  5. **Q8 note:** gemma2's encode economics change the CPU-lane math
+     (model is ~2× smaller than text-small; CUDA lane measured 20×+ per
+     row). A CPU gemma2 import is worth one bounded timing probe before
+     more Q8 work lands.
+
+  Remaining Phase 0: the llama.cpp external lanes (jina-v3 / Qwen3
+  GGUFs) via `/embeddings`, and one reranker lane to size re-rank
+  latency. Phase-1 defaults can be picked from datum 4 regardless.
 - **Phase 1 — the seam:** W1–W5 + tests, HTTP backend only.
 - **Phase 2 — Silk integration:** W8 + docs; default answer for Weave is
   the HTTP backend (their node is out-of-process by design).

@@ -291,9 +291,36 @@ engine-independent; only their *row caps* read `count()`.
      row). A CPU gemma2 import is worth one bounded timing probe before
      more Q8 work lands.
 
-  Remaining Phase 0: the llama.cpp external lanes (jina-v3 / Qwen3
-  GGUFs) via `/embeddings`, and one reranker lane to size re-rank
-  latency. Phase-1 defaults can be picked from datum 4 regardless.
+  6. **The external llama.cpp lane carries crate-level quality**
+     (2026-11-05, first external-family slice). Machine infra: LM Studio's
+     llama.cpp runtime (`~/.lmstudio`) serving the bundled
+     `nomic-embed-text-v1.5-Q4_K_M.gguf` on `127.0.0.1:8931`/v1/embeddings
+     — the exact wire the pool's `ServerEmbedder` uses, and the wire W1
+     will consume. Offline vector-KNN scorer (`offline_trio_nomic.py`),
+     identical pool (dogfood's 637 chunks + 46 concepts) and identical
+     scoring (grade-2/1 per concept, first-appearance-wins), chunk-target
+     label rows (n=13:
+
+     | lane | nDCG@10 | MRR | recall |
+     |---|---|---|---|
+     | gemma2@512 (crate, CUDA fp16) | **0.810** | **0.910** | 0.859 |
+     | jina-v5-small@512 (crate) | 0.781 | 0.846 | 0.910 |
+     | nomic-v1.5@768 (llama.cpp server) | 0.784 | 0.846 | 0.872 |
+
+     The external family lands **at parity with the crate baseline** on
+     its first try. Nomic also validates the whole EngineSpec posture:
+     different family = mean pooling + **mandatory per-side prefixes**
+     (`search_query:` / `search_document:`) + native dim 768 with its own
+     ladder — exactly the per-family declaration the seam is designed
+     around. W1's stub fixtures should encode the nomic contract as the
+     first real reference, jina-v5's as the second (in-crate).
+
+  Remaining Phase 0: one reranker lane to size re-rank latency (llama.cpp
+  reranking route or a TEI-shaped server vs the mmarco cross-encoder);
+  the jina-v3 / Qwen3-Embedding GGUF external families can ride the same
+  offline scorer whenever their GGUFs are on disk. Phase-1 defaults can
+  be picked: gemma2 as the default embedder family (datum 4), nomic via
+  the external lane for host-driven models (datum 6).
 - **Phase 1 — the seam:** W1–W5 + tests, HTTP backend only.
 - **Phase 2 — Silk integration:** W8 + docs; default answer for Weave is
   the HTTP backend (their node is out-of-process by design).

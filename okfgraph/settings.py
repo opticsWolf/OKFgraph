@@ -136,7 +136,7 @@ SETTINGS = [
             "Declared family id for an external engine, e.g. 'nomic-v1.5' "
             "(required for backend='external')"),
     Setting("embed_pooling", "str", "mean", "embedding",
-            "Declared pooling identity of the external engine:",
+            "Declared pooling identity of the external engine",
             choices=("mean", "last", "cls")),
     Setting("embed_prefixes", "str", "none", "embedding",
             "External per-task prefixes: 'none', a built-in family name "

@@ -173,11 +173,19 @@ counter      = "heuristic" # tokenizer | gguf-meta | heuristic
   refused at session open exactly like mixed precisions, with the remedy
   = `reembed` (graph-wide) or `import --all --force`. The one-backend-per-
   graph rule: a pin authored under one backend refuses sessions from the
-  other.
+  other. **Landed shape (2026-11-05):** the external lane enforces the
+  model pin at router boot (`_enforce_pins`; external carries no numeric
+  precision so the precision pin is skipped there) and the reembed op is
+  the sanctioned escape: boot with `OKFGRAPH_ALLOW_REPIN=1` (loud warning)
+  to open a graph whose pin disagrees with the configured model, run
+  `reembed`, re-pin on success.
 - **When a switch is legal:** change settings → `okf reembed` re-computes
   every vector under the *current* engine and re-pins on success
   (existing op; the fp16/fp32 path is the precedent). `okf reembed
-  --dry-run` reports the plan first.
+  --dry-run` reports the plan first. The shipped op refuses dim
+  migrations (`DIM_MISMATCH`) and multimodal graphs
+  (`IMAGE_PIN_MISMATCH`); each step auto-commits, so a crash mid-way is
+  recoverable by re-running.
 
 ## 5. Counting port (the part budgets live or die on)
 

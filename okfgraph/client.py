@@ -46,7 +46,8 @@ OPS = (
     # write (O11)
     "update", "supersede", "delete",
     # health / hygiene
-    "doctor", "diff", "reindex", "list_broken_links", "repair_links",
+    "doctor", "diff", "reindex", "reembed",
+    "list_broken_links", "repair_links",
     "list_deleted", "recover_deleted", "purge_deleted", "detach",
     # images
     "list_images", "get_image",

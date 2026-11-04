@@ -12,6 +12,11 @@ One implementation per op here — import, health, hygiene. Return shapes:
   ``err.data``)
 * ``produce`` → ``{"producer", "files", "root", "prefix", "lint"}``
 * ``reindex`` → ``{"rebuilt": bool}``
+* ``reembed`` → the plan/report dict (``dry_run`` mirrors →
+  ``concepts``/``chunks``/``dimension``/``model_id``; execute adds
+  ``reembedded`` counts, ``seconds`` and ``precision``; refusals:
+  ``DIM_MISMATCH`` on a dim migration, ``IMAGE_PIN_MISMATCH`` on a
+  multimodal graph)
 * ``list_deleted`` → rows; ``recover_deleted`` → ``{"concept_id",
   "recovered"}``; ``purge_deleted`` → ``{"purged": n}``
 * ``detach`` → the detach report (verbatim)
@@ -20,9 +25,12 @@ One implementation per op here — import, health, hygiene. Return shapes:
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from okfgraph.errors import OKFError
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["AdminOps"]
 
@@ -369,6 +377,167 @@ class AdminOps:
         """Rebuild search indexes; ``{"rebuilt": bool}``."""
         rebuilt = self.schema_mgr.reindex(force=not if_dirty)
         return {"rebuilt": bool(rebuilt)}
+
+    # ------------------------------------------------------------------
+    # reembed (0.12.0): rebuild every text vector under the configured
+    # embed engine, then re-pin. The graph keeps one model per vector
+    # space, so the op is an explicit, single-tenant rebuild — never a
+    # silent mix.
+    # ------------------------------------------------------------------
+
+    def reembed(self, *, dry_run: bool = False) -> dict:
+        """Rebuild every text vector under the configured embed engine,
+        then re-pin ``embedding_model``. Returns the report dict.
+
+        Steps (the 2026-11-05 probe's exact order, `.okf-suite-1102/
+        phase0-embedder/reembed-gemma-copy.py`): drop the two vector
+        indexes (a Ladybug vector column is locked while its index
+        exists), read the stored texts, embed with the router's active
+        engine, SET `Concept.embedding`/`Chunk.embedding`, recreate the
+        indexes with the schema lane's width DDL, re-pin the model
+        MetaText row (numeric precision untouched — the crate lane
+        enforces its own, external engines have none).
+
+        Refuses:
+        * graphs with ImageAsset rows (``IMAGE_PIN_MISMATCH``): the omni
+          space must never be rebuilt by a text-model switch;
+        * a dim migration (``DIM_MISMATCH``): 0.12.0 rebuilds vectors in
+          place at the graph's column width; a different engine dim needs
+          a fresh graph.
+
+        Each step auto-commits; a crash mid-way leaves the op recoverable
+        by re-running (hence the returned per-table counts).
+        """
+        from okfgraph.components.embedding import MODEL_META_KEY, _PRECISION_CODE
+        from okfgraph.errors import StateError
+        encoder = getattr(self, "encoder", None)
+        if encoder is None:
+            raise StateError(
+                "INTERNAL", "no embed engine mounted", op="reembed")
+        dim = (getattr(encoder, "dim", None)
+               or getattr(encoder, "dimension", None)
+               or self.embedding_dim)
+        if dim != self.embedding_dim:
+            raise StateError(
+                "DIM_MISMATCH",
+                f"engine dim {dim} != graph column dim {self.embedding_dim}; "
+                "0.12.0 reembed keeps the column width — open a fresh graph "
+                "for a different dim",
+                op="reembed",
+                fields={"engine_dim": dim,
+                        "graph_dim": self.embedding_dim},
+                remedy="re-import into a new database with the new dim, "
+                       "or reopen with the pinned model",
+            )
+        image_rows = self.conn.execute(
+            "MATCH (a:ImageAsset) RETURN a.id AS id LIMIT 1"
+        ).rows_as_dict().get_all()
+        if image_rows:
+            raise StateError(
+                "IMAGE_PIN_MISMATCH",
+                "graph carries ImageAsset rows; a text-model reembed would "
+                "leave the omni space under the old weights",
+                op="reembed",
+                remedy="re-import into a fresh database instead",
+            )
+        crows = self.conn.execute(
+            "MATCH (c:Concept) RETURN c.id AS id, c.title AS t, "
+            "c.description AS d, c.body AS b"
+        ).rows_as_dict().get_all()
+        chrows = self.conn.execute(
+            "MATCH (k:Chunk) RETURN k.id AS id, k.chunk_text AS t"
+        ).rows_as_dict().get_all()
+        # NOTE the concept text shape must mirror the import lane's
+        # search_text exactly (title + description + body, spaces).
+        def _texts(rows, keys):
+            out = []
+            for r in rows:
+                text = " ".join(str(r.get(k) or "") for k in keys)
+                if text.strip():
+                    out.append((r["id"], text))
+            return out
+        crs = _texts(crows, ("t", "d", "b"))
+        chr_ = _texts(chrows, ("t",))
+        model_id = getattr(encoder, "model_id", None) or self.model_id
+        model_name = getattr(encoder, "model_name", None)
+        if callable(model_name):
+            model_name = model_name()
+        report = {
+            "dry_run": dry_run,
+            "model_id": model_id,
+            "model_name": model_name,
+            "dimension": dim,
+            "concepts": len(crs),
+            "chunks": len(chr_),
+        }
+        if dry_run:
+            return report
+        import time as _t
+        t0 = _t.time()
+        logger.info(
+            "reembed: rebuilding %s concepts + %s chunks with %s",
+            len(crs), len(chr_), model_id)
+        # 1. drop the two vector indexes (schema lane's exact kinds)
+        drops = (
+            ("Concept", "concept_embedding"),
+            ("Chunk", "chunk_embedding"),
+        )
+        for tbl, name in drops:
+            try:
+                self.conn.execute(
+                    f"CALL DROP_VECTOR_INDEX('{tbl}', '{name}')")
+            except Exception as exc:
+                logger.debug("drop index %s.%s skipped: %s", tbl, name, exc)
+        # 2. SET in batches of the engine's batch size (delegates order)
+        import time as _tt
+        def _rewrite(label, rows, prop):
+            n = 0
+            bs = max(1, int(getattr(encoder, "batch_size", 32) or 32))
+            for i in range(0, len(rows), bs):
+                part = rows[i:i + bs]
+                vecs = encoder.encode_batch([t for _, t in part], task="Document")
+                if len(vecs) != len(part):
+                    raise StateError(
+                        "INTERNAL",
+                        f"embed engine returned {len(vecs)} vectors for "
+                        f"{len(part)} {label}", op="reembed")
+                for (cid, _), vec in zip(part, vecs):
+                    self.conn.execute(
+                        f"MATCH (k:{label.capitalize()} {{id: $id}}) "
+                        f"SET k.{prop} = $vec",
+                        {"id": cid, "vec": vec},
+                    )
+                n += len(part)
+            return n
+        nc = _rewrite("concept", crs, "embedding")
+        nch = _rewrite("chunk", chr_, "embedding")
+        # 3. recreate the two vector indexes exactly like the schema lane
+        for table, name, create_sql in self.schema_mgr._index_specs():
+            if name in ("concept_embedding", "chunk_embedding"):
+                self.conn.execute(create_sql)
+        # 4. re-pin the model MetaText row (the parameter keeps odd ids safe)
+        self.conn.execute(
+            f"MERGE (m:MetaText {{key: '{MODEL_META_KEY}'}}) SET m.value = $v",
+            {"v": model_id},
+        )
+        precision = getattr(encoder, "precision", None)
+        if precision in _PRECISION_CODE:
+            self.conn.execute(
+                f"MERGE (m:Meta {{key: 'embedding_precision'}}) "
+                f"SET m.value = {_PRECISION_CODE[precision]}"
+            )
+        took = _tt.time() - t0
+        self.schema_mgr._set_meta(
+            "indexed_epoch", self.schema_mgr._get_meta("write_epoch"))
+        report.update({
+            "reembedded": {"concepts": nc, "chunks": nch},
+            "seconds": round(took, 2),
+            "precision": precision,
+        })
+        logger.info("reembed: %s concepts + %s chunks -> %s (%.1fs)",
+                    nc, nch, model_id, took)
+        return report
+
 
     # ------------------------------------------------------------------
     # delete / soft-delete trio (D2-a)

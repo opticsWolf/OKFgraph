@@ -203,7 +203,10 @@ def test_end_to_end(tmp_path, monkeypatch):
         {"id": "q2", "query": "dogs bark", "relevant": ["dogs"], "lang": "de"},
     ]), encoding="utf-8")
     md, js = tmp_path / "r.md", tmp_path / "r.json"
-    monkeypatch.setattr(ev, "open_router", lambda db, copy: _open(db))
+    # eval_search's open_router grew a --model-id param (26b2388): the test
+    # stub mirrors its (db, model_id, copy) signature; model_id rides on the
+    # pin adoption inside the real helper, so the stub ignores it.
+    monkeypatch.setattr(ev, "open_router", lambda db, model_id, copy: _open(db))
 
     def _open(db):
         router = OKFRouter(db_path=db, bundle_root=str(kb), embedding_dim=512,

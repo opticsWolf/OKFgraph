@@ -430,24 +430,41 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                     )
             logger.debug("using explicit model files: %s", model_path)
 
-        def _report_encoder_open(encoder) -> None:
-            # Precision pin (fail-closed): the first open records the
-            # landed precision; later opens refuse on mismatch so FP16
-            # and FP32 vectors never share one graph.
+        # The reembed escape hatch (0.12.0): a boot that opens a graph
+        # pinned to a DIFFERENT model id than the configured one, on
+        # purpose, because a reembed under the new model is about to run
+        # (the op re-pins on success). Declared via env, loudly warned.
+        reembed_override = bool(os.environ.get("OKFGRAPH_ALLOW_REPIN"))
+
+        def _enforce_pins(encoder):
+            """Precision + model pins at first embed/first encode. External
+            engines carry no numeric precision, so only the model pin."""
             from okfgraph.components.embedding import (
+                _PRECISION_CODE,
                 enforce_model_pin,
                 enforce_precision_pin,
             )
             pin_precision = getattr(encoder, "precision", None) or self.precision
-            pinned = enforce_precision_pin(self.conn, pin_precision)
-            # Model pin (fail-closed, 0.6.0): different weights live in
-            # different spaces — a model switch forces a fresh reimport.
-            # Explicit local files bypass the registry (model_id is the
-            # file path, unique per file set, so pinning still separates).
+            if reembed_override:
+                logger.warning(
+                    "OKFGRAPH_ALLOW_REPIN: opening graph under pin-exempt "
+                    "mode; run the reembed op to re-pin the model")
+                return None
+            pinned = None
+            if pin_precision in _PRECISION_CODE:
+                pinned = enforce_precision_pin(self.conn, pin_precision)
             enforce_model_pin(self.conn, model_id)
+            return pinned
+
+        def _report_encoder_open(encoder) -> None:
+            # Precision pin (fail-closed): the first open records the
+            # landed precision; later opens refuse on mismatch so FP16
+            # and FP32 vectors never share one graph.
+            pinned = _enforce_pins(encoder)
+            encoder_used_cuda = getattr(encoder, "used_cuda", False)
             logger.info(
                 "text embeddings: %s dim=%d cuda=%s precision=%s",
-                model_id, self.embedding_dim, encoder.used_cuda, pinned,
+                model_id, self.embedding_dim, encoder_used_cuda, pinned,
             )
             if device == "cuda" and not encoder.used_cuda:
                 logger.warning(
@@ -489,7 +506,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                     "client, not a crate session")
         elif explicit_files:
             def _open_session():
-                return embroider.JinaV5.open_files(
+                return self.embroider.JinaV5.open_files(
                     str(model_path),
                     str(tokenizer_path),
                     # Read off self: the stored dimension wins over the
@@ -500,12 +517,12 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                     max_length=self.max_length,
                     cpu_arena=self.cpu_arena,
                 )
-            tokenizer_factory = lambda: embroider.JinaTokenizer.open_files(
+            tokenizer_factory = lambda: self.embroider.JinaTokenizer.open_files(
                 str(tokenizer_path),
             )
         else:
             def _open_session():
-                return embroider.JinaV5.open(
+                return self.embroider.JinaV5.open(
                     model_id,
                     # See above: adopted dimension, resolved at first encode.
                     truncate_dim=self.embedding_dim,
@@ -515,7 +532,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                     precision=self.precision,
                     cpu_arena=self.cpu_arena,
                 )
-            tokenizer_factory = lambda: embroider.JinaTokenizer.open(
+            tokenizer_factory = lambda: self.embroider.JinaTokenizer.open(
                 model_id,
                 cache_dir=cache_dir,
             )
@@ -591,7 +608,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 embedding_dim=self.embedding_dim,
                 image_model_id=image_model_id,
             )
-            return embroider.JinaV5Vision.open(
+            return self.embroider.JinaV5Vision.open(
                 image_model_id,
                 truncate_dim=self.embedding_dim,
                 device=rust_device,
@@ -624,7 +641,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
 
         def _rerank_session_factory():
             _require_ort()
-            return embroider.Reranker.open(
+            return self.embroider.Reranker.open(
                 rerank_model_id,
                 cache_dir=cache_dir,
                 device=rerank_device,
@@ -650,8 +667,15 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 embed_max_tokens=embed_max_tokens,
                 embed_counter=embed_counter,
             )
-        else:
-            self.encoder = None  # set below with the crate lane
+            # Mirrors the crate lane's first-embed hooks for the pins:
+            # external engines carry no numeric precision, so the model
+            # pin only (boot-time, both lanes equally fail-closed).
+            _enforce_pins(self.encoder)
+            logger.info(
+                "text embeddings (external): %s dim=%d family=%s",
+                self.model_id, self.embedding_dim, embed_family,
+            )
+        # else: the crate lane mounted LazyRustEncoder earlier; keep it.
         self.embed_engine = EmbeddingEngine(
             self.encoder, self.embedding_dim,
             self.device, self.cache_dir, self.model_id,

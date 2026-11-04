@@ -69,6 +69,7 @@ Same graph and the same ops as the MCP skill, through `okf` commands.
 | Generate a bundle from SQLite | `produce --from sqlite --source DB [--output-dir D]` |
 | Structural drift | `diff OLD NEW` (dirs) or `diff [DIR]` (graph vs dir / roots) |
 | Health score + safe repairs | `doctor [--fix] [--strict]` |
+| Re-embed a graph under a NEW model (0.12) | `okf reembed [--dry-run]` — boot with `OKFGRAPH_ALLOW_REPIN=1` when the model pin disagrees with the configured model; refuses dim migrations and image-bearing graphs |
 | End the mirror: the DB becomes the artifact | `detach [--bundle-path D] [--no-verify] [--force]` |
 | Soft-deleted concepts | `deleted-list`, `deleted-recover ID`, `deleted-purge` |
 | Remove a wrongly imported concept | `delete ID` — soft-delete, recoverable 24 h; **refuses file-backed concepts while their source file exists** (remedy: remove the file, then `import --all --prune-missing`) |

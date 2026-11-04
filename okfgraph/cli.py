@@ -996,6 +996,29 @@ def _reindex(args):
     return _out(args, "reindex", _router(args).reindex(if_dirty=args.if_dirty), render)
 
 
+def _reembed(args):
+    """Rebuild every vector under the CONFIGURED embed engine, then re-pin.
+
+    A graph pinned to another model boots only with OKFGRAPH_ALLOW_REPIN=1
+    (0.12.0): run `okf reembed --dry-run` for the plan, then plain reembed
+    to re-encode + re-pin. Dim migrations and multimodal graphs refuse.
+    """
+    def render(r):
+        if r.get("dry_run"):
+            print(
+                "[PLAN] reembed {} concepts + {} chunks at dim {} "
+                "with {}".format(r["concepts"], r["chunks"],
+                                 r["dimension"], r["model_id"]))
+            print("run 'okf reembed' without --dry-run to execute")
+        else:
+            re = r["reembedded"]
+            print("[OK] re-embedded {} concepts + {} chunks as {} "
+                  "({:.1f}s)".format(re["concepts"], re["chunks"],
+                                     r["model_id"], r["seconds"]))
+    result = _router(args).reembed(dry_run=args.dry_run)
+    return _out(args, "reembed", result, render)
+
+
 def _ingest(args):
     """Unified ingest: markdown file, PDF/Office, or raw thoughts."""
     settings = _settings(args)
@@ -1569,6 +1592,11 @@ def build_parser():
     p.add_argument("--if-dirty", action="store_true",
                    help="Only rebuild if data changed since the last index build")
 
+    p = command("reembed", "Rebuild every vector under the configured embed "
+                           "engine, then re-pin (0.12.0)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Report the plan (counts, dim, model) without writing")
+
     command("deleted-list", "List soft-deleted concepts")
     p = command("deleted-recover", "Recover a soft-deleted concept")
     p.add_argument("concept_id", help="Concept ID to recover")
@@ -1653,6 +1681,7 @@ _COMMANDS = {
     "lint": _lint,
     "produce": _produce,
     "reindex": _reindex,
+    "reembed": _reembed,
     "deleted-list": _deleted_list,
     "deleted-recover": _deleted_recover,
     "delete": _deleted_delete,

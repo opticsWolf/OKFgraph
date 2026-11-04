@@ -205,6 +205,29 @@ v6.8)" and its Design Decisions table.
 
 ## [Unreleased]
 
+### Added (0.12.0 — the embedder-loader seam)
+- **`[embedding] backend = "external"`.** A second embedding lane that talks
+  to any OpenAI-shaped `POST /embeddings` endpoint (llama.cpp `llama-server`,
+  LM Studio, TEI, Ollama…): new settings `endpoint_url`, `api_key_env`,
+  `embed_family` (the declared contract, e.g. `nomic-v1.5` — per-side
+  prefixes, pooling, native dim and Matryoshka ladder live in a declared
+  `EngineSpec`, never guessed), `embed_pooling`, `embed_prefixes`,
+  `embed_max_tokens`, `embed_counter` (heuristic counts are flagged, once,
+  per process). A graph keeps one model per vector space; the crate lane
+  (`jinaai/jina-embeddings-v5-text-small-retrieval` via embroider/ONNX)
+  stays the default.
+- **`okf reembed` / `POST /ops/reembed` (0.12).** Rebuild every vector under
+  the configured embed engine, then re-pin (`dry_run` reports counts, dim
+  and model without writing). Refuses dim migrations (`DIM_MISMATCH`) and
+  multimodal graphs (`IMAGE_PIN_MISMATCH`). Boot with
+  `OKFGRAPH_ALLOW_REPIN=1` to open a graph whose model pin disagrees with
+  the configured model — that is the sanctioned path to a reembed; without
+  it pins stay fail-closed.
+- **`POST /ops/embed` (0.12).** Embed arbitrary texts with the graph's own
+  pinned encoder (`{texts, task, dim}` → `{vectors, dim, model_id,
+  renormalised, honours_dimensions, counter}`; per-call Matryoshka dims
+  slice + renormalise client-side; caps 256 texts / 1 MiB).
+
 ### Changed
 - **ladybug 0.21.2 → 0.22.1.** Storage version 47 → 49: the first open
   under 0.22 upgrades a graph in place, and 0.21.2 can no longer read it

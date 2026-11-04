@@ -1244,6 +1244,16 @@ and has an `OKFGRAPH_*` env var and an `okfgraph.toml` key; precedence is
 CLI > env > TOML > defaults, per key. Invalid configuration is
 `CONFIG_INVALID` (exit 2).
 
+> 0.12 embedder-loader seam: `[embedding] backend = "embroider" | "external"`
+> gains `endpoint_url`, `api_key_env`, `embed_family`, `embed_pooling`,
+> `embed_prefixes`, `embed_max_tokens`, `embed_counter` — an OpenAI-shaped
+> `/embeddings` endpoint with a *declared* `EngineSpec` (family, native dim,
+> Matryoshka ladder, pooling, per-side prefixes, counter). All ONNX numerics
+> stay in the crate; external loaders own their numerics. `okf reembed`
+> re-encodes + re-pins across a model switch (`OKFGRAPH_ALLOW_REPIN=1` is
+> the sanctioned pin-exempt boot for that), `POST /ops/embed` rides the
+> graph's pinned encoder for foreign callers.
+
 ### 5.4. Import Options
 
 | Option | Default | Description |

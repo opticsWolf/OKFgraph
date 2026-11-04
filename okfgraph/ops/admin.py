@@ -538,6 +538,112 @@ class AdminOps:
                     nc, nch, model_id, took)
         return report
 
+    # ------------------------------------------------------------------
+    # embed (0.12.0): the inverse lane. Silk's ledger may ride the
+    # graph's OWN pinned encoder (crate or external) with one router
+    # call instead of running a second model host — the vectors must
+    # match the stored space, so the op never guesses: whatever it
+    # embeds with, the graph's pin already declared.
+    # ------------------------------------------------------------------
+
+    #: Wire caps for the embed op — bounded work per call.
+    EMBED_MAX_TEXTS = 256
+    EMBED_MAX_CHARS = 1 << 20
+    #: Per-call dims must be Matryoshka ladder steps ≤ the session dim.
+    EMBED_DIM_LADDER = (32, 64, 128, 256, 512, 768, 1024)
+
+    def embed(self, *, texts, task: str = "Document",
+              dim: int | None = None) -> dict:
+        """Embed texts with the graph's active, pinned engine.
+
+        Args mirror the ingest lane's Language: ``task`` is
+        ``"Query"``/``"Document"`` (the same per-task prefixes the graph
+        was built with), ``dim`` optionally asks for a smaller
+        Matryoshka step (slice + renormalise — MRL distributions hold
+        their geometry; the crate lane and external engines both).
+
+        Returns ``vectors`` / ``dim`` / ``model_id`` / ``task``, plus
+        provenance: ``renormalised`` (a per-call dim was applied
+        client-side), ``honours_dimensions`` (False when the external
+        endpoint ignored a ``dimensions`` request — the engine then
+        sliced and re-normalised itself, loudly logged once) and
+        ``counter`` (the declared counting source, budget honesty).
+
+        Refusals (``BAD_VALUE``): empty texts or blank strings, over the
+        caps (texts / total chars), an unknown task, or ``dim`` not being
+        a ladder step ≤ the session dim (external engines must also
+        declare it on their own ladder).
+        """
+        from okfgraph.components.external_embedder import slice_renorm
+        from okfgraph.errors import UsageError
+        encoder = getattr(self, "encoder", None)
+        if encoder is None:
+            raise UsageError(
+                "BAD_VALUE", "no embed engine mounted", op="embed")
+        if not isinstance(texts, list) or not texts:
+            raise UsageError(
+                "BAD_VALUE", "texts must be a non-empty list of strings",
+                op="embed", fields={"n": len(texts) if texts else 0})
+        if len(texts) > self.EMBED_MAX_TEXTS:
+            raise UsageError(
+                "BAD_VALUE", f"too many texts (cap {self.EMBED_MAX_TEXTS})",
+                op="embed", fields={"cap": self.EMBED_MAX_TEXTS,
+                                    "got": len(texts)})
+        chars = 0
+        for t in texts:
+            if not isinstance(t, str) or not t.strip():
+                raise UsageError(
+                    "BAD_VALUE",
+                    "every text must be a non-empty string", op="embed")
+            chars += len(t)
+        if chars > self.EMBED_MAX_CHARS:
+            raise UsageError(
+                "BAD_VALUE", f"too many chars (cap {self.EMBED_MAX_CHARS})",
+                op="embed", fields={"cap": self.EMBED_MAX_CHARS,
+                                    "got": chars})
+        if task not in ("Query", "Document"):
+            raise UsageError(
+                "BAD_VALUE", f"task must be 'Query' or 'Document', got '{task}'",
+                op="embed", fields={"task": task})
+        engine_dim = (getattr(encoder, "dim", None)
+                      or getattr(encoder, "_truncate_dim", None)
+                      or self.embedding_dim)
+        renorm = False
+        if dim is not None:
+            if dim not in self.EMBED_DIM_LADDER or dim > engine_dim:
+                raise UsageError(
+                    "BAD_VALUE",
+                    f"dim must be a Matryoshka step <= {engine_dim}, got {dim}",
+                    op="embed", fields={"dim": dim, "engine_dim": engine_dim})
+            supports = getattr(encoder, "spec", None)
+            supports_ok = True
+            if supports is not None and not supports.supports_dim(dim):
+                supports_ok = False
+            if not supports_ok:
+                raise UsageError(
+                    "BAD_VALUE",
+                    f"dim {dim} is not on the declared ladder of "
+                    f"{getattr(encoder, 'family', encoder)}",
+                    op="embed", fields={"dim": dim,
+                                        "ladder": list(supports.matryoshka or ())})
+        vecs = encoder.encode_batch(list(texts), task=task)
+        if dim is not None and dim != engine_dim:
+            vecs = [slice_renorm(v, dim) for v in vecs]
+            renorm = True
+        spec = getattr(encoder, "spec", None)
+        return {
+            "vectors": vecs,
+            "dim": dim if dim is not None else engine_dim,
+            "model_id": getattr(encoder, "model_id", None) or self.model_id,
+            "task": task,
+            "renormalised": renorm,
+            "honours_dimensions": getattr(
+                encoder, "honours_dimensions", True),
+            # crate = the exact tokenizer inside the engine; external = the
+            # declared counter ("heuristic" budget = approximate, logged).
+            "counter": spec.counter if spec is not None else "crate",
+        }
+
 
     # ------------------------------------------------------------------
     # delete / soft-delete trio (D2-a)

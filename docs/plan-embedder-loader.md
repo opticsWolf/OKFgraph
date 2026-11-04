@@ -358,8 +358,28 @@ engine-independent; only their *row caps* read `count()`.
      (13 green) and a live smoke through LM Studio's llama.cpp nomic
      lane: end-to-end `ingest` + `search` with the family-contract lane
      live (nomic prefixes, heuristic counter, MRL fallback logged once).
-     Remaining Phase-1 scope: the `reembed` op (W3), `count` port upgrades
-     (W4), `ops/embed` (W5), reranker seam (W9).
+  10. **Phase 1 slices 2–3 = the graph-side ops, landed** (2026-11-05,
+      `afd0454` …).
+      `reembed(dry_run)` (W3): drop both vector indexes → re-encode every
+      Concept/Chunk with the active engine (import-lane text shape) →
+      recreate indexes from the schema specs → re-pin
+      ``embedding_model`` (+ numeric precision when the engine owns one);
+      refuses dim migrations (`DIM_MISMATCH`) and multimodal graphs
+      (`IMAGE_PIN_MISMATCH`); reachable across a pin change via the
+      `OKFGRAPH_ALLOW_REPIN=1` boot escape (loud warning; pin refusals
+      stay fail-closed without it; crate + external enforce through one
+      shared `_enforce_pins`, external = model pin only). `embed`
+      (W5): the inverse lane — any caller may ride the graph's OWN
+      pinned encoder via `POST /ops/embed` with `{texts, task, dim}`;
+      per-call Matryoshka dims slice+renormalise client-side (no server
+      cooperation needed), the response carries provenance
+      (`renormalised`, `honours_dimensions`, `counter` — the `_HONOURS`
+      guard), caps = 256 texts / 1 MiB, refusals = BAD_VALUE. Both ops
+      are CLI/HTTP (`OPS` tuple + client proxy); MCP keeps search/read.
+      W5 smoke: serve route + stub endpoint, dim 256 round-trip \\\\
+      `renormalised=True`. Remaining Phase-1 scope: docs (W7), budget-
+      fence tests under the heuristic counter (W6 tail), Silk wiring
+      (W8), reranker seam (W9).
   9. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
      the crate default family, nomic-v1.5 as the reference external
      embedder contract (datum 6), bge-reranker-v2-m3 as the reference

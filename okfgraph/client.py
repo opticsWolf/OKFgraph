@@ -39,6 +39,9 @@ __all__ = ["OKFClient", "OPS", "serve_file_for", "discover"]
 OPS = (
     # query
     "search", "read", "traverse",
+    # embed utility (0.12.0: the inverse lane — Silk's ledger riding the
+    # graph's pinned encoder; CLI/HTTP only, MCP carries search/read only)
+    "embed",
     # ingest / export
     "ingest", "export_bundle", "export_concept",
     # import

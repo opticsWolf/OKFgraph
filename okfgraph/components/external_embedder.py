@@ -62,6 +62,20 @@ class EngineSpec:
         return bool(self.matryoshka and dim in self.matryoshka)
 
 
+def slice_renorm(vec: List[float], dim: int) -> List[float]:
+    """Truncate a Matryoshka vector to ``dim`` and renormalise its head.
+
+    Shared by the ``/ops/embed`` op: both lanes may deliver a smaller
+    ladder-step vector from the same engine — an MRL-trained embedding
+    keeps its geometry under prefix truncation + head renormalisation.
+    """
+    head = vec[:dim]
+    norm = sum(x * x for x in head) ** 0.5
+    if norm <= 0:
+        return head
+    return [x / norm for x in head]
+
+
 class ExternalEmbeddingError(RuntimeError):
     """The endpoint refused or failed a request, with the response body."""
 
@@ -143,6 +157,13 @@ class ExternalEmbedEngine:
         """The numeric identity this engine stores (its owner's business)."""
         return "external"
 
+    @property
+    def honours_dimensions(self) -> bool:
+        """True until a response came back at native width while a
+        Matryoshka dim was requested — i.e. the endpoint ignored the
+        ``dimensions`` parameter and the engine sliced client-side."""
+        return not self._renorm_fallback
+
     def encode(self, text: str, task: str = "Document") -> List[float]:
         vec = self._post_embed([text], task)[0]
         return vec
@@ -219,11 +240,7 @@ class ExternalEmbedEngine:
 
     @staticmethod
     def _slice_renorm(vec: List[float], dim: int) -> List[float]:
-        head = vec[:dim]
-        norm = sum(x * x for x in head) ** 0.5
-        if norm <= 0:
-            return head
-        return [x / norm for x in head]
+        return slice_renorm(vec, dim)
 
     def _post_embed(self, texts: List[str], task: str) -> List[List[float]]:
         if not texts:

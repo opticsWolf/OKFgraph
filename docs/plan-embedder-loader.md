@@ -315,12 +315,36 @@ engine-independent; only their *row caps* read `count()`.
      around. W1's stub fixtures should encode the nomic contract as the
      first real reference, jina-v5's as the second (in-crate).
 
-  Remaining Phase 0: one reranker lane to size re-rank latency (llama.cpp
-  reranking route or a TEI-shaped server vs the mmarco cross-encoder);
-  the jina-v3 / Qwen3-Embedding GGUF external families can ride the same
-  offline scorer whenever their GGUFs are on disk. Phase-1 defaults can
-  be picked: gemma2 as the default embedder family (datum 4), nomic via
-  the external lane for host-driven models (datum 6).
+  7. **The reranker lane closes Phase 0** (2026-11-05). Three reranks
+     over identical pure-VS top-30 pools (gemma2 retriever, chunk-target
+     label rows, n=13; probes in the evidence dir):
+
+     | rerank lane | nDCG@10 | MRR | recall | p50/p95 s |
+     |---|---|---|---|---|
+     | none (VS order) | 0.830 | 0.923 | 0.859 | — |
+     | crate mmarco cross-encoder | 0.859 | 0.923 | 0.923 | 0.06 / 0.78 |
+     | bge-reranker-v2-m3 Q8, llama.cpp `/v1/rerank` | 0.839 | 0.910 | 0.885 | 0.12 / 0.21 |
+
+     The external rerank wire (llama.cpp b12110 CUDA13, official release,
+     `--rerank`) lands **at parity with the crate cross-encoder at its
+     latency profile** — and the external lane is even steady at p95.
+     Two hard facts ride with it: (a) **Silk's pool cannot rerank at all**
+     — `llama_cpp` 0.3.34 has no `LlamaReranker` and no `/v1/rerank`
+     route, so Silk's reranker future rides the llama.cpp binary server
+     lane (or the crate), never the python pool; (b) family contracts
+     matter as much here as for embedding: the community **Qwen3-Reranker
+     0.6B Q8 GGUF scored 0.424 / 0.541 / 0.538 — a red datum for the
+     conversion, not the wire** (the toy 3-doc sanity call ranks
+     correctly; official safetensors conversions are part of any real
+     adoption). Also recorded: long pair inputs need `-ub 1024` (the
+     512-token physical batch 500-errors on ~657-token chunks).
+  8. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
+     the crate default family, nomic-v1.5 as the reference external
+     embedder contract (datum 6), bge-reranker-v2-m3 as the reference
+     external rerank contract (datum 7), mmarco cross-encoder stays the
+     in-crate default reranker. jina-v3 / Qwen3-Embedding GGUFs can ride
+     the offline scorer opportunistically when their GGUFs land on disk;
+     they are no longer blocking.
 - **Phase 1 — the seam:** W1–W5 + tests, HTTP backend only.
 - **Phase 2 — Silk integration:** W8 + docs; default answer for Weave is
   the HTTP backend (their node is out-of-process by design).

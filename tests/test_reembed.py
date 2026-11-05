@@ -159,6 +159,42 @@ def test_execute_reembeds_keeps_pin_until_model_changes(tmp_path):
     assert hits and any((h.get("id") or "") == "b" for h in hits)
 
 
+def test_pin_info_reports_pin_and_mismatch(tmp_path):
+    """The node-facing pins flow: pin_info names what is pinned, flags a
+    configured-model mismatch via the re-embed escape, and clears after a
+    reembed re-pins the graph."""
+    import os
+    r = _router_files(tmp_path, "stub/model-a")
+    info = r.pin_info()
+    assert info["pinned"]["model_id"] == "stub/model-a"
+    assert info["pinned"]["embedding_dim"] == 512
+    assert info["mismatch"] == []
+    assert info["concepts"] >= 1
+
+    r.close()
+    os.environ["OKFGRAPH_ALLOW_REPIN"] = "1"
+    try:
+        r2 = OKFRouter(
+            db_path=str(tmp_path / "graph.db"),
+            model_id="stub/model-b",
+            embedding_dim=512,
+            embed_backend="external",
+            endpoint_url=f"http://127.0.0.1:{PORT}",
+            embed_family="nomic-v1.5",
+            embed_prefixes="nomic-v1.5",
+            embed_counter="heuristic",
+        )
+    finally:
+        os.environ.pop("OKFGRAPH_ALLOW_REPIN", None)
+    info = r2.pin_info()
+    assert info["pinned"]["model_id"] == "stub/model-a"
+    assert info["mismatch"] == ["model_id"]
+    assert "embedding_dim" not in info["mismatch"]    # width never re-pins
+    report = r2.reembed()
+    assert report["pins_after"]["mismatch"] == []      # re-embed re-pins
+    assert r2.pin_info()["mismatch"] == []
+
+
 def test_refuses_graph_with_image_rows(tmp_path):
     r = _router_files(tmp_path, "stub/nomic-a")
     # add an ImageAsset row directly — the schema lane created the table

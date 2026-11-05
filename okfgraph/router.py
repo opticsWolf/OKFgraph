@@ -284,6 +284,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # Long-doc vectors change when the limit is raised — reimport fully
         # after changing it, don't mix limits in one graph.
         _emb = self.embroider  # None on the external lane, crate otherwise
+        self.embed_backend = embed_backend   # pin_info reads it directly
         model_max_tokens = getattr(_emb, "MODEL_MAX_TOKENS", None)
         default_max = getattr(_emb, "MAX_LENGTH", 8192)
         if embed_backend == "external" and model_max_tokens is None:

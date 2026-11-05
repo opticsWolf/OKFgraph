@@ -533,10 +533,102 @@ class AdminOps:
             "reembedded": {"concepts": nc, "chunks": nch},
             "seconds": round(took, 2),
             "precision": precision,
+            "pins_after": self.pin_info(),
         })
         logger.info("reembed: %s concepts + %s chunks -> %s (%.1fs)",
                     nc, nch, model_id, took)
         return report
+
+    def pin_info(self) -> dict:
+        """What the vectors are pinned to, against what this server runs
+        with (the Silk/Weave node's pin display flows over this).
+
+        Reading shape::
+
+            {"pinned": {"model_id": str|None, "precision": str|None,
+                        "embedding_dim": int},
+             "configured": {"model_id": str, "expected_precision": str|None,
+                            "embedding_dim": int, "backend": str,
+                            "embedding_family": str},
+             "mismatch": ["model_id"|"precision", ...],
+             "empty": bool, "concepts": n, "chunks": n}
+
+        ``embedding_dim`` never appears in ``mismatch``: the graph adopts
+        its column width at boot, so server and graph always agree — a
+        width change needs a fresh database, not a re-embed.
+        """
+        from okfgraph.components.embedding import (
+            MODEL_META_KEY, PRECISION_META_KEY)
+
+        def _meta_str(table, key):
+            try:
+                rows = self.conn.execute(
+                    f"MATCH (m:{table} {{key: '{key}'}}) "
+                    "RETURN m.value AS v"
+                ).rows_as_dict().get_all()
+            except Exception:
+                return None
+            return rows[0]["v"] if rows else None
+
+        pinned_model = self.model_id
+        try:
+            pinned_model = _meta_str("MetaText", MODEL_META_KEY) or None
+        except Exception:
+            pinned_model = None
+        pinned_precision = _meta_str("Meta", PRECISION_META_KEY)
+        if pinned_precision is not None:
+            pinned_precision = {16: "fp16", 32: "fp32"}.get(
+                int(pinned_precision))
+        encoder = getattr(self, "encoder", None)
+        if embed_backend := getattr(self, "embed_backend", None):
+            backend = embed_backend
+        else:
+            backend = "external" if getattr(
+                encoder, "spec", None) is not None else "embroider"
+        configured_precision = None
+        if backend != "external":
+            configured_precision = getattr(
+                encoder, "precision", None) or (
+                None if self.precision == "auto" else self.precision)
+        try:
+            empty_rows = self.conn.execute(
+                "MATCH (c:Concept) RETURN count(c) AS n"
+            ).rows_as_dict().get_all()
+        except Exception:
+            empty_rows = []
+        concepts = int((empty_rows or [{"n": 0}])[0].get("n") or 0)
+        try:
+            chunk_rows = self.conn.execute(
+                "MATCH (k:Chunk) RETURN count(k) AS n"
+            ).rows_as_dict().get_all()
+        except Exception:
+            chunk_rows = []
+        chunks = int((chunk_rows or [{"n": 0}])[0].get("n") or 0)
+        mismatch: List[str] = []
+        empty = concepts == 0
+        if pinned_model and not empty and pinned_model != self.model_id:
+            mismatch.append("model_id")
+        if (pinned_precision and configured_precision
+                and not empty
+                and pinned_precision != configured_precision):
+            mismatch.append("precision")
+        return {
+            "pinned": {
+                "model_id": pinned_model, "precision": pinned_precision,
+                "embedding_dim": int(self.schema_mgr.embedding_dim),
+            },
+            "configured": {
+                "model_id": self.model_id,
+                "expected_precision": configured_precision,
+                "embedding_dim": int(self.embedding_dim),
+                "backend": backend,
+                "embedding_family": getattr(
+                    getattr(encoder, "spec", None), "family", ""),
+            },
+            "mismatch": mismatch,
+            "empty": empty,
+            "concepts": concepts, "chunks": chunks,
+        }
 
     # ------------------------------------------------------------------
     # embed (0.12.0): the inverse lane. Silk's ledger may ride the

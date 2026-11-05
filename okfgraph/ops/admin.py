@@ -659,7 +659,10 @@ class AdminOps:
         client-side), ``honours_dimensions`` (False when the external
         endpoint ignored a ``dimensions`` request — the engine then
         sliced and re-normalised itself, loudly logged once) and
-        ``counter`` (the declared counting source, budget honesty).
+        ``counter`` (the **effective** counting source: the declared
+        'server-tokenize' / 'gguf-meta' / 'declared' / 'heuristic', or
+        'heuristic-fallback' when a declared source failed its probe —
+        W4's loud-degrade contract; 'crate' for the in-engine tokenizer).
 
         Refusals (``BAD_VALUE``): empty texts or blank strings, over the
         caps (texts / total chars), an unknown task, or ``dim`` not being
@@ -722,7 +725,6 @@ class AdminOps:
         if dim is not None and dim != engine_dim:
             vecs = [slice_renorm(v, dim) for v in vecs]
             renorm = True
-        spec = getattr(encoder, "spec", None)
         return {
             "vectors": vecs,
             "dim": dim if dim is not None else engine_dim,
@@ -732,8 +734,9 @@ class AdminOps:
             "honours_dimensions": getattr(
                 encoder, "honours_dimensions", True),
             # crate = the exact tokenizer inside the engine; external = the
-            # declared counter ("heuristic" budget = approximate, logged).
-            "counter": spec.counter if spec is not None else "crate",
+            # effective counter (a declared source may have degraded to
+            # 'heuristic-fallback' at probe time — loud, once, per W4).
+            "counter": getattr(encoder, "counter", "crate"),
         }
 
 

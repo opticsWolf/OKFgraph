@@ -145,9 +145,19 @@ SETTINGS = [
     Setting("embed_max_tokens", "int", 32768, "embedding",
             "The external engine's true input token ceiling"),
     Setting("embed_counter", "str", "heuristic", "embedding",
-            "Where external token counts come from (heuristic is approximate "
-            "and logs once)",
-            choices=("heuristic", "tokenizer", "gguf-meta")),
+            "Where external token-count budgets come from: 'server-tokenize' "
+            "(the host's POST /tokenize, exact; fails over loudly), "
+            "'gguf-meta' (a chars/token prior read from the model's GGUF "
+            "header), 'declared' (embed_chars_per_token), 'heuristic' "
+            "(len/4, approximate, logs once)",
+            choices=("server-tokenize", "gguf-meta", "declared", "heuristic")),
+    Setting("embed_counter_gguf", "str", "", "embedding",
+            "Path to the model's GGUF file, required for "
+            "embed_counter='gguf-meta'; the header's vocabulary yields a "
+            "measured chars/token prior (pure Python, no tokenizer wheel)"),
+    Setting("embed_chars_per_token", "float", 0.0, "embedding",
+            "Declared chars-per-token constant, required (0.5..64) for "
+            "embed_counter='declared'"),
     Setting("precision", "str", "auto", "embedding",
             "Weight precision: auto follows device (CUDA->FP16, CPU->FP32); "
             "int8 explicit only, needs a measured artifact",
@@ -267,6 +277,12 @@ def _parse(kind: str, raw: Any, origin: str) -> Any:
         except (TypeError, ValueError):
             raise ValueError(
                 f"{origin}: expected an integer (got {raw!r})") from None
+    if kind == "float":
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{origin}: expected a number (got {raw!r})") from None
     if kind == "csv":
         if isinstance(raw, (list, tuple)):
             items = [str(x).strip() for x in raw]
@@ -325,6 +341,8 @@ class Settings:
     embed_prefixes: str = "none"
     embed_max_tokens: int = 32768
     embed_counter: str = "heuristic"
+    embed_counter_gguf: str = ""
+    embed_chars_per_token: float = 0.0
     image_model_id: Optional[str] = None
     image_precision: str = "auto"
     cpu_arena: bool = False
@@ -483,10 +501,24 @@ class Settings:
             if not 64 <= self.embed_max_tokens <= 1048576:
                 errors.append(
                     "embedding.embed_max_tokens must be within 64..1048576")
-        elif self.endpoint_url or self.embed_family:
+            if self.embed_counter == "gguf-meta" and not (
+                    self.embed_counter_gguf
+                    and Path(self.embed_counter_gguf).is_file()):
+                errors.append(
+                    "embedding.embed_counter_gguf must be the path to an "
+                    "existing GGUF file when embed_counter='gguf-meta'")
+            if self.embed_counter == "declared" and not (
+                    0.5 <= self.embed_chars_per_token <= 64.0):
+                errors.append(
+                    "embedding.embed_chars_per_token must be within 0.5..64 "
+                    "when embed_counter='declared'")
+        elif (self.endpoint_url or self.embed_family
+              or self.embed_counter != "heuristic"
+              or self.embed_counter_gguf or self.embed_chars_per_token):
             errors.append(
-                "embedding.endpoint_url/embed_family are external-backend "
-                "settings — set embedding.backend='external' or drop them")
+                "embedding.endpoint_url/embed_family/embed_counter* are "
+                "external-backend settings — set "
+                "embedding.backend='external' or drop them")
 
         if self.rerank_backend == "external":
             if not self.rerank_endpoint_url.lower().startswith(("http://", "https://")):
@@ -556,6 +588,8 @@ class Settings:
             embed_prefixes=self.embed_prefixes,
             embed_max_tokens=self.embed_max_tokens,
             embed_counter=self.embed_counter,
+            embed_counter_gguf=self.embed_counter_gguf,
+            embed_chars_per_token=self.embed_chars_per_token,
             cache_dir=self.cache_dir,
             device=self.device,
             precision=self.precision,
@@ -740,6 +774,8 @@ def set_cli_flags(parser: Any, *, hidden: bool = False, mcp: bool = False) -> No
             opts: Dict[str, Any] = dict(default=argparse.SUPPRESS, help=help_text)
             if row.kind == "int":
                 opts["type"] = int
+            if row.kind == "float":
+                opts["type"] = float
             if row.choices:
                 opts["choices"] = row.choices
             _add(flag, **opts)

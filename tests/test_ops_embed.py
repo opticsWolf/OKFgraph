@@ -133,6 +133,25 @@ def test_per_call_dim_when_endpoint_ignores_dimensions(tmp_path):
         _EHandler.honour_dimensions = True
 
 
+def test_embed_reports_the_effective_counter_source(tmp_path):
+    """W4: the provenance `counter` is the effective source — a declared
+    `server-tokenize` probe that fails (LM Studio / TEI serve no /tokenize)
+    reports 'heuristic-fallback', not the wish."""
+    r = OKFRouter(
+        db_path=str(tmp_path / "graph.db"),
+        model_id="stub/nomic-a",
+        embedding_dim=512,
+        embed_backend="external",
+        endpoint_url=f"http://127.0.0.1:{PORT}",
+        embed_family="nomic-v1.5",
+        embed_prefixes="nomic-v1.5",
+        embed_counter="server-tokenize",      # the stub has no /tokenize
+    )
+    out = r.embed(texts=["degraded counting"], task="Document")
+    assert out["counter"] == "heuristic-fallback"
+    assert out["honours_dimensions"] is True
+
+
 def test_budget_fences_hold_under_heuristic_counter(tmp_path):
     """W6 tail: the greedy token bins respect the budget even when the
     counting source is the external engine's heuristic (len/4, floor 8)."""

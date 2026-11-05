@@ -23,6 +23,19 @@ db_path = "kb.db"
 [import]
 # identity = "frontmatter"   # a frontmatter `id:` is the concept id (moves keep links)
 
+[embedding]
+# 0.12 external-lane options (the embroider crate stays the default):
+# backend = "external"          # an OpenAI-shaped POST /embeddings host owns the model
+# endpoint_url = "http://127.0.0.1:8931"
+# embed_family = "nomic-v1.5"   # declared contract: prefixes, pooling, dim ladder
+# api_key_env = "MY_KEY_VAR"    # name of the env var holding the bearer key
+# Counting ladder (batch budgets): embed_counter = "server-tokenize" asks the
+# host's POST /tokenize for exact counts (llama.cpp serves it; LM Studio/TEI
+# do not — a failed probe degrades loudly); "gguf-meta" + embed_counter_gguf
+# = "path/model.gguf" reads a chars/token prior from the GGUF header (pure
+# Python, no tokenizer wheel); "declared" + embed_chars_per_token = 3.8 is
+# your own constant; default "heuristic" = len/4, logged once as approximate.
+
 [search]
 # exclude_tags = ["superseded"]   # hidden unless a search passes exclude_tags
 # Cross-encoder for opt-in rerank (search --rerank / --rank cross):

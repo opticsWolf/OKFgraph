@@ -216,6 +216,17 @@ v6.8)" and its Design Decisions table.
   per process). A graph keeps one model per vector space; the crate lane
   (`jinaai/jina-embeddings-v5-text-small-retrieval` via embroider/ONNX)
   stays the default.
+- **Counting ladder for the external budget (W4).** `embed_counter`
+  declares where token counts come from: `server-tokenize` (exact — the
+  host's own `POST /tokenize`, which llama.cpp serves at the server root;
+  probed once, degrading to the heuristic with one loud warning when
+  absent), `gguf-meta` + `embed_counter_gguf` (a measured chars/token
+  prior read from the model's GGUF header — pure Python, no `tokenizers`
+  wheel: the header's vocabulary is greedily matched against a fixed
+  English probe), `declared` + `embed_chars_per_token` (0.5..64), or
+  `heuristic` (`max(8, len/4)`, logged once). A failed probe lands on
+  `heuristic-fallback`, and `POST /ops/embed` reports the effective
+  source in its `counter` field.
 - **`okf reembed` / `POST /ops/reembed` (0.12).** Rebuild every vector under
   the configured embed engine, then re-pin (`dry_run` reports counts, dim
   and model without writing). Refuses dim migrations (`DIM_MISMATCH`) and

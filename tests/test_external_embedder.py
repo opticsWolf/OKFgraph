@@ -198,5 +198,62 @@ def test_router_kwargs_spray_covers_the_new_rows():
     kwargs = s.router_kwargs()
     for key in ("embed_backend", "endpoint_url", "api_key_env",
                 "embed_family", "embed_pooling", "embed_prefixes",
-                "embed_max_tokens", "embed_counter"):
+                "embed_max_tokens", "embed_counter", "embed_counter_gguf",
+                "embed_chars_per_token"):
         assert key in kwargs, key
+
+
+# ── W4 counter ladder (settings layers) ──────────────────────────────────
+
+def test_settings_checks_counter_ladder(tmp_path):
+    s = Settings()
+    s.db_path = "test.db"
+    s.backend = "external"
+    s.endpoint_url = "http://127.0.0.1:9"
+    s.embed_family = "nomic-v1.5"
+    # gguf-meta without a real file refuses
+    s.embed_counter = "gguf-meta"
+    errors, _ = s.checks()
+    assert any("embed_counter_gguf" in e for e in errors)
+    s.embed_counter_gguf = str(tmp_path / "absent.gguf")
+    errors, _ = s.checks()
+    assert any("embed_counter_gguf" in e for e in errors)
+    good = tmp_path / "model.gguf"
+    good.write_bytes(b"GGUF" + b"\x00" * 8)
+    s.embed_counter_gguf = str(good)
+    errors, _ = s.checks()
+    assert not any("embed_counter_gguf" in e for e in errors)
+    # declared needs the constant in range
+    s.embed_counter = "declared"
+    errors, _ = s.checks()
+    assert any("embed_chars_per_token" in e for e in errors)
+    s.embed_chars_per_token = 3.8
+    errors, _ = s.checks()
+    assert not any("embed_chars_per_token" in e for e in errors)
+    s.embed_chars_per_token = 999.0
+    errors, _ = s.checks()
+    assert any("embed_chars_per_token" in e for e in errors)
+    # the choice table carries the four W4 sources (tokenizer is gone)
+    s.embed_counter = "tokenizer"
+    errors, _ = s.checks()
+    assert any("must be one of" in e for e in errors)
+
+
+def test_settings_reject_counter_rows_on_the_crate_lane():
+    s = Settings()
+    s.db_path = "test.db"
+    s.embed_counter = "server-tokenize"     # harmless wish, wrong lane
+    errors, _ = s.checks()
+    assert any("backend='external'" in e for e in errors)
+
+
+def test_float_setting_parses_from_env():
+    base = {"OKFGRAPH_BACKEND": "external",
+            "OKFGRAPH_ENDPOINT_URL": "http://127.0.0.1:9",
+            "OKFGRAPH_EMBED_FAMILY": "nomic-v1.5",
+            "OKFGRAPH_EMBED_CHARS_PER_TOKEN": "3.8"}
+    s = Settings.load(environ=base)
+    assert s.embed_chars_per_token == pytest.approx(3.8)
+    bad = dict(base, **{"OKFGRAPH_EMBED_CHARS_PER_TOKEN": "nan-ish"})
+    with pytest.raises(ValueError):
+        Settings.load(environ=bad)

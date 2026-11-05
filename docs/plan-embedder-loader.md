@@ -436,6 +436,28 @@ engine-independent; only their *row caps* read `count()`.
       the 0.12 report shapes. Seam tests 4 green; the touched Weave
       suites 55 green. Remaining: the W4 counters (`server-tokenize`
       first), docs passes, the 0.11.x backlog.
+  8e. **Phase 1 slice 7 = W4, the counting ladder (2026-11-05).**
+      `embed_counter` declares where external token-count budgets come
+      from: `server-tokenize` (exact — the host's own `POST /tokenize`,
+      which llama.cpp serves at the server root; probed once per process,
+      degrading to the heuristic with one loud warning when absent),
+      `gguf-meta` + `embed_counter_gguf` (a measured chars/token prior
+      read from the model's GGUF header — pure Python, no `tokenizers`
+      wheel: the header's vocabulary is greedily longest-match probed
+      against a fixed English sample), `declared` + `embed_chars_per_token`
+      (0.5..64) and `heuristic` (`max(8, len/4)`, logged once). A failed
+      probe lands on `heuristic-fallback`; `POST /ops/embed` reports the
+      **effective** source. Live on this machine (nomic-v1.5 Q4_K_M at a
+      142-char text): true `/tokenize` = 25 tokens (5.68 chars/token),
+      heuristic = 35 (+40% over-count, the safe direction), gguf-meta
+      prior 4.35 → ~33 (+32%), header scan 32 ms. LM Studio / TEI serve
+      no `/tokenize` and degrade as designed. Tests: `test_counter_gguf.py`
+      (15 — synthetic GGUFs, wrapped `EngineSpec` usage, the root-vs-/v1
+      wire, the once-only degrade), `test_external_embedder.py` +3
+      (settings checks incl. the crate-lane refusal, the env float
+      parse, the kwargs spray), `test_ops_embed.py` +1 (effective
+      counter provenance). Touched offline suites 86 + 109 green.
+      Remaining Phase-1 scope: docs passes, the 0.11.x backlog.
   9. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
      the crate default family, nomic-v1.5 as the reference external
      embedder contract (datum 6), bge-reranker-v2-m3 as the reference

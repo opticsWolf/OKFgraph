@@ -1252,7 +1252,13 @@ CLI > env > TOML > defaults, per key. Invalid configuration is
 > stay in the crate; external loaders own their numerics. `okf reembed`
 > re-encodes + re-pins across a model switch (`OKFGRAPH_ALLOW_REPIN=1` is
 > the sanctioned pin-exempt boot for that), `POST /ops/embed` rides the
-> graph's pinned encoder for foreign callers.
+> graph's pinned encoder for foreign callers. W4's counting ladder lets
+> `embed_counter` declare where token-count budgets come from:
+> `server-tokenize` (exact, the host's `POST /tokenize`), `gguf-meta`
+> (a chars/token prior from the model's GGUF header, no tokenizer wheel),
+> `declared` (`embed_chars_per_token`) or `heuristic` (len/4, logged
+> once); a failed probe lands on `heuristic-fallback`, and `/ops/embed`
+> reports the effective source.
 
 ### 5.4. Import Options
 

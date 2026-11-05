@@ -155,6 +155,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         embed_prefixes: str = "none",
         embed_max_tokens: int = 32768,
         embed_counter: str = "heuristic",
+        embed_counter_gguf: str = "",
+        embed_chars_per_token: float = 0.0,
     ):
         """Open (or create) the graph database and wire up all managers.
 
@@ -697,6 +699,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 embed_prefixes=embed_prefixes,
                 embed_max_tokens=embed_max_tokens,
                 embed_counter=embed_counter,
+                embed_counter_gguf=embed_counter_gguf,
+                embed_chars_per_token=embed_chars_per_token,
             )
             # Mirrors the crate lane's first-embed hooks for the pins:
             # external engines carry no numeric precision, so the model

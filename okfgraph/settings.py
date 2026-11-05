@@ -215,6 +215,22 @@ SETTINGS = [
     Setting("rerank_stride", "int", None, "search",
             "Token step between long-text windows (default: half the window)",
             cli=False, mcp=False),
+    Setting("rerank_backend", "str", "embroider", "search",
+            "Rerank lane: 'embroider' (the crate cross-encoder) or 'external' "
+            "(a POST /v1/rerank endpoint), 0.12.0",
+            choices=("embroider", "external")),
+    Setting("rerank_endpoint_url", "str", "", "search",
+            "External rerank base URL, e.g. http://127.0.0.1:8932 (optional; "
+            "required for rerank_backend='external')"),
+    Setting("rerank_api_key_env", "str", "", "search",
+            "Name of the env var carrying the external rerank endpoint's "
+            "bearer key (optional)"),
+    Setting("rerank_family", "str", "", "search",
+            "Declared rerank family label for provenance, e.g. 'bge-v2-m3' "
+            "(required for rerank_backend='external')"),
+    Setting("rerank_max_tokens", "int", 8192, "search",
+            "The external engine's declared per-pair token ceiling (the "
+            "short/long split point)", cli=False, mcp=False),
     # TOML/env only: `search --efs` is the per-call spelling.
     Setting("efs", "int", None, "search",
             "Vector index search breadth, 16..1000 (higher: slower, closer to "
@@ -327,6 +343,11 @@ class Settings:
     rerank_device: str = "auto"
     rerank_precision: str = "auto"
     rerank_top_n: int = 30
+    rerank_backend: str = "embroider"
+    rerank_endpoint_url: str = ""
+    rerank_api_key_env: str = ""
+    rerank_family: str = ""
+    rerank_max_tokens: int = 8192
     rerank_window: Optional[int] = None
     rerank_stride: Optional[int] = None
     efs: Optional[int] = None
@@ -467,6 +488,23 @@ class Settings:
                 "embedding.endpoint_url/embed_family are external-backend "
                 "settings — set embedding.backend='external' or drop them")
 
+        if self.rerank_backend == "external":
+            if not self.rerank_endpoint_url.lower().startswith(("http://", "https://")):
+                errors.append(
+                    "search.rerank_endpoint_url must be an http(s) URL for "
+                    "rerank_backend='external'")
+            if not self.rerank_family or "/" in self.rerank_family:
+                errors.append(
+                    "search.rerank_family must be a short declared label "
+                    "for rerank_backend='external'")
+            if not 64 <= self.rerank_max_tokens <= 1048576:
+                errors.append(
+                    "search.rerank_max_tokens must be within 64..1048576")
+        elif self.rerank_endpoint_url or self.rerank_family:
+            errors.append(
+                "search.rerank_endpoint_url/rerank_family are external-lane "
+                "settings — set search.rerank_backend='external' or drop them")
+
         if not 1 <= self.batch_size <= 256:
             errors.append("import.batch_size must be between 1 and 256")
         if not 64 <= self.chunk_size <= 8192:
@@ -540,6 +578,11 @@ class Settings:
             rerank_top_n=self.rerank_top_n,
             rerank_window=self.rerank_window,
             rerank_stride=self.rerank_stride,
+            rerank_backend=self.rerank_backend,
+            rerank_endpoint_url=self.rerank_endpoint_url,
+            rerank_api_key_env=self.rerank_api_key_env,
+            rerank_family=self.rerank_family,
+            rerank_max_tokens=self.rerank_max_tokens,
             efs=self.efs,
         )
 

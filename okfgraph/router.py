@@ -141,6 +141,11 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         rerank_top_n: int = 30,
         rerank_window: Optional[int] = None,
         rerank_stride: Optional[int] = None,
+        rerank_backend: str = "embroider",
+        rerank_endpoint_url: str = "",
+        rerank_api_key_env: str = "",
+        rerank_family: str = "",
+        rerank_max_tokens: int = 8192,
         efs: Optional[int] = None,
         embed_backend: str = "embroider",
         endpoint_url: str = "",
@@ -226,6 +231,13 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             rerank_device: ``auto`` / ``cpu`` / ``cuda`` for the reranker.
             rerank_precision: ``auto`` (= fp32), ``fp32`` or ``q8``.
             rerank_top_n: Candidates the cross-encoder rescores per search.
+            rerank_backend: ``embroider`` (the crate cross-encoder, default)
+                or ``external`` (0.12: a ``POST /v1/rerank`` endpoint —
+                llama.cpp ``--rerank``, TEI, …). No graph pins either way:
+                rerank scores are order-only; identity rides boot logs and
+                search provenance notes. The external engine failing its
+                first score disables rerank for the session (one loud
+                warning); keyword + vector search keeps answering.
             rerank_window / rerank_stride: Token window and step for texts
                 longer than the pair cap (``None`` = embroider defaults).
             efs: Default vector index search breadth (16..1000) for
@@ -630,31 +642,49 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         self.vision_encoder._truncate_dim = self.embedding_dim
         # Cross-encoder rerank (0.11.0): opt-in per search, opened on the
         # first rerank. No compat or pin checks — it writes no vectors.
-        from okfgraph.components.embedding import LazyReranker
-
-        def _report_rerank_open(session) -> None:
+        # (0.12.0): the external lane scores over the standard rerank wire
+        # instead; both lanes keep the LazyReranker API surface.
+        if rerank_backend == "external":
+            from okfgraph.components.external_reranker import (
+                rerank_engine_from_settings,
+            )
+            self.reranker = rerank_engine_from_settings(
+                backend="external", model_id=rerank_model_id,
+                family=rerank_family, endpoint_url=rerank_endpoint_url,
+                api_key_env=rerank_api_key_env,
+                max_tokens=rerank_max_tokens,
+            )
             logger.info(
-                "rerank: %s cuda=%s precision=%s max_length=%s",
-                rerank_model_id, session.used_cuda, session.precision,
-                session.max_length,
+                "rerank (external): %s via %s family=%s max_tokens=%s",
+                rerank_model_id, rerank_endpoint_url, rerank_family,
+                rerank_max_tokens,
             )
+        else:
+            from okfgraph.components.embedding import LazyReranker
 
-        def _rerank_session_factory():
-            _require_ort()
-            return self.embroider.Reranker.open(
-                rerank_model_id,
-                cache_dir=cache_dir,
+            def _report_rerank_open(session) -> None:
+                logger.info(
+                    "rerank: %s cuda=%s precision=%s max_length=%s",
+                    rerank_model_id, session.used_cuda, session.precision,
+                    session.max_length,
+                )
+
+            def _rerank_session_factory():
+                _require_ort()
+                return self.embroider.Reranker.open(
+                    rerank_model_id,
+                    cache_dir=cache_dir,
+                    device=rerank_device,
+                    precision=None if rerank_precision == "auto" else rerank_precision,
+                    cpu_arena=self.cpu_arena,
+                )
+
+            self.reranker = LazyReranker(
+                model_id=rerank_model_id,
                 device=rerank_device,
-                precision=None if rerank_precision == "auto" else rerank_precision,
-                cpu_arena=self.cpu_arena,
+                session_factory=_rerank_session_factory,
+                on_open=_report_rerank_open,
             )
-
-        self.reranker = LazyReranker(
-            model_id=rerank_model_id,
-            device=rerank_device,
-            session_factory=_rerank_session_factory,
-            on_open=_report_rerank_open,
-        )
         self.rerank_top_n = rerank_top_n
         if embed_backend == "external":
             from okfgraph.components.external_embedder import engine_from_settings

@@ -379,9 +379,38 @@ engine-independent; only their *row caps* read `count()`.
       W5 smoke: serve route + stub endpoint, dim 256 round-trip \\\\
       `renormalised=True`. **W7 landed** (`8fc2afc`): `okf reembed
       [--dry-run]` CLI, README ops/maintenance rows, CHANGELOG 0.12
-      section, architecture settings note, CLI skill row. Remaining
-      Phase-1 scope: budget-fence tests under the heuristic counter
-      (W6 tail), Silk wiring (W8), reranker seam (W9).
+      section, architecture settings note, CLI skill row. **W6 tail
+      landed** (`bcb8ffe`): the greedy token bins respect the batch cap
+      and budget under the external heuristic counter.
+  8b. **Phase 1 slice 4 = the reranker seam, landed** (W9,
+      `dev_0.12.0`). `ExternalRerankEngine`
+      (`okfgraph/components/external_reranker.py`): the
+      `LazyReranker` duck-type (`score_batch`/`score_long`/
+      `count_tokens`/`max_length`/`model_id`/`used_cuda`) over the
+      standard rerank wire, `POST <base>/v1/rerank`
+      `{model, query, documents, top_n}` → `{results: [{index,
+      relevance_score}]}` (the llama.cpp/TEI shape; one call = one
+      query group; `score_batch` groups pairs by query, input order
+      preserved; full index coverage + finite scores validated).
+      Settings `[search] rerank_backend='external'` +
+      `rerank_endpoint_url` / `rerank_api_key_env` / `rerank_family` /
+      `rerank_max_tokens` (declared per-pair ceiling; the short/long
+      split point). The optional half's contract: the external engine
+      failing its first score **disables rerank for the session**
+      (`down` + one loud warning); `SearchEngine._cross_scores`
+      answers that search and all later ones unranked (returns None →
+      no cross_score keys, raw order). The crate lane's fail-fast
+      semantics unchanged. No graph pins — identity rides boot logs +
+      `spec_report()`; windowing = None in the spec (window/stride
+      arguments accepted and ignored, warned once). Tests
+      (`test_rerank_external.py`, 7 green): grouping/order, the
+      one-shot window warning, broken-index coverage → trip → the
+      fast-path skip, the router smoke (first failure degrades the
+      search, later searches make no rerank calls; a healthy host
+      orders with `cross_score`), settings validation, factory.
+      Remaining Phase-1 scope: Silk wiring (W8), the W4 counters
+      (`server-tokenize` first, GGUF calibrated prior second),
+      0.11.x backlog.
   9. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
      the crate default family, nomic-v1.5 as the reference external
      embedder contract (datum 6), bge-reranker-v2-m3 as the reference

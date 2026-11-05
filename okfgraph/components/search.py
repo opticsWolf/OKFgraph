@@ -1019,36 +1019,55 @@ class SearchEngine:
                 title = r.get("title")
             docs.append(f"{title}: {text}" if title else text)
 
-        for r, score in zip(head, self._cross_scores(query, docs)):
+        scores = self._cross_scores(query, docs)
+        if scores is None:
+            # The rerank lane is down (or absent): answer unranked — the
+            # optional half must never take a search with it.
+            return results
+        for r, score in zip(head, scores):
             r["cross_score"] = score
         head.sort(key=lambda x: (-x["cross_score"], x.get("id") or "",
                                  x.get("chunk_id") or ""))
         return head + tail
 
-    def _cross_scores(self, query: str, docs: List[str]) -> List[float]:
+    def _cross_scores(self, query: str, docs: List[str]) -> Optional[List[float]]:
         """Cross-encoder logits for ``(query, doc)`` pairs, in ``docs`` order.
 
         A doc that fits the pair cap (query + doc + 4 specials) joins one
         ``score_batch``; a longer one is scored by ``score_long`` so no
         tail is silently cut.
+
+        Returns None when the reorder must be skipped this search: no
+        reranker is mounted, or an external rerank lane has already
+        tripped (``down`` — the optional half; search answers unranked).
         """
         rr = self.reranker
+        if rr is None or getattr(rr, "down", False):
+            return None
         window = self.rerank_window
-        cap = min(rr.max_length, window) if window else rr.max_length
-        q_len = rr.count_tokens(query)
-        scores: List[Optional[float]] = [None] * len(docs)
-        short = []
-        for i, doc in enumerate(docs):
-            if q_len + rr.count_tokens(doc) + 4 > cap:
-                scores[i] = rr.score_long(query, doc, window=window,
-                                          stride=self.rerank_stride)
-            else:
-                short.append(i)
-        if short:
-            batch = rr.score_batch([(query, docs[i]) for i in short])
-            for i, s in zip(short, batch):
-                scores[i] = float(s)
-        return [float(s) for s in scores]
+        try:
+            cap = min(rr.max_length, window) if window else rr.max_length
+            q_len = rr.count_tokens(query)
+            scores: List[Optional[float]] = [None] * len(docs)
+            short = []
+            for i, doc in enumerate(docs):
+                if q_len + rr.count_tokens(doc) + 4 > cap:
+                    scores[i] = rr.score_long(query, doc, window=window,
+                                              stride=self.rerank_stride)
+                else:
+                    short.append(i)
+            if short:
+                batch = rr.score_batch([(query, docs[i]) for i in short])
+                for i, s in zip(short, batch):
+                    scores[i] = float(s)
+            return [float(s) for s in scores]
+        except Exception as exc:  # noqa: BLE001 — the optional half degrades
+            from okfgraph.components.external_reranker import RerankDownError
+            if isinstance(exc, RerankDownError):
+                # the external lane just tripped under us: the engine has
+                # disabled itself (loud warning logged); answer unranked
+                return None
+            raise
 
 
     def search_hybrid(

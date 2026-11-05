@@ -408,9 +408,34 @@ engine-independent; only their *row caps* read `count()`.
       fast-path skip, the router smoke (first failure degrades the
       search, later searches make no rerank calls; a healthy host
       orders with `cross_score`), settings validation, factory.
-      Remaining Phase-1 scope: Silk wiring (W8), the W4 counters
+      Remaining Phase-1 scope: the W4 counters
       (`server-tokenize` first, GGUF calibrated prior second),
       0.11.x backlog.
+  8c. **Phase 1 slice 5 = `pin_info` + the host half of the node flow
+      (2026-11-05, `9a7f850`).** `OKFRouter.pin_info()` (in `OPS`): what
+      the vectors are pinned to (`MetaText` model, `Meta` numeric
+      precision, the column width) against what the server booted with
+      (model, expected precision, backend, family) — the Softer-side
+      pins display flows over this. ``embedding_dim`` never mismatches
+      (the width is a create-time fact; a re-embed cannot move it),
+      `reembed`'s report gains `pins_after`. Rust-side tests: the
+      mismatch across the repin escape, cleared by the re-embed.
+  8d. **Phase 1 slice 6 = W8, the Silk/Weave wiring (2026-11-05).** In
+      the Weave plugin's silk mirror (the module tree the runtime
+      imports; the whole okf layer = working-tree files there):
+      `OkfSpec` gains `embedding_dim` / `backend` / `embed_family` /
+      `endpoint_url` / `api_key_env` / `allow_repin`; the external-lane
+      rows and the re-embed escape ride `OKFGRAPH_*` env at launch
+      (`--embedding-dim` carries the width), `OkfEmbedder` rides
+      `POST /ops/embed` on the graph's pinned encoder
+      (`embedder_for` accepts an `OkfGraph` handle; the inherited
+      fail-to-silence), `OkfGraph.repinned()` = the declared pin-exempt
+      boot → re-embed → pin-clean restart cycle, and the Knowledge
+      Graph node gains vector-dim / backend / endpoint / family /
+      key-env rows (node_version 2) with the honest pin display and
+      the 0.12 report shapes. Seam tests 4 green; the touched Weave
+      suites 55 green. Remaining: the W4 counters (`server-tokenize`
+      first), docs passes, the 0.11.x backlog.
   9. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
      the crate default family, nomic-v1.5 as the reference external
      embedder contract (datum 6), bge-reranker-v2-m3 as the reference

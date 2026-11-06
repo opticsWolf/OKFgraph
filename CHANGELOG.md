@@ -227,6 +227,21 @@ v6.8)" and its Design Decisions table.
   `heuristic` (`max(8, len/4)`, logged once). A failed probe lands on
   `heuristic-fallback`, and `POST /ops/embed` reports the effective
   source in its `counter` field.
+- **Interruptible re-embed: the serve job lane (0.12.1).** The re-embed
+  used to ride one blocking HTTP request with a 6 h timeout — Silk could
+  only abandon it by dropping the connection, and the op kept the graph
+  lock while every other call queued. `POST /ops/reembed
+  {"mode": "job"}` now answers a job id inline; `GET /jobs/<id>`
+  reports status + per-batch progress (`concepts`/`chunks`, done/total);
+  `POST /jobs/<id>/cancel` stops the op at its next batch boundary
+  (`reembed(progress=, cancelled=)` hooks, batch-boundary only). Cancel
+  never queues behind the op lock. A cancelled run returns
+  `cancelled: true` (`resumable: true`) with partial counts — the
+  vector indexes stay dropped exactly as after a crash, and a re-run
+  converges the graph. A second concurrent reembed (job or sync)
+  refuses `REEMBED_IN_PROGRESS` instead of silently queueing.
+  `OKFClient` gains `job`/`jobs`/`cancel_job`/`reembed_job`. The
+  blocking default is unchanged.
 - **`okf reembed` / `POST /ops/reembed` (0.12).** Rebuild every vector under
   the configured embed engine, then re-pin (`dry_run` reports counts, dim
   and model without writing). Refuses dim migrations (`DIM_MISMATCH`) and

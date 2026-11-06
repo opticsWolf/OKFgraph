@@ -458,6 +458,41 @@ engine-independent; only their *row caps* read `count()`.
       parse, the kwargs spray), `test_ops_embed.py` +1 (effective
       counter provenance). Touched offline suites 86 + 109 green.
       Remaining Phase-1 scope: docs passes, the 0.11.x backlog.
+  8f. **Phase 1 slice 8 = interruptible re-embed: the job lane (2026-11-05,
+      the Weave integration's blocking gap).** The re-embed rode ONE
+      blocking HTTP request with a 6 h timeout; Silk could only abandon
+      it by dropping the connection — and the op kept the graph lock
+      while search/ingest/pin_info queued behind it. ``okf serve`` now
+      owns a job lane (0.12.1): ``POST /ops/reembed {"mode": "job"}``
+      answers a job id inline, ``GET /jobs/<id>`` reports status +
+      phase/done/total (the reembed accepts a ``progress`` hook called
+      per batch), and ``POST /jobs/<id>/cancel`` stops the op AT ITS
+      NEXT BATCH BOUNDARY (``reembed`` takes a ``cancelled`` callable
+      checked between batches only). The cancel itself never queues
+      behind the op lock, so cancelling a 6 h re-embed answers now.
+      A cancelled run returns ``cancelled: true`` with partial counts
+      ``resumable: true`` — the same crash-like state the docstring
+      recorded (vector indexes stay dropped until a re-run converges;
+      a re-run re-encodes FROM SCRATCH, honestly noted, since no
+      per-row rewrite marker exists). Sync default unchanged (mode
+      absent = the blocking call), a second submit (job OR sync) now
+      refuses ``REEMBED_IN_PROGRESS`` instead of silently queueing (a
+      route precheck + an in-op check under the lock as the race
+      backstop; new state code). Silk-side: ``OkfGraph.reembed`` rides
+      the job lane (poll between ``OkfGraph.REEMBED_POLL`` seconds,
+      ``on_progress`` per poll, ``should_stop()`` between polls →
+      cancel), ``OkfGraph.repinned`` inherits it, and
+      ``OkfClient.job/cancel_job`` carry the GET/POST surface; each
+      dropped poll retries without killing the loop, and a window that
+      expires cancels the job server-side so nothing queues. Tests:
+      ``tests/test_reembed_jobs.py`` (5 — real-server-on-a-thread:
+      progress, cancel-between-batches with the partial counts + the
+      re-run converges + search restored, the double-submit refusal,
+      unknown-job/terminal-cancel idempotence, the mode list; the
+      sleepy stub encoder × 40 rows makes the batch boundaries real).
+      Plus a cross-repo live smoke (the Silk OkfClient polling a real
+      0.12.1 owner: submit → poll → done → report). Touched suites
+      green; sync-contract regression suites green.
   9. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
      the crate default family, nomic-v1.5 as the reference external
      embedder contract (datum 6), bge-reranker-v2-m3 as the reference

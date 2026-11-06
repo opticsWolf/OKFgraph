@@ -199,6 +199,33 @@ class OKFClient:
             raise OKFError("BAD_VALUE", f"unknown op {op!r}", fields={"op": op})
         return self._unwrap(self._request("POST", f"/ops/{op}", kwargs))
 
+    # -- jobs (0.12.1) -------------------------------------------------------
+
+    def jobs(self) -> list:
+        """Known serve-side jobs (running + recently finished)."""
+        return self._unwrap(self._request("GET", "/jobs"))
+
+    def job(self, job_id: str) -> Dict[str, Any]:
+        """One job record: ``status`` / ``phase`` progress and, when the
+        job is terminal, the op's full result (a cancelled reembed carries
+        ``cancelled: true`` with its partial counts)."""
+        return self._unwrap(self._request("GET", f"/jobs/{job_id}"))
+
+    def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """Ask the op to stop at its next batch boundary. This does not
+        queue behind the op: the cancel flag is checked by the op thread
+        itself, so cancelling a 6 h re-embed answers immediately."""
+        return self._unwrap(self._request("POST", f"/jobs/{job_id}/cancel"))
+
+    def reembed_job(self, **kwargs) -> str:
+        """Submit the re-embed as a job and return its job id.
+
+        Mirrors ``router.reembed``'s keyword shape (``dry_run``); the
+        result itself then rides ``job(job_id)``.
+        """
+        out = self.call("reembed", mode="job", **kwargs)
+        return str(out.get("job"))
+
     def close(self) -> None:
         """Nothing to release: one connection per call."""
 

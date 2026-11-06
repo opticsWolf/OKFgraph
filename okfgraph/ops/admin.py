@@ -385,7 +385,8 @@ class AdminOps:
     # silent mix.
     # ------------------------------------------------------------------
 
-    def reembed(self, *, dry_run: bool = False) -> dict:
+    def reembed(self, *, dry_run: bool = False,
+                progress=None, cancelled=None) -> dict:
         """Rebuild every text vector under the configured embed engine,
         then re-pin ``embedding_model``. Returns the report dict.
 
@@ -403,11 +404,47 @@ class AdminOps:
           space must never be rebuilt by a text-model switch;
         * a dim migration (``DIM_MISMATCH``): 0.12.0 rebuilds vectors in
           place at the graph's column width; a different engine dim needs
-          a fresh graph.
+          a fresh graph;
+        * a second reembed while one is in flight (``REEMBED_IN_PROGRESS``
+          — 0.12.1); a running reembed owns the graph, and queuing a
+          second one behind the op lock would stall every other call
+          behind the queue instead of answering now.
+
+        Cooperative hooks (0.12.1, for the job lane in ``okf serve``):
+        ``progress(phase, done, total)`` is called after every rewritten
+        batch (``phase`` ∈ ``concepts``/``chunks``); ``cancelled()`` — a
+        zero-arg callable — is checked between batches only, never inside
+        one, so a cancel request stops the op at a batch boundary with
+        everything written so far committed. A cancelled run returns
+        ``cancelled: true`` with the partial counts; the vector indexes
+        stay dropped exactly as after a crash mid-way The graph is
+        untouched otherwise and a RE-RUN converges it back (it re-encodes
+        from scratch — there is no per-row marker of already-rewritten
+        rows — the honest recovery contract, same text as the crash
+        note). Search answers nothing in between: without the vector
+        indexes there is no vector search.
 
         Each step auto-commits; a crash mid-way leaves the op recoverable
         by re-running (hence the returned per-table counts).
         """
+        from okfgraph.components.embedding import MODEL_META_KEY, _PRECISION_CODE
+        from okfgraph.errors import StateError
+        if getattr(self, "_reembed_active", False):
+            raise StateError(
+                "REEMBED_IN_PROGRESS",
+                "another reembed is already running on this graph",
+                op="reembed",
+                remedy="poll GET /jobs/<id> on the owner server, or cancel "
+                       "it with POST /jobs/<id>/cancel")
+        self._reembed_active = True
+        try:
+            return self._reembed_inner(
+                dry_run=dry_run, progress=progress, cancelled=cancelled)
+        finally:
+            self._reembed_active = False
+
+    def _reembed_inner(self, *, dry_run: bool = False,
+                       progress=None, cancelled=None) -> dict:
         from okfgraph.components.embedding import MODEL_META_KEY, _PRECISION_CODE
         from okfgraph.errors import StateError
         encoder = getattr(self, "encoder", None)
@@ -478,6 +515,11 @@ class AdminOps:
             "reembed: rebuilding %s concepts + %s chunks with %s",
             len(crs), len(chr_), model_id)
         # 1. drop the two vector indexes (schema lane's exact kinds)
+        if callable(cancelled) and cancelled():
+            report["cancelled"] = True
+            report["resumable"] = True
+            report["reembedded"] = {"concepts": 0, "chunks": 0}
+            return report
         drops = (
             ("Concept", "concept_embedding"),
             ("Chunk", "chunk_embedding"),
@@ -494,6 +536,17 @@ class AdminOps:
             n = 0
             bs = max(1, int(getattr(encoder, "batch_size", 32) or 32))
             for i in range(0, len(rows), bs):
+                if callable(cancelled) and cancelled():
+                    # Batch-boundary stop: rows from the previous batches
+                    # are committed; the rest still carry the old vectors
+                    # and the vector indexes stay dropped (same state a
+                    # crash mid-way leaves; a re-run converges it).
+                    if progress is not None:
+                        try:
+                            progress(label, n, len(rows))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    return n, True
                 part = rows[i:i + bs]
                 vecs = encoder.encode_batch([t for _, t in part], task="Document")
                 if len(vecs) != len(part):
@@ -508,14 +561,35 @@ class AdminOps:
                         {"id": cid, "vec": vec},
                     )
                 n += len(part)
-            return n
-        nc = _rewrite("concept", crs, "embedding")
-        nch = _rewrite("chunk", chr_, "embedding")
+                if progress is not None:
+                    try:
+                        progress(label, n, len(rows))
+                    except Exception:  # noqa: BLE001 - a progress sink
+                        pass            # never breaks the op
+            return n, False
+        nc, c_cancel = _rewrite("concept", crs, "embedding")
+        nch, ch_cancel = (0, False)
+        if not c_cancel:
+            nch, ch_cancel = _rewrite("chunk", chr_, "embedding")
+        cancelled_midway = c_cancel or ch_cancel
+        if cancelled_midway:
+            report["cancelled"] = True
+            report["resumable"] = True
+            report["reembedded"] = {"concepts": nc, "chunks": nch}
+            logger.info(
+                "reembed: cancelled after %s concepts + %s chunks "
+                "(recoverable; re-run to converge)", nc, nch)
+            return report
         # 3. recreate the two vector indexes exactly like the schema lane
         for table, name, create_sql in self.schema_mgr._index_specs():
             if name in ("concept_embedding", "chunk_embedding"):
                 self.conn.execute(create_sql)
-        # 4. re-pin the model MetaText row (the parameter keeps odd ids safe)
+        # 4. re-pin the model MetaText row (the parameter keeps odd ids safe;
+        #    the table itself is created by the first-embed hook and may not
+        #    exist in a graph whose vectors were never closed-session pinned)
+        self.conn.execute(
+            "CREATE NODE TABLE IF NOT EXISTS MetaText "
+            "(key STRING PRIMARY KEY, value STRING)")
         self.conn.execute(
             f"MERGE (m:MetaText {{key: '{MODEL_META_KEY}'}}) SET m.value = $v",
             {"v": model_id},

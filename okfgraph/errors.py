@@ -63,6 +63,7 @@ STATE_CODES = frozenset({
     "VISION_INCOMPATIBLE",
     "NO_ORT_RUNTIME",
     "EMBROIDER_TOO_OLD",
+    "REEMBED_IN_PROGRESS",
     "INTERNAL",
 })
 

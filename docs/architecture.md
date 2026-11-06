@@ -1258,7 +1258,13 @@ CLI > env > TOML > defaults, per key. Invalid configuration is
 > (a chars/token prior from the model's GGUF header, no tokenizer wheel),
 > `declared` (`embed_chars_per_token`) or `heuristic` (len/4, logged
 > once); a failed probe lands on `heuristic-fallback`, and `/ops/embed`
-> reports the effective source.
+> reports the effective source. Long ops run as jobs (0.12.1):
+> `POST /ops/reembed {"mode": "job"}` answers a job id inline,
+> `GET /jobs/<id>` reports status + batch progress, and
+> `POST /jobs/<id>/cancel` stops the op at its next batch boundary
+> (`REEMBED_IN_PROGRESS` refuses a second concurrent run); the sync
+> default is unchanged, and a cancelled run returns partial counts the
+> same way a crash does — the recovery contract (re-run converges it).
 
 ### 5.4. Import Options
 

@@ -32,6 +32,10 @@ Same graph and the same ops as the MCP skill, through `okf` commands.
 
    Flags (`--db-path`, `--bundle-root`, `--root ALIAS=PATH`, ...) and
    `OKFGRAPH_*` env vars override it per call: CLI > env > TOML > defaults.
+   With nothing configured the graph lives in `./.okfgraph/` (db
+   `.okfgraph/okfgraph.db`, bundles `.okfgraph/bundle`, created on first
+   use); a CWD with a legacy `./okfgraph.db` and no `.okfgraph/` keeps
+   using it (bundle root `.`) and warns once.
 2. `okf init` creates the schema (any command would; init just reports
    the adopted pins). It does **not** persist flags — keep roots in TOML.
 3. `okf import --all` loads every configured root. Verify with

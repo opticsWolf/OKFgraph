@@ -82,8 +82,9 @@ def make_lifespan(settings: Settings, given_router=None):
             yield GraphContext(router=given_router, settings=settings)
             return
         db_path = settings.db_path
-        # Default bundle root: the database's parent directory.
-        root = settings.bundle_root or str(Path(db_path).parent)
+        # Default bundle root: <home>/bundle for a db in a .okfgraph home,
+        # else the database's parent directory.
+        root = settings.default_bundle_root(str(Path(db_path).parent))
         router = OKFRouter(
             db_path=db_path,
             bundle_root=root,

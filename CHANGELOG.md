@@ -255,6 +255,22 @@ v6.8)" and its Design Decisions table.
   slice + renormalise client-side; caps 256 texts / 1 MiB).
 
 ### Changed
+- **A graph's default home is `.okfgraph/` (0.12.1).** The built-in
+  `db_path` is `.okfgraph/okfgraph.db` (was `okfgraph.db`) and the default
+  bundle root is `.okfgraph/bundle` (CLI was `.`); both are created on
+  first use. The bundle default follows the db's layout, on every surface:
+  any db inside a `.okfgraph` folder (the default, or an explicit
+  `<root>/.okfgraph/okfgraph.db` as Silk passes it) gets that folder's
+  `bundle/`; any other db keeps the old rule (CLI `.`, `okf serve` /
+  `okf-mcp` the db's parent), and an explicit `--bundle-root` always wins.
+  `okf produce` without `--output-dir` writes into the graph's bundle root.
+  **Backward compatible, nothing moves:** a CWD with `./okfgraph.db` and
+  no `./.okfgraph/` keeps that db (bundle root `.`) and logs one warning
+  naming the new default; a `.okfgraph/` whose db already exists without
+  `bundle/` keeps its old bundle tree (one warning), so a bundle import
+  never reads existing files as deleted. Configs that pin a `db_path`
+  outside a `.okfgraph` folder (`okfgraph.toml`, `OKFGRAPH_DB_PATH`,
+  `--db-path`) are unaffected.
 - **ladybug 0.21.2 → 0.22.1.** Storage version 47 → 49: the first open
   under 0.22 upgrades a graph in place, and 0.21.2 can no longer read it
   afterwards — back up graphs and upgrade every `okf`/`okf-mcp` on the

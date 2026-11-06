@@ -400,7 +400,7 @@ def serve(settings, listen: str, *, ready: Optional[threading.Event] = None,
         Path(uds).unlink()
     router = OKFRouter(
         db_path=settings.db_path,
-        bundle_root=settings.bundle_root or str(Path(settings.db_path).parent),
+        bundle_root=settings.default_bundle_root(str(Path(settings.db_path).parent)),
         **settings.router_kwargs(),
     )
     sf = serve_file_for(settings.db_path)

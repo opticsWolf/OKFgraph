@@ -212,7 +212,7 @@ def _router(args):
     try:
         router = OKFRouter(
             db_path=settings.db_path,
-            bundle_root=settings.bundle_root or ".",
+            bundle_root=settings.default_bundle_root("."),
             **settings.router_kwargs(),
         )
     except OKFError:
@@ -863,7 +863,8 @@ def _produce(args):
         raise OKFError("MISSING_PARAM", "produce needs --source (or --sync)",
                        op="produce", fields={"source": None})
     result = OKFRouter.produce(
-        args.from_, args.source, args.output_dir or ".",
+        args.from_, args.source,
+        args.output_dir or _settings(args).default_bundle_root("."),
         prefix=args.prefix, overwrite=args.overwrite,
     )
 
@@ -1572,7 +1573,8 @@ def build_parser():
                    "exactly the files the producer wrote (default output: the "
                    "bundle root)")
     p.add_argument("--output-dir", default=None,
-                   help="Bundle root to write under (default: .); files go "
+                   help="Bundle root to write under (default: the graph's "
+                   "bundle root, .okfgraph/bundle); files go "
                    "to <output-dir>/<prefix>/ so lint + import agree on ids")
     p.add_argument("--prefix", default=None,
                    help="Namespace directory (default: the producer's own)")

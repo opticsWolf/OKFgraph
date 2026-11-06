@@ -22,7 +22,9 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
    `OKFGRAPH_DB_PATH`, or `[database] db_path` in an `okfgraph.toml` in
    the server's CWD. The server refuses to boot (`CONFIG_INVALID`, exit 2)
    when none is set — a temp default would mean an empty graph every
-   session. `--bundle-root` is optional (default: the DB's parent dir);
+   session. `--bundle-root` is optional (default: `<home>/bundle` for a
+   DB inside a `.okfgraph` home such as `<root>/.okfgraph/okfgraph.db`,
+   else the DB's parent dir);
    `--root ALIAS=PATH` (repeatable) joins extra named roots.
 2. The first boot creates the schema; no init call needed. Bulk
    (re)import of a bundle tree is CLI/Python only (`okf import --all`);

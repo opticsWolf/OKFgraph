@@ -8,6 +8,7 @@ the --bundle-root collision guard.
 
 import argparse
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -24,7 +25,7 @@ NANO = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 # ---- defaults --------------------------------------------------------------
 def test_table_defaults():
     s = Settings()
-    assert s.db_path == "okfgraph.db"
+    assert s.db_path == ".okfgraph/okfgraph.db"
     assert s.bundle_root is None
     assert s.embedding_dim == 512
     assert s.model_id == DEFAULT_MODEL_ID
@@ -48,6 +49,60 @@ def test_table_defaults():
 
 def test_default_model_id_frozen():
     assert DEFAULT_MODEL_ID == "jinaai/jina-embeddings-v5-text-small-retrieval"
+
+
+# ---- graph home (0.12.1) ---------------------------------------------------
+def test_fresh_cwd_uses_the_graph_home(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    s = Settings.load(environ={})
+    assert s.db_path == ".okfgraph/okfgraph.db"
+    assert s.default_bundle_root(".") == str(Path(".okfgraph/bundle"))
+    assert (tmp_path / ".okfgraph" / "bundle").is_dir()
+
+
+def test_legacy_db_keeps_working(tmp_path, monkeypatch, caplog):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "okfgraph.db").write_bytes(b"")
+    with caplog.at_level("WARNING", logger="okfgraph.settings"):
+        s = Settings.load(environ={})
+    assert s.db_path == "okfgraph.db"
+    assert s.default_bundle_root(".") == "."
+    assert not (tmp_path / ".okfgraph").exists()
+    warned = [r for r in caplog.records if ".okfgraph/okfgraph.db" in r.getMessage()]
+    assert len(warned) == 1
+
+
+def test_legacy_db_loses_to_an_existing_home(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "okfgraph.db").write_bytes(b"")
+    (tmp_path / ".okfgraph").mkdir()
+    assert Settings.load(environ={}).db_path == ".okfgraph/okfgraph.db"
+
+
+def test_explicit_db_path_skips_the_legacy_probe(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "okfgraph.db").write_bytes(b"")
+    s = Settings.load(environ={"OKFGRAPH_DB_PATH": "kb.db"})
+    assert s.db_path == "kb.db"
+    # Outside a .okfgraph home the surface fallback stays.
+    assert s.default_bundle_root("fallback") == "fallback"
+
+
+def test_explicit_home_db_gets_its_bundle(tmp_path):
+    db = tmp_path / "proj" / ".okfgraph" / "okfgraph.db"
+    s = Settings(db_path=str(db))
+    assert s.default_bundle_root("x") == str(db.parent / "bundle")
+    assert (db.parent / "bundle").is_dir()
+    assert Settings(db_path=str(db), bundle_root="mine").default_bundle_root("x") == "mine"
+
+
+def test_home_db_without_bundle_keeps_the_fallback(tmp_path):
+    home = tmp_path / ".okfgraph"
+    home.mkdir()
+    (home / "okfgraph.db").write_bytes(b"")
+    s = Settings(db_path=str(home / "okfgraph.db"))
+    assert s.default_bundle_root(str(tmp_path)) == str(tmp_path)
+    assert not (home / "bundle").exists()
 
 
 # ---- TOML discovery --------------------------------------------------------

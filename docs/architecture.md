@@ -1226,8 +1226,8 @@ so the guard loads without the router.
 
 | Option | Default | Description |
 |---|---|---|
-| `--db-path <path>` | `okfgraph.db` | Database file path |
-| `--bundle-root <path>` | `.` | Primary bundle root directory (single value) |
+| `--db-path <path>` | `.okfgraph/okfgraph.db` | Database file path (0.12.1; a CWD with a legacy `okfgraph.db` and no `.okfgraph/` keeps it, one warning) |
+| `--bundle-root <path>` | `<home>/bundle` | Primary bundle root directory (single value). A db inside a `.okfgraph` home gets `<home>/bundle` (created on first use; a home whose db predates `bundle/` keeps the old tree); any other db: CLI `.`, serve/MCP the db's parent |
 | `--root ALIAS=PATH` | — | Additional named bundle root (repeatable; `@alias/rel` IDs) |
 | `--embedding-dim <int>` | `512` | Embedding dimension (Matryoshka ladder) |
 | `--model-id <id>` / `--image-model-id <id>` | registry | Text / vision model ids (switching forces fresh reimport) |

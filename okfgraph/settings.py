@@ -44,6 +44,13 @@ DEFAULT_RERANK_MODEL_ID = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 #: warns (not errors) off-ladder, so the settings layer warns the same way.
 _DIM_LADDER = (32, 64, 128, 256, 512, 768, 1024)
 
+#: A graph's home (0.12.1): the database and its bundle tree live in one
+#: hidden directory, ``.okfgraph/okfgraph.db`` + ``.okfgraph/bundle``.
+GRAPH_HOME = ".okfgraph"
+DEFAULT_DB_PATH = f"{GRAPH_HOME}/okfgraph.db"
+#: Pre-0.12.1 default. A CWD holding it (and no ``.okfgraph/``) keeps it.
+LEGACY_DB_PATH = "okfgraph.db"
+
 _TRUE_WORDS = ("1", "true", "yes", "on")
 _FALSE_WORDS = ("0", "false", "no", "off")
 
@@ -100,10 +107,11 @@ class Setting:
 #: The table. Row order = validation report order (database, embedding, import, search).
 SETTINGS = [
     # ── database ────────────────────────────────────────────────────────────
-    Setting("db_path", "str", "okfgraph.db", "database",
+    Setting("db_path", "str", DEFAULT_DB_PATH, "database",
             "Path to the Ladybug database file", required_mcp=True),
-    # Top-level TOML key (not inside [database]); no default here — the CLI
-    # falls back to "." and MCP to the db's parent.
+    # Top-level TOML key (not inside [database]); no default here — see
+    # Settings.default_bundle_root (``<home>/bundle`` for a db inside a
+    # .okfgraph home, else the CLI's "." / serve's and MCP's db parent).
     Setting("bundle_root", "str", None, "",
             "Primary bundle root directory"),
     Setting("wal_mode", "bool", False, "database",
@@ -325,7 +333,7 @@ def _handle_bundle_root(value: Any) -> str:
 class Settings:
     """Flat canonical settings; attributes are the OKFRouter kwargs."""
 
-    db_path: str = "okfgraph.db"
+    db_path: str = DEFAULT_DB_PATH
     bundle_root: Optional[str] = None
     wal_mode: bool = False
     extension_dir: Optional[str] = None
@@ -435,6 +443,12 @@ class Settings:
                 setattr(settings, setting_row.name, taken[setting_row.name])
         if "roots" in taken:
             settings.roots = _parse_roots(taken["roots"])
+        if "db_path" not in taken and _legacy_home():
+            logger.warning(
+                "using the legacy database ./%s: the default is now ./%s "
+                "(move it there, or pin db_path in okfgraph.toml)",
+                LEGACY_DB_PATH, DEFAULT_DB_PATH)
+            settings.db_path = LEGACY_DB_PATH
 
         errors, warnings = settings.checks()
         for warning in warnings:
@@ -572,10 +586,39 @@ class Settings:
         return errors, warnings
 
     # ------------------------------------------------------------ outputs --
+    def default_bundle_root(self, fallback: str) -> str:
+        """The primary bundle root a surface opens the router with.
+
+        An explicit ``bundle_root`` always wins. Otherwise the layout of
+        the db decides, not how it was named: a db inside a ``.okfgraph``
+        home (the default ``.okfgraph/okfgraph.db``, or Silk's explicit
+        ``<root>/.okfgraph/okfgraph.db``) gets ``<home>/bundle``, created
+        on first use. Any other db path keeps the surface's ``fallback``
+        (CLI ``.``, serve/MCP the db's parent), as before 0.12.1.
+
+        A home whose db already exists without ``bundle/`` was filled
+        against the fallback tree; it keeps that tree (one warning) so a
+        bundle import never reads the old files as deleted.
+        """
+        if self.bundle_root:
+            return self.bundle_root
+        db = Path(self.db_path)
+        if db.parent.name != GRAPH_HOME:
+            return fallback
+        bundle = db.parent / "bundle"
+        if not bundle.is_dir():
+            if db.exists():
+                logger.warning(
+                    "%s has no %s/: keeping bundle root %s (pass "
+                    "--bundle-root to choose another)", db, bundle, fallback)
+                return fallback
+            bundle.mkdir(parents=True, exist_ok=True)
+        return str(bundle)
+
     def router_kwargs(self) -> Dict[str, Any]:
         """Keyword args for ``OKFRouter``. ``db_path`` and ``bundle_root``
-        are excluded: surfaces pick their own bundle default (CLI ``.``,
-        MCP the db's parent) and ``db_path`` is passed explicitly."""
+        are excluded: surfaces pick their bundle with
+        :meth:`default_bundle_root` and pass ``db_path`` explicitly."""
         return dict(
             model_id=self.model_id,
             embedding_dim=self.embedding_dim,
@@ -625,6 +668,12 @@ _row_by_name = {row.name: row for row in SETTINGS}
 
 #: Fields the MCP server needs set explicitly (``Settings.load(require=…)``).
 MCP_REQUIRED = tuple(row.name for row in SETTINGS if row.required_mcp)
+
+
+def _legacy_home() -> bool:
+    """The CWD predates the ``.okfgraph/`` home: ``./okfgraph.db`` and no
+    ``./.okfgraph/``. Nothing is ever moved; the old file stays in use."""
+    return Path(LEGACY_DB_PATH).exists() and not Path(GRAPH_HOME).exists()
 
 
 def _merge_layer(target: Dict[str, Any], layer: Dict[str, Any]) -> None:

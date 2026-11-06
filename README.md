@@ -213,7 +213,14 @@ Concurrency: one process per db file; the 0-byte `<db>.lock` beside it is
 ladybug's own lock marker and is harmless when no process holds it.
 A leftover after a crash/kill is indistinguishable from a live hold at first
 glance — check processes first, then remove by hand if stale (`okf doctor`
-reports it; the CLI never auto-deletes). Pin the database in `okfgraph.toml`
+reports it; the CLI never auto-deletes). Without any configuration a
+graph lives in `.okfgraph/` under the CWD: the database at
+`.okfgraph/okfgraph.db` and its bundle tree at `.okfgraph/bundle`, both
+created on first use (0.12.1). A CWD that still holds a pre-0.12.1
+`okfgraph.db` (and no `.okfgraph/`) keeps using it, bundle root `.`,
+with one warning naming the new default; nothing is ever moved. Any db
+inside a `.okfgraph` folder gets that folder's `bundle/` as its default
+bundle root, on every surface. Pin the database in `okfgraph.toml`
 (`db_path = "kb.db"`, overridable per-invocation with `OKFGRAPH_DB_PATH`)
 so a held-open default can never silently fork a second database.
 Unexpected failures (`INTERNAL`) also write the full traceback — with argv,
@@ -258,7 +265,9 @@ ops fail fast naming the missing root). Thought IDs are namespaced
 database — `--db-path`, `OKFGRAPH_DB_PATH` or `[database] db_path` in
 `okfgraph.toml`; the server refuses to boot without one (`CONFIG_INVALID`,
 exit 2) since a temp dir means amnesia every session. `--bundle-root`
-defaults to the database's parent directory. First
+defaults to the `bundle/` beside a database inside a `.okfgraph` folder
+(`<root>/.okfgraph/okfgraph.db` → `<root>/.okfgraph/bundle`), else to the
+database's parent directory. First
 boot creates the schema; pre-approve the `ingest` / `export_bundle` /
 `export_concept` write tools for knowledge workflows. `.mcp.json` ships a
 ready config (`uv run --project . okf-mcp`). Every tool returns the result

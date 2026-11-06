@@ -38,6 +38,7 @@ from okfgraph.components import (
 )
 
 from okfgraph.errors import OKFError
+from okfgraph.settings import GRAPH_HOME
 from okfgraph.ops import AdminOps, ExportOps, IngestOps, QueryOps, WriteOps
 
 logger = logging.getLogger(__name__)
@@ -299,6 +300,11 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 f"max_length must be within 1..={model_max_tokens}, got {max_length}"
             )
         self.max_length = max_length if max_length is not None else default_max
+
+        # A graph's .okfgraph/ home is created on first use (0.12.1); any
+        # other parent directory must already exist.
+        if Path(db_path).parent.name == GRAPH_HOME:
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         try:
             try:

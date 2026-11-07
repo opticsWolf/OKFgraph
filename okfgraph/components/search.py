@@ -1047,11 +1047,13 @@ class SearchEngine:
         window = self.rerank_window
         try:
             cap = min(rr.max_length, window) if window else rr.max_length
-            q_len = rr.count_tokens(query)
+            # the cap rides along so a gated counting lane (external
+            # server-tokenize) can fast-path the texts far from THIS cap
+            q_len = rr.count_tokens(query, cap=cap)
             scores: List[Optional[float]] = [None] * len(docs)
             short = []
             for i, doc in enumerate(docs):
-                if q_len + rr.count_tokens(doc) + 4 > cap:
+                if q_len + rr.count_tokens(doc, cap=cap) + 4 > cap:
                     scores[i] = rr.score_long(query, doc, window=window,
                                               stride=self.rerank_stride)
                 else:

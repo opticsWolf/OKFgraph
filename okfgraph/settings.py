@@ -249,6 +249,13 @@ SETTINGS = [
     Setting("rerank_max_tokens", "int", 8192, "search",
             "The external engine's declared per-pair token ceiling (the "
             "short/long split point)", cli=False, mcp=False),
+    Setting("rerank_count", "str", "heuristic", "search",
+            "How the external reranker counts tokens for the short/long "
+            "split: heuristic (len/4, one warning) or server-tokenize "
+            "(exact — the rerank host's POST /tokenize, gated: texts far "
+            "from the pair cap never pay a call, only the ambiguous middle "
+            "band does; host failure degrades to heuristic with one "
+            "warning)", choices=("heuristic", "server-tokenize")),
     # TOML/env only: `search --efs` is the per-call spelling.
     Setting("efs", "int", None, "search",
             "Vector index search breadth, 16..1000 (higher: slower, closer to "
@@ -374,6 +381,7 @@ class Settings:
     rerank_api_key_env: str = ""
     rerank_family: str = ""
     rerank_max_tokens: int = 8192
+    rerank_count: str = "heuristic"
     rerank_window: Optional[int] = None
     rerank_stride: Optional[int] = None
     efs: Optional[int] = None
@@ -546,10 +554,12 @@ class Settings:
             if not 64 <= self.rerank_max_tokens <= 1048576:
                 errors.append(
                     "search.rerank_max_tokens must be within 64..1048576")
-        elif self.rerank_endpoint_url or self.rerank_family:
+        elif self.rerank_endpoint_url or self.rerank_family or (
+                self.rerank_count != "heuristic"):
             errors.append(
-                "search.rerank_endpoint_url/rerank_family are external-lane "
-                "settings — set search.rerank_backend='external' or drop them")
+                "search.rerank_endpoint_url/rerank_family/rerank_count are "
+                "external-lane settings — set "
+                "search.rerank_backend='external' or drop them")
 
         if not 1 <= self.batch_size <= 256:
             errors.append("import.batch_size must be between 1 and 256")

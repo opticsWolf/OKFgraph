@@ -579,8 +579,11 @@ class LazyReranker:
         return float(self._get_session().score_long(
             query, doc, window=window, stride=stride))
 
-    def count_tokens(self, text: str) -> int:
-        """Token count in the cross-encoder's own tokenizer (no specials)."""
+    def count_tokens(self, text: str, cap: Optional[int] = None) -> int:
+        """Token count in the cross-encoder's own tokenizer (no specials).
+
+        ``cap`` is the caller's pair cap, informational here — the crate
+        session counts exactly, so no gating shortcut ever applies."""
         return int(self._get_session().count_tokens(text))
 
     def _get_session(self):

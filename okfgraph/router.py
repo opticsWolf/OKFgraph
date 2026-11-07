@@ -147,6 +147,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         rerank_api_key_env: str = "",
         rerank_family: str = "",
         rerank_max_tokens: int = 8192,
+        rerank_count: str = "heuristic",
         efs: Optional[int] = None,
         embed_backend: str = "embroider",
         endpoint_url: str = "",
@@ -237,6 +238,12 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             rerank_backend: ``embroider`` (the crate cross-encoder, default)
                 or ``external`` (0.12: a ``POST /v1/rerank`` endpoint —
                 llama.cpp ``--rerank``, TEI, …). No graph pins either way:
+            rerank_count: how the external engine counts tokens for the
+                short/long split — ``heuristic`` (len/4, one warning) or
+                ``server-tokenize`` (exact via the host's ``/tokenize``,
+                gated so texts far from the pair cap never pay a call;
+                a host failure degrades with one warning). Crate-lane
+                errors refuse the row.
                 rerank scores are order-only; identity rides boot logs and
                 search provenance notes. The external engine failing its
                 first score disables rerank for the session (one loud
@@ -661,12 +668,13 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 backend="external", model_id=rerank_model_id,
                 family=rerank_family, endpoint_url=rerank_endpoint_url,
                 api_key_env=rerank_api_key_env,
-                max_tokens=rerank_max_tokens,
+                max_tokens=rerank_max_tokens, count=rerank_count,
             )
             logger.info(
-                "rerank (external): %s via %s family=%s max_tokens=%s",
+                "rerank (external): %s via %s family=%s max_tokens=%s "
+                "count=%s",
                 rerank_model_id, rerank_endpoint_url, rerank_family,
-                rerank_max_tokens,
+                rerank_max_tokens, rerank_count,
             )
         else:
             from okfgraph.components.embedding import LazyReranker

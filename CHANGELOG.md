@@ -240,6 +240,25 @@ v6.8)" and its Design Decisions table.
   vector indexes stay dropped exactly as after a crash, and a re-run
   converges the graph. A second concurrent reembed (job or sync)
   refuses `REEMBED_IN_PROGRESS` instead of silently queueing.
+- **External rerank backends (W9) and the 0.12.1 hardening on top.**
+  `rerank_backend='external'` scores the top hits over a standard rerank
+  wire (`POST <endpoint>/v1/rerank`, llama.cpp `--rerank`,
+  Jina/Cohere-compat) instead of the crate cross-encoder — no pins, no
+  reimport; the first failure disables the lane for the session with one
+  loud warning and search answers unranked (fail-down-once: the optional
+  half never takes retrieval with it). The dialect probes once per
+  session: the standard shape first, then the TEI shape (bare
+  `[{index, score}]` over `{query, texts, truncate}` at the host root);
+  rows accept `relevance_score` or `score` in either shape and the
+  answering dialect latches for the session. `rerank_count` picks the
+  short/long split-counting source: `heuristic` (len/4, one warning;
+  default) or `server-tokenize` — exact counts from the rerank host's
+  `/tokenize`, **gated**: texts far from the pair cap never pay a call
+  and only the ambiguous middle band asks (~0.9 ms loopback per call on
+  the live probe host; 8 of 30 typical candidates asked, so ~5% added to
+  the rerank step); a host failure latches to `heuristic-fallback` with
+  one warning. `[search]` rows: `rerank_endpoint_url`, `rerank_family`,
+  `rerank_api_key_env`, `rerank_max_tokens`, `rerank_count`.
   `OKFClient` gains `job`/`jobs`/`cancel_job`/`reembed_job`. The
   blocking default is unchanged.
 - **`okf reembed` / `POST /ops/reembed` (0.12).** Rebuild every vector under

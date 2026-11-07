@@ -531,3 +531,43 @@ engine-independent; only their *row caps* read `count()`.
 - The in-process injection is **not** supported for hosts whose process
   already runs an ONNX session (the crash-log's second-ONNX story):
   inject llama_cpp-class engines only, or separate processes.
+
+  9. **Phase 1 slice 9 = external rerank hardening (0.12.1): TEI
+      dialect + gated exact counting, with the measured overhead.**
+      Two follow-ups on the W9 rerank lane. (a) The wire dialect probes once per session: the
+      standard `results[] / relevance_score` shape first, then the TEI
+      shape — bare `[{"index","score"}]` over
+      `{query, texts, truncate: true}` at the host root; rows accept
+      either score key, irrelevant of shape; the answering dialect
+      latches; neither → the combined error names both attempts (the
+      lane trips down as always). (b) `rerank_count` picks the
+      short/long split-counting source: `heuristic` (len/4, warned
+      once — the default, unchanged) or `server-tokenize`: exact counts
+      from the rerank host's own `POST /tokenize` (llama.cpp serves it
+      at the root; timeout min(timeout, 10)), **gated** — the split is
+      a threshold check, so `count_tokens(text, cap=)` (the caller now
+      passes the effective `min(max_length, window)`; the crate lane's
+      exact counts ignore it) fast-paths texts at most `(cap-4)/2`
+      chars (chars bound tokens from above for BPE/SPM/Unigram: the
+      combined pair can never cross `cap`, zero calls) and texts over
+      `cap` chars (upper bound → over-cautiously long, zero calls);
+      only the ambiguous middle band asks the host, after a one-time
+      probe. Any counting failure latches to `heuristic-fallback` with
+      one warning (the search never waits twice on a counted lane).
+      Offline: `test_rerank_external.py` 12 (7 W9 + the TEI probe/
+      latch, the score alias, the gate's 0-call bands + exact band
+      counts + window-cap, the degrade-once latch, factory + settings
+      checks). Touched suites 163 + 1 skip green.
+      **Live + measured** (llama-b12110 `--rerank -ngl 99`, CUDA,
+      bge-reranker-v2-m3 GGUF Q4_K_M, ctx-size 8192, :8935): binary
+      relevance ordering intact (laptop 5.71 vs -10.99/-11.0); the gate
+      asked **8 of 30** candidates (fast-path 22, `cap=512`); the warm
+      `/tokenize` route costs **~0.9 ms/call** loopback (first call
+      hosts the cold BPE path: ~8 ms), so counting adds **~7 ms over
+      the ~136 ms cross-encoder pass ≈ 5%** for a search-shaped
+      workload with zero split flips on English text — while the exact
+      counts expose the CJK drift the heuristic hides (304 chars:
+      exact 241/243 tokens vs len/4's 76, a 3.2× underestimate, which
+      is exactly the silent-truncate case the gate removes). Probe
+      script `$LOCALAPPDATA/Temp/okf-p0/w9_rerank_live.py`; GGUF in
+      `$LOCALAPPDATA/Temp/okf-p0/gguf/`; server killed after.

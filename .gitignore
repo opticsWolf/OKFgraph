@@ -245,3 +245,7 @@ okfgraph.toml
 # kb.db bundle files the okfgraph update tool writes for thoughts
 # (the graph is the record, never commit)
 /thoughts/
+
+# 0.11.x eval + probe scratch (bench harness, env files, probe
+# fixtures) -- local experiment residue, never commit
+/.okf-suite-1102/

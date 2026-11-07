@@ -21,7 +21,7 @@ NANO = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 # ---- config ---------------------------------------------------------------
 
 def test_embedding_model_default_frozen():
-    assert DEFAULT_MODEL_ID == "jinaai/jina-embeddings-v5-text-small-retrieval"
+    assert DEFAULT_MODEL_ID == "google/embeddinggemma-2"
     s = Settings()
     assert s.model_id == DEFAULT_MODEL_ID
     assert s.checks() == ([], [])

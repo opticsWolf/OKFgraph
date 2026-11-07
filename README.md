@@ -485,7 +485,8 @@ Check them before any commercial use.
 
 | Used for | Model (Hugging Face repo) | Fetched by | Licence |
 |---|---|---|---|
-| Text embeddings (default, fp32) | `jinaai/jina-embeddings-v5-text-small-retrieval` | embroider | CC BY-NC 4.0 |
+| Text embeddings (default, 0.12.1) | `google/embeddinggemma-2` (`onnx-community/embeddinggemma-2-ONNX` fp32; `opticsWolf/embeddinggemma-2-onnx-fp16` CUDA mirror) | embroider | Apache-2.0 |
+| Text embeddings (0.11-era default, fp32) | `jinaai/jina-embeddings-v5-text-small-retrieval` | embroider | CC BY-NC 4.0 — check them before any commercial use |
 | Text embeddings (fp16) | `opticsWolf/jina-embeddings-v5-text-small-retrieval-onnx-fp16` (ONNX conversion of the above) | embroider | CC BY-NC 4.0 |
 | Text embeddings (nano) | `jinaai/jina-embeddings-v5-text-nano-retrieval` | embroider | CC BY-NC 4.0 |
 | Image embeddings (≤0.6.x `--extra omni`, removed 0.7.0) | `jinaai/jina-embeddings-v5-omni-small-retrieval` | sentence-transformers (torch path, removed) | CC BY-NC 4.0 |

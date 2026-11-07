@@ -48,7 +48,7 @@ def test_table_defaults():
 
 
 def test_default_model_id_frozen():
-    assert DEFAULT_MODEL_ID == "jinaai/jina-embeddings-v5-text-small-retrieval"
+    assert DEFAULT_MODEL_ID == "google/embeddinggemma-2"
 
 
 # ---- graph home (0.12.1) ---------------------------------------------------

@@ -33,7 +33,14 @@ logger = logging.getLogger(__name__)
 #: Default text embedding model. Adding registry entries never moves this:
 #: different weights = different vector space, so the default is frozen
 #: (a model switch forces a full reimport, enforced by the model pin).
-DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v5-text-small-retrieval"
+#: The default embedding engine (0.12.1): EmbeddingGemma 2 — native 768,
+#: Matryoshka ladder 128/256/512/768 (the 512 default stays on-ladder), 8K
+#: context, mean pooling + Gemma prompts applied inside the crate, and
+#: Apache-2.0 where jina-v5-small is CC BY-NC. Existing graphs keep their
+#: pinned model: one model per graph, never moved by a registry change.
+DEFAULT_MODEL_ID = "google/embeddinggemma-2"
+#: The 0.11-era default, kept for docs referencing it (registered too:
+#: `jinaai/jina-embeddings-v5-text-small-retrieval`).
 #: Cross-encoder for opt-in search rerank (0.11.0). It writes no vectors,
 #: so switching it needs no reimport. Multilingual by default (the
 #: Phase 3 eval: English-only ``cross-encoder/ms-marco-MiniLM-L-6-v2``

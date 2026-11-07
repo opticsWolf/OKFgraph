@@ -571,3 +571,25 @@ engine-independent; only their *row caps* read `count()`.
       is exactly the silent-truncate case the gate removes). Probe
       script `$LOCALAPPDATA/Temp/okf-p0/w9_rerank_live.py`; GGUF in
       `$LOCALAPPDATA/Temp/okf-p0/gguf/`; server killed after.
+
+  10. **Phase 1 slice 10 = the crate floor rises, EmbeddingGemma 2
+      becomes the default embedding engine (0.12.1, release prep).**
+      embroider 0.13.0 shipped 2026-11-04 (``4aa9eb2``): the EmbeddingGemma 2
+      registry entry (``google/embeddinggemma-2`` — mean pooling, 8K
+      context, Matryoshka ladder 128/256/512/768, Gemma prompts applied
+      inside the crate, Apache-2.0) with onnxruntime-gpu 1.31.1 goldens.
+      okfgraph follows: ``pyproject`` pins ``embroider>=0.13,<0.14``
+      (was ``>=0.12,<0.13``), and ``DEFAULT_MODEL_ID`` flips to
+      ``google/embeddinggemma-2`` (native 768, the 512 built-in default
+      on-ladder; jina-v5-small stays registered as the 0.11-era default,
+      still the mirror default inside ``model_info`` pre-0.12.1 call
+      sites of concern). The pin design absorbs the flip: one model per
+      graph is a create-time pin, existing graphs never move, and a
+      switch is the measured ``okf reembed``; docs carry the licence
+      upgrade (CC BY-NC → Apache-2.0) where it matters (README model
+      table, architecture header + dims + engine table). Tests: the
+      default-assertion crews flip (``test_settings``/``test_model``);
+      touched batch 120 green (settings/model/router/lazy-encoder/
+      rerank-external/reembed-jobs) on the 0.13.0 crate; the full gate
+      re-runs on ``embroider 0.13.0`` (probe venv) as the release-grade
+      run.

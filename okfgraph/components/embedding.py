@@ -1280,7 +1280,7 @@ class EmbeddingEngine:
 
 
     @classmethod
-    def model_info(cls, model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
+    def model_info(cls, model_id: str = "google/embeddinggemma-2",
                    cache_dir: Optional[str] = None,
                    *, device: str = "auto",
                    precision: Optional[str] = None) -> Dict[str, Any]:
@@ -1319,7 +1319,7 @@ class EmbeddingEngine:
                 remedy="upgrade: pip install 'embroider>=0.3.2,<0.4' "
                        "(or reinstall with 'okfgraph[cpu]')",
             )
-        effective_id = model_id or "jinaai/jina-embeddings-v5-text-small-retrieval"
+        effective_id = model_id or "google/embeddinggemma-2"
         eff = precision
         if eff in (None, "auto"):
             # Mirror the engine: auto precision follows the *landed* device,

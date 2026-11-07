@@ -17,7 +17,7 @@
 
 **Storage**: LadybugDB (v0.22.1, storage version 49 — one-way upgrade from 0.21.2's 47) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
-**Embedding Engine**: Jina v5 text model (`jinaai/jina-embeddings-v5-text-small-retrieval`) via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core).  
+**Embedding Engine**: **EmbeddingGemma 2** (`google/embeddinggemma-2` — mean pooling, Apache-2.0) as the 0.12.1 default, via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core). `jinaai/jina-embeddings-v5-text-small-retrieval` stays registered (the 0.11-era default); existing graphs keep whatever they pinned — switching ids is a re-import, by design.  
 **Images**: caption route (`text`) or ONNX vision route (`optional`/`omni` → `vision-onnx` via embroider `JinaV5Vision`, text-nano graphs only) into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0 and replaced by ONNX vision in 0.8.0 — same vector space, no torch anywhere.  
 **Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
 **Search Modes**: Hybrid (RRF fusion, vector + FTS, `rank=none|hub|ppr|cross`; `cross` and chunk `rerank=True` reorder the top hits by an opt-in cross-encoder (default model `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, Q5 Phase 3: parity with MiniLM on English, better on German), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
@@ -400,7 +400,7 @@ CALL CREATE_VECTOR_INDEX(
 
 ### Matryoshka Dimensions
 
-`jinaai/jina-embeddings-v5-text-small-retrieval` supports Matryoshka truncation at these official dimensions:
+`google/embeddinggemma-2` truncates at its official ladder — **768 native, 512 default, 256, 128** (embed via the crate's MRL support, re-normalised client-side). `jinaai/jina-embeddings-v5-text-small-retrieval` truncates at these official dimensions:
 
 | Dimension | Use Case |
 |---|---|
@@ -555,7 +555,7 @@ class OKFRouter:
         self,
         db_path: str,
         bundle_root: Optional[str] = None,  # None = file-free (thoughts loop; file-side ops fail closed)
-        model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
+        model_id: str = "google/embeddinggemma-2",
         embedding_dim: int = 512,
         cache_dir: Optional[str] = None,
         model_path: Optional[str] = None,      # explicit local ONNX …
@@ -1458,12 +1458,12 @@ mcp.run(transport="stdio")
 
 | Feature | Detail |
 |---|---|
-| **Model** | `jinaai/jina-embeddings-v5-text-small-retrieval` |
-| **Framework** | External `embroider` crate (Rust/ORT — no Python ML stack in core) |
-| **Dimensions** | **1024** native (Matryoshka truncation: `ALLOWED_DIMS`, default **512**) |
-| **Context Window** | 8192 tokens natively (tokenizer-only counts via `JinaTokenizer`, no session) |
-| **Prefix Logic** | `Query:` for search queries, `Document:` for indexed content (frozen contract) |
-| **Pooling** | **Last-token pooling** (NOT mean pooling — required by Jina v5) |
+| **Model (default)** | `google/embeddinggemma-2` — mean pooling (per its model card), Apache-2.0; `jinaai/jina-embeddings-v5-text-small-retrieval` remains registered |
+| **Framework** | External `embroider` crate (Rust/ORT — no Python ML stack in core, floor 0.13.0: the EmbeddingGemma 2 registry entry + ORT 1.31.1 goldens) |
+| **Dimensions** | **768** native for gemma-2 (Matryoshka ladder 128/256/512/768), **1024** native for jina-small (`ALLOWED_DIMS`); default **512**, on-ladder for both |
+| **Context Window** | 8192 tokens for both (tokenizer-only counts via `JinaTokenizer`, no session) |
+| **Prefix Logic** | `Query:` / `Document:` (frozen contract); EmbeddingGemma prompts are applied inside the crate |
+| **Pooling** | Mean for gemma-2; **last-token pooling** for Jina v5 (NOT mean — required by Jina) |
 | **Normalization** | L2 normalization (cosine similarity), re-normalised after truncation |
 | **Session Lifecycle** | Lazy — opens on first encode; router construction stays cheap |
 | **Air-gapped** | `model_path` + `tokenizer_path` pin both files (zero network, fail-fast on missing) |

@@ -114,7 +114,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         self,
         db_path: str,
         bundle_root: Optional[str] = None,
-        model_id: str = "jinaai/jina-embeddings-v5-text-small-retrieval",
+        model_id: str = "google/embeddinggemma-2",
         embedding_dim: int = 512,
         max_length: Optional[int] = None,
         cache_dir: Optional[str] = None,

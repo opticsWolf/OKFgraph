@@ -290,6 +290,17 @@ v6.8)" and its Design Decisions table.
   never reads existing files as deleted. Configs that pin a `db_path`
   outside a `.okfgraph` folder (`okfgraph.toml`, `OKFGRAPH_DB_PATH`,
   `--db-path`) are unaffected.
+- **EmbeddingGemma 2 is the default embedding engine (0.12.1).**
+  `[embedding] model_id` now defaults to `google/embeddinggemma-2`
+  (registry entry added in embroider 0.13.0 — mean pooling, 8K context,
+  Matryoshka ladder 128/256/512/768, Gemma search prompts applied inside
+  the crate): native 768 with the 512 built-in default on-ladder, and
+  Apache-2.0 where jina-v5-small is CC BY-NC (the model table in the
+  README keeps the licences front and centre). The crate floor rises to
+  `embroider>=0.13,<0.14`. **Nothing moves for existing graphs**: one
+  model per graph is a create-time pin and switching ids is a measured
+  reimport (`okf reembed`) — jina-v5-small stays registered as the
+  0.11-era default.
 - **ladybug 0.21.2 → 0.22.1.** Storage version 47 → 49: the first open
   under 0.22 upgrades a graph in place, and 0.21.2 can no longer read it
   afterwards — back up graphs and upgrade every `okf`/`okf-mcp` on the

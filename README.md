@@ -429,8 +429,8 @@ okfgraph/
 │   ├── errors.py          # OKFError(code, fields, remedy) + UsageError / StateError / OutcomeError
 │   ├── router.py          # OKFRouter facade = OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps)
 │   ├── ops/               # the 24-op vocabulary: query.py, ingest.py, export.py, admin.py
-│   ├── cli.py             # okf: 8 core verbs + maintenance + images/image, --json (D5/D6)
-│   ├── mcp_server.py      # okf-mcp: 8 tools, MCP ≥ 2.0, lifespan-managed router, envelope/_ToolFailure
+│   ├── cli.py             # okf: query verbs + maintenance + images/image, --json (D5/D6)
+│   ├── mcp_server.py      # okf-mcp: 11 tools, MCP ≥ 2.0, lifespan-managed router, envelope/_ToolFailure
 │   ├── images.py          # IngestMode (text + vision-onnx since 0.8.0), planning helpers
 │   ├── security.py        # SSRF/domain guards for remote images
 │   └── components/        # ranking, links, search, lint, import_, export, diff, doctor,

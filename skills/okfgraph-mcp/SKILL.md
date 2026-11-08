@@ -1,9 +1,11 @@
 ---
 name: okfgraph-mcp
 description: >
-  Ladybug-backed knowledge graph with Jina v5 semantic search, via MCP
-  tools (search, read, traverse, ingest, export_bundle, export_concept,
-  list_images, get_image). Use when the task needs persistent project
+  Ladybug-backed knowledge graph with local semantic search (default
+  engine: EmbeddingGemma 2), via 11 MCP tools — the read/ingest lane
+  (search, read, traverse, ingest, export_bundle, export_concept,
+  list_images, get_image) plus the write tools (update, supersede,
+  delete). Use when the task needs persistent project
   knowledge and okf-mcp is wired: search past decisions and docs,
   navigate concept relationships, read stored documents, or persist new
   knowledge. Prefers graph lookup over re-deriving context the project
@@ -14,7 +16,8 @@ description: >
 # OKFgraph skill (MCP)
 
 OKFgraph is a persistent knowledge graph: markdown concepts with semantic
-(vector) + keyword (FTS) search and graph traversal, exposed as 8 MCP tools.
+(vector) + keyword (FTS) search and graph traversal, exposed as 11 MCP
+tools (8 read/ingest + 3 write).
 
 ## Setup (once per project)
 
@@ -59,6 +62,9 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
 | Browse a directory | `traverse` (empty start_id = root) |
 | Store markdown / PDF / reasoning / bibliography | `ingest` kind="md"\|"pdf"\|"thoughts"\|"bib" (okfgraph-ingest skill) |
 | Export | `export_bundle` output_dir (+ filters, flavor); `export_concept` concept_id, output_dir |
+| Edit knowledge in place | `update` concept_id (+ title/description/type/tags/add_tags/remove_tags) — pre-approved or harness-gated |
+| Retire a superseded decision | `supersede` old_id, new_id (typed supersedes link + 'superseded' tag; both markdown files rewritten) |
+| Remove a wrongly persisted item | `delete` concept_id — soft-delete (24 h recoverable via CLI `okf deleted-recover`; refuses file-backed concepts while their source exists) |
 
 ## Results and errors
 

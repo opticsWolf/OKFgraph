@@ -36,7 +36,7 @@ rename list in `CHANGELOG.md`):
 | **Errors** | `ValueError`/`RuntimeError`, silent skips | **Typed `OKFError` codes** (usage → exit 2, state/outcome → exit 1); outcome reports on `err.data`; MCP `isError` | §4 |
 | **Refusals** | Ignored params silently dropped | **`BAD_VALUE` naming the ignored params** (search, traverse, ingest) | X3 |
 | **Settings** | `config.py` + hand-written flags | **`settings.py` table** generates CLI/MCP flags, env names, TOML keys; CLI > env > TOML > defaults | §3.1 |
-| **MCP** | 5 tools | **8 tools** (+ `export_concept`, `list_images`, `get_image`); `db_path` from flag, env or TOML | Q5 |
+| **MCP** | 5 tools | **11 tools** — the read/ingest lane (+ `export_concept`, `list_images`, `get_image`) and since 0.11 the write tools (`update`, `supersede`, `delete`); `db_path` from flag, env or TOML | Q5 |
 
 ## Summary of Changes (v6.6 → v6.7)
 
@@ -1172,9 +1172,11 @@ okf = "okfgraph.cli:main"
 
 ### 5.2. Commands
 
-The CLI is a strict superset of the MCP surface (§6a): the eight MCP tools
-map 1:1 onto `search`, `read`, `traverse`, `ingest`, `export_bundle`,
-`export_concept`, `list_images`, `get_image`; everything else is
+The CLI is a strict superset of the MCP surface (§6a): the eleven MCP
+tools — the eight read/ingest tools mapping 1:1 onto `search`, `read`,
+`traverse`, `ingest`, `export_bundle`, `export_concept`, `list_images`,
+`get_image`, plus the 0.11 write tools (`update`, `supersede`, `delete`,
+also available as `okf` commands) — while everything else is
 library/maintenance surface. Every command accepts `--json` for the D5
 envelope and exits by the §4 exit plan (0 ok / 1 state+outcome / 2 usage).
 Typed state codes worth knowing on ops: `DB_LOCKED` (the db is held by

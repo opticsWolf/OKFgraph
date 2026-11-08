@@ -5,8 +5,9 @@
 > vocabulary (`import_file`, `search(target="chunks")`,
 > `read(include="document")`), but §9 “Tool Definitions (tools.py)” and
 > §10 “CLI Updates” describe the surface *as planned then* — the tool
-> list and shell grammar live in `mcp_server.py` / `cli.py` now (8 MCP
-> tools, shell shorthand through the same subparsers). History in git.
+> list and shell grammar live in `mcp_server.py` / `cli.py` now (11 MCP
+> tools — 8 read/ingest + the 0.11 write tools; shell shorthand through
+> the same subparsers). History in git.
 
 ## 1. Architecture Overview
 

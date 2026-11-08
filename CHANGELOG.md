@@ -203,6 +203,21 @@ v6.8)" and its Design Decisions table.
   older is known) and `effective_at` from their authored date if any.
   `rank="ppr"` now also returns a slice of a 25-row pool, like the others.
 
+## [0.12.1] — 2026-11-08
+
+### Changed
+- **Skill + docs surface alignment (post-release audit).** No behavior
+  changes — the agent-facing story now matches the shipped 0.12.0:
+  the `okfgraph-mcp` skill front matter names the default engine
+  (EmbeddingGemma 2, was "Jina v5 semantic search") and counts the
+  eleven-tool surface, with `update` / `supersede` / `delete` usage rows
+  in the which-tool-when table; the `okfgraph-cli` skill lists the
+  maintenance verbs (`reindex`, `model-info`, `retitle-thoughts
+  [--topic] [--apply]`); architecture's MCP row (5 → 8 → 11) and the
+  "CLI is a strict superset" paragraph count all eleven; the chunking
+  doc's pointer note and the README source-tree comments drop the stale
+  8-tool / 8-verb counts.
+
 ## [0.12.0] — 2026-11-08
 
 ### Added (0.12.0 — the embedder-loader seam)

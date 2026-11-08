@@ -39,8 +39,11 @@ logger = logging.getLogger(__name__)
 #: Apache-2.0 where jina-v5-small is CC BY-NC. Existing graphs keep their
 #: pinned model: one model per graph, never moved by a registry change.
 DEFAULT_MODEL_ID = "google/embeddinggemma-2"
-#: The 0.11-era default, kept for docs referencing it (registered too:
-#: `jinaai/jina-embeddings-v5-text-small-retrieval`).
+#: The 0.11-era default was `jinaai/jina-embeddings-v5-text-small-retrieval`
+#: (task prompts + last-token pooling); it stays registered — a graph can
+#: still be created on it with an explicit `model_id`, and every graph
+#: created on 0.11 keeps its pin.
+
 #: Cross-encoder for opt-in search rerank (0.11.0). It writes no vectors,
 #: so switching it needs no reimport. Multilingual by default (the
 #: Phase 3 eval: English-only ``cross-encoder/ms-marco-MiniLM-L-6-v2``

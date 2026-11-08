@@ -45,7 +45,7 @@ JOB_OPS = ("reembed",)
 
 
 class JobRegistry:
-    """In-memory jobs for ``okf serve`` (0.12.1).
+    """In-memory jobs for ``okf serve`` (0.12.0).
 
     A long op — the re-embed over a big graph takes hours — used to ride
     one blocking HTTP request: Silk could only abandon it by dropping the
@@ -263,7 +263,7 @@ def _json_safe(value: Any) -> Any:
 
 def build_app(router, settings=None):
     """Starlette app serving ``router`` over MCP (``/mcp``), JSON ops
-    and (0.12.1) the job lane.
+    and (0.12.0) the job lane.
 
     ``router`` is used as-is (and not closed here): the caller owns it.
     Returns ``(app, locked_router)``.
@@ -329,7 +329,7 @@ def build_app(router, settings=None):
                 "another reembed is already running on this graph",
                 op=op, remedy="poll GET /jobs/<id> or cancel it")),
                 status_code=409)
-        # The job lane (0.12.1): a long op submitted with mode="job" answers
+        # The job lane (0.12.0): a long op submitted with mode="job" answers
         # a job id inline and keeps running on a worker thread the client
         # polls (GET /jobs/<id>) and can stop (POST /jobs/<id>/cancel)
         # between op batches. The default stays the blocking call so

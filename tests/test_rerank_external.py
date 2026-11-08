@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""External rerank engine tests (plan-embedder-loader W9 + 0.12.1, offline).
+"""External rerank engine tests (plan-embedder-loader W9 + 0.12.0, offline).
 
 A stdlib HTTP server stands in for a llama.cpp ``--rerank`` host serving
 BOTH ``/v1/embeddings`` (so the graph's embed lane can be external too)
@@ -9,7 +9,7 @@ coverage), query grouping in ``score_batch``, the windowing one-shot
 warning, the first-failure→``down`` session contract (the search answers
 unranked, later searches skip the lane, no take-down of retrieval), the
 settings validation around ``[search] rerank_backend='external'``, and
-the 0.12.1 hardening: the TEI-shape fallback (bare list, ``texts``, the
+the 0.12.0 hardening: the TEI-shape fallback (bare list, ``texts``, the
 host root's ``/rerank`` — probe once, the answering dialect latches) and
 the gated ``server-tokenize`` counter (exact counts from the host's
 ``/tokenize`` for the ambiguous middle band only; texts far from the cap
@@ -42,7 +42,7 @@ def _det(text: str, dim: int):
 class _ZHandler(BaseHTTPRequestHandler):
     """Loopback double endpoint: /v1/embeddings (stub embeds) and
     /v1/rerank (deterministic scores keyed by (query, doc) hashes).
-    The 0.12.1 flags drive both dialect modes and the /tokenize route."""
+    The 0.12.0 flags drive both dialect modes and the /tokenize route."""
     fail_rerank = False            # 500 every rerank call
     broken_index = False           # non-covering rerank rows
     tei_mode = False               # 404 /v1/rerank; root /rerank = TEI shape
@@ -266,7 +266,7 @@ def test_rerank_engine_from_settings_factory():
     assert rep["family"] == "bge-v2-m3" and rep["backend"] == "external"
 
 
-# ── 0.12.1: the TEI-shape fallback and the gated exact counting ───────────
+# ── 0.12.0: the TEI-shape fallback and the gated exact counting ───────────
 
 def test_tei_shape_fallback_latches_and_speaks_texts():
     """Root-only TEI host: /v1/rerank 404s, the probe falls back to the

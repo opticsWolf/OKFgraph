@@ -51,7 +51,7 @@ def test_default_model_id_frozen():
     assert DEFAULT_MODEL_ID == "google/embeddinggemma-2"
 
 
-# ---- graph home (0.12.1) ---------------------------------------------------
+# ---- graph home (0.12.0) ---------------------------------------------------
 def test_fresh_cwd_uses_the_graph_home(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     s = Settings.load(environ={})

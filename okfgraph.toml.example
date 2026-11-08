@@ -5,7 +5,7 @@
 # run and pytest invocation from here. Keeping the live file untracked
 # makes the pin a deliberate local choice, documented by this example.
 #
-# Without any TOML the built-ins apply (0.12.1): db_path =
+# Without any TOML the built-ins apply (0.12.0): db_path =
 # ".okfgraph/okfgraph.db", bundle_root = ".okfgraph/bundle" — a CWD with
 # a legacy okfgraph.db and no .okfgraph/ keeps that db and bundle root ".".
 # Overridable per-invocation with OKFGRAPH_DB_PATH / OKFGRAPH_BUNDLE_ROOT.

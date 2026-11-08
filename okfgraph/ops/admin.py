@@ -406,11 +406,11 @@ class AdminOps:
           place at the graph's column width; a different engine dim needs
           a fresh graph;
         * a second reembed while one is in flight (``REEMBED_IN_PROGRESS``
-          — 0.12.1); a running reembed owns the graph, and queuing a
+          — 0.12.0); a running reembed owns the graph, and queuing a
           second one behind the op lock would stall every other call
           behind the queue instead of answering now.
 
-        Cooperative hooks (0.12.1, for the job lane in ``okf serve``):
+        Cooperative hooks (0.12.0, for the job lane in ``okf serve``):
         ``progress(phase, done, total)`` is called after every rewritten
         batch (``phase`` ∈ ``concepts``/``chunks``); ``cancelled()`` — a
         zero-arg callable — is checked between batches only, never inside

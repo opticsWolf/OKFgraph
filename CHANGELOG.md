@@ -203,7 +203,7 @@ v6.8)" and its Design Decisions table.
   older is known) and `effective_at` from their authored date if any.
   `rank="ppr"` now also returns a slice of a 25-row pool, like the others.
 
-## [Unreleased]
+## [0.12.0] — 2026-11-08
 
 ### Added (0.12.0 — the embedder-loader seam)
 - **`[embedding] backend = "external"`.** A second embedding lane that talks
@@ -227,7 +227,7 @@ v6.8)" and its Design Decisions table.
   `heuristic` (`max(8, len/4)`, logged once). A failed probe lands on
   `heuristic-fallback`, and `POST /ops/embed` reports the effective
   source in its `counter` field.
-- **Interruptible re-embed: the serve job lane (0.12.1).** The re-embed
+- **Interruptible re-embed: the serve job lane (0.12.0).** The re-embed
   used to ride one blocking HTTP request with a 6 h timeout — Silk could
   only abandon it by dropping the connection, and the op kept the graph
   lock while every other call queued. `POST /ops/reembed
@@ -240,7 +240,7 @@ v6.8)" and its Design Decisions table.
   vector indexes stay dropped exactly as after a crash, and a re-run
   converges the graph. A second concurrent reembed (job or sync)
   refuses `REEMBED_IN_PROGRESS` instead of silently queueing.
-- **External rerank backends (W9) and the 0.12.1 hardening on top.**
+- **External rerank backends (W9) and the 0.12.0 hardening on top.**
   `rerank_backend='external'` scores the top hits over a standard rerank
   wire (`POST <endpoint>/v1/rerank`, llama.cpp `--rerank`,
   Jina/Cohere-compat) instead of the crate cross-encoder — no pins, no
@@ -274,7 +274,7 @@ v6.8)" and its Design Decisions table.
   slice + renormalise client-side; caps 256 texts / 1 MiB).
 
 ### Changed
-- **A graph's default home is `.okfgraph/` (0.12.1).** The built-in
+- **A graph's default home is `.okfgraph/` (0.12.0).** The built-in
   `db_path` is `.okfgraph/okfgraph.db` (was `okfgraph.db`) and the default
   bundle root is `.okfgraph/bundle` (CLI was `.`); both are created on
   first use. The bundle default follows the db's layout, on every surface:
@@ -290,7 +290,7 @@ v6.8)" and its Design Decisions table.
   never reads existing files as deleted. Configs that pin a `db_path`
   outside a `.okfgraph` folder (`okfgraph.toml`, `OKFGRAPH_DB_PATH`,
   `--db-path`) are unaffected.
-- **EmbeddingGemma 2 is the default embedding engine (0.12.1).**
+- **EmbeddingGemma 2 is the default embedding engine (0.12.0).**
   `[embedding] model_id` now defaults to `google/embeddinggemma-2`
   (registry entry added in embroider 0.13.0 — mean pooling, 8K context,
   Matryoshka ladder 128/256/512/768, Gemma search prompts applied inside

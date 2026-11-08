@@ -216,7 +216,7 @@ glance — check processes first, then remove by hand if stale (`okf doctor`
 reports it; the CLI never auto-deletes). Without any configuration a
 graph lives in `.okfgraph/` under the CWD: the database at
 `.okfgraph/okfgraph.db` and its bundle tree at `.okfgraph/bundle`, both
-created on first use (0.12.1). A CWD that still holds a pre-0.12.1
+created on first use (0.12.0). A CWD that still holds a pre-0.12.0
 `okfgraph.db` (and no `.okfgraph/`) keeps using it, bundle root `.`,
 with one warning naming the new default; nothing is ever moved. Any db
 inside a `.okfgraph` folder gets that folder's `bundle/` as its default
@@ -485,12 +485,12 @@ Check them before any commercial use.
 
 | Used for | Model (Hugging Face repo) | Fetched by | Licence |
 |---|---|---|---|
-| Text embeddings (default, 0.12.1) | `google/embeddinggemma-2` (`onnx-community/embeddinggemma-2-ONNX` fp32; `opticsWolf/embeddinggemma-2-onnx-fp16` CUDA mirror) | embroider | Apache-2.0 |
+| Text embeddings (default, 0.12.0) | `google/embeddinggemma-2` (`onnx-community/embeddinggemma-2-ONNX` fp32; `opticsWolf/embeddinggemma-2-onnx-fp16` CUDA mirror) | embroider | Apache-2.0 |
 | Text embeddings (0.11-era default, fp32) | `jinaai/jina-embeddings-v5-text-small-retrieval` | embroider | CC BY-NC 4.0 — check them before any commercial use |
 | Text embeddings (fp16) | `opticsWolf/jina-embeddings-v5-text-small-retrieval-onnx-fp16` (ONNX conversion of the above) | embroider | CC BY-NC 4.0 |
 | Text embeddings (nano) | `jinaai/jina-embeddings-v5-text-nano-retrieval` | embroider | CC BY-NC 4.0 |
 | Image embeddings (≤0.6.x `--extra omni`, removed 0.7.0) | `jinaai/jina-embeddings-v5-omni-small-retrieval` | sentence-transformers (torch path, removed) | CC BY-NC 4.0 |
-| Image embeddings (vision gemma slot, 0.12.1+) | `onnx-community/embeddinggemma-2-vision` (Apache-2.0, fp32 in-repo + fp16 mirror; image vectors share the gemma-2 text space) | embroider (`GemmaVision`) | Apache-2.0 |
+| Image embeddings (vision gemma slot, 0.12.0+) | `onnx-community/embeddinggemma-2-vision` (Apache-2.0, fp32 in-repo + fp16 mirror; image vectors share the gemma-2 text space) | embroider (`GemmaVision`) | Apache-2.0 |
 | Image embeddings (vision jina slot, 0.8.0+) | `opticsWolf/jina-embeddings-v5-omni-nano-retrieval-onnx` (dynamic-grid ONNX export of `jinaai/jina-embeddings-v5-omni-nano-retrieval`) | embroider (`JinaV5Vision`) | CC BY-NC 4.0 |
 | PDF layout (`--extra pdf`) | `wybxc/DocLayout-YOLO-DocStructBench-onnx` | bobine | Apache-2.0 |
 | PDF OCR det/rec (`--extra pdf`) | `SWHL/RapidOCR` (PP-OCRv4) | bobine | Apache-2.0 |

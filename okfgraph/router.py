@@ -314,7 +314,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             )
         self.max_length = max_length if max_length is not None else default_max
 
-        # A graph's .okfgraph/ home is created on first use (0.12.1); any
+        # A graph's .okfgraph/ home is created on first use (0.12.0); any
         # other parent directory must already exist.
         if Path(db_path).parent.name == GRAPH_HOME:
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)

@@ -463,7 +463,7 @@ engine-independent; only their *row caps* read `count()`.
       blocking HTTP request with a 6 h timeout; Silk could only abandon
       it by dropping the connection — and the op kept the graph lock
       while search/ingest/pin_info queued behind it. ``okf serve`` now
-      owns a job lane (0.12.1): ``POST /ops/reembed {"mode": "job"}``
+      owns a job lane (0.12.0): ``POST /ops/reembed {"mode": "job"}``
       answers a job id inline, ``GET /jobs/<id>`` reports status +
       phase/done/total (the reembed accepts a ``progress`` hook called
       per batch), and ``POST /jobs/<id>/cancel`` stops the op AT ITS
@@ -491,7 +491,7 @@ engine-independent; only their *row caps* read `count()`.
       unknown-job/terminal-cancel idempotence, the mode list; the
       sleepy stub encoder × 40 rows makes the batch boundaries real).
       Plus a cross-repo live smoke (the Silk OkfClient polling a real
-      0.12.1 owner: submit → poll → done → report). Touched suites
+      0.12.0 owner: submit → poll → done → report). Touched suites
       green; sync-contract regression suites green.
   9. **Phase 0 = closed.** Defaults going into Phase 1: gemma2@512 as
      the crate default family, nomic-v1.5 as the reference external
@@ -532,7 +532,7 @@ engine-independent; only their *row caps* read `count()`.
   already runs an ONNX session (the crash-log's second-ONNX story):
   inject llama_cpp-class engines only, or separate processes.
 
-  9. **Phase 1 slice 9 = external rerank hardening (0.12.1): TEI
+  9. **Phase 1 slice 9 = external rerank hardening (0.12.0): TEI
       dialect + gated exact counting, with the measured overhead.**
       Two follow-ups on the W9 rerank lane. (a) The wire dialect probes once per session: the
       standard `results[] / relevance_score` shape first, then the TEI
@@ -573,7 +573,7 @@ engine-independent; only their *row caps* read `count()`.
       `$LOCALAPPDATA/Temp/okf-p0/gguf/`; server killed after.
 
   10. **Phase 1 slice 10 = the crate floor rises, EmbeddingGemma 2
-      becomes the default embedding engine (0.12.1, release prep).**
+      becomes the default embedding engine (0.12.0, release prep).**
       embroider 0.13.0 shipped 2026-11-04 (``4aa9eb2``): the EmbeddingGemma 2
       registry entry (``google/embeddinggemma-2`` — mean pooling, 8K
       context, Matryoshka ladder 128/256/512/768, Gemma prompts applied
@@ -582,7 +582,7 @@ engine-independent; only their *row caps* read `count()`.
       (was ``>=0.12,<0.13``), and ``DEFAULT_MODEL_ID`` flips to
       ``google/embeddinggemma-2`` (native 768, the 512 built-in default
       on-ladder; jina-v5-small stays registered as the 0.11-era default,
-      still the mirror default inside ``model_info`` pre-0.12.1 call
+      still the mirror default inside ``model_info`` pre-0.12.0 call
       sites of concern). The pin design absorbs the flip: one model per
       graph is a create-time pin, existing graphs never move, and a
       switch is the measured ``okf reembed``; docs carry the licence
@@ -595,7 +595,7 @@ engine-independent; only their *row caps* read `count()`.
       run.
 
 11. **Phase 1 slice 11 = the 0.14 crate round adopted (2026-11-08,
-    0.12.1)**. The crate releases folded the CUDA-loader self-service
+    0.12.0)**. The crate releases folded the CUDA-loader self-service
     into 0.14.0 (0.13.1 never reached PyPI — in-code surface only),
     added the general ``Tokenizer`` handle (0.14.1; ``JinaTokenizer``
     resolves via a ``DeprecationWarning`` alias), and shipped the

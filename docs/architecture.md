@@ -17,7 +17,7 @@
 
 **Storage**: LadybugDB (v0.22.1, storage version 49 — one-way upgrade from 0.21.2's 47) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
-**Embedding Engine**: **EmbeddingGemma 2** (`google/embeddinggemma-2` — mean pooling, Apache-2.0) as the 0.12.1 default, via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core). `jinaai/jina-embeddings-v5-text-small-retrieval` stays registered (the 0.11-era default); existing graphs keep whatever they pinned — switching ids is a re-import, by design.  
+**Embedding Engine**: **EmbeddingGemma 2** (`google/embeddinggemma-2` — mean pooling, Apache-2.0) as the 0.12.0 default, via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core). `jinaai/jina-embeddings-v5-text-small-retrieval` stays registered (the 0.11-era default); existing graphs keep whatever they pinned — switching ids is a re-import, by design.  
 **Images**: caption route (`text`) or ONNX vision route (`optional`/`omni` → `vision-onnx` via the registry vision pairing of the text model — `GemmaVision` on gemma-2 graphs (image vectors share the gemma-2 text space), `JinaV5Vision` on text-nano graphs) into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0 and replaced by ONNX vision in 0.8.0 — same vector space, no torch anywhere.  
 **Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
 **Search Modes**: Hybrid (RRF fusion, vector + FTS, `rank=none|hub|ppr|cross`; `cross` and chunk `rerank=True` reorder the top hits by an opt-in cross-encoder (default model `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, Q5 Phase 3: parity with MiniLM on English, better on German), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
@@ -1226,7 +1226,7 @@ so the guard loads without the router.
 
 | Option | Default | Description |
 |---|---|---|
-| `--db-path <path>` | `.okfgraph/okfgraph.db` | Database file path (0.12.1; a CWD with a legacy `okfgraph.db` and no `.okfgraph/` keeps it, one warning) |
+| `--db-path <path>` | `.okfgraph/okfgraph.db` | Database file path (0.12.0; a CWD with a legacy `okfgraph.db` and no `.okfgraph/` keeps it, one warning) |
 | `--bundle-root <path>` | `<home>/bundle` | Primary bundle root directory (single value). A db inside a `.okfgraph` home gets `<home>/bundle` (created on first use; a home whose db predates `bundle/` keeps the old tree); any other db: CLI `.`, serve/MCP the db's parent |
 | `--root ALIAS=PATH` | — | Additional named bundle root (repeatable; `@alias/rel` IDs) |
 | `--embedding-dim <int>` | `512` | Embedding dimension (Matryoshka ladder) |
@@ -1258,7 +1258,7 @@ CLI > env > TOML > defaults, per key. Invalid configuration is
 > (a chars/token prior from the model's GGUF header, no tokenizer wheel),
 > `declared` (`embed_chars_per_token`) or `heuristic` (len/4, logged
 > once); a failed probe lands on `heuristic-fallback`, and `/ops/embed`
-> reports the effective source. Long ops run as jobs (0.12.1):
+> reports the effective source. Long ops run as jobs (0.12.0):
 > `POST /ops/reembed {"mode": "job"}` answers a job id inline,
 > `GET /jobs/<id>` reports status + batch progress, and
 > `POST /jobs/<id>/cancel` stops the op at its next batch boundary

@@ -199,7 +199,7 @@ class OKFClient:
             raise OKFError("BAD_VALUE", f"unknown op {op!r}", fields={"op": op})
         return self._unwrap(self._request("POST", f"/ops/{op}", kwargs))
 
-    # -- jobs (0.12.1) -------------------------------------------------------
+    # -- jobs (0.12.0) -------------------------------------------------------
 
     def jobs(self) -> list:
         """Known serve-side jobs (running + recently finished)."""

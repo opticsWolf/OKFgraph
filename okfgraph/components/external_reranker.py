@@ -10,7 +10,7 @@ session:
     POST <endpoint>/v1/rerank  {"model", "query", "documents", "top_n"}
     →  {"results": [{"index": i, "relevance_score": s}]
 
-(0.12.1) TEI-shape tolerance, probe once per session: when the standard
+(0.12.0) TEI-shape tolerance, probe once per session: when the standard
 wire is refused, the engine retries the same query against the host
 root's ``POST /rerank`` in the TEI text-embeddings-inference shape —
 ``{"query", "texts", "truncate": true}`` answered by a *bare* list
@@ -23,7 +23,7 @@ One call scores one query against N documents (llama.cpp ``llama-server
 --rerank``, TEI, …). ``score_batch`` groups pairs by query and issues one
 call per distinct query; every input pair is scored, order preserved.
 
-Token counting (0.12.1): ``rerank_count`` picks the source used for the
+Token counting (0.12.0): ``rerank_count`` picks the source used for the
 short/long split decision.
 
 - ``"heuristic"`` (default): ``max(8, len/4)``, flagged once per process.

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""0.12.1: the re-embed as an interruptible job (``okf serve``).
+"""0.12.0: the re-embed as an interruptible job (``okf serve``).
 
 The contract this locks down:
 

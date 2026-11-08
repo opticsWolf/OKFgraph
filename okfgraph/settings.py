@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 #: Default text embedding model. Adding registry entries never moves this:
 #: different weights = different vector space, so the default is frozen
 #: (a model switch forces a full reimport, enforced by the model pin).
-#: The default embedding engine (0.12.1): EmbeddingGemma 2 — native 768,
+#: The default embedding engine (0.12.0): EmbeddingGemma 2 — native 768,
 #: Matryoshka ladder 128/256/512/768 (the 512 default stays on-ladder), 8K
 #: context, mean pooling + Gemma prompts applied inside the crate, and
 #: Apache-2.0 where jina-v5-small is CC BY-NC. Existing graphs keep their
@@ -54,11 +54,11 @@ DEFAULT_RERANK_MODEL_ID = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 #: warns (not errors) off-ladder, so the settings layer warns the same way.
 _DIM_LADDER = (32, 64, 128, 256, 512, 768, 1024)
 
-#: A graph's home (0.12.1): the database and its bundle tree live in one
+#: A graph's home (0.12.0): the database and its bundle tree live in one
 #: hidden directory, ``.okfgraph/okfgraph.db`` + ``.okfgraph/bundle``.
 GRAPH_HOME = ".okfgraph"
 DEFAULT_DB_PATH = f"{GRAPH_HOME}/okfgraph.db"
-#: Pre-0.12.1 default. A CWD holding it (and no ``.okfgraph/``) keeps it.
+#: Pre-0.12.0 default. A CWD holding it (and no ``.okfgraph/``) keeps it.
 LEGACY_DB_PATH = "okfgraph.db"
 
 _TRUE_WORDS = ("1", "true", "yes", "on")
@@ -616,7 +616,7 @@ class Settings:
         home (the default ``.okfgraph/okfgraph.db``, or Silk's explicit
         ``<root>/.okfgraph/okfgraph.db``) gets ``<home>/bundle``, created
         on first use. Any other db path keeps the surface's ``fallback``
-        (CLI ``.``, serve/MCP the db's parent), as before 0.12.1.
+        (CLI ``.``, serve/MCP the db's parent), as before 0.12.0.
 
         A home whose db already exists without ``bundle/`` was filled
         against the fallback tree; it keeps that tree (one warning) so a

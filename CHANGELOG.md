@@ -297,7 +297,15 @@ v6.8)" and its Design Decisions table.
   the crate): native 768 with the 512 built-in default on-ladder, and
   Apache-2.0 where jina-v5-small is CC BY-NC (the model table in the
   README keeps the licences front and centre). The crate floor rises to
-  `embroider>=0.13,<0.14`. **Nothing moves for existing graphs**: one
+  `embroider>=0.13,<0.14`, and again to `embroider>=0.14,<0.15` after the
+  crate release round (0.13.1 — the CUDA loader self-service — was
+  folded into 0.14.0 and never reached PyPI; 0.14 adds the general
+  `Tokenizer` handle (the `JinaTokenizer` consumers keep, renamed with a
+  deprecation alias) and the GemmaVision vision slot whose image vectors
+  share the gemma-2 text space, while bobine 0.8.0 rides the same
+  0.14.1 requirement). Fresh installs therefore get the cuDNN loader
+  fix; the resolver-safe surface used by okfgraph is unchanged.
+  **Nothing moves for existing graphs**: one
   model per graph is a create-time pin and switching ids is a measured
   reimport (`okf reembed`) — jina-v5-small stays registered as the
   0.11-era default.

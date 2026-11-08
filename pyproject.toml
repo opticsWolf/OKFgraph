@@ -30,7 +30,7 @@ dependencies = [
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",
     "numpy>=1.26",
-    "mordant>=0.9",
+    "mordant>=0.10.1",   # floor rides the GFM-parser stabilization; latest at pin time
     "mcp>=2.0",
     "fasteners>=0.19",
     # Image decode + bicubic resize for the vision route (0.8.0): core,

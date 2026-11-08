@@ -445,13 +445,13 @@ wheels = [
 
 [[package]]
 name = "mordant"
-version = "0.9.0"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/05/74/60fec852543b36a2584fa99f8016da8684a7083df8001b898827e4d40f2a/mordant-0.9.0.tar.gz", hash = "sha256:fc0c41378b66b092c0db740aede2cd795775b44db56d9e7b9eede80f53ee7ef5", size = 720427, upload-time = "2026-08-24T14:55:45.72Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/fa/7812f22889429aa3e583a25fdd65fef4405556ed1f87c46fbe83fa9fe59e/mordant-0.10.1.tar.gz", hash = "sha256:1e763777bb0e0ed5ea57acaf6aa75670ed91f797fe376ea626adcd5e58f80464", size = 766104, upload-time = "2026-11-08T18:04:58.71Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/30/fb/56a414e686edda2444b6d10ed16f4313ed0383399d5b85ffbb40945fa4a9/mordant-0.9.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:2025d2546e611751d3b918409dabf732718c22f2646b991487f3edca701004ba", size = 4706896, upload-time = "2026-08-24T14:55:39.968Z" },
-    { url = "https://files.pythonhosted.org/packages/32/00/b1b0fcad5c8337e45ed68f512ed5574eeb5f9950ad9616621f3a4ce98f08/mordant-0.9.0-cp39-abi3-manylinux_2_35_x86_64.whl", hash = "sha256:0c3213ba990fba00e972ef3decfc7cd23eb813d8f02c08cb965d60846478652c", size = 32415263, upload-time = "2026-08-24T14:55:41.859Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/45/199d90d1b19921354ca36b6f87ec15a36d22a1444ff781a072d5bcc6eb0a/mordant-0.9.0-cp39-abi3-win_amd64.whl", hash = "sha256:9f99758058ad779a92e02140bfb21faa9e8111805a79f33b45be24a629382341", size = 4770293, upload-time = "2026-08-24T14:55:44.053Z" },
+    { url = "https://files.pythonhosted.org/packages/57/cc/c03882c39ded24b9823fbe241a174f8a0c083a3e340758f0ca946adecf7c/mordant-0.10.1-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:44f66d4d35551e7058b0fa260d7d7ede14cc2975172a158dc94f9ff7a6ec0fb2", size = 4818051, upload-time = "2026-11-08T18:04:52.736Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/ca/d1e7a7b9b078124abf18134899d8fb54c68390f72f61b49f8887ff21f9e9/mordant-0.10.1-cp39-abi3-manylinux_2_35_x86_64.whl", hash = "sha256:d1dc07c0dce8ac015de46b035707a8413dd7b091da91e0297d91adad95643e00", size = 32708967, upload-time = "2026-11-08T18:04:54.996Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/f4/74339f2be97dc7fabecd06c9883f97888c6d9310af26c3b439e1a25eb1bb/mordant-0.10.1-cp39-abi3-win_amd64.whl", hash = "sha256:3d2c338b96a7727dc69448b5a44f82ab337cc85860e8e9861aa8826ca2d7763c", size = 4912801, upload-time = "2026-11-08T18:04:57.287Z" },
 ]
 
 [[package]]
@@ -732,7 +732,7 @@ requires-dist = [
     { name = "fasteners", specifier = ">=0.19" },
     { name = "ladybug", specifier = "==0.22.1" },
     { name = "mcp", specifier = ">=2.0" },
-    { name = "mordant", specifier = ">=0.9" },
+    { name = "mordant", specifier = ">=0.10.1" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "onnxruntime", marker = "extra == 'cpu'", specifier = "==1.31.1" },
     { name = "onnxruntime-gpu", extras = ["cuda", "cudnn"], marker = "extra == 'gpu'", specifier = "==1.31.1" },

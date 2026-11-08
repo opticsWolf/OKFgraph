@@ -6,7 +6,8 @@ prompt engineering); fall back to the **CLI** for scripts and debugging.
 ## MCP server
 
 ```bash
-uv run --project . okf-mcp --db-path ./kb.db --bundle-root .
+uv run --project . okf-mcp            # defaults: the .okfgraph/ home
+uv run --project . okf-mcp --db-path ./kb.db --bundle-root .   # explicit paths win
 ```
 
 - Transport: stdio (default). Entry point: `okf-mcp` (`okfgraph.mcp_server:main`).
@@ -17,13 +18,19 @@ uv run --project . okf-mcp --db-path ./kb.db --bundle-root .
   graph. Boot flags are the CLI's global flags (same table, same env names).
 - Dependencies resolve from `pyproject.toml` (`uv sync`); the embedding
   engine is the external `embroider` package (PyPI wheels, also used by
-  bobine — no Rust toolchain needed to run okfgraph).
+  bobine — no Rust toolchain needed to run okfgraph). The 0.12.0 default
+  engine is EmbeddingGemma 2; jina-v5 stays registered for pinned graphs.
 - The `pdf` extra (`bobine`) is needed only for `ingest` with `kind='pdf'`
   and the default converter. Image embeddings (`mode=optional`/`omni`) run
-  through embroider (`JinaV5Vision`) on the shared ONNX Runtime — install
-  `okfgraph[cpu]` or `[gpu]` for that; there is no separate vision extra.
+  through the text model's registry vision pairing (`GemmaVision` on
+  embeddinggemma-2 graphs, `JinaV5Vision` on text-nano graphs) on the
+  shared ONNX Runtime — install `okfgraph[cpu]` or `[gpu]` for that;
+  there is no separate vision extra.
 - Optional: `ORT_DYLIB_PATH` to pin the ONNX Runtime binary shared by
-  bobine + embroider (defaults to the pip-installed `onnxruntime==1.29.0`).
+  bobine + embroider (defaults to the pip-installed `onnxruntime==1.31.1`;
+  since embroider 0.14 the crate also self-serves the CUDA loader dirs —
+  venv `nvidia*` dists + `onnxruntime*` `capi` + the cuDNN SDK layouts —
+  so a fresh server process needs no machine PATH edits).
 
 ### Claude Code
 
@@ -99,14 +106,16 @@ embedder is cold or unavailable; keep hybrid ranking for phrasing-sensitive
 questions. `read --max-tokens N` / `max_tokens` caps any reading to a
 budgeted section list (self first, then PPR-ranked neighbours).
 
-## Tool surface (8 MCP tools)
+## Tool surface (11 MCP tools)
 
 - `search` (concepts/chunks/images, expand, hub_rerank, rank),
   `read` (body/chunks/document/context, max_tokens),
   `traverse` (relationships, directory listing, shortest path),
   `ingest` (md/pdf/thoughts/bib), `export_bundle` (okf/obsidian flavors),
   `export_concept` (single concept), `list_images` (assets on a concept),
-  `get_image` (metadata + base64 bytes).
+  `get_image` (metadata + base64 bytes) — and since 0.11 the write tools
+  `update` (edit a concept/bump dim), `supersede` (fold into a successor),
+  `delete` (remove a node or nested tree).
 - Wire contract (D7): a success result is the envelope string
   (`{ok: true, op, data, warnings}`); a failure raises, so the result
   carries `isError: true` and the text is the error envelope — typed code,

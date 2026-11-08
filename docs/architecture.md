@@ -2,7 +2,7 @@
 
 **Version**: 6.8 (as-built for okfgraph 0.11.0 — the findings-store changes in the v6.7 → v6.8 summary below: links survive re-import, per-file change detection, opt-in frontmatter identity, `okf serve` (one owner, many clients), offline extensions, typed relations, filters, typed ingest, producer cursors, MCP write tools; schema v9. Earlier: 6.7 for okfgraph 0.10.2 — v6.6 surface per `docs/surface-unification-plan.md` plus the v6.6 → v6.7 summary below: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)
 **Based on**: Architecture v6.5 (0.8.x–0.9.0 tree)  
-**Verified against**: LadybugDB v0.22.1, Python 3.11–3.13, `embroider 0.12.x`, `bobine 0.6.x`, `onnxruntime==1.29.0`
+**Verified against**: LadybugDB v0.22.1, Python 3.11–3.14, `embroider 0.14.x`, `bobine 0.8.0`, `onnxruntime==1.31.1`
 
 > **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
 > `docs/OKF Graph V6.0.md`, `docs/Okfgraph 6.0 amendment.md`,
@@ -248,7 +248,7 @@ pip install "okfgraph[cpu]"   # ladybug, embroider, mordant, mcp, … + CPU ORT 
 ladybug == 0.22.1            # graph + vector + FTS store (0.20.x segfaulted 2nd in-process vector-index builds — Step 6; 0.21.2 unbounded FTS)
 embroider >= 0.3, < 0.4      # Jina v5 text + vision embeddings (external Rust/ORT crate, PyPI wheels)
 pillow >= 11                 # caller-side vision decode/resize (core — the vision contract starts at RGB bytes)
-# onnxruntime == 1.29.0 lives in the cpu|gpu extras (exactly one): ONE pinned
+# onnxruntime == 1.31.1 lives in the cpu|gpu extras (exactly one): ONE pinned
 # ORT binary, shared by bobine + embroider (load-dynamic)
 mordant >= 0.9               # Rust GFM chunking
 mcp >= 2.0                   # MCP server surface
@@ -263,7 +263,7 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 > (`LazyRustEncoder`), and explicit air-gapped model paths.
 
 **Verified versions** (0.11.0 tree, re-resolved + full suite green):
-- `ladybug==0.22.1`, `onnxruntime==1.29.0` (via `cpu`|`gpu` extra), `embroider>=0.12,<0.13`, `mordant` (Rust GFM parser)
+- `ladybug==0.22.1`, `onnxruntime==1.31.1` (via `cpu`|`gpu` extra), `embroider>=0.14,<0.15`, `mordant` (Rust GFM parser)
 - Single pinned ORT binary shared by bobine + embroider — do not float.
 
 ### PDF conversion (optional — bobine)
@@ -574,7 +574,7 @@ class OKFRouter:
 
 Router construction stays cheap: importing the `embroider` wheel does not
 open any ONNX session, and `resolve_ort_dylib()` fixes the shared runtime
-choice (single pinned `onnxruntime==1.29.0`, `ORT_DYLIB_PATH`-overridable)
+choice (single pinned `onnxruntime==1.31.1`, `ORT_DYLIB_PATH`-overridable; embroider 0.14 self-serves the CUDA loader dirs)
 *before* the native module is first used.
 
 ### Auto-Detect Embedding Dimension
@@ -1476,11 +1476,18 @@ mcp.run(transport="stdio")
 ### Vision (Multimodal) Model — ONNX, restored 0.8.0
 
 The torch `sentence-transformers` omni path was removed per
-`docs/plan-onnx-only.md` Phase 1 (ONNX-only chain) and replaced by the
-ONNX vision model per `docs/plan-onnx-only-followup.md` Phase 6: embroider
-`JinaV5Vision` over `opticsWolf/jina-embeddings-v5-omni-nano-retrieval-onnx`
-(registry `jina-v5-omni-nano-retrieval-vision`), text-nano graphs only
-(graph pins the `text_partner`, fail-closed). fp32 on CPU, fp16 on CUDA.
+`docs/plan-onnx-only.md` Phase 1 (ONNX-only chain) and replaced by ONNX
+vision slots per `docs/plan-onnx-only-followup.md` Phase 6. The vision
+model is the **registry vision pairing of the graph's text model**
+(`image_model_id=None`): an **embeddinggemma-2 graph selects the gemma-2
+vision slot** (`GemmaVision` over `onnx-community/embeddinggemma-2-vision`
+— Apache-2.0, the SigLIP-style tower fused through the text tower behind
+`text_partner`, so image vectors share the gemma-2 **text space**; host
+resize via `gemma_vision_target_size`); a **text-nano graph keeps the jina
+omni slot** (`JinaV5Vision` over `opticsWolf/jina-embeddings-v5-omni-nano-retrieval-onnx`).
+Both fail closed on the graph's `text_partner` pin, and both refuse
+fp16-on-CPU (the vision towers NaN under emulated fp16 — the jina and
+gemma slots fail fast alike). fp32 on CPU, fp16 on CUDA.
 | **Text Query** | `model.encode_query()` / `model.encode_document()` for cross-modal search |
 
 ### Unified Vector Space
@@ -1859,7 +1866,7 @@ remains the policy in the embroider crate.)*
 
 This specification is **verified against production LadybugDB v0.21.2**
 (okfgraph 0.2.12 tree: `embroider 0.1.3`, `bobine 0.5.11`,
-`onnxruntime==1.29.0`). All code patterns have been tested end-to-end
+`onnxruntime==1.31.1`). All code patterns have been tested end-to-end
 with real data, real model inference, and real database operations.
 
 ---
@@ -1874,7 +1881,7 @@ with it. What remains are standing constraints, not gaps:
 | Constraint | Status |
 |---|---|
 | **Ladybug three-clause MERGE** | Vector upserts must avoid `MERGE … SET` on indexed columns (runtime abort — see the quarantine at §2). Reported upstream; watch `macrame-db` 0.18 |
-| **Single pinned ORT** | `onnxruntime==1.29.0` shared by bobine + embroider; a stale system DLL fails session creation with `BadVersion`. `ORT_DYLIB_PATH` overrides; entry points resolve before first use |
+| **Single pinned ORT** | `onnxruntime==1.31.1` shared by bobine + embroider; a stray system DLL still fails session creation with `BadVersion` (the crate pin now also delivers the venv's own dylib when `ORT_DYLIB_PATH` is unset). Entry points resolve before first use |
 | **Frozen vector space** | Jina contract (prefixes, last-token pooling, truncation order) is identical across okfgraph 0.2.x and embroider 0.1.x — enforced by golden parity tests, never by convention alone |
 | **Floor-pinned embroider** | `embroider>=0.3.2,<0.4`: a new embroider minor without an okfgraph release is a *supported* state, and the suite proves the floor still passes (contract fixtures in the embroider repo `fixtures/`, vendored at `tests/fixtures/golden_jina_v5_text_small.json` + `tests/test_golden_vectors.py`; matrix: embroider `COMPAT.md`) |
 | **Schema v6** | `DeletedConcept` carries a full-fidelity snapshot (embeddings + metadata survive soft-delete → recover); v5 DBs migrate on open (ALTER existing table or CREATE it — 0.2.x fresh DBs never had it) |

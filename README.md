@@ -55,7 +55,7 @@ extra, `cpu` or `gpu`:
 | | `[gpu]` | `[cpu]` |
 |---|---|---|
 | **Pick it when** | the machine has an NVIDIA GPU (`nvidia-smi` prints it) | no NVIDIA GPU, macOS, CI, or a small install |
-| Runtime | `onnxruntime-gpu[cuda,cudnn]==1.29.0` (bundles the CUDA + cuDNN runtime wheels: a large download) | `onnxruntime==1.29.0` (small) |
+| Runtime | `onnxruntime-gpu[cuda,cudnn]==1.31.1` (bundles the CUDA + cuDNN runtime wheels: a large download) | `onnxruntime==1.31.1` (small) |
 | `--device auto` lands on | CUDA, FP16 weights (much faster bulk import) | CPU, FP32 weights |
 | Platforms | Windows, Linux x86-64 with a recent NVIDIA driver | all |
 
@@ -103,9 +103,9 @@ Skip both extras and point `ORT_DYLIB_PATH` at your onnxruntime 1.29
 library instead — but never rely on bare OS-loader discovery: a stale
 system DLL (e.g. in `System32`) fails the load instead of being used.
 
-Core dependencies are deliberately few: `ladybug==0.22.1`, `embroider>=0.12,<0.13`
+Core dependencies are deliberately few: `ladybug==0.22.1`, `embroider>=0.14,<0.15`
 (the shared embedding engine — github.com/opticsWolf/embroider, also used by
-bobine), `onnxruntime==1.29.0` (one pinned ORT binary shared by bobine +
+bobine), `onnxruntime==1.31.1` (one pinned ORT binary shared by bobine +
 embroider; `ORT_DYLIB_PATH`-overridable), `mordant`, `mcp>=2.0`, `pydantic`,
 `pyyaml`, `numpy`, `python-frontmatter`, `fasteners`. There is no torch, no
 transformers, no optimum, no PDF stack in the core install.
@@ -349,7 +349,7 @@ Key design decisions:
   diff, and doctor stay cold.
 - **Last-token pooling** (not mean) — required by Jina v5; mean pooling
   breaks alignment with stored vectors.
-- **Single pinned ORT** (`onnxruntime==1.29.0`, `ORT_DYLIB_PATH`-overridable)
+- **Single pinned ORT** (`onnxruntime==1.31.1`, `ORT_DYLIB_PATH`-overridable; embroider also self-serves the CUDA loader dirs since its 0.14 wheel)
   shared by bobine + embroider.
 - **Bobine is a plugin, not a dependency** — `DocumentConverter.convert()`
   is the seam; provider owns its options (`routing_mode`,
@@ -446,15 +446,16 @@ okfgraph/
 
 ## Requirements
 
-Core (`uv sync`): `ladybug==0.22.1`, `embroider>=0.12,<0.13` (PyPI wheels,
+Core (`uv sync`): `ladybug==0.22.1`, `embroider>=0.14,<0.15` (PyPI wheels,
 github.com/opticsWolf/embroider), `mordant>=0.9`,
 `mcp>=2.0`, `pydantic>=2`, `pyyaml>=6`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.
-Plus exactly one ORT provider: `okfgraph[cpu]` (`onnxruntime==1.29.0`)
-or `okfgraph[gpu]` (`onnxruntime-gpu[cuda,cudnn]==1.29.0`) — shared with
-bobine via `ORT_DYLIB_PATH`.
+Plus exactly one ORT provider: `okfgraph[cpu]` (`onnxruntime==1.31.1`)
+or `okfgraph[gpu]` (`onnxruntime-gpu[cuda,cudnn]==1.31.1`) — shared with
+bobine via `ORT_DYLIB_PATH` (embroider 0.14 additionally self-serves the
+CUDA EP's loader dirs).
 
-- `--extra pdf`: `bobine>=0.7` (default PDF converter; 0.7.5 pinned in the lock).
+- `--extra pdf`: `bobine>=0.7` (default PDF converter; 0.8.0 pinned in the lock).
 - `--extra dev`: `pytest>=8`.
 
 ### Upgrading ladybug (0.22.1)

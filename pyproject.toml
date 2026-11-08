@@ -53,10 +53,10 @@ dev = [
 # cpu XOR gpu — never install both. Without either, the first encode fails
 # fast with "install okfgraph[cpu] or okfgraph[gpu]".
 cpu = [
-    "onnxruntime==1.29.0",
+    "onnxruntime==1.31.1",
 ]
 gpu = [
-    "onnxruntime-gpu[cuda,cudnn]==1.29.0",
+    "onnxruntime-gpu[cuda,cudnn]==1.31.1",
 ]
 # PDF conversion (default BobineConverter; custom converters need none of this)
 pdf = [

@@ -138,5 +138,5 @@ def test_pages_published_stack_matches_pins():
         html))
     assert shown["okfgraph"] == release
     assert f'<span class="release">{release}</span>' in html  # hero badge
-    for pkg in ("bobine", "embroider", "ladybug", "onnxruntime"):
+    for pkg in ("bobine", "embroider", "mordant", "ladybug", "onnxruntime"):
         assert shown[pkg] == locked[pkg], (pkg, shown[pkg], locked[pkg])

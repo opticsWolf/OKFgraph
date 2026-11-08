@@ -309,6 +309,20 @@ v6.8)" and its Design Decisions table.
   model per graph is a create-time pin and switching ids is a measured
   reimport (`okf reembed`) — jina-v5-small stays registered as the
   0.11-era default.
+- **Tokenizer + GemmaVision adoption (embroider 0.14).** The two
+  tokenizer factories move to `embroider.Tokenizer` (the general handle;
+  `JinaTokenizer` resolves via a deprecation alias). Image-content
+  search gains the gemma-2 vision slot: with `image_model_id=None` the
+  vision model is now the registry vision pairing of the graph's text
+  model (`default_image_model_id`) — gemma-2 graphs select
+  `google/embeddinggemma-2-vision` (`GemmaVision`, Apache-2.0, image
+  vectors sharing the gemma-2 text space), text-nano graphs keep the
+  jina omni slot (`JinaV5Vision`); texts without a pairing entry fall
+  back to the legacy default and compat refuses (caption fallback
+  named). The host-side resize follows the slot (`gemma_vision_target_size`);
+  `enforce_vision_compat` needs no edit — partners ride
+  `available_models()`, as always. New tests: pairing default, loader
+  class, gemma compat pass (`test_vision` → 15).
 - **ladybug 0.21.2 → 0.22.1.** Storage version 47 → 49: the first open
   under 0.22 upgrades a graph in place, and 0.21.2 can no longer read it
   afterwards — back up graphs and upgrade every `okf`/`okf-mcp` on the

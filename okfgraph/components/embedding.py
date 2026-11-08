@@ -434,6 +434,40 @@ def enforce_vision_compat(conn, *, text_model_id: str, embedding_dim: int,
     return partner
 
 
+def default_image_model_id(embroider_module, text_model_id: str) -> str:
+    """Vision model pairing a graph's text model (0.14 pairing rule).
+
+    Read off the registry (`available_models`): the first entry whose
+    `text_partner` is the graph's text model — a gemma-2 text graph
+    selects `google/embeddinggemma-2-vision`, a text-nano graph the jina
+    omni slot. Texts with no pairing entry (e.g. jina-v5-small) fall back
+    to the legacy vision default; `enforce_vision_compat` then refuses
+    with the caption fallback named, exactly as a misconfigured explicit
+    id would.
+    """
+    try:
+        models = embroider_module.available_models()
+    except Exception:
+        models = []
+    for entry in models:
+        if entry.get("text_partner") == text_model_id:
+            return entry["id"]
+    return getattr(embroider_module, "VISION_NANO_MODEL",
+                   "jina-v5-omni-nano-retrieval-vision")
+
+
+def vision_loader_class(image_model_id: str) -> str:
+    """The embroider loader type for an image model id (0.14 surface).
+
+    The gemma-2 vision slot rides `GemmaVision`; the jina omni slot stays
+    on `JinaV5Vision`. Model ids under the `google/` owner name the gemma
+    loader; unknown ids default to the Jina loader and get refused later
+    by compat/pins with the real reason. Both `open` signatures match.
+    """
+    return ("GemmaVision"
+            if image_model_id.startswith("google/") else "JinaV5Vision")
+
+
 def vision_content_hash(image_model_id: str, image_precision: str, payload: bytes) -> str:
     """Content hash for vision-route rows (0.8.0).
 
@@ -463,8 +497,9 @@ class LazyVisionEncoder:
     """Defers the vision session open until the first image encode (0.8.0).
 
     Mirrors `LazyRustEncoder`: the `embroider` wheel import is validated
-    eagerly, but `JinaV5Vision.open` — download + session build — waits
-    for the first `encode_image`. Failures cache and re-raise; threading
+    eagerly, but the vision loader's `open` (`JinaV5Vision`, or
+    `GemmaVision` for gemma-2 image ids — same signature) — download +
+    session build — waits for the first `encode_image`. Failures cache and re-raise; threading
     follows the same lock discipline. Text-only imports never touch it.
     """
 
@@ -891,8 +926,9 @@ class LazyRustEncoder:
     validated eagerly (fail fast on a missing install), but ``JinaV5.open``
     — model download + session build — waits for the first ``encode`` /
     ``encode_batch`` / ``used_cuda`` access. Token counting uses the
-    separate lightweight ``JinaTokenizer`` handle, so budgeted reads and the
-    context-window guard stay cold too.
+    separate lightweight ``Tokenizer`` handle (embroider 0.14 renamed the
+    Jina-specific entry; it serves Gemma tokenizers too), so budgeted
+    reads and the context-window guard stay cold too.
 
     A failed session open is cached and re-raised: configuration errors stay
     fail-fast (once, at first encode) instead of retrying network/model

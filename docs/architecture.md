@@ -18,7 +18,7 @@
 **Storage**: LadybugDB (v0.22.1, storage version 49 — one-way upgrade from 0.21.2's 47) — graph + vector + full-text search.  
 **Data Model**: Pydantic v2 with `extra='allow'` — preserves OKF extensibility, maps cleanly to Ladybug's `MAP` and `LIST` columns.  
 **Embedding Engine**: **EmbeddingGemma 2** (`google/embeddinggemma-2` — mean pooling, Apache-2.0) as the 0.12.1 default, via the external **`embroider`** crate (github.com/opticsWolf/embroider — Rust/ORT, no torch, no transformers, no optimum anywhere in core). `jinaai/jina-embeddings-v5-text-small-retrieval` stays registered (the 0.11-era default); existing graphs keep whatever they pinned — switching ids is a re-import, by design.  
-**Images**: caption route (`text`) or ONNX vision route (`optional`/`omni` → `vision-onnx` via embroider `JinaV5Vision`, text-nano graphs only) into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0 and replaced by ONNX vision in 0.8.0 — same vector space, no torch anywhere.  
+**Images**: caption route (`text`) or ONNX vision route (`optional`/`omni` → `vision-onnx` via the registry vision pairing of the text model — `GemmaVision` on gemma-2 graphs (image vectors share the gemma-2 text space), `JinaV5Vision` on text-nano graphs) into `ImageAsset.embedding` (indexed by `image_omni_idx`). The torch omni path was removed in 0.7.0 and replaced by ONNX vision in 0.8.0 — same vector space, no torch anywhere.  
 **Chunking**: Mordant (Rust-based Markdown parser) with heading context injection and structural block boundaries.  
 **Search Modes**: Hybrid (RRF fusion, vector + FTS, `rank=none|hub|ppr|cross`; `cross` and chunk `rerank=True` reorder the top hits by an opt-in cross-encoder (default model `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, Q5 Phase 3: parity with MiniLM on English, better on German), chunk-level RRF with matched-chunk attachment, graph traversal, direct ID lookup, image search (text→image via unified index), **model-free PPR retrieval** (works with no embedding model loaded).
 
@@ -115,7 +115,7 @@ closure):
 
 | Area | v6.4 (0.7.x) | v6.5 (0.8.x) | Reason |
 |---|---|---|---|
-| **Image embeddings** | Caption-only (`mode=text`) | **ONNX vision restored** (`optional`/`omni` → `vision-onnx`, embroider `JinaV5Vision`, text-nano graphs) | Follow-up Phase 6; 6.4a parity + 6.3 in-situ gates green |
+| **Image embeddings** | Caption-only (`mode=text`) | **ONNX vision restored** (`optional`/`omni` → `vision-onnx`, embroider `JinaV5Vision` for the jina slot + `GemmaVision` for the gemma-2 slot since 0.14 pairing) | Follow-up Phase 6; 6.4a parity + 6.3 in-situ gates green |
 | **Dependencies** | `embroider>=0.2,<0.3` | **`embroider>=0.3,<0.4`**, `Pillow>=11` in core | Vision contract (resize/prompt) + caller-side decode |
 | **Bundle creation** | Human-written only | **`okf produce`** (`SourceProducer` seam, SQLite provider, `## Observations`, `log.md`) | Bundle-hardening §3 + §5 |
 | **Constructor** | `bundle_root` required | **`bundle_root=None`** (file-free thoughts loop; file-side ops fail closed) | Thoughts-in/search-out without a tree |
@@ -626,7 +626,7 @@ truncation order without re-indexing every database.
 
 **Lazy sessions.** `LazyRustEncoder` opens the ONNX session on first
 encode, not at router construction — importing a bundle, running doctor,
-or opening a DB never pays for a session it doesn't use. `JinaTokenizer`
+or opening a DB never pays for a session it doesn't use. `Tokenizer`
 is a separate session-free handle for exact token counts (used for
 token-budgeted reads).
 
@@ -657,7 +657,7 @@ holds an embroider `JinaV5Vision` session over
 `jina-v5-omni-nano-retrieval-vision`), opened lazily like the text
 session. The graph pins `(text_model_id, image_model_id,
 image_precision)` in Meta fail-closed — the vision model must be the
-registry `text_partner` of the text model (text-nano graphs only), or
+registry `text_partner` of the text model (the gemma-2 or jina pairing), or
 import refuses rather than fork the vector space. Vision vectors land in
 the same `ImageAsset.embedding` space (6.4a parity: cos ≥ 0.9999 vs
 torch over 191 images; 6.3 in-situ: 1.00000 on stored vectors).
@@ -1270,7 +1270,7 @@ CLI > env > TOML > defaults, per key. Invalid configuration is
 
 | Option | Default | Description |
 |---|---|---|
-| `--mode <mode>` | `[import] mode` (`text`) | Image ingestion mode: `text` (captions), `optional`/`omni` (ONNX vision, text-nano graphs only) |
+| `--mode <mode>` | `[import] mode` (`text`) | Image ingestion mode: `text` (captions), `optional`/`omni` (ONNX vision, the text model's registry vision pairing) |
 | `--batch-size <int>` | `[import] batch_size` (`32`) | Batch size for encoding |
 | `--prune-missing` | — | With `--all`: remove concepts whose source files were deleted from disk (prunes concept, chunks, links, and orphaned image assets) |
 
@@ -1461,7 +1461,7 @@ mcp.run(transport="stdio")
 | **Model (default)** | `google/embeddinggemma-2` — mean pooling (per its model card), Apache-2.0; `jinaai/jina-embeddings-v5-text-small-retrieval` remains registered |
 | **Framework** | External `embroider` crate (Rust/ORT — no Python ML stack in core, floor 0.13.0: the EmbeddingGemma 2 registry entry + ORT 1.31.1 goldens) |
 | **Dimensions** | **768** native for gemma-2 (Matryoshka ladder 128/256/512/768), **1024** native for jina-small (`ALLOWED_DIMS`); default **512**, on-ladder for both |
-| **Context Window** | 8192 tokens for both (tokenizer-only counts via `JinaTokenizer`, no session) |
+| **Context Window** | 8192 tokens for both (tokenizer-only counts via `Tokenizer`, no session) |
 | **Prefix Logic** | `Query:` / `Document:` (frozen contract); EmbeddingGemma prompts are applied inside the crate |
 | **Pooling** | Mean for gemma-2; **last-token pooling** for Jina v5 (NOT mean — required by Jina) |
 | **Normalization** | L2 normalization (cosine similarity), re-normalised after truncation |

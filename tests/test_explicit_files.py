@@ -44,7 +44,7 @@ def _stub_embed(monkeypatch, calls):
                 _Session("files"),
             )[1],
         ),
-        JinaTokenizer=types.SimpleNamespace(
+        Tokenizer=types.SimpleNamespace(
             open=lambda *a, **k: (_ for _ in ()).throw(
                 AssertionError(f"unexpected tokenizer open: {a} {k}")
             ),
@@ -134,7 +134,7 @@ def test_default_path_still_uses_open(tmp_path, monkeypatch):
                 AssertionError("open_files must not be used by default")
             ),
         ),
-        JinaTokenizer=types.SimpleNamespace(
+        Tokenizer=types.SimpleNamespace(
             open=lambda *a, **k: types.SimpleNamespace(
                 count_tokens=lambda t: 1
             ),

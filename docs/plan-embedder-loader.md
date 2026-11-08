@@ -593,3 +593,31 @@ engine-independent; only their *row caps* read `count()`.
       rerank-external/reembed-jobs) on the 0.13.0 crate; the full gate
       re-runs on ``embroider 0.13.0`` (probe venv) as the release-grade
       run.
+
+11. **Phase 1 slice 11 = the 0.14 crate round adopted (2026-11-08,
+    0.12.1)**. The crate releases folded the CUDA-loader self-service
+    into 0.14.0 (0.13.1 never reached PyPI — in-code surface only),
+    added the general ``Tokenizer`` handle (0.14.1; ``JinaTokenizer``
+    resolves via a ``DeprecationWarning`` alias), and shipped the
+    ``GemmaVision`` vision slot (``google/embeddinggemma-2-vision``,
+    Apache-2.0: SigLIP-style tower fused through the text tower behind
+    ``text_partner`` — image vectors share the gemma-2 text space —
+    fp16-on-CPU refuses, fail fast like the jina slot). okfgraph adopts:
+    (a) the two ``JinaTokenizer`` factories move to ``Tokenizer`` (the
+    docstring follows); (b) ``image_model_id=None`` now resolves the
+    registry vision pairing of the graph's text model
+    (``default_image_model_id`` — gemma-2 text → the gemma slot,
+    text-nano → the jina omni slot; texts without a pairing entry fall
+    back to the legacy default and compat refuses, caption fallback
+    named); (c) the vision session factory selects the loader per model
+    id (``vision_loader_class`` — ``google/`` owner → ``GemmaVision``,
+    both `open` signatures match); (d) the host-side resize follows the
+    slot (``gemma_vision_target_size``: aspect-preserving multiples of
+    48, patch 16, ``[-1,-1]`` pad vs the jina dynamic grid);
+    ``enforce_vision_compat`` needs no edit — the partner rides
+    ``available_models()`` as always. Floor rises to
+    ``embroider>=0.14,<0.15`` (fresh installs now carry the loader fix);
+    uv.lock pins 0.14.1 + bobine 0.8.0; pages published-stack follows.
+    Tests: ``test_vision`` 15 (pairing default, loader class, gemma
+    compat pass on the fake registry); reader batch + full gate run on
+    the 0.14.1 crate as the release-grade run.

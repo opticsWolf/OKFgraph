@@ -23,10 +23,14 @@ PNG_1x1 = base64.b64decode(
 
 NANO_TEXT = "jinaai/jina-embeddings-v5-text-nano-retrieval"
 VISION_ID = "jina-v5-omni-nano-retrieval-vision"
+GEMMA_TEXT = "google/embeddinggemma-2"
+GEMMA_VISION_ID = "google/embeddinggemma-2-vision"
 
 FAKE_REGISTRY = [
     {"id": NANO_TEXT, "text_partner": ""},
     {"id": VISION_ID, "text_partner": NANO_TEXT},
+    {"id": GEMMA_TEXT, "text_partner": ""},
+    {"id": GEMMA_VISION_ID, "text_partner": GEMMA_TEXT},
 ]
 
 
@@ -75,6 +79,52 @@ class StubVision:
 # -- compat refusals --------------------------------------------------------
 # Direct `enforce_vision_compat` calls: the factory adds only the ORT
 # pre-check and the session open, so these run with no runtime at all.
+
+def test_default_image_model_follows_the_registry_pairing():
+    """0.14: None selects the vision model whose text_partner matches."""
+    import embroider as ev
+
+    from okfgraph.components.embedding import default_image_model_id
+    assert default_image_model_id(
+        ev, "google/embeddinggemma-2"
+    ) == "google/embeddinggemma-2-vision"
+    assert default_image_model_id(
+        ev, NANO_TEXT
+    ) == "jina-v5-omni-nano-retrieval-vision"
+    # No pairing entry (jina-v5-small) falls back to the legacy default;
+    # compat refuses the pairing with the caption fallback, as before.
+    assert default_image_model_id(
+        ev, "jinaai/jina-embeddings-v5-text-small-retrieval"
+    ) == "jina-v5-omni-nano-retrieval-vision"
+
+
+def test_vision_loader_class_follows_the_slot():
+    from okfgraph.components.embedding import vision_loader_class
+    assert vision_loader_class("google/embeddinggemma-2-vision") == "GemmaVision"
+    assert vision_loader_class(
+        "jina-v5-omni-nano-retrieval-vision"
+    ) == "JinaV5Vision"
+    # Unknown ids keep the Jina loader; compat/pins refuse with the
+    # real reason instead of an AttributeError.
+    assert vision_loader_class("cross/model-x") == "JinaV5Vision"
+
+
+def test_gemma_pairing_passes_vision_compat(router, registry):
+    """0.14: the gemma-2 vision slot pairs with a gemma-2 text graph.
+
+    Runs against the FAKE_REGISTRY pairing (`router` has text-nano, so
+    the gemma pair is only exercised via ids `enforce_vision_compat`
+    never opens) — the model row and partner resolve per registry.
+    """
+    from okfgraph.components.embedding import enforce_vision_compat
+    partner = enforce_vision_compat(
+        router.conn,
+        text_model_id=GEMMA_TEXT,
+        embedding_dim=512,
+        image_model_id=GEMMA_VISION_ID,
+    )
+    assert partner == GEMMA_TEXT
+
 
 def test_vision_refused_on_text_small_graph(router, registry):
     with pytest.raises(RuntimeError, match="needs a .* graph"):

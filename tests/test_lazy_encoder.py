@@ -183,7 +183,7 @@ def test_router_construction_stays_cold(tmp_path, monkeypatch):
 
     stub = types.SimpleNamespace(
         JinaV5=types.SimpleNamespace(open=boom),
-        JinaTokenizer=types.SimpleNamespace(open=boom),
+        Tokenizer=types.SimpleNamespace(open=boom),
         MAX_LENGTH=8192,
     )
     monkeypatch.setitem(sys.modules, "embroider", stub)
@@ -272,7 +272,7 @@ def test_no_ort_fails_before_backend(tmp_path, monkeypatch):
 
     stub = types.SimpleNamespace(
         JinaV5=types.SimpleNamespace(open=panic_open),
-        JinaTokenizer=types.SimpleNamespace(open=panic_open),
+        Tokenizer=types.SimpleNamespace(open=panic_open),
         MAX_LENGTH=8192,
     )
     monkeypatch.setitem(sys.modules, "embroider", stub)

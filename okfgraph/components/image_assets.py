@@ -245,14 +245,27 @@ class ImageAssetManager:
             import embroider
         except ImportError:
             raise RuntimeError(
-                "image-content search needs embroider>=0.3 "
-                "(JinaV5Vision); use mode=text (captions)"
+                "image-content search needs embroider>=0.14 "
+                "(the vision slot: JinaV5Vision or GemmaVision); "
+                "use mode=text (captions)"
             ) from None
-        target_size_fn = getattr(embroider, "vision_target_size", None)
+        # The host-side resize contract differs per slot: the jina omni
+        # grid vs the gemma vision processor (resize to multiples of 48,
+        # patch 16, [-1,-1] pad). Read the encoder's model id — the lazy
+        # store hands it over pre-open, like `_encode_vision_image` does.
+        ve = self.embed_engine.vision_encoder
+        if (getattr(ve, "model_id", "") or "").startswith("google/"):
+            target_size_fn = getattr(embroider, "gemma_vision_target_size",
+                                     None)
+        else:
+            target_size_fn = getattr(embroider, "vision_target_size", None)
         if target_size_fn is None:
+            need = ("gemma_vision_target_size" if target_size_fn is None and
+                    (getattr(ve, "model_id", "") or "").startswith("google/")
+                    else "vision_target_size")
             raise RuntimeError(
-                "image-content search needs embroider>=0.3 "
-                "(vision_target_size); use mode=text (captions)"
+                f"image-content search needs embroider>=0.14 "
+                f"({need}); use mode=text (captions)"
             )
         return prepare_vision_rgb(img.data, target_size_fn=target_size_fn)
 

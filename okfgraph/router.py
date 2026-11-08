@@ -402,13 +402,18 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 f"'{image_precision}' (vision ships no int8 artifact)"
             )
         # Default vision id comes off the installed wheel when it knows
-        # the contract (>=0.3); the literal keeps older wheels failing
-        # with "unknown image model" instead of AttributeError.
+        # the contract (>=0.14); unknown ids fail closed at compat with
+        # the real reason instead of AttributeError.
         if image_model_id is None:
-            image_model_id = getattr(
-                self.embroider, "VISION_NANO_MODEL",
-                "jina-v5-omni-nano-retrieval-vision",
+            # 0.14 pairing rule: the registry vision partner of this
+            # graph's text model — gemma-2 graphs select the gemma
+            # vision slot, text-nano graphs the jina omni slot; texts
+            # without a pairing entry fall back to the legacy default
+            # and compat refuses there (caption fallback named).
+            from okfgraph.components.embedding import (
+                default_image_model_id,
             )
+            image_model_id = default_image_model_id(self.embroider, model_id)
         self.image_model_id = image_model_id
         self.image_precision = image_precision
         if not model_id or "/" not in model_id or any(
@@ -545,7 +550,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                     max_length=self.max_length,
                     cpu_arena=self.cpu_arena,
                 )
-            tokenizer_factory = lambda: self.embroider.JinaTokenizer.open_files(
+            tokenizer_factory = lambda: self.embroider.Tokenizer.open_files(
                 str(tokenizer_path),
             )
         else:
@@ -560,7 +565,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                     precision=self.precision,
                     cpu_arena=self.cpu_arena,
                 )
-            tokenizer_factory = lambda: self.embroider.JinaTokenizer.open(
+            tokenizer_factory = lambda: self.embroider.Tokenizer.open(
                 model_id,
                 cache_dir=cache_dir,
             )
@@ -612,10 +617,12 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # run inside the factory, so text-only graphs never pay for them.
         # No explicit-files path: vision opens by registry id only.
         from okfgraph.components.embedding import (
+            default_image_model_id,
             enforce_image_model_pin,
             enforce_image_precision_pin,
             enforce_vision_compat,
             LazyVisionEncoder,
+            vision_loader_class,
         )
 
         def _report_vision_open(encoder) -> None:
@@ -636,7 +643,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 embedding_dim=self.embedding_dim,
                 image_model_id=image_model_id,
             )
-            return self.embroider.JinaV5Vision.open(
+            loader = getattr(self.embroider, vision_loader_class(image_model_id))
+            return loader.open(
                 image_model_id,
                 truncate_dim=self.embedding_dim,
                 device=rust_device,

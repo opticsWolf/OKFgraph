@@ -48,7 +48,7 @@ def snap_paths():
 
 def test_golden_token_counts_exact(golden, snap_paths):
     _, tok_path = snap_paths
-    tok = embroider.JinaTokenizer.open_files(str(tok_path))
+    tok = embroider.Tokenizer.open_files(str(tok_path))
     for key, expected in golden["token_counts"].items():
         assert tok.count_tokens(golden["texts"][key]) == expected
 

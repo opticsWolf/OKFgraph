@@ -91,7 +91,7 @@ def test_open_files_matches_hf_acquisition():
         a = via_hub.encode(text, task="Document")
         b = via_files.encode(text, task="Document")
         assert a == pytest.approx(b, abs=1e-6)
-    tok = embroider.JinaTokenizer.open_files(str(tok_path))
+    tok = embroider.Tokenizer.open_files(str(tok_path))
     assert tok.count_tokens("hello world") == 2
 
 

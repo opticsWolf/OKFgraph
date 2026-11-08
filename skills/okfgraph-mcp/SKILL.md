@@ -91,6 +91,6 @@ OKFgraph is a persistent knowledge graph: markdown concepts with semantic
   deterministic, or the query names topics rather than phrases. Other
   searches and `ingest` load the ONNX model (~30s once per server).
 - Model, precision and dimension are pinned per graph at creation;
-  reopening adopts them (defaults: jina-v5-text-small, 512 dims,
-  device/precision auto). Changing them is a CLI-side fresh rebuild.
+  reopening adopts them (defaults: embeddinggemma-2 — jina-v5 kept as the
+  registered 0.11-era option, 512 dims, device/precision auto). Changing them is a CLI-side fresh rebuild.
 - To persist knowledge, follow the okfgraph-ingest skill.

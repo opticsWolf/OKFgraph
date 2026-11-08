@@ -1,17 +1,21 @@
-"""OKFRouter — Ladybug-backed knowledge graph with Jina v5 embeddings.
+"""OKFRouter — Ladybug-backed knowledge graph under the embroider engine.
 
 Design choices:
-    - **Rust embedding core**: The jina-embeddings-v5 model runs through
-      the embroider wheel (ONNX Runtime, no torch / optimum / transformers
-      anywhere in the process). Task prefix, tokenization, last-token
-      pooling, L2 normalisation and Matryoshka truncation all live in Rust;
+    - **Rust embedding core**: The default embedding engine is
+      EmbeddingGemma 2 (`DEFAULT_MODEL_ID`); jina-embeddings-v5-small
+      stays registered (0.11-era option). Models run through the
+      embroider wheel (ONNX Runtime, no torch / optimum / transformers
+      anywhere in the process). Prompts, tokenization, pooling (mean for
+      gemma-2, last-token for jina v5), L2 normalisation and Matryoshka
+      truncation all live in Rust and are keyed off the model id;
       ``tests/test_parity.py`` pins the numerics.
     - **CUDA is opportunistic**: the loaded ORT build decides (CUDA EP
       present or not); a missing GPU warns once and falls back to CPU,
       never fatal.
-    - **Last-token pooling**: Required by jina-embeddings-v5. Mean pooling
-      produces vectors in a different embedding space that will NOT match
-      stored vectors.
+    - **One pool per model**: pooling is not a setting — gemma-2 is mean
+      pooled, jina v5 is last-token, decided inside the crate. A graph's
+      vectors only match vectors produced by the same (model, precision)
+      pair; reopening with a different model fails closed.
 """
 
 import logging
@@ -82,7 +86,9 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
     # Construction
     # ------------------------------------------------------------------
 
-    # Valid Matryoshka truncation levels for jina-embeddings-v5-text.
+    # Matryoshka truncation levels, the union of the registry ladders (jina
+    # v5 32..1024, gemma-2 128/256/512/768); per-model ladders ride
+    # embroider's registry — this set validates the CLI arg.
     ALLOWED_DIMS = (32, 64, 128, 256, 512, 768, 1024)
 
     # Owned by EmbeddingEngine; model_info is the AdminOps op.

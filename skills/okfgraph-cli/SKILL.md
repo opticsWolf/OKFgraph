@@ -112,8 +112,7 @@ filters on `--target images`) instead of silently dropping them.
 
 - Defaults just work: `--device auto` (CUDA when present, else CPU),
   `--precision auto` (CUDA→FP16, CPU→FP32), `--embedding-dim 512`, text
-  model embeddinggemma-2 (the 0.11 era shipped jina-v5-text-small;
-  existing graphs keep their pins). All are pinned per graph at creation;
+  model embeddinggemma-2. All are pinned per graph at creation;
   reopening adopts them, and a mismatching flag fails closed
   (`*_PIN_MISMATCH`).
 - `--embedding-dim` takes the Matryoshka ladder 32..1024; `--model-id`

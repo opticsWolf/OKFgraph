@@ -130,6 +130,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         cpu_arena: bool = False,
         image_model_id: Optional[str] = None,
         image_precision: str = "auto",
+        image_backend: str = "embroider",
+        image_endpoint_url: str = "",
         allow_remote_images: bool = False,
         allowed_image_domains: Optional[List[str]] = None,
         chunk_size: int = 512,
@@ -218,6 +220,13 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 FP16, CPU → FP32), "fp32" or "fp16". Explicit fp16 on
                 CPU fails fast (the vision graph stalls on CPU). Pinned
                 per graph like the text precision — never mix.
+            image_backend: "embroider" (default: the vision session opens
+                in this process) or "external" (an embroider.serve vision
+                host over HTTP — no ONNX loads here). An external lane
+                probes the host's identity and refuses a host that cannot
+                name its model, precision, width and text partner.
+            image_endpoint_url: vision host base URL, required for
+                image_backend="external".
             allow_remote_images: Whether http(s) image URLs may be fetched.
             allowed_image_domains: Domain allowlist for remote images.
             chunk_size: Target chunk size in tokens.
@@ -409,7 +418,24 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # Default vision id comes off the installed wheel when it knows
         # the contract (>=0.14); unknown ids fail closed at compat with
         # the real reason instead of AttributeError.
-        if image_model_id is None:
+        if image_backend not in ("embroider", "external"):
+            raise ValueError(
+                f"image_backend must be 'embroider' or 'external', got "
+                f"'{image_backend}'"
+            )
+        if image_backend == "external":
+            if not image_endpoint_url.lower().startswith(
+                    ("http://", "https://")):
+                raise ValueError(
+                    f"image_endpoint_url must be an http(s) URL for "
+                    f"image_backend='external', got '{image_endpoint_url}'"
+                )
+        elif image_endpoint_url:
+            raise ValueError(
+                "image_endpoint_url is an external-backend setting — set "
+                "image_backend='external' or drop it"
+            )
+        if image_model_id is None and image_backend != "external":
             # 0.14 pairing rule: the registry vision partner of this
             # graph's text model — gemma-2 graphs select the gemma
             # vision slot, text-nano graphs the jina omni slot; texts
@@ -421,6 +447,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             image_model_id = default_image_model_id(self.embroider, model_id)
         self.image_model_id = image_model_id
         self.image_precision = image_precision
+        self.image_backend = image_backend
+        self.image_endpoint_url = image_endpoint_url
         if not model_id or "/" not in model_id or any(
             c in model_id for c in ("'", '"', "\\", ";")
         ):

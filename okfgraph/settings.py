@@ -200,6 +200,14 @@ SETTINGS = [
             "Vision weight precision: auto follows device; explicit fp16 on "
             "CPU fails fast",
             choices=("auto", "fp32", "fp16")),
+    Setting("image_backend", "str", "embroider", "embedding",
+            "Vision engine: 'embroider' (the crate, ONNX in this process) or "
+            "'external' (an embroider.serve vision host over HTTP, so no "
+            "ONNX loads here)",
+            choices=("embroider", "external")),
+    Setting("image_endpoint_url", "str", "", "embedding",
+            "Base URL of an embroider vision host, e.g. "
+            "http://127.0.0.1:8932 (required for image_backend='external')"),
     Setting("cpu_arena", "bool", False, "embedding",
             "Enable the CPU arena allocator (default off: ~8x lower peak "
             "RSS for ~1.4x encode time)"),
@@ -391,6 +399,8 @@ class Settings:
     embed_chars_per_token: float = 0.0
     image_model_id: Optional[str] = None
     image_precision: str = "auto"
+    image_backend: str = "embroider"
+    image_endpoint_url: str = ""
     cpu_arena: bool = False
     cache_dir: Optional[str] = None
     max_length: Optional[int] = None
@@ -578,6 +588,17 @@ class Settings:
                 "external-backend settings — set "
                 "embedding.backend='external' or drop them")
 
+        if self.image_backend == "external":
+            if not self.image_endpoint_url.lower().startswith(
+                    ("http://", "https://")):
+                errors.append(
+                    "embedding.image_endpoint_url must be an http(s) URL "
+                    "for image_backend='external'")
+        elif self.image_endpoint_url:
+            errors.append(
+                "embedding.image_endpoint_url is an external-backend "
+                "setting — set embedding.image_backend='external' or drop it")
+
         if self.rerank_backend == "external":
             if not self.rerank_endpoint_url.lower().startswith(("http://", "https://")):
                 errors.append(
@@ -688,6 +709,8 @@ class Settings:
             cpu_arena=self.cpu_arena,
             image_model_id=self.image_model_id,
             image_precision=self.image_precision,
+            image_backend=self.image_backend,
+            image_endpoint_url=self.image_endpoint_url,
             allow_remote_images=self.allow_remote_images,
             allowed_image_domains=list(self.allowed_image_domains),
             chunk_size=self.chunk_size,

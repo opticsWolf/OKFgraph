@@ -96,7 +96,10 @@ tools (8 read/ingest + 3 write).
   walk): use it when the embedder is cold, results must be
   deterministic, or the query names topics rather than phrases. Other
   searches and `ingest` load the ONNX model (~30s once per server).
-- Model, precision and dimension are pinned per graph at creation;
-  reopening adopts them (defaults: embeddinggemma-2, 512 dims,
-  device/precision auto). Changing them is a CLI-side fresh rebuild.
+- Model, precision, dimension and vector space are pinned per graph at
+  creation; reopening adopts them (defaults: embeddinggemma-2, 512 dims,
+  device/precision auto). A server whose model landed elsewhere (another
+  snapshot or precision) refuses with `SPACE_PIN_MISMATCH`. Changing the
+  model is CLI-side: `okf reembed` (a new dimension needs a fresh
+  rebuild).
 - To persist knowledge, follow the okfgraph-ingest skill.

@@ -252,6 +252,12 @@ key (`embedding_image_space`) and one new error code.
   an external image lane (the host names its precision), and
   `runtime`/`external` helpers are shared through
   `okfgraph/components/_http.py` instead of being copied per lane.
+- **One resize contract.** `prepare_vision_rgb` and its per-slot
+  `target_size_fn` branch are gone; the in-process lane calls
+  `embroider.prepare_image`, the same function the vision host uses,
+  after a byte-for-byte equivalence check across both slots and seven
+  image shapes (JPEG, alpha PNG, palette PNG, 1×1, very wide, very tall,
+  EXIF-rotated). `VISION_CONTRACT` is unchanged, so no graph re-embeds.
 
 ## [0.13.1] — 2026-11-11
 

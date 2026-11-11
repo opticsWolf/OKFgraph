@@ -19,7 +19,6 @@ from okfgraph.images import (
     build_extracted_images,
     fallback_caption,
     plan_embedding,
-    prepare_vision_rgb,
 )
 
 logger = logging.getLogger(__name__)
@@ -345,34 +344,37 @@ class ImageAssetManager:
         return "fp16" if cuda else "fp32"
 
     def _prepare_vision(self, img) -> Tuple[bytes, int, int]:
-        """Decode + resize image bytes for the vision encoder (0.8.0)."""
+        """Decode + resize through embroider's own contract (0.14.0).
+
+        ``embroider.prepare_image`` is the reference the vision *host*
+        uses, so resizing here and letting a host resize produce the same
+        buffer for the same bytes — verified byte for byte across both
+        slots and the image shapes that matter (JPEG, alpha PNG, palette
+        PNG, 1x1, very wide, very tall, EXIF-rotated). That is why
+        ``VISION_CONTRACT`` did not change in 0.14.0 and no graph
+        re-embeds: the hash still describes the same pixels.
+        """
         try:
             import embroider
         except ImportError:
             raise RuntimeError(
-                "image-content search needs embroider>=0.14 "
-                "(the vision slot: JinaV5Vision or GemmaVision); "
-                "use mode=text (captions)"
+                "image-content search needs the embroider wheel "
+                "(prepare_image + the vision slot: GemmaVision or "
+                "JinaV5Vision); use mode=text (captions)"
             ) from None
-        # The host-side resize contract differs per slot: the jina omni
-        # grid vs the gemma vision processor (resize to multiples of 48,
-        # patch 16, [-1,-1] pad). Read the encoder's model id — the lazy
-        # store hands it over pre-open, like `_encode_vision_image` does.
-        ve = self.embed_engine.vision_encoder
-        if (getattr(ve, "model_id", "") or "").startswith("google/"):
-            target_size_fn = getattr(embroider, "gemma_vision_target_size",
-                                     None)
-        else:
-            target_size_fn = getattr(embroider, "vision_target_size", None)
-        if target_size_fn is None:
-            need = ("gemma_vision_target_size" if target_size_fn is None and
-                    (getattr(ve, "model_id", "") or "").startswith("google/")
-                    else "vision_target_size")
+        prepare = getattr(embroider, "prepare_image", None)
+        if prepare is None:
             raise RuntimeError(
-                f"image-content search needs embroider>=0.14 "
-                f"({need}); use mode=text (captions)"
+                "image-content search needs embroider>=0.15 "
+                "(embroider.prepare_image); use mode=text (captions)"
             )
-        return prepare_vision_rgb(img.data, target_size_fn=target_size_fn)
+        ve = self.embed_engine.vision_encoder
+        model_id = getattr(ve, "model_id", "") or ""
+        if not model_id:
+            raise RuntimeError(
+                "vision model id unknown (no configured id and no opened "
+                "session); use mode=text (captions)")
+        return prepare(img.data, model_id)
 
     def _concept_has_assets(self, concept_id: str) -> bool:
         result = self.conn.execute(

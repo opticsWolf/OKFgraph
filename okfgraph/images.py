@@ -36,7 +36,6 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-
 class IngestMode(str, Enum):
     """How images are turned into embeddings during ingestion.
 
@@ -454,28 +453,3 @@ def plan_embedding(img: ExtractedImage, mode: IngestMode) -> Tuple[EmbedRoute, O
     return EmbedRoute.TEXT, caption  # graceful fallback when bytes are missing
 
 
-def prepare_vision_rgb(data: bytes, *, target_size_fn) -> Tuple[bytes, int, int]:
-    """Decode image bytes to resized RGB for the vision encoder.
-
-    Returns ``(raw_rgb, h, w)``: row-major ``[h, w, 3]`` uint8 where
-    ``(h, w)`` is its own resize target (Pillow bicubic when the source
-    differs). ``target_size_fn(h, w)`` is the embroider
-    ``vision_target_size`` binding — injected (not imported) so this
-    module stays importable without the embedding stack (hermetic tests
-    pass a stub).
-
-    Raises ``ValueError`` when the bytes don't decode to an image.
-    """
-    from PIL import Image as _Image
-
-    try:
-        img = _Image.open(io.BytesIO(data)).convert("RGB")
-    except Exception as exc:
-        raise ValueError(f"image bytes do not decode: {exc}") from exc
-    rh, rw = target_size_fn(img.height, img.width)
-    if (rh, rw) != (img.height, img.width):
-        img = img.resize((rw, rh), _Image.Resampling.BICUBIC)
-    import numpy as _np
-
-    arr = _np.asarray(img, dtype=_np.uint8)
-    return bytes(arr.data), img.height, img.width

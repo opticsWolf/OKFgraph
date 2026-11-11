@@ -154,22 +154,6 @@ def test_vision_route_id_and_contract():
     assert isinstance(images.VISION_CONTRACT, str) and images.VISION_CONTRACT
 
 
-def test_prepare_vision_rgb_resizes_to_target():
-    def fake_target(h, w):
-        return (64, 64)  # stub: everything maps to 64x64
-
-    # 1x1 PNG upscaled to the stub target: bicubic, RGB, row-major.
-    rgb, h, w = images.prepare_vision_rgb(PNG_1x1, target_size_fn=fake_target)
-    assert (h, w) == (64, 64)
-    assert len(rgb) == 64 * 64 * 3
-
-    def passthrough(h, w):
-        return (h, w)
-
-    with pytest.raises(ValueError):
-        images.prepare_vision_rgb(b"not an image", target_size_fn=passthrough)
-
-
 def test_build_extracted_images_local_and_inline(tmp_path):
     (tmp_path / "pics").mkdir()
     (tmp_path / "pics" / "real.png").write_bytes(PNG_1x1)

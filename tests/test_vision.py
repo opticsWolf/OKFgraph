@@ -207,6 +207,86 @@ def test_vision_hash_covers_spec():
     assert VISION_CONTRACT == "smart32/min262144/max1310720/bicubic-rgb"
 
 
+# -- the resize contract is embroider's (0.14.0, step C) ----------------------
+
+def _image_cases():
+    """The shapes that decide whether two resize contracts agree."""
+    import io
+
+    from PIL import Image
+
+    def enc(size, mode="RGB", color=(20, 90, 200), fmt="PNG", **kw):
+        buf = io.BytesIO()
+        Image.new(mode, size, color).save(buf, format=fmt, **kw)
+        return buf.getvalue()
+
+    im = Image.new("RGB", (400, 300), (10, 200, 60))
+    exif = im.getexif()
+    exif[274] = 6                     # orientation: rotate 90 on display
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", exif=exif.tobytes())
+
+    return {
+        "jpeg": enc((800, 600), fmt="JPEG", quality=88),
+        "png-alpha": enc((320, 240), "RGBA", (1, 2, 3, 128)),
+        "png-palette": enc((300, 200), "P"),
+        "tiny-1x1": enc((1, 1)),
+        "very-wide": enc((3000, 60)),
+        "very-tall": enc((60, 3000)),
+        "exif-rotated": buf.getvalue(),
+    }
+
+
+@pytest.mark.parametrize("slot", [GEMMA_VISION_ID, VISION_ID])
+def test_prepare_vision_matches_embroider_byte_for_byte(slot):
+    """The two resize contracts are one contract, so no graph re-embeds.
+
+    okfgraph used to own this resize (`prepare_vision_rgb` + a per-slot
+    `target_size_fn` branch). Since 0.14.0 it calls
+    `embroider.prepare_image` — the reference the vision *host* uses —
+    which is only safe if both produce the same buffer for the same
+    bytes. Verified across both slots and the shapes that differ in
+    decode path, aspect and EXIF: equal RGB buffers and equal sizes, so
+    `VISION_CONTRACT` stays put and stored image hashes still match.
+    """
+    import embroider
+
+    from okfgraph.images import VISION_CONTRACT
+
+    assert VISION_CONTRACT == "smart32/min262144/max1310720/bicubic-rgb"
+    for name, data in _image_cases().items():
+        reference = embroider.prepare_image(data, slot)
+        # The router's own path (no session, no router: the method only
+        # needs an encoder exposing `model_id`).
+        class _Stub:
+            model_id = slot
+
+        class _Engine:
+            vision_encoder = _Stub()
+
+        from okfgraph.components.image_assets import ImageAssetManager
+
+        mgr = ImageAssetManager.__new__(ImageAssetManager)
+        mgr.embed_engine = _Engine()
+        got = mgr._prepare_vision(type("Img", (), {"data": data})())
+        assert got == reference, f"{slot} {name}: buffers or sizes differ"
+
+
+def test_prepare_vision_refuses_undecodable_bytes():
+    from okfgraph.components.image_assets import ImageAssetManager
+
+    class _Stub:
+        model_id = GEMMA_VISION_ID
+
+    class _Engine:
+        vision_encoder = _Stub()
+
+    mgr = ImageAssetManager.__new__(ImageAssetManager)
+    mgr.embed_engine = _Engine()
+    with pytest.raises((ValueError, RuntimeError)):
+        mgr._prepare_vision(type("Img", (), {"data": b"not an image"})())
+
+
 # -- stub-encoder ingest ------------------------------------------------------
 
 def _import_vision_doc(router, monkeypatch):

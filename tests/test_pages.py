@@ -121,9 +121,10 @@ def _uv_lock_versions():
 def test_pages_published_stack_matches_pins():
     """The 'Published stack' table must track the release + locked pins.
 
-    okfgraph follows pyproject (bump it in the release commit, tag before
-    merging to main so the table never claims an unpublished version);
-    every dependency follows uv.lock. CPU/GPU runtime parity is asserted
+    okfgraph follows pyproject (bump it in the release commit; release
+    tags go on main only, after the release commit lands there, so the
+    site may show the new version minutes before PyPI does); every
+    dependency follows uv.lock. CPU/GPU runtime parity is asserted
     too — the plan-onnx-only single-binary pin.
     """
     root = Path(__file__).resolve().parents[1]

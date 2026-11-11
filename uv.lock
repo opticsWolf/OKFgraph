@@ -44,26 +44,26 @@ wheels = [
 
 [[package]]
 name = "bobine"
-version = "0.8.0"
+version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/14/06/ea52967d8b304304005a62dc706385cab6b473a9aeac8a980d59fcd8c6dc/bobine-0.8.0.tar.gz", hash = "sha256:43f3326e53b2d7caa8e9e47fc4304473cad759f5e58bc8ca20df8f2be1cab05b", size = 1596941, upload-time = "2026-11-08T11:37:49.574Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/fb/e8766f0d59c59dc0b7a0ca3ca30d8314be49a5f200d628f591d34cbe82a0/bobine-0.8.1.tar.gz", hash = "sha256:9f1014dc1571086381d5b5bfa757a3f7eac0717fcf5bad263bb20f61e84648fa", size = 1597152, upload-time = "2026-11-11T09:21:25.549Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/b6/58f1f75d46fb2242837ea65bd50d878e6d59666a10eba1b4738967fddc9a/bobine-0.8.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:4d3ea15f30e966603cd99bd5fcec60438319c469df86b2b6e587e39116c15930", size = 17372083, upload-time = "2026-11-08T11:37:08.213Z" },
-    { url = "https://files.pythonhosted.org/packages/29/b7/89d43c394eaa26985caf0d19ac469ad64013b7c8e628732f917075ed1570/bobine-0.8.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:31791352f711996be0df2596cefcfa02feadd8dcd19df300b4c76246fe34e512", size = 17808507, upload-time = "2026-11-08T11:37:10.569Z" },
-    { url = "https://files.pythonhosted.org/packages/2e/70/6eebc8dd2bd8019f9eacc67268da612f9165213fa4a175f99d630a8cefee/bobine-0.8.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:21c6b231408788305e25fef9ff94d34942df1b9ae380aafaf1711b7fc23a4c61", size = 19413686, upload-time = "2026-11-08T11:37:12.835Z" },
-    { url = "https://files.pythonhosted.org/packages/71/dd/be8cd0503827483e382fe0c4ad76ca266d51192ecdc65b35166812332761/bobine-0.8.0-cp311-cp311-win_amd64.whl", hash = "sha256:10d418b18beaa968df7c17937e53ff27e2ea56d9c8606b47d5205cf1e5b71c8f", size = 18721839, upload-time = "2026-11-08T11:37:15.574Z" },
-    { url = "https://files.pythonhosted.org/packages/3f/d0/82eefae21cd7ee382d1faad490af82e7aa95f071f419875df1db68567620/bobine-0.8.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:167067d2265df2a0d7cc2441f6bc4ae4ca8a8f4b0028ff9dacfc3205e5ba6dc5", size = 17364015, upload-time = "2026-11-08T11:37:17.966Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/e5/2937954013cdf76690b448b418db37f59f0975ee6742677fd063691ad49b/bobine-0.8.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:c4e0572032a248f0e5a679d393055ede8a80df39ff95c4a1517c031a43320cab", size = 17813894, upload-time = "2026-11-08T11:37:21.875Z" },
-    { url = "https://files.pythonhosted.org/packages/a4/2c/f53fabf623e5a582e0c587ecb909ee76b924ca2f418e4fe643e020691f5d/bobine-0.8.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:409a6e6c492634e24cf3d4c11602d77dbaa0e9ec1f097a1dbf1c6edd16e0516f", size = 19405151, upload-time = "2026-11-08T11:37:24.213Z" },
-    { url = "https://files.pythonhosted.org/packages/19/bb/f72be5ee61ead3ebb29728dd1fad01d8625d999c9ff8defd770c681f4f19/bobine-0.8.0-cp312-cp312-win_amd64.whl", hash = "sha256:eda27a96904cf606117b2c841efdf03f0d6f0057f8621b7e45b0d61c560a4f29", size = 18738449, upload-time = "2026-11-08T11:37:27.391Z" },
-    { url = "https://files.pythonhosted.org/packages/e9/1a/e3f7cad1450f9046e7ae76af339f54d377e0e68ccf8176a6fa5df8f01ee9/bobine-0.8.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:90eea7a5138e5632e85fac5cb6cb0bb620f39c39826c8ac24a34e4b9b5c4fe1a", size = 17362359, upload-time = "2026-11-08T11:37:30.012Z" },
-    { url = "https://files.pythonhosted.org/packages/f7/22/e9b4079d4005c6bbc95eab54c6a71f9288d776d8fd0a0b38f56afe25f534/bobine-0.8.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:75e67c6de98430a110efb0f2fe242868452eb4744664c9cce9a8818079d0e97b", size = 17810569, upload-time = "2026-11-08T11:37:32.709Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/95/29411bc0427fb705ffe1096ba11b61b0ffabc68797722040062cf9cdbf1f/bobine-0.8.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:db7b7cc5027cdfaef78b4e401d22304ce58ac539a11dc23533f5314c4f5ac7a7", size = 19410089, upload-time = "2026-11-08T11:37:34.994Z" },
-    { url = "https://files.pythonhosted.org/packages/3e/8e/829209e12d19aa0a7d984680544aad6dece2a76e41176ddf674f07a290fd/bobine-0.8.0-cp313-cp313-win_amd64.whl", hash = "sha256:ce86187b854d06035dfffe3750c93e450160b20075d2bf8705f690fb390e67c9", size = 18722088, upload-time = "2026-11-08T11:37:37.431Z" },
-    { url = "https://files.pythonhosted.org/packages/da/32/6ef8e00d82f792855e32eacf66c20870900a5e46ae774bdda05ad57042d9/bobine-0.8.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:9cfd3b7aefac05eb4630e8e717832a47c04c6b44ae198b9c83dbf616b42b0cb2", size = 17364601, upload-time = "2026-11-08T11:37:39.921Z" },
-    { url = "https://files.pythonhosted.org/packages/9a/b2/cc29ea02a0e8219cc83faf69506b5a873b460fc15de30d7eac6b69984e5b/bobine-0.8.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:0df007694c535352bcf05db7624cf7c1cf4ff6ed71ec46f7c5a99326c24608ef", size = 17808224, upload-time = "2026-11-08T11:37:42.331Z" },
-    { url = "https://files.pythonhosted.org/packages/4a/4b/2f9322eac83c5ceedba6a39ab98879cbeecccb4c1eaa040174a6423d648e/bobine-0.8.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:6b152d3173749305e4d5554e0dcf4a1d78d7043689e151aeec774b45927780b1", size = 19411841, upload-time = "2026-11-08T11:37:44.878Z" },
-    { url = "https://files.pythonhosted.org/packages/74/c6/5bdcb35e22e8beebdd085d6c1b4f594a19ff5aedf0022bc09927a30694e1/bobine-0.8.0-cp314-cp314-win_amd64.whl", hash = "sha256:e538f0193f0dd60b0fa76e411c389f1f9b008351e326e078acafe6d2e6cef9ac", size = 18718369, upload-time = "2026-11-08T11:37:47.184Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/44/bea95272887663c268f3693f7c33dc4a65a858466fe0a2be40ce7cb76ea5/bobine-0.8.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:206fa9dbcceaf586890e9fb3890a2196a0475cb8aa380019a8c341a90d80bacc", size = 17373207, upload-time = "2026-11-11T09:20:44.493Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/e7/74f2cc8e9ffd86e994507cd270ae15e42c0fd106016f9424d633334060f6/bobine-0.8.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:c4f4b15a62bad74cc27f99cfa28dd81d1fca94ce8704ab86ab1db1a93120d766", size = 17807302, upload-time = "2026-11-11T09:20:47.172Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/ba/0d328fb2a6c9e63a1ceede2dcb258c168e28ba43cb7278d3f73ce6fa0eed/bobine-0.8.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:fa47a51d33ce4144b2bc27f99a8b2663e4bb211b474fb76ca66ba7063c9b3428", size = 19413392, upload-time = "2026-11-11T09:20:49.669Z" },
+    { url = "https://files.pythonhosted.org/packages/93/61/62267fe1d96a1e0cdb8753288ac5e2724f02d628452990cf99e407853008/bobine-0.8.1-cp311-cp311-win_amd64.whl", hash = "sha256:cefb6680dbf47c1b469fdeb46562014f837cbe2c52c5b01d4d9f8e2a7849d7a4", size = 18721730, upload-time = "2026-11-11T09:20:52.274Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/83/7a956793dcabc9a0674035bf2fce18fd7983f60913d23873473b1e413e56/bobine-0.8.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:5eff7ad163f269342e73abd1cc65ded59f8b57c334e1bdaff15a51312ddc53db", size = 17364299, upload-time = "2026-11-11T09:20:54.661Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/a5/65fe7a43b3f73a0e267fb6bbf49e3aab09bdfaeadf9d8ec91a25fc437102/bobine-0.8.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:bc36b5f7bdef480cb3516ea672e77080bad23d5933051e8a3fde44f3be350a65", size = 17813771, upload-time = "2026-11-11T09:20:57.093Z" },
+    { url = "https://files.pythonhosted.org/packages/98/0f/a03387ad920a51dc52c29ab0fb01bc1fef866fe0f4ae5038955a69b9ace1/bobine-0.8.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:42eccc85741a6629360ac678e09ac02457d3167fcd890cb8f9c1895e9f046452", size = 19404368, upload-time = "2026-11-11T09:20:59.536Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/1e/3dfc5915dd8b62f596b6e9b643bad93023b50475e6cbf7b0c9f41ad400ca/bobine-0.8.1-cp312-cp312-win_amd64.whl", hash = "sha256:410f2d5812773b0a39d3b774d79aad737591852b041add092735f62cb4a7e0c5", size = 18738611, upload-time = "2026-11-11T09:21:02.281Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/94/8e0a55630387024b0c5b50a5d099c5f5a8aa278afb01d0ba730d08388589/bobine-0.8.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:e9f8ea4b07bee709e2d251628a2124ff04ab1501cbef1cd8fdd66887828d7ca9", size = 17362956, upload-time = "2026-11-11T09:21:04.661Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/0c/83e316ea3a47c19ed44893e1471e4712cad3b908da7f012cd1d22f2a59f1/bobine-0.8.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:f399e5e532803a2a45861055e2c8ac13c3d5c9a7b632a00e025e9e03b6a088c7", size = 17809408, upload-time = "2026-11-11T09:21:07.282Z" },
+    { url = "https://files.pythonhosted.org/packages/68/d4/c8a9ac959bb92c4b017255f2c416a11fcbc9c252cff98c4dfd105b876ef0/bobine-0.8.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:d17aaab329b1d90e6fc4b1db3bfb7b074d5988844c9f8640acaa1875b63600d0", size = 19409534, upload-time = "2026-11-11T09:21:09.872Z" },
+    { url = "https://files.pythonhosted.org/packages/45/fa/7aa26302369f471f28a401937d8472e7e479e323f2901cede6d13cc9e89f/bobine-0.8.1-cp313-cp313-win_amd64.whl", hash = "sha256:360202df1985fed30096a0545f580d6ca8e52af19e96c3e7c5a229c85d07693f", size = 18721679, upload-time = "2026-11-11T09:21:12.678Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/7f/6ddb7f2ae114a208b8f1f88c6bbdb0a8a1b979107f2bb7b4d1c23dc4cf7b/bobine-0.8.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:688a69c8a5d2a22006c9e292049378854974739cac4f3c3242ae986400e92e9e", size = 17365388, upload-time = "2026-11-11T09:21:15.279Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/49/602a9411336dea60079b29f5011adf0f2085cdb46d37f174e088e027f12d/bobine-0.8.1-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:900aa8bc7fbe2f44d49b86cfee8dac80e2130ec2557f9a371621e7a98f8ed95d", size = 17809194, upload-time = "2026-11-11T09:21:17.972Z" },
+    { url = "https://files.pythonhosted.org/packages/86/4f/c2f33b3f4c25688dbc4d2af233ae0fbd4ba39461fab2f572cb529afd00fa/bobine-0.8.1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:c7a49a4a7805eea6b7b1f443ab813557ad529e75afbea27a2d12ceea3e7fcf6a", size = 19411660, upload-time = "2026-11-11T09:21:20.67Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/f9/6afc4c1beb514c01c4952c91b225a4ca93a22a1d44080946ab60c1fbe350/bobine-0.8.1-cp314-cp314-win_amd64.whl", hash = "sha256:6cd0a9959c3d6479d5959cce9b7ea77012da23c4a4437c38c13e013ba4e932ad", size = 18718351, upload-time = "2026-11-11T09:21:23.271Z" },
 ]
 
 [[package]]
@@ -240,19 +240,19 @@ wheels = [
 
 [[package]]
 name = "embroider"
-version = "0.14.1"
+version = "0.15.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/be/89/b2ad37c8186fc671dda3a405aad7d3fe6e165de2b3884339711b74a7ef62/embroider-0.14.1.tar.gz", hash = "sha256:b5b409303cc399ef2795b645aa67b013391e4e11e92f7df9efd4d56228d5f99c", size = 7315030, upload-time = "2026-11-08T08:31:58.711Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/6f/b013df56c25be821a657bf6baf49e2a7253c9f6d67a1397a19427e229499/embroider-0.15.0.tar.gz", hash = "sha256:575b8a8f419624a5d1576d633cf239b483df4fcb533bfe7a60dfbf0f56b4cc50", size = 7347119, upload-time = "2026-11-11T08:56:02.399Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3c/c2/d21bf7c73b38a3a8a526d0656b54f1b25c5c61a7a3cc97fed653208c05ab/embroider-0.14.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:4f23ef5a1e4fb29c07ac57214904b15ddfeef1e4173d0d31a285082213301888", size = 6681715, upload-time = "2026-11-08T08:31:38.781Z" },
-    { url = "https://files.pythonhosted.org/packages/cd/a0/2497a011473046e230e5483c91c88c5b47db45e4b67804b2810f6274b35f/embroider-0.14.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:0251d4b0f282761aa1eeff8b0c03feb3afa1ff2e97cc769cd7f9bf6cd2a169de", size = 7662549, upload-time = "2026-11-08T08:31:41.401Z" },
-    { url = "https://files.pythonhosted.org/packages/10/ed/fb1b825fcf5c873f720e40dab12606a36c6cf039ba6e4825caf0adc75a6b/embroider-0.14.1-cp311-cp311-win_amd64.whl", hash = "sha256:ad380e2433fd9be1a3c25cfc57ddb9263f842bc9a3716a4cb837f954d35fb7fa", size = 6213449, upload-time = "2026-11-08T08:31:43.285Z" },
-    { url = "https://files.pythonhosted.org/packages/21/f4/6c0ce332de0493f4de6fe59c1fc0147e09c886399254d84dfd53a2b0c541/embroider-0.14.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:232d501ed41b00c2fff97719a600bdcc432dd36444b91e48ecac563c07a0ea92", size = 6674499, upload-time = "2026-11-08T08:31:45.741Z" },
-    { url = "https://files.pythonhosted.org/packages/2e/09/d19dd7720962c846b4b50f6ea1df4e69f3877bac3dbed7f3634c77c20f35/embroider-0.14.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:aa458cff8b4bdbde977e11319aecd5b7ea2026d7f22b72309fc1281e955ec234", size = 7657296, upload-time = "2026-11-08T08:31:48.086Z" },
-    { url = "https://files.pythonhosted.org/packages/2b/0d/566812f64d9e5f91536ee929fd232aab1d79368b47d172001df7bf922c43/embroider-0.14.1-cp312-cp312-win_amd64.whl", hash = "sha256:bc8ed0a1bc3f07f97df42802437119b4342110df2081c01b128616a367054aea", size = 6211282, upload-time = "2026-11-08T08:31:50.142Z" },
-    { url = "https://files.pythonhosted.org/packages/6d/c0/fb1bac4c6bb2659e456fbd8d1acf8639294c6cbb83bb4781066aac9b7d6a/embroider-0.14.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:f42023ec54b5f33eb42499528b32f6b91a428164934e108e9132181adc15f8ac", size = 6671352, upload-time = "2026-11-08T08:31:52.194Z" },
-    { url = "https://files.pythonhosted.org/packages/af/60/5580342a8a6bdc430d21a1a933aa6af39d341eb8e0ed8d040b508ce7dec5/embroider-0.14.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:7ac8f4a2ee91b1334cc21022ee50c642d0a350995482cb0f8e3b4e3a800d860d", size = 7656540, upload-time = "2026-11-08T08:31:54.397Z" },
-    { url = "https://files.pythonhosted.org/packages/d0/2d/bf24d569cec993b223f50359c4c8aecbdddc101fc945b754bde628d14fe6/embroider-0.14.1-cp313-cp313-win_amd64.whl", hash = "sha256:30472183ad52a61b0ff915ef1bfb27c567af0229d78c92d52210887f81e8aa5d", size = 6211779, upload-time = "2026-11-08T08:31:56.644Z" },
+    { url = "https://files.pythonhosted.org/packages/55/71/fe5cb2c33b59a1cf7c9ec4f8a77c298b1defa6de898d76397b6faa29d8ca/embroider-0.15.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:f45dbf9f4048dfd847d198d15aaf6d7a8e7598b41677ee66c212dbea121d91c8", size = 6703323, upload-time = "2026-11-11T08:55:42.132Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/f1/35eda7e64d7c67cffa1285255194d3993c550ed732494095a0118332ddfa/embroider-0.15.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:6cfb55c85906ccb1de09f662b5aa9a77ab51e7ea76ee9e085deecb83a49f7f74", size = 7679249, upload-time = "2026-11-11T08:55:44.321Z" },
+    { url = "https://files.pythonhosted.org/packages/af/5b/edb086124b91a2876e48f08fa0ff8ad6cfef407bfa178d244bcbbbfa72a4/embroider-0.15.0-cp311-cp311-win_amd64.whl", hash = "sha256:b5bbeba2e2329f6777cb352207ee2c77a2c2c35b9e25eb88f4cb5ba8ab99119d", size = 6239405, upload-time = "2026-11-11T08:55:46.673Z" },
+    { url = "https://files.pythonhosted.org/packages/15/b8/72be8fc9e38b28dc626ec3aa396266585dd72414e088611602d70e50c447/embroider-0.15.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:dc5d9c2871e23b0cad2b09d9a81108c90abf743013a200bf5414adbddd424c6d", size = 6691970, upload-time = "2026-11-11T08:55:48.844Z" },
+    { url = "https://files.pythonhosted.org/packages/05/95/0ea20d159c678dd6b96f0bbdf82f1eb1ef9bb26e2eb16aae95f0150a6126/embroider-0.15.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:cdb715dd8b7347d71f15ff958dea2a981dbb770df76496e54423d33a31c62280", size = 7667330, upload-time = "2026-11-11T08:55:50.743Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/66/89d4813224be34c5a7f35b46afbb2b59d8b1213c4c267cb9f3ecc3597d4c/embroider-0.15.0-cp312-cp312-win_amd64.whl", hash = "sha256:6d84ca9d7e4f43723e28ccef53cdadc23e30be25c99fdbada780fe4a69838782", size = 6232341, upload-time = "2026-11-11T08:55:53.236Z" },
+    { url = "https://files.pythonhosted.org/packages/97/79/de6f72aca413d4dcd562d112a34cdd921045c9141bdc54220d830ab0960f/embroider-0.15.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:853c546cd4c52eccc6456cb89df012716eaa55894e230c87624b0ae0aaa430f7", size = 6688612, upload-time = "2026-11-11T08:55:55.896Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/b9/7aafbbe0376f82abaeeaeec96c470307fedd76bd0a21f8470e2595b4d3de/embroider-0.15.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:f3fb02b621262c608d560b9b2e8939ec59f3e93fc6aa0df29a195b04a87a2ae9", size = 7665700, upload-time = "2026-11-11T08:55:57.969Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/74/be3b5faea746b7e4de2a792b2279d2f32053309890e493cb90817bd4a560/embroider-0.15.0-cp313-cp313-win_amd64.whl", hash = "sha256:1299b549a68f3fee290a6ac0bd920fb1924d59f9b32625954d896dc60965d648", size = 6232198, upload-time = "2026-11-11T08:56:00.244Z" },
 ]
 
 [[package]]
@@ -695,7 +695,7 @@ wheels = [
 
 [[package]]
 name = "okfgraph"
-version = "0.12.1"
+version = "0.13.0"
 source = { editable = "." }
 dependencies = [
     { name = "embroider" },
@@ -728,7 +728,7 @@ pdf = [
 [package.metadata]
 requires-dist = [
     { name = "bobine", marker = "extra == 'pdf'", specifier = ">=0.7" },
-    { name = "embroider", specifier = ">=0.14,<0.15" },
+    { name = "embroider", specifier = ">=0.15,<0.16" },
     { name = "fasteners", specifier = ">=0.19" },
     { name = "ladybug", specifier = "==0.22.1" },
     { name = "mcp", specifier = ">=2.0" },

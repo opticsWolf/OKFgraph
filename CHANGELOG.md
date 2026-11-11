@@ -230,6 +230,11 @@ key (`embedding_image_space`) and one new error code.
   lane opens first (crate `describe().space` or the host's identity) and
   refused with `IMAGE_PIN_MISMATCH` on a differing space; a graph with no
   vision-route vectors re-pins, so caption-only graphs stay free to adopt.
+- **`CONVERSION_FAILED`** — a bobine failure (a corrupt PDF, an
+  unsupported file) is now a typed outcome about that file, with
+  `fields={"path", "converter": "bobine"}`, instead of `INTERNAL` plus a
+  crash log that read like an OKFgraph bug. A missing file is still
+  `FILE_NOT_FOUND`, checked before conversion starts.
 - **`EXTERNAL_UNAVAILABLE`** — a typed outage for all three external
   lanes. An unreachable embedding/rerank/vision host raises it (with the
   endpoint in `fields`) instead of a per-item error; the vision engine

@@ -154,19 +154,46 @@ class BobineConverter:
                 "bobine is required for PDF and Office ingestion: pip install \"okfgraph[pdf]\" (or pip install bobine)"
             ) from None
 
+        # A missing file is a usage problem the caller can name exactly; it
+        # must not read as a converter bug (0.14.0).
+        source = Path(pdf_path)
+        if not source.exists():
+            raise OKFError(
+                "FILE_NOT_FOUND",
+                f"file not found: {source}",
+                fields={"path": str(source), "converter": "bobine"},
+            )
+
         mode = getattr(bobine.RoutingMode, _BOBINE_ROUTING[self.routing_mode])
         config = bobine.ConverterConfig(
             routing_mode=mode,
             extract_images=self.extract_images,
         )
-        doc = bobine.ingest_document(
-            str(pdf_path),
-            str(output_dir),
-            config,
-            should_continue=lambda: True,
-            on_page=on_page
-            or (lambda idx, total: logger.info("page %d/%d", idx + 1, total)),
-        )
+        try:
+            doc = bobine.ingest_document(
+                str(pdf_path),
+                str(output_dir),
+                config,
+                should_continue=lambda: True,
+                on_page=on_page
+                or (lambda idx, total: logger.info("page %d/%d", idx + 1, total)),
+            )
+        except OKFError:
+            raise
+        except RuntimeError as exc:
+            # bobine collapses every internal failure (a corrupt PDF, an
+            # unsupported file, a pdf_oxide/office_oxide refusal) into
+            # PyRuntimeError with a prefixed message. That is a conversion
+            # outcome about this file, not an OKFgraph bug: type it so it
+            # stops writing a crash log (0.14.0).
+            raise OKFError(
+                "CONVERSION_FAILED",
+                f"bobine could not convert {source}: {exc}",
+                op="ingest",
+                fields={"path": str(source), "converter": "bobine"},
+                remedy="check the file opens in another reader, or route it "
+                       "through a different converter",
+            ) from exc
         return ConvertedDocument(
             md_path=Path(doc.md_path),
             image_dir=Path(doc.image_dir),

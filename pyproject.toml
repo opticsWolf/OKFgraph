@@ -89,5 +89,6 @@ okfgraph = ["skills/*/SKILL.md"]
 markers = [
     "slow: GPU-heavy or large-batch tests",
     "integration: Tests with real model loading",
+    "pdf: needs the optional bobine converter (okfgraph[pdf])",
 ]
 addopts = ["-v", "--tb=short"]

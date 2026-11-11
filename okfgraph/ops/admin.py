@@ -187,7 +187,11 @@ class AdminOps:
                                           cache_dir=cache_dir)
         for name, lane in self.lanes().items():
             where = lane["endpoint"] or "in-process"
-            message = (f"{lane['model_id']} via {where} "
+            # An external lane may not know its model until it opens: the
+            # host names it. Say that instead of "None" (0.14.0).
+            who = lane["model_id"] or (
+                "the host's model" if lane["endpoint"] else "unopened")
+            message = (f"{who} via {where} "
                        f"(identity={lane['identity']}")
             if lane.get("family"):
                 message += f", family={lane['family']}"

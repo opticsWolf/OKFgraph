@@ -87,7 +87,7 @@ def test_cli_model_reaches_router(tmp_path):
     from okfgraph.cli import _router, build_parser
 
     args = build_parser().parse_args(
-        ["doctor", "--db-path", str(tmp_path / "m.db"),
+        ["init", "--db-path", str(tmp_path / "m.db"),
          "--bundle-root", str(tmp_path), "--model-id", NANO])
     router = _router(args)
     try:

@@ -38,6 +38,7 @@ def shell_env(tmp_path_factory):
         encoding="utf-8",
     )
     ns = argparse.Namespace(
+        command="import",   # the fixture creates the graph it then imports
         db_path=str(tmp / "shell.db"),
         bundle_root=str(bundle),
         enable_chunking=True,

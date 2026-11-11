@@ -400,7 +400,7 @@ class TestSurfaces:
         prim = _mkroot(tmp_path, "prim", {})
         a = _mkroot(tmp_path, "a", {})
         args = build_parser().parse_args(
-            ["doctor", "--db-path", str(tmp_path / "m.db"),
+            ["init", "--db-path", str(tmp_path / "m.db"),
              "--bundle-root", str(prim), "--root", f"aa={a}"])
         router = _router(args)
         try:
@@ -425,7 +425,7 @@ class TestSurfaces:
         prim = _mkroot(tmp_path, "prim", {})
         a = _mkroot(tmp_path, "a", {})
         args = build_parser().parse_args(
-            ["doctor", "--db-path", str(tmp_path / "m.db"),
+            ["init", "--db-path", str(tmp_path / "m.db"),
              "--bundle-root", str(prim), "--root", f"aa={a}"])
         router = _router(args)
         try:

@@ -1283,6 +1283,32 @@ CLI > env > TOML > defaults, per key. Invalid configuration is
 > it) reports per lane the backend, endpoint, identity, family,
 > precision and space without opening a session.
 
+
+> 0.14 image lane: `[embedding] image_backend = "embroider" | "external"`
+> plus `image_endpoint_url`. `external` points the image route at an
+> `embroider.serve` **vision** host (`--kind vision --dim <graph dim>`),
+> which receives the original image bytes over
+> `POST /v1/images/embeddings` and owns the resize — so an in-process
+> graph and a hosted one hash the same image to the same
+> `vision_content_hash`, and a graph moves between them with no re-embed.
+> There is no declared mode for this lane: the host must answer
+> `GET /v1/models` with `engine: embroider`, `kind: vision`, its width,
+> landed precision, `space` and `text_partner`, and every mismatch is
+> refused with the remedy named (`IMAGE_PIN_MISMATCH` when the host names
+> no partner). The compat check runs against the host's `text_partner`
+> without importing the crate, and the branch skips `_require_ort`
+> entirely — an import with images succeeds with no ONNX runtime and no
+> `embroider` in the process, which is the lane's proof. Graphs pin
+> `MetaText embedding_image_space` beside the image model and precision;
+> `lanes()` gains an `image` row, so `okf doctor` prints `image_lane`.
+> One refusal (a host answering 400 for a corrupt image) falls back to
+> that image's caption; an **outage** raises `EXTERNAL_UNAVAILABLE` — the
+> same typed code the text and rerank lanes now surface — and latches the
+> engine broken, because a downed host must cost one error, not one
+> caption per image. On a declared (GGUF) text lane the same fallback
+> covers the vision session open, so `mode=omni` writes captions instead
+> of dropping the concept's images.
+
 ### 5.4. Import Options
 
 | Option | Default | Description |

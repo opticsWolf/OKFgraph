@@ -203,6 +203,56 @@ v6.8)" and its Design Decisions table.
   older is known) and `effective_at` from their authored date if any.
   `rank="ppr"` now also returns a slice of a 25-row pool, like the others.
 
+## [0.14.0] — 2026-11-11
+
+The image-lane release: the vision model can run in an `embroider.serve`
+host, so a process that must not load ONNX can embed image content
+instead of falling back to captions. No schema change; one new MetaText
+key (`embedding_image_space`) and one new error code.
+
+### Added
+- **`embedding.image_backend` / `embedding.image_endpoint_url`** — the
+  image twin of the text and rerank lanes. `external` points the vision
+  route at an `embroider.serve --kind vision --dim <graph dim>` host,
+  which receives the **original image bytes** over
+  `POST /v1/images/embeddings` and owns the resize, so host and
+  in-process vectors hash the same (`vision_content_hash` is unchanged)
+  and a graph moves between them with no re-embed.
+- **The lane has no declared mode.** The host must answer
+  `GET /v1/models` with `engine: embroider`, `kind: vision`, its width,
+  landed precision, `space` and `text_partner`; a non-embroider host, a
+  text model, a different id/precision/width and a host naming no partner
+  are each refused with the remedy named. The compat check runs on the
+  host's `text_partner` without importing the crate, and the branch skips
+  `_require_ort`, so an import with images succeeds with neither
+  `onnxruntime` nor `embroider` in the process.
+- **Image space pin**: `MetaText embedding_image_space`, set by whichever
+  lane opens first (crate `describe().space` or the host's identity) and
+  refused with `IMAGE_PIN_MISMATCH` on a differing space; a graph with no
+  vision-route vectors re-pins, so caption-only graphs stay free to adopt.
+- **`EXTERNAL_UNAVAILABLE`** — a typed outage for all three external
+  lanes. An unreachable embedding/rerank/vision host raises it (with the
+  endpoint in `fields`) instead of a per-item error; the vision engine
+  also latches broken, so a dead host costs one error rather than one
+  caption per image.
+- **`lanes()` gains an `image` row** (backend, model, endpoint, identity,
+  precision, space, `pinned_space`), so `okf doctor` prints `image_lane`
+  and `model-info` reports the image pins and space.
+
+### Fixed
+- **A vision-open failure no longer drops a document's images.** The
+  caption fallback covered preparation only; the open/encode half
+  propagated, so on a declared (GGUF) text lane `mode=omni` prepared
+  happily and then dropped the concept's images (a warning on bundle
+  import, silence on single-file import, a hard error on `okf ingest`).
+  The fallback now covers both halves, recomputes the text hash for the
+  caption row, and warns once per concept with the first reason. Outages
+  still raise — a downed host must not become a hundred captions.
+- `_vision_precision()` no longer probes `embroider.cuda_available()` on
+  an external image lane (the host names its precision), and
+  `runtime`/`external` helpers are shared through
+  `okfgraph/components/_http.py` instead of being copied per lane.
+
 ## [0.13.1] — 2026-11-11
 
 Setup and CLI fixes. No schema or vector change.

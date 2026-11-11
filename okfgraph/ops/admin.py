@@ -709,7 +709,48 @@ class AdminOps:
         reranker = getattr(self, "reranker", None)
         rerank_backend = ("external" if getattr(reranker, "spec", None)
                           is not None else "embroider")
-        return {"embed": embed, "rerank": _lane(reranker, rerank_backend)}
+        return {"embed": embed,
+                "rerank": _lane(reranker, rerank_backend),
+                "image": self._image_lane()}
+
+    def _image_lane(self) -> dict:
+        """The vision lane's row for ``lanes()`` (0.14.0).
+
+        Reported without opening anything: an external lane shows its
+        configured endpoint with ``identity="unopened"`` until the first
+        image encode probes the host, and the crate lane shows the
+        in-process session once it is open. Nothing here contacts a host.
+        """
+        from okfgraph.components.embedding import parse_space
+
+        vision = getattr(self, "vision_encoder", None)
+        backend = getattr(self, "image_backend", "embroider") or "embroider"
+        configured_id = getattr(self, "image_model_id", None)
+        lane: dict = {
+            "backend": backend,
+            "model_id": configured_id,
+            "endpoint": (getattr(self, "image_endpoint_url", "") or None)
+            if backend == "external" else None,
+            "identity": "unopened" if backend == "external" else "in-process",
+            "precision": None,
+            "space": None,
+            "text_partner": None,
+            "pinned_space": getattr(self, "image_pinned_space", None),
+        }
+        engine = getattr(vision, "_encoder", None)   # opened? (never opens)
+        if vision is not None:
+            lane["model_id"] = getattr(vision, "model_id", None) or configured_id
+        if engine is not None:
+            lane["model_id"] = getattr(engine, "model_id", None) or lane["model_id"]
+            lane["identity"] = getattr(engine, "identity_source", "in-process")
+            precision = getattr(vision, "precision", None)
+            if isinstance(precision, str):
+                lane["precision"] = precision
+            space = getattr(vision, "space", None)
+            lane["space"] = space if isinstance(space, str) else None
+            lane["text_partner"] = getattr(engine, "text_partner", None)
+            lane["space_fields"] = parse_space(lane["space"]) is not None
+        return lane
 
     def pin_info(self) -> dict:
         """What the vectors are pinned to, against what this server runs
@@ -732,6 +773,14 @@ class AdminOps:
         from okfgraph.components.embedding import (
             MODEL_META_KEY, PRECISION_META_KEY, SPACE_META_KEY, parse_space,
             _space_differences)
+
+        def _image_pin_precision(raw):
+            if raw is None:
+                return None
+            try:
+                return {16: "fp16", 32: "fp32"}.get(int(raw), str(raw))
+            except (TypeError, ValueError):
+                return str(raw)
 
         def _meta_str(table, key):
             try:
@@ -807,6 +856,15 @@ class AdminOps:
                 "backend": backend,
                 "embedding_family": getattr(
                     getattr(encoder, "spec", None), "family", ""),
+            },
+            "image": {
+                "pinned_model": _meta_str("MetaText", "embedding_image_model"),
+                "pinned_precision": _image_pin_precision(_meta_str(
+                    "Meta", "embedding_image_precision")),
+                "pinned_space": _meta_str("MetaText",
+                                          "embedding_image_space"),
+                "backend": getattr(self, "image_backend", "embroider"),
+                "configured_model": getattr(self, "image_model_id", None),
             },
             "mismatch": mismatch,
             "empty": empty,

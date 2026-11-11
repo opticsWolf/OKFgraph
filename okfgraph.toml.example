@@ -33,6 +33,12 @@ db_path = "kb.db"
 #                               # space (embed_family optional); "declared" skips it
 # embed_family = "nomic-v1.5"   # declared contract: prefixes, pooling, dim ladder
 # api_key_env = "MY_KEY_VAR"    # name of the env var holding the bearer key
+# 0.14 image lane: run the vision model out of process too (an
+# embroider.serve vision host resizes and embeds; nothing ONNX loads here).
+# Without it, images embed in-process with the crate — and a declared
+# (GGUF) text lane, having no vision partner, embeds them as captions.
+# image_backend = "external"
+# image_endpoint_url = "http://127.0.0.1:8932"
 # Counting ladder (batch budgets): embed_counter = "server-tokenize" asks the
 # host's POST /tokenize for exact counts (llama.cpp serves it; LM Studio/TEI
 # do not — a failed probe degrades loudly); "gguf-meta" + embed_counter_gguf

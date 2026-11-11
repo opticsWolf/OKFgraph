@@ -42,7 +42,10 @@ never from ``available_models()``.
 from __future__ import annotations
 
 import base64
+import json
 import logging
+import urllib.error
+import urllib.request
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from okfgraph.components._http import (
@@ -52,7 +55,6 @@ from okfgraph.components._http import (
     post_json,
     unavailable,
 )
-from okfgraph.components.external_embedder import probe_identity
 from okfgraph.errors import OKFError
 
 logger = logging.getLogger("okfgraph.embedding")
@@ -80,12 +82,34 @@ def vision_identity(endpoint_url: str, *, api_key_env: str = "",
                     timeout: float = 10.0) -> Optional[Dict[str, Any]]:
     """``GET /v1/models`` for a vision host; None when it is not embroider.
 
-    Reuses the text lane's probe so both lanes agree on what "an
-    embroider host" means (a ``data[0]`` row carrying
-    ``engine == "embroider"``).
+    Same question the text lane's :func:`probe_identity` asks, and the
+    same answer shape (a row carrying ``engine == "embroider"``), but a
+    different failure policy: an unreachable host here is a **lane
+    outage** and raises ``OKFError('EXTERNAL_UNAVAILABLE')``, not the
+    text lane's boot-time ``ExternalEmbeddingError``. The image lane has
+    no declared fallback to fall back to, so swallowing that would leave
+    the import captioning every image for a host that is simply down.
     """
-    return probe_identity(endpoint_url, headers=auth_headers(api_key_env),
-                          timeout=timeout)
+    url = normalize_endpoint(endpoint_url) + "/models"
+    req = urllib.request.Request(url, headers=dict(auth_headers(api_key_env)))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 405, 501):     # no such route: not embroider
+            return None
+        raise ExternalVisionError(f"{url} refused {exc.code}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise unavailable(url, exc, remedy=(
+            "start the vision host, or set "
+            "embedding.image_backend='embroider'")) from exc
+    except ValueError:                      # not JSON: not embroider
+        return None
+    rows = body.get("data") if isinstance(body, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get("engine") == "embroider":
+            return dict(row)
+    return None
 
 
 class ExternalVisionEngine:

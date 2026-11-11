@@ -811,6 +811,14 @@ class LazyVisionEncoder:
         """Embed one resized RGB buffer (row-major `[h, w, 3]` uint8)."""
         return self._get_encoder().encode_image(rgb, h, w)
 
+    def encode_image_bytes(self, data: bytes):
+        """Embed original image bytes via an engine that owns the resize.
+
+        The external lane's seam (0.14.0): the host decodes and resizes,
+        so okfgraph hands over exactly the bytes it read.
+        """
+        return self._get_encoder().encode_image_bytes(data)
+
     def _get_encoder(self):
         encoder = self._encoder
         if encoder is not None:

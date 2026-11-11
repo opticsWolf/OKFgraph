@@ -26,6 +26,12 @@ uv run --project . okf-mcp --db-path ./kb.db --bundle-root .   # explicit paths 
   embeddinggemma-2 graphs, `JinaV5Vision` on text-nano graphs) on the
   shared ONNX Runtime — install `okfgraph[cpu]` or `[gpu]` for that;
   there is no separate vision extra.
+- All three lanes can run out of process (0.14): `backend=external`
+  (`/v1/embeddings`), `rerank_backend=external` (`/v1/rerank`) and
+  `image_backend=external` (`/v1/images/embeddings`, an
+  `embroider.serve --kind vision` host). With all three set, no ONNX
+  runtime and no `embroider` wheel need to exist in the harness
+  process at all — that is the configuration Weave's Silk plugin runs.
 - Optional: `ORT_DYLIB_PATH` to pin the ONNX Runtime binary shared by
   bobine + embroider (defaults to the pip-installed `onnxruntime==1.31.1`;
   since embroider 0.14 the crate also self-serves the CUDA loader dirs —

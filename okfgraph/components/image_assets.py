@@ -24,6 +24,17 @@ from okfgraph.images import (
 
 logger = logging.getLogger(__name__)
 
+
+def _is_lane_outage(exc: BaseException) -> bool:
+    """True for ``EXTERNAL_UNAVAILABLE`` — an outage, not a bad image.
+
+    ``OKFError`` builds ``StateError``, which subclasses ``RuntimeError``,
+    so the caption fallback's ``except`` would otherwise swallow a downed
+    vision host and turn every image of the import into a caption.
+    """
+    return getattr(exc, "code", "") == "EXTERNAL_UNAVAILABLE"
+
+
 class ImageAssetManager:
     def __init__(
         self,
@@ -120,6 +131,8 @@ class ImageAssetManager:
                 try:
                     prep = self._vision_encoder_call(img)
                 except (ValueError, RuntimeError) as exc:
+                    if _is_lane_outage(exc):
+                        raise
                     # Undecodable bytes (or no vision wheel): graceful
                     # fallback to the caption path, like missing bytes.
                     self._note_vision_failure(exc)
@@ -165,9 +178,12 @@ class ImageAssetManager:
                     # runtime, an image pin refusal or a host refusing one
                     # image all land here — the caption is a working row,
                     # the exception would have been a dropped concept.
-                    # An *outage* is not caught: it is EXTERNAL_UNAVAILABLE
-                    # (an OKFError, not a RuntimeError subclass) and must
-                    # stop the import rather than caption everything.
+                    # An *outage* is the exception: OKFError(StateError) is
+                    # also a RuntimeError, so it has to be named explicitly
+                    # — a downed host must stop the import, never caption
+                    # every image.
+                    if _is_lane_outage(exc):
+                        raise
                     self._note_vision_failure(exc)
                     route, caption = self._caption_route(img)
                     content_hash = self._content_hash(

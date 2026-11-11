@@ -57,7 +57,8 @@ def test_o4_client_mirrors_the_router_and_errors_cross_typed(server):
     c = OKFClient(server["url"])
     health = c.health()
     assert health["db_path"] == str(server["db"].resolve())
-    assert set(health["lanes"]) == {"embed", "rerank"}
+    # 0.14: the vision lane reports too (unopened until an image encode)
+    assert set(health["lanes"]) == {"embed", "rerank", "image"}
     assert "lanes" in health["ops"]
     assert c.import_bundle()["concept_ids"] == ["a"]
     assert [h["id"] for h in c.search("zebra")] == ["a"]

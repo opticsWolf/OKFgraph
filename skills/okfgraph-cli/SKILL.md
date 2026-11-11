@@ -73,9 +73,9 @@ Same graph and the same ops as the MCP skill, through `okf` commands.
 | Generate a bundle from SQLite | `produce --from sqlite --source DB [--output-dir D]` |
 | Structural drift | `diff OLD NEW` (dirs) or `diff [DIR]` (graph vs dir / roots) |
 | Health score + safe repairs | `doctor [--fix] [--strict]` |
-| Cache hygiene / what the graph runs on | `reindex` (rebuild vector+FTS indexes); `model-info` (pinned model report) |
+| Cache hygiene / what the graph runs on | `reindex` (rebuild vector+FTS indexes); `model-info` (pinned model report); `doctor` info rows `embed_lane` / `rerank_lane` (who serves each model, its precision and space) |
 | Old titles mature: 'Thought: <topic>' -> first sentence | `retitle-thoughts [--topic T] [--apply]` (dry run until --apply) |
-| Re-embed a graph under a NEW model (0.12) | `okf reembed [--dry-run]` — boot with `OKFGRAPH_ALLOW_REPIN=1` when the model pin disagrees with the configured model; refuses dim migrations and image-bearing graphs |
+| Re-embed a graph under a NEW model (0.12) | `okf reembed [--dry-run]` — boot with `OKFGRAPH_ALLOW_REPIN=1` when the model pin disagrees with the configured model; refuses dim migrations and image-bearing graphs. It also re-pins the vector space (0.13), the cure for `SPACE_PIN_MISMATCH` (another revision or precision than the graph's vectors) |
 | End the mirror: the DB becomes the artifact | `detach [--bundle-path D] [--no-verify] [--force]` |
 | Soft-deleted concepts | `deleted-list`, `deleted-recover ID`, `deleted-purge` |
 | Remove a wrongly imported concept | `delete ID` — soft-delete, recoverable 24 h; **refuses file-backed concepts while their source file exists** (remedy: remove the file, then `import --all --prune-missing`) |

@@ -28,7 +28,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
 | Category | Features |
 |---|---|
-| **Embeddings** | Jina v5 (default `…-text-small-retrieval`, `--model-id` selects registry: text-nano) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (default 512, per-model ladder); device `auto` (CUDA→FP16 mirror weights, CPU→FP32, `--precision` pins incl. explicit `int8`); CPU arena off by default (`--cpu-arena`); token ceiling configurable (`--max-length`); model + precision pinned per graph, never mixed. No torch anywhere (0.7.0+) |
+| **Embeddings** | Jina v5 (default `…-text-small-retrieval`, `--model-id` selects registry: text-nano) via the `embroider` Rust wheel; last-token pooling, Matryoshka truncation (default 512, per-model ladder); device `auto` (CUDA→FP16 mirror weights, CPU→FP32, `--precision` pins incl. explicit `int8`); CPU arena off by default (`--cpu-arena`); token ceiling configurable (`--max-length`); model, precision and vector space (0.13: embroider's `space` id) pinned per graph, never mixed. No torch anywhere (0.7.0+) |
 | **Search** | Hybrid RRF fusion (vector + FTS) at concept and chunk granularity; `rank=none\|hub\|ppr` — including **PPR**: lexical seeds → exact Personalized PageRank, zero model load, deterministic |
 | **Read** | Body / chunks / rebuilt document / graph context, with optional **token budgets** (`max_tokens`): self first, then PPR-ranked neighbours, index-first for context |
 | **Storage** | LadybugDB `==0.22.1` (pinned — storage format and extensions move with each minor; see [Upgrading ladybug](#upgrading-ladybug-0221)): graph + vector + FTS in one file |
@@ -99,7 +99,7 @@ Bare `uv sync` installs the core only, with no runtime: the first
 encode then fails with an install hint.)
 
 Prefer a system-wide ONNX Runtime (conda, distro package, self-built)?
-Skip both extras and point `ORT_DYLIB_PATH` at your onnxruntime 1.29
+Skip both extras and point `ORT_DYLIB_PATH` at your onnxruntime 1.31
 library instead — but never rely on bare OS-loader discovery: a stale
 system DLL (e.g. in `System32`) fails the load instead of being used.
 
@@ -452,8 +452,9 @@ github.com/opticsWolf/embroider), `mordant>=0.9`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.
 Plus exactly one ORT provider: `okfgraph[cpu]` (`onnxruntime==1.31.1`)
 or `okfgraph[gpu]` (`onnxruntime-gpu[cuda,cudnn]==1.31.1`) — shared with
-bobine via `ORT_DYLIB_PATH` (embroider 0.14 additionally self-serves the
-CUDA EP's loader dirs).
+bobine via `ORT_DYLIB_PATH`. embroider finds the pip-installed runtime
+itself (`locate_runtime()`, 0.15) and self-serves the CUDA EP's loader
+dirs.
 
 - `--extra pdf`: `bobine>=0.7` (default PDF converter; 0.8.0 pinned in the lock).
 - `--extra dev`: `pytest>=8`.

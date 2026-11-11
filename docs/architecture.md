@@ -2,7 +2,7 @@
 
 **Version**: 6.8 (as-built for okfgraph 0.11.0 — the findings-store changes in the v6.7 → v6.8 summary below: links survive re-import, per-file change detection, opt-in frontmatter identity, `okf serve` (one owner, many clients), offline extensions, typed relations, filters, typed ingest, producer cursors, MCP write tools; schema v9. Earlier: 6.7 for okfgraph 0.10.2 — v6.6 surface per `docs/surface-unification-plan.md` plus the v6.6 → v6.7 summary below: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)
 **Based on**: Architecture v6.5 (0.8.x–0.9.0 tree)  
-**Verified against**: LadybugDB v0.22.1, Python 3.11–3.14, `embroider 0.14.x`, `bobine 0.8.0`, `onnxruntime==1.31.1`
+**Verified against**: LadybugDB v0.22.1, Python 3.11–3.14, `embroider 0.15.x`, `bobine 0.8.1`, `onnxruntime==1.31.1`
 
 > **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
 > `docs/OKF Graph V6.0.md`, `docs/Okfgraph 6.0 amendment.md`,
@@ -244,9 +244,9 @@ pip install "okfgraph[cpu]"   # ladybug, embroider, mordant, mcp, … + CPU ORT 
 ```
 
 ```toml
-# pyproject.toml (0.8.0) — deliberately few, all pinned or floor-pinned:
+# pyproject.toml (0.13.0) — deliberately few, all pinned or floor-pinned:
 ladybug == 0.22.1            # graph + vector + FTS store (0.20.x segfaulted 2nd in-process vector-index builds — Step 6; 0.21.2 unbounded FTS)
-embroider >= 0.3, < 0.4      # Jina v5 text + vision embeddings (external Rust/ORT crate, PyPI wheels)
+embroider >= 0.15, < 0.16    # text + vision embeddings, rerank, runtime locator (external Rust/ORT crate, PyPI wheels)
 pillow >= 11                 # caller-side vision decode/resize (core — the vision contract starts at RGB bytes)
 # onnxruntime == 1.31.1 lives in the cpu|gpu extras (exactly one): ONE pinned
 # ORT binary, shared by bobine + embroider (load-dynamic)
@@ -574,7 +574,7 @@ class OKFRouter:
 
 Router construction stays cheap: importing the `embroider` wheel does not
 open any ONNX session, and `locate_ort_runtime()` (embroider's locator) fixes the shared runtime
-choice (single pinned `onnxruntime==1.31.1`, `ORT_DYLIB_PATH`-overridable; embroider 0.14 self-serves the CUDA loader dirs)
+choice (single pinned `onnxruntime==1.31.1`, `ORT_DYLIB_PATH`-overridable; embroider's `locate_runtime()` finds the pip build, 0.14+ self-serves the CUDA loader dirs)
 *before* the native module is first used.
 
 ### Auto-Detect Embedding Dimension
@@ -1217,7 +1217,7 @@ so the guard loads without the router.
 | `okf export --all\|--concept-id ID --output-dir <dir>` | Export entire bundle (filters: `--concept-type`, `--tags`, `--directory-id`) or one concept; OKF or Obsidian flavor |
 | `okf images <id>` / `okf image <asset-id> [--output-path F]` | List a concept's image assets; dump one asset's bytes |
 | `okf diff` | Structural diff: concepts/edges/broken-link deltas |
-| `okf doctor` | Health scan: score, findings, safe `--fix`; informational entries (`converter_cache`, `cache_hygiene`, `ort_gpu_unused`) never score |
+| `okf doctor` | Health scan: score, findings, safe `--fix`; informational entries (`converter_cache`, `cache_hygiene`, `ort_gpu_unused`, and since 0.13 `embed_lane` / `rerank_lane`: who serves each model, its identity, precision and space) never score |
 | `okf lint` | Validate bundle frontmatter + links before import |
 | `okf broken-links` / `okf repair-links` | List / repair links to not-yet-imported concepts |
 | `okf reindex` | Rebuild vector + FTS search indexes |
@@ -1267,6 +1267,21 @@ CLI > env > TOML > defaults, per key. Invalid configuration is
 > (`REEMBED_IN_PROGRESS` refuses a second concurrent run); the sync
 > default is unchanged, and a cancelled run returns partial counts the
 > same way a crash does — the recovery contract (re-run converges it).
+
+> 0.13 identity and space: `embed_identity` / `rerank_identity`
+> (`auto` | `declared`, default `auto`) make the external lanes ask the
+> host `GET /v1/models` first. An embroider host names its model, family,
+> dim, ceiling, precision and `space`, so `embed_family` / `rerank_family`
+> become optional (given, they must agree), counts use the host's exact
+> `/tokenize`, and embeds send `task` instead of prefixes; any other
+> server keeps the declared 0.12 contract. Graphs pin the embroider
+> `space` (`MetaText embedding_space`) next to model and precision,
+> whichever lane opens first: equal space, identical vectors, so a graph
+> moves between the crate and a host without a re-embed, and another
+> space refuses with `SPACE_PIN_MISMATCH` (`max_length` is not compared —
+> stored texts are chunked below it). `lanes()` (an op; `/health` carries
+> it) reports per lane the backend, endpoint, identity, family,
+> precision and space without opening a session.
 
 ### 5.4. Import Options
 
@@ -1472,7 +1487,7 @@ mcp.run(transport="stdio")
 | **Acquisition** | HF hub into the model cache, or explicit paths — identical vectors, pinned by test |
 | **GPU Support** | `--device auto` (default; CUDA when present, else CPU) against the single pinned ORT; CUDA is opportunistic, CPU always works |
 | **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`/`int8` (int8 explicit-only, needs a measured artifact); explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
-| **Model registry (0.6.0)** | `embedding.model_id` on every surface (default text-small, frozen); registry resolves (model, precision) → artifact with per-model ladder/ceiling (nano: 768 dim max, 8192 ctx); graph pins the id in MetaText fail-closed (mismatch refuses, empty re-pins) — a model switch forces a fresh reimport, never a silent space fork |
+| **Model registry (0.6.0)** | `embedding.model_id` on every surface (default text-small, frozen); registry resolves (model, precision) → artifact with per-model ladder/ceiling (nano: 768 dim max, 8192 ctx); graph pins the id in MetaText fail-closed (mismatch refuses, empty re-pins) — a model switch forces a fresh reimport, never a silent space fork; 0.13 adds the embroider `space` pin (`SPACE_PIN_MISMATCH`) |
 | **CPU Arena** | Off by default (`--cpu-arena` opts in): 8x lower peak RSS for ~1.4x encode time (measured) |
 
 ### Vision (Multimodal) Model — ONNX, restored 0.8.0

@@ -43,6 +43,9 @@ class ImageAssetManager:
         self.schema_mgr = schema_mgr
         self.allow_remote_images = allow_remote_images
         self.allowed_image_domains = allowed_image_domains or []
+        #: caption fallbacks this concept took (one summary warn)
+        self._vision_failures = 0
+        self._vision_failure_reason = ""
         self.bundle_root = bundle_root
 
     def _ingest_concept_images(
@@ -112,25 +115,24 @@ class ImageAssetManager:
                 stats["skipped"] += 1
                 continue
             route, caption = plan_embedding(img, mode)
+            prep = None
             if route is EmbedRoute.VISION:
                 try:
-                    rgb, rh, rw = self._prepare_vision(img)
+                    prep = self._vision_encoder_call(img)
                 except (ValueError, RuntimeError) as exc:
                     # Undecodable bytes (or no vision wheel): graceful
                     # fallback to the caption path, like missing bytes.
-                    logger.warning(
-                        "image %s: %s — embedding caption instead",
-                        img.asset_id, exc,
-                    )
-                    route = EmbedRoute.TEXT
-                    caption = img.alt_text if img.has_alt_text else fallback_caption(
-                        img.filename, img.index, img.concept_id
-                    )
+                    self._note_vision_failure(exc)
+                    route, caption = self._caption_route(img)
             if route is EmbedRoute.VISION:
                 from okfgraph.components.embedding import vision_content_hash
                 ve = self.embed_engine.vision_encoder
+                # Precision first: on the external lane asking for it is
+                # the identity probe (no model loads), and the hash needs
+                # the landed value, not a prediction.
+                precision = self._vision_precision()
                 content_hash = vision_content_hash(
-                    ve.model_id, self._vision_precision(), img.data
+                    ve.model_id, precision, img.data
                 )
             else:
                 content_hash = self._content_hash(route, (caption or "").encode("utf-8"))
@@ -155,7 +157,22 @@ class ImageAssetManager:
             # arrive here as TEXT (their stored omni hash missed above) and are
             # re-embedded by caption. `stats["omni"]` stays 0 by construction.
             if route is EmbedRoute.VISION:
-                embedding = self._encode_vision_image(rgb, rh, rw)
+                try:
+                    embedding = prep()
+                except (ValueError, RuntimeError) as exc:
+                    # 0.14.0 (step H): the open/encode half falls back too.
+                    # A declared lane (no vision partner), a missing ONNX
+                    # runtime, an image pin refusal or a host refusing one
+                    # image all land here — the caption is a working row,
+                    # the exception would have been a dropped concept.
+                    # An *outage* is not caught: it is EXTERNAL_UNAVAILABLE
+                    # (an OKFError, not a RuntimeError subclass) and must
+                    # stop the import rather than caption everything.
+                    self._note_vision_failure(exc)
+                    route, caption = self._caption_route(img)
+                    content_hash = self._content_hash(
+                        route, (caption or "").encode("utf-8"))
+            if route is EmbedRoute.VISION:
                 stats["vision"] += 1
                 caption = ""  # bytes embedded, not text
             else:
@@ -176,6 +193,16 @@ class ImageAssetManager:
                 stats["vision"],
             )
 
+        if self._vision_failures:
+            # One line per concept, not one per image: a declared lane (or
+            # a host refusing every image) must not write a hundred
+            # identical warnings.
+            logger.warning(
+                "image ingestion: %d image(s) embedded as captions: %s",
+                self._vision_failures, self._vision_failure_reason,
+            )
+            self._vision_failures = 0
+            self._vision_failure_reason = ""
         stale_ids = [aid for aid in existing if aid not in planned_ids]
         stats["pruned"] = len(stale_ids)
 
@@ -214,6 +241,61 @@ class ImageAssetManager:
         h.update(payload or b"")
         return h.hexdigest()
 
+    def _note_vision_failure(self, exc: BaseException) -> None:
+        """Count a caption fallback; keep the first reason for the summary."""
+        self._vision_failures += 1
+        if not self._vision_failure_reason:
+            self._vision_failure_reason = f"{type(exc).__name__}: {str(exc)[:160]}"
+
+    @staticmethod
+    def _caption_route(img):
+        """The caption route for an image the vision lane could not embed."""
+        caption = (img.alt_text if img.has_alt_text
+                   else fallback_caption(img.filename, img.index, img.concept_id))
+        return EmbedRoute.TEXT, caption
+
+    def _vision_encoder_call(self, img):
+        """Prepare *img* and return a zero-arg call that embeds it.
+
+        Two lanes, one seam: the crate session wants a resized RGB buffer
+        (so the work happens here, once), the external host wants the
+        original bytes and resizes on its side. Raising from this call is
+        the caption fallback; raising from the returned callable is too
+        (0.14.0, step H).
+        """
+        ve = self.embed_engine.vision_encoder
+        if ve is None:
+            raise RuntimeError(
+                "vision encoder not wired (router without image support); "
+                "use mode=text (captions)"
+            )
+        if getattr(ve, "backend", "embroider") == "external":
+            self._probe_decodable(img.data)
+            return lambda: ve.encode_image_bytes(img.data)
+        rgb, rh, rw = self._prepare_vision(img)
+        return lambda: ve.encode_image(rgb, rh, rw)
+
+    @staticmethod
+    def _probe_decodable(data: bytes) -> None:
+        """Cheap decode check for the external lane (the host resizes).
+
+        Pillow is not a hard dependency of okfgraph: without it the check
+        is skipped and a corrupt image is caught by the host's refusal
+        instead (which also falls back to the caption).
+        """
+        if not data:
+            raise ValueError("image has no bytes")
+        try:
+            from PIL import Image
+        except ImportError:      # pragma: no cover - Pillow ships with embroider
+            return
+        import io
+        try:
+            with Image.open(io.BytesIO(data)) as probe:
+                probe.verify()
+        except Exception as exc:  # noqa: BLE001 - any decode failure
+            raise ValueError(f"image bytes do not decode: {exc}") from exc
+
     def _vision_precision(self) -> str:
         """Resolved vision precision for the content hash (0.8.0).
 
@@ -227,7 +309,14 @@ class ImageAssetManager:
         cfg = (ve._precision_cfg if ve is not None else "auto") or "auto"
         if cfg != "auto":
             return cfg
-        if ve is not None and ve.is_loaded:
+        # The external lane asked for `auto` must not consult the crate at
+        # all (0.14.0): opening *that* lane is an identity probe, not a
+        # model load, so ask it — it names the precision it landed on.
+        if ve is not None and (ve.is_loaded
+                               or getattr(ve, "backend", "embroider") == "external"):
+            landed = getattr(ve, "precision", None)
+            if isinstance(landed, str) and landed in ("fp16", "fp32"):
+                return landed
             return "fp16" if ve.used_cuda else "fp32"
         device = ve._device if ve is not None else "auto"
         if device == "cpu":
@@ -268,17 +357,6 @@ class ImageAssetManager:
                 f"({need}); use mode=text (captions)"
             )
         return prepare_vision_rgb(img.data, target_size_fn=target_size_fn)
-
-    def _encode_vision_image(self, rgb: bytes, h: int, w: int):
-        """Embed one resized RGB buffer via the lazy vision session."""
-        ve = self.embed_engine.vision_encoder
-        if ve is None:
-            raise RuntimeError(
-                "vision encoder not wired (router without image support); "
-                "use mode=text (captions)"
-            )
-        return ve.encode_image(rgb, h, w)
-
 
     def _concept_has_assets(self, concept_id: str) -> bool:
         result = self.conn.execute(

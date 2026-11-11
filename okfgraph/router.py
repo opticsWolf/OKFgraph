@@ -678,15 +678,79 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             vision_loader_class,
         )
 
+        def _stored_image_precision():
+            """The image precision this graph had pinned before this open.
+
+            Feeds the space pin's *adopt* rule: a graph the crate lane
+            filled may adopt a space, a graph a lane without precision
+            claims filled may not be blessed by the first session that
+            happens to open it.
+            """
+            from okfgraph.components.embedding import IMAGE_PRECISION_META_KEY
+            try:
+                rows = self.conn.execute(
+                    f"MATCH (m:Meta {{key: '{IMAGE_PRECISION_META_KEY}'}}) "
+                    "RETURN m.value AS v"
+                ).rows_as_dict().get_all()
+            except Exception:
+                return None
+            if not rows:
+                return None
+            return {16: "fp16", 32: "fp32"}.get(int(rows[0]["v"]))
+
         def _report_vision_open(encoder) -> None:
-            pinned = enforce_image_precision_pin(self.conn, encoder.precision)
-            enforce_image_model_pin(self.conn, image_model_id)
+            from okfgraph.components.embedding import (
+                IMAGE_PRECISION_META_KEY,      # noqa: F401  (documented)
+                enforce_image_space_pin,
+            )
+            prior = _stored_image_precision()
+            # A lane that cannot name a weight precision (an external host
+            # that omits it) pins only the model and the space.
+            pinned = None
+            precision = getattr(encoder, "precision", None)
+            if precision in ("fp16", "fp32"):
+                pinned = enforce_image_precision_pin(self.conn, precision)
+            enforce_image_model_pin(
+                self.conn, getattr(encoder, "model_id", None) or image_model_id)
+            self.image_pinned_space = enforce_image_space_pin(
+                self.conn, getattr(encoder, "space", None),
+                adopt=pinned is not None and prior == pinned,
+            )
             logger.info(
-                "image embeddings: %s dim=%d cuda=%s precision=%s",
-                image_model_id, self.embedding_dim, encoder.used_cuda, pinned,
+                "image embeddings: %s dim=%d cuda=%s precision=%s space=%s",
+                getattr(encoder, "model_id", None) or image_model_id,
+                self.embedding_dim, encoder.used_cuda, pinned,
+                self.image_pinned_space,
             )
 
         def _vision_session_factory():
+            # ── the external lane (0.14.0) ─────────────────────────────
+            # No _require_ort(): this branch must work with no ONNX runtime
+            # (and no embroider) in the process at all. The host owns the
+            # model; okfgraph owns the pins.
+            if image_backend == "external":
+                from okfgraph.components.embedding import (
+                    check_vision_compat,
+                )
+                from okfgraph.components.external_vision import (
+                    build_external_vision,
+                )
+                engine = build_external_vision(
+                    endpoint_url=image_endpoint_url,
+                    embedding_dim=self.embedding_dim,
+                    image_model_id=image_model_id,
+                    image_precision=image_precision,
+                    api_key_env=api_key_env,
+                )
+                # Same refusal the crate lane makes, but on the host's own
+                # text_partner — the registry is never consulted here.
+                check_vision_compat(
+                    self.conn,
+                    text_model_id=model_id,
+                    embedding_dim=self.embedding_dim,
+                    partner=engine.text_partner,
+                )
+                return engine
             _require_ort()
             # Fail-closed compat BEFORE any download: wrong text model,
             # oversize dim, or unknown image id all refuse here.
@@ -713,7 +777,9 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             session_factory=_vision_session_factory,
             on_open=_report_vision_open,
             precision=image_precision,
+            backend=image_backend,
         )
+        self.image_pinned_space = None
         # Same pre-adoption sync as the text encoder above: the factory
         # reads the adopted dim lazily, the stored dim follows it here.
         self.vision_encoder._truncate_dim = self.embedding_dim

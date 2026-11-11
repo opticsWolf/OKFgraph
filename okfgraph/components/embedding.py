@@ -392,6 +392,13 @@ IMAGE_MODEL_META_KEY = "embedding_image_model"
 #: `_PRECISION_CODE`). FP16 and FP32 vision weights live in different
 #: spaces, same as text.
 IMAGE_PRECISION_META_KEY = "embedding_image_precision"
+#: MetaText key pinning the vector space a graph's image vectors live in
+#: (0.14.0). The image twin of `SPACE_META_KEY`: set by whichever lane
+#: opens first — the crate's `describe().space`, or an external host's
+#: identity — so an in-process graph and a hosted one with the same space
+#: are interchangeable with no re-embed, and two different spaces are
+#: refused instead of silently mixing.
+IMAGE_SPACE_META_KEY = "embedding_image_space"
 
 
 def enforce_image_model_pin(conn, image_model_id: str) -> str:
@@ -489,6 +496,96 @@ def enforce_image_precision_pin(conn, precision: str) -> str:
     return precision
 
 
+def _graph_has_vision_vectors(conn) -> bool:
+    """True when any ImageAsset row was embedded from image bytes.
+
+    Only the vision route puts vectors in the space this pin names;
+    caption rows live in the text model's space and must not stop a
+    re-pin (a graph whose images are all captions is free to adopt the
+    space of the first real image it embeds).
+    """
+    try:
+        rows = conn.execute(
+            "MATCH (i:ImageAsset) WHERE i.embed_route = 'vision-onnx' "
+            "RETURN i.id AS id LIMIT 1"
+        ).rows_as_dict().get_all()
+    except Exception:
+        return False
+    return bool(rows)
+
+
+def enforce_image_space_pin(conn, space, *, adopt: bool) -> Optional[str]:
+    """Fail-closed image-space pin for a graph (0.14.0).
+
+    Runs after the image model and precision pins, in whichever lane
+    opened the vision session. With a space stored, a session landing in
+    another space is refused (a graph with no vision vectors re-pins),
+    naming each field that differs; ``max_length`` never counts. With
+    none stored, the space is recorded when the graph has no vision
+    vectors or *adopt* says the model and precision pins just agreed (how
+    a pre-0.14 graph adopts it), and is otherwise left unrecorded.
+
+    A session that cannot name its space (an older crate, a host without
+    one) checks nothing here, as the text lane does. Returns the pinned
+    space, or ``None``.
+    """
+    landed = parse_space(space)
+    conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS MetaText (key STRING PRIMARY KEY, value STRING)"
+    )
+    try:
+        rows = conn.execute(
+            f"MATCH (m:MetaText {{key: '{IMAGE_SPACE_META_KEY}'}}) "
+            "RETURN m.value AS v"
+        ).rows_as_dict().get_all()
+    except Exception:
+        rows = []
+    stored = rows[0]["v"] if rows else None
+    if landed is None:
+        if stored:
+            logger.warning(
+                "graph image vectors are pinned to space %s but this session "
+                "can't name its own: checking the image model and precision "
+                "only", stored)
+        return stored or None
+
+    def _pin():
+        conn.execute(
+            f"MERGE (m:MetaText {{key: '{IMAGE_SPACE_META_KEY}'}}) "
+            "SET m.value = $v",
+            {"v": space},
+        )
+
+    if stored:
+        pinned = parse_space(stored)
+        differ = (_space_differences(pinned, landed) if pinned is not None
+                  else ["space"])
+        if not differ:
+            return stored
+        if not _graph_has_vision_vectors(conn):
+            _pin()
+            logger.info("graph without vision vectors re-pinned to image "
+                        "space=%s", space)
+            return space
+        if pinned is None:
+            detail = f"pinned {stored}, landed {space}"
+        else:
+            detail = "; ".join(
+                f"pinned {f}={pinned[f]}, landed {landed[f]}" for f in differ)
+        raise OKFError(
+            "IMAGE_PIN_MISMATCH",
+            f"graph image vectors live in another space than this vision "
+            f"session's ({detail}). Image vectors from different spaces must "
+            f"never mix. Reopen with the pinned settings, or reimport into a "
+            f"fresh database."
+        )
+    if adopt or not _graph_has_vision_vectors(conn):
+        _pin()
+        logger.debug("graph image vectors pinned to space=%s", space)
+        return space
+    return None
+
+
 def vision_text_partner(image_model_id: str) -> str:
     """Text model sharing a vision model's vector space (0.8.0).
 
@@ -533,10 +630,27 @@ def enforce_vision_compat(conn, *, text_model_id: str, embedding_dim: int,
     vision native ceiling (768) are refused — image vectors use the
     graph's `truncate_dim`, which must fit the vision output.
 
+    The crate lane's entry point: it reads the partner off embroider's
+    registry, then checks. The external lane calls
+    :func:`check_vision_compat` instead with the host's own `text_partner`
+    — that lane must not import the crate (0.14.0).
+
     Returns the partner text model id. Runs inside the vision session
     factory, so text-only graphs never pay for it.
     """
-    partner = vision_text_partner(image_model_id)
+    return check_vision_compat(
+        conn, text_model_id=text_model_id, embedding_dim=embedding_dim,
+        partner=vision_text_partner(image_model_id),
+    )
+
+
+def check_vision_compat(conn, *, text_model_id: str, embedding_dim: int,
+                        partner: str) -> str:
+    """The pure half of :func:`enforce_vision_compat` (0.14.0).
+
+    No import, no registry: *partner* is whatever the lane knows — the
+    crate's registry entry, or an external host's ``text_partner``.
+    """
     if embedding_dim > 768:
         raise OKFError(
             "VISION_INCOMPATIBLE",
@@ -633,7 +747,9 @@ class LazyVisionEncoder:
     """
 
     def __init__(self, *, image_model_id, truncate_dim, device,
-                 session_factory, on_open=None, precision="auto"):
+                 session_factory, on_open=None, precision="auto",
+                 backend="embroider"):
+        self.backend = backend          # "embroider" | "external" (0.14.0)
         self._image_model_id = image_model_id
         self._truncate_dim = truncate_dim
         self._device = device
@@ -652,12 +768,44 @@ class LazyVisionEncoder:
 
     @property
     def model_id(self) -> str:
+        """The configured id, or the one the opened engine reports.
+
+        An external lane may start with no configured id (the host names
+        its own model); once open, this is the id the content hash and the
+        pin must use.
+        """
+        if self._encoder is not None:
+            return getattr(self._encoder, "model_id", None) or self._image_model_id
         return self._image_model_id
 
     @property
     def used_cuda(self) -> bool:
         """Effective device — opens the session on first access."""
         return bool(self._get_encoder().used_cuda)
+
+    @property
+    def precision(self):
+        """The landed weight precision once open, else the configured one.
+
+        ``None`` when neither exists (an external host that omits it):
+        the image precision pin then records nothing, as the text lane
+        does for an engine without numeric claims.
+        """
+        if self._encoder is not None:
+            landed = getattr(self._encoder, "precision", None)
+            if landed:
+                return landed
+        if self._precision_cfg != "auto":
+            return self._precision_cfg
+        return None
+
+    @property
+    def space(self):
+        """The opened engine's vector space, or ``None``."""
+        if self._encoder is None:
+            return None
+        space = getattr(self._encoder, "space", None)
+        return space if isinstance(space, str) else None
 
     def encode_image(self, rgb: bytes, h: int, w: int):
         """Embed one resized RGB buffer (row-major `[h, w, 3]` uint8)."""

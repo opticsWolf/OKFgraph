@@ -42,7 +42,6 @@ from okfgraph.components import (
 )
 
 from okfgraph.errors import OKFError
-from okfgraph.settings import GRAPH_HOME
 from okfgraph.ops import AdminOps, ExportOps, IngestOps, QueryOps, WriteOps
 
 logger = logging.getLogger(__name__)
@@ -313,9 +312,10 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             )
         self.max_length = max_length if max_length is not None else default_max
 
-        # A graph's .okfgraph/ home is created on first use (0.12.0); any
-        # other parent directory must already exist.
-        if Path(db_path).parent.name == GRAPH_HOME:
+        # The db's folder is created on first use: the .okfgraph/ home
+        # (0.12.0) and, since 0.13.1, any other parent, relative or absolute
+        # (a missing one surfaced as ladybug's raw IO error, an INTERNAL).
+        if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         try:

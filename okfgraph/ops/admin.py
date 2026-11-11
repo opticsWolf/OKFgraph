@@ -385,6 +385,19 @@ class AdminOps:
                            remedy="pass --from DIR holding libvector/libfts "
                                   ".lbug_extension from an online machine") from exc
 
+    @staticmethod
+    def setup_skills(target=None, names=None) -> dict:
+        """Copy the packaged agent skills into a harness folder (router-free,
+        0.13.1). Default target ``.claude/skills``; ``names`` picks some of
+        okfgraph-mcp / okfgraph-cli / okfgraph-ingest. Returns
+        ``{"target", "installed", "updated", "unchanged"}``."""
+        from okfgraph.components.skills import setup_skills
+        try:
+            return setup_skills(Path(target) if target else None, names)
+        except KeyError as exc:
+            raise OKFError("BAD_VALUE", exc.args[0], op="setup_skills",
+                           fields={"skill": list(names or ())}) from exc
+
     def reindex(self, *, if_dirty: bool = False) -> dict:
         """Rebuild search indexes; ``{"rebuilt": bool}``."""
         rebuilt = self.schema_mgr.reindex(force=not if_dirty)

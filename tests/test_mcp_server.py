@@ -155,7 +155,7 @@ class TestMCPServer:
             mcp = create_mcp_server(Settings(db_path=db_path))
             assert mcp.name == "OKFgraph MCP Server"
             assert "ONNX" in mcp.instructions
-            assert "Jina v5" in mcp.instructions
+            assert "embroider" in mcp.instructions
 
     @pytest.mark.anyio
     async def test_lifespan_yields_router_and_closes(self, tmp_path, monkeypatch):

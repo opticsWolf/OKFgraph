@@ -30,14 +30,19 @@ Same graph and the same ops as the MCP skill, through `okf` commands.
    path = "../notes"           # relative to this file
    ```
 
-   Flags (`--db-path`, `--bundle-root`, `--root ALIAS=PATH`, ...) and
-   `OKFGRAPH_*` env vars override it per call: CLI > env > TOML > defaults.
+   Flags (`--db-path`, `--bundle-root`, `--root ALIAS=PATH`, ...), before
+   or after the command, and `OKFGRAPH_*` env vars override it per call:
+   CLI > env > TOML > defaults. Relative paths count from the CWD (only
+   `[[roots]]` count from the TOML file). Only `init`, `import` and
+   `ingest` create a missing database; other commands answer
+   `FILE_NOT_FOUND` (check the path, or `okf init`).
    With nothing configured the graph lives in `./.okfgraph/` (db
    `.okfgraph/okfgraph.db`, bundles `.okfgraph/bundle`, created on first
    use); a CWD with a legacy `./okfgraph.db` and no `.okfgraph/` keeps
    using it (bundle root `.`) and warns once.
-2. `okf init` creates the schema (any command would; init just reports
-   the adopted pins). It does **not** persist flags — keep roots in TOML.
+2. `okf init` creates the database and schema and reports the adopted
+   pins (`import`/`ingest` would also create it; read commands refuse a
+   missing database). It does **not** persist flags — keep roots in TOML.
 3. `okf import --all` loads every configured root. Verify with
    `okf traverse` (root listing; an empty graph prints a message).
 4. Prefer `uv run --project <root> okf ...` so dependencies resolve from

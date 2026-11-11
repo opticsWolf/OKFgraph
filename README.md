@@ -47,8 +47,27 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 
 ## Installation
 
-Requires Python ≥ 3.11. You must pick **exactly one** ONNX Runtime
-extra, `cpu` or `gpu`:
+Requires Python ≥ 3.11. The extras decide what you get:
+
+| Extra | Installs | Gives you |
+|---|---|---|
+| `cpu` **or** `gpu` (pick exactly one) | `onnxruntime==1.31.1` / `onnxruntime-gpu[cuda,cudnn]==1.31.1` | the ONNX Runtime that embedding, search and rerank run on |
+| `pdf` | `bobine>=0.8.1` | `okf ingest --kind pdf`: PDF and Office files (docx/xlsx/pptx, legacy doc/xls/ppt) converted to markdown, then imported |
+| `dev` | `pytest` | the test suite |
+
+**Why the runtime isn't installed by default.** `onnxruntime` and
+`onnxruntime-gpu` are two distributions of the same `onnxruntime`
+module, and pip can't pick one by the hardware or install both side by
+side. So okfgraph names neither in its core dependencies: a bare
+`pip install okfgraph` installs, but the first embedding fails with
+`NO_ORT_RUNTIME` and the install line to run.
+
+**How bobine comes in.** bobine is a plugin, not a dependency: only the
+`pdf` extra installs it, and okfgraph imports it only when it converts a
+document. Without it, Markdown, thoughts and BibTeX work as usual and
+`ingest --kind pdf` fails asking for `pip install "okfgraph[pdf]"`. bobine uses
+the same ONNX Runtime that `cpu`/`gpu` installed (0.8.1 pins the same
+1.31.1), so it needs no runtime of its own.
 
 ### CPU or GPU?
 
@@ -105,10 +124,15 @@ system DLL (e.g. in `System32`) fails the load instead of being used.
 
 Core dependencies are deliberately few: `ladybug==0.22.1`, `embroider>=0.15,<0.16`
 (the shared embedding engine — github.com/opticsWolf/embroider, also used by
-bobine), `onnxruntime==1.31.1` (one pinned ORT binary shared by bobine +
-embroider; `ORT_DYLIB_PATH`-overridable), `mordant`, `mcp>=2.0`, `pydantic`,
-`pyyaml`, `numpy`, `python-frontmatter`, `fasteners`. There is no torch, no
+bobine), `mordant`, `mcp>=2.0`, `pydantic`, `pyyaml`, `numpy`,
+`python-frontmatter`, `fasteners`, `Pillow`. The ONNX Runtime comes from
+the `cpu`/`gpu` extra (one pinned 1.31.1 binary shared by bobine and
+embroider; `ORT_DYLIB_PATH`-overridable). There is no torch, no
 transformers, no optimum, no PDF stack in the core install.
+
+After installing, copy the agent skills into your harness:
+`okf setup skills` writes them to `.claude/skills/` (Claude Code);
+`--to DIR` for another harness, `--skill NAME` for one of them.
 
 ---
 
@@ -197,8 +221,23 @@ pdf — reasoning you already hold beats re-extracting it from files.
 
 Eight verbs mirror the MCP tools; maintenance commands cover the rest. Global
 flags (`--db-path`, `--bundle-root`, `--embedding-dim`, `--model-id`,
-`--max-length`, …) are documented once in `okf --help`, accepted everywhere,
-and usually live in `okfgraph.toml`. Every command accepts `--json` (D5):
+`--max-length`, …) are documented once in `okf --help`, accepted before or
+after the command (`okf --db-path kb.db search x` = `okf search x --db-path
+kb.db`), and usually live in `okfgraph.toml`. Where to look:
+
+| What | Set by | Default |
+|---|---|---|
+| database | `--db-path`, `OKFGRAPH_DB_PATH`, `[database] db_path` | `.okfgraph/okfgraph.db` in the current directory (okf-mcp: must be set) |
+| bundle root | `--bundle-root`, `OKFGRAPH_BUNDLE_ROOT`, top-level `bundle_root` | `bundle/` beside a db in a `.okfgraph` folder; else `okf` uses the current directory, `okf-mcp`/`okf serve` the db's folder |
+| config file | — | `okfgraph.toml` in the current directory, else in the bundle root, else `~/.config/okfgraph/config.toml` (first found wins) |
+
+Precedence is flag > environment > `okfgraph.toml` > default. Relative
+paths count from the current directory, in `okfgraph.toml` too (except
+`[[roots]]`, which count from the file). Only `okf init`, `okf import`
+and `okf ingest` create a missing database, folders included; every other
+command refuses it with `FILE_NOT_FOUND`, so a mistyped path never leaves
+an empty graph behind (0.13.1). `okf-mcp` and `okf serve` create the
+database on first boot from the path you set. Every command accepts `--json` (D5):
 human renderer by default, the result envelope
 (`{ok, op, data, warnings, error}`) on stdout with `--json`. Results always
 go to stdout and logs to stderr (`-q` silences logs, never results).
@@ -237,7 +276,7 @@ package import itself.
 | `okf search QUERY [--target concepts\|chunks\|images] [--rank none\|hub\|ppr] [--expand] [--hub-rerank]` | Concepts (RRF hybrid), chunks (passages), images; `--rank ppr` is model-free |
 | `okf read ID [--include body\|chunks\|document\|context] [--max-tokens N]` | Full shapes uncapped; budgeted section list with `--max-tokens` |
 | `okf traverse [ID] [--relationship CONTAINS\|LINKS_TO\|PART_OF\|INCLUDES_ASSET] [--direction …] [--target ID]` | Relationships, directory listing (empty ID = root), shortest path via `--target` |
-| `okf ingest --kind md\|pdf\|thoughts\|bib …` | `--md-path`, `--pdf-path` (`--routing-mode`, auto-imports by default; `--no-auto-import` converts only), `--thoughts --topic`, `--bib-path` (one `refs/<key>` concept per BibTeX entry) |
+| `okf ingest --kind md\|pdf\|thoughts\|bib …` | `--md-path`, `--pdf-path FILE...` (several files in one process on one loaded model; a failed file is reported and the rest continue; `--routing-mode`, auto-imports by default; `--no-auto-import` converts only), `--thoughts --topic`, `--bib-path` (one `refs/<key>` concept per BibTeX entry) |
 | `okf export --all\|--concept-id ID --output-dir DIR [--flavor okf\|obsidian]` | Bundle or single-concept export; obsidian = `[[Title]]` links, no index files |
 | `okf images CONCEPT_ID` / `okf image ASSET_ID [--output-path F]` | Image assets on a concept; metadata (+ bytes) per asset |
 | `okf diff [OLD] [NEW] [--json]` | Snapshot (two dirs, no model) or drift (graph vs dir); exit 0 identical / 1 different |
@@ -252,7 +291,12 @@ Only commands that embed text (`search` except `--rank ppr`, `import`,
 `ingest`) load the model (~30s cold per process); `read`, `traverse`,
 `lint`, `diff`, `doctor` and `export` never do — batch searches, use
 `okf shell` for a warm session, and reach for `--rank ppr` for topic
-queries in cold sessions. Omit `--bundle-root` entirely for file-free mode: thoughts ingest,
+queries in cold sessions. Bulk input: many Markdown files go through
+`okf import --all` (or `okf import FILE...`) — `.md`, `.markdown` and
+`.txt`, one model load, batched writes. PDF and Office files go through
+`okf ingest --kind pdf --pdf-path A.pdf B.docx …`: one model load for the
+batch, but bobine opens its converter per file. With `okf serve` running,
+every `okf` call reuses the server's loaded model. Omit `--bundle-root` entirely for file-free mode: thoughts ingest,
 search, read, traverse, doctor, and export work from the DB alone (file-side
 ops fail fast naming the missing root). Thought IDs are namespaced
 (`thoughts/<topic>/<ts>_<id>`), so a fileless graph exports into a tidy tree.
@@ -295,15 +339,19 @@ proves the plumbing works.
 
 ### Skills
 
-Harness-neutral skill sources live in `skills/` (Claude Code auto-loads
-`.claude/skills/<name>/SKILL.md`; other harnesses have their own dirs — see
-`docs/harness-integration.md`):
+Harness-neutral skill sources live in `okfgraph/skills/` and ship in the
+wheel (0.13.1). `okf setup skills` copies them to `.claude/skills/<name>/SKILL.md`,
+where Claude Code loads them; `--to DIR` targets another harness's folder
+(see `docs/harness-integration.md`) and `--skill NAME` (repeatable) picks
+some. Rerun it after an upgrade: changed files are updated, the rest left alone.
 
 - **`okfgraph-mcp`** — finding knowledge via MCP tools (pick this *or* CLI).
 - **`okfgraph-cli`** — same graph through `okf` shell commands.
 - **`okfgraph-ingest`** — feeding discipline: what to store, which kind,
   converter modes, wikilink/alias conventions. Install alongside either
-  finder when the agent should persist knowledge.
+  finder when the agent should persist knowledge. It is separate so the
+  rules are written once for both finders, and so a read-only agent can
+  get a finder without it.
 
 ---
 
@@ -433,9 +481,9 @@ okfgraph/
 │   ├── mcp_server.py      # okf-mcp: 11 tools, MCP ≥ 2.0, lifespan-managed router, envelope/_ToolFailure
 │   ├── images.py          # IngestMode (text + vision-onnx since 0.8.0), planning helpers
 │   ├── security.py        # SSRF/domain guards for remote images
+│   ├── skills/            # okfgraph-mcp, okfgraph-cli, okfgraph-ingest (shipped; okf setup skills)
 │   └── components/        # ranking, links, search, lint, import_, export, diff, doctor,
-│                          # embedding, converters, image_assets, delta, purge, schema, ingest
-├── skills/                # okfgraph-mcp, okfgraph-cli, okfgraph-ingest (harness-neutral source)
+│                          # embedding, converters, image_assets, delta, purge, schema, ingest, skills
 ├── tests/fixtures/        # conformance corpus: ppr, diff, doctor, obsidian, bundles
 ├── docs/                  # architecture spec (v6.5), converters, chunking, harness guides; archive/ holds completed plans
 ├── .mcp.json              # ready MCP wiring (uv run --project . okf-mcp)
@@ -456,7 +504,7 @@ bobine via `ORT_DYLIB_PATH`. embroider finds the pip-installed runtime
 itself (`locate_runtime()`, 0.15) and self-serves the CUDA EP's loader
 dirs.
 
-- `--extra pdf`: `bobine>=0.7` (default PDF converter; 0.8.0 pinned in the lock).
+- `--extra pdf`: `bobine>=0.8.1` (default PDF and Office converter; 0.8.1 pinned in the lock).
 - `--extra dev`: `pytest>=8`.
 
 ### Upgrading ladybug (0.22.1)

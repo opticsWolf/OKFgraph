@@ -90,11 +90,13 @@ re-extracting it from files.
   unless `--apply`; CLI-only
 - `--kind md --md-path F [--concept-id ID] [--title T] [--tags a,b]`
 - `--kind bib --bib-path F [--tags a,b]` — one `refs/<key>` concept per entry
-- `--kind pdf --pdf-path F [--routing-mode ...]` — auto-imports by default;
-  `--no-auto-import` converts only (next to the source, or
-  `--output-dir DIR`), then `okf import --all --bundle-path DIR`.
-  Bulk: `okf import --all [--bundle-path DIR]` (`--prune-missing` drops
-  concepts whose files vanished from disk).
+- `--kind pdf --pdf-path F [F ...] [--routing-mode ...]` — auto-imports by
+  default; `--no-auto-import` converts only (next to the source, or
+  `--output-dir DIR`), then `okf import --all --bundle-path DIR`. Several
+  files run in one process on one loaded model (a failed file is
+  reported, the rest continue): prefer one call over a loop.
+  Bulk markdown (`.md`/`.markdown`/`.txt`): `okf import --all [--bundle-path DIR]`
+  (`--prune-missing` drops concepts whose files vanished from disk).
 - `--json` prints the same `data` as the MCP tool inside the envelope.
 
 ## Namespaced IDs (multi-root graphs)

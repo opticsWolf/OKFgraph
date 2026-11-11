@@ -4,7 +4,8 @@
 `DocumentConverter` (`okfgraph/components/converters.py`). Bobine is the
 default implementation, not a dependency: nothing imports it at module
 level, and the router builds fine without it installed. Only converting a
-PDF with the *default* converter raises `RuntimeError: pip install bobine`.
+PDF with the *default* converter raises a `RuntimeError` naming
+`pip install "okfgraph[pdf]"`.
 
 ## The contract
 

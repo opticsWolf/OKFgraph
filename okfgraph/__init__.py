@@ -1,4 +1,4 @@
-"""OKF Knowledge Graph — Ladybug-backed knowledge system with ONNX + Jina v5 embeddings."""
+"""OKF Knowledge Graph — Ladybug-backed knowledge system with ONNX (embroider) embeddings."""
 
 # Lazy exports (PEP 562): importing a light submodule (okfgraph.crash, the
 # okf start-up guard in okfgraph._entry) must not drag in the router and

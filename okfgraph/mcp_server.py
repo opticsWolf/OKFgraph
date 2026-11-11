@@ -49,7 +49,7 @@ from okfgraph.settings import MCP_REQUIRED, Settings, cli_signal, set_cli_flags
 logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = (
-    "OKF knowledge graph with ONNX + Jina v5 embeddings: persistent project "
+    "OKF knowledge graph with ONNX embeddings (embroider): persistent project "
     "knowledge as markdown concepts with hybrid (vector + full-text) search "
     "and graph traversal. Start with search; read a concept once you have "
     "its id; traverse to follow links or list directories; ingest to "

@@ -68,13 +68,18 @@ with absolute paths. No auth, no headers, no sidecars.
 
 ### Skills
 
-- `skills/okfgraph-mcp/SKILL.md` (`okfgraph-mcp`) — the MCP skill: when to reach
+The skills ship in the wheel (`okfgraph/skills/`, 0.13.1). `okf setup
+skills` copies them to `.claude/skills/<name>/SKILL.md`; `--to DIR` puts
+them in another harness's folder and `--skill NAME` (repeatable) picks
+some. Rerun after an upgrade to refresh changed files.
+
+- `okfgraph/skills/okfgraph-mcp/SKILL.md` (`okfgraph-mcp`) — the MCP skill: when to reach
   for the graph and which tool to use. Install when `okf-mcp` is wired.
-- `skills/okfgraph-cli/SKILL.md` (`okfgraph-cli`) — the CLI skill: same
+- `okfgraph/skills/okfgraph-cli/SKILL.md` (`okfgraph-cli`) — the CLI skill: same
   routing table as shell commands, plus cold-boot batching conventions.
   Install for shell-only environments. The two descriptions cross-reference
   so only the applicable one triggers.
-- `skills/okfgraph-ingest/SKILL.md` (`okfgraph-ingest`) — the feeding skill:
+- `okfgraph/skills/okfgraph-ingest/SKILL.md` (`okfgraph-ingest`) — the feeding skill:
   what to store, kind selection, converter modes, topic discipline.
   Install alongside either of the above when the agent should persist
   knowledge, not just read it.

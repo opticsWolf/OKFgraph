@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "okfgraph"
-version = "0.13.0"
-description = "Ladybug-backed OKF knowledge graph with ONNX + Jina v5 embeddings"
+version = "0.13.1"
+description = "Ladybug-backed OKF knowledge graph with ONNX (embroider) embeddings"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0 OR MIT"
@@ -61,9 +61,11 @@ cpu = [
 gpu = [
     "onnxruntime-gpu[cuda,cudnn]==1.31.1",
 ]
-# PDF conversion (default BobineConverter; custom converters need none of this)
+# PDF and Office conversion (default BobineConverter; custom converters need
+# none of this). 0.8.1: bobine's own runtime extras pin the same
+# onnxruntime 1.31.1 as cpu/gpu above, so the two never conflict.
 pdf = [
-    "bobine>=0.7",
+    "bobine>=0.8.1",
 ]
 
 [tool.uv]
@@ -78,6 +80,10 @@ okf-mcp = "okfgraph.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["okfgraph*"]
+
+[tool.setuptools.package-data]
+# The agent skills ride in the wheel (0.13.1); `okf setup skills` copies them.
+okfgraph = ["skills/*/SKILL.md"]
 
 [tool.pytest]
 markers = [

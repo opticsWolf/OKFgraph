@@ -695,7 +695,7 @@ wheels = [
 
 [[package]]
 name = "okfgraph"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "." }
 dependencies = [
     { name = "embroider" },
@@ -727,7 +727,7 @@ pdf = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bobine", marker = "extra == 'pdf'", specifier = ">=0.7" },
+    { name = "bobine", marker = "extra == 'pdf'", specifier = ">=0.8.1" },
     { name = "embroider", specifier = ">=0.15,<0.16" },
     { name = "fasteners", specifier = ">=0.19" },
     { name = "ladybug", specifier = "==0.22.1" },

@@ -91,7 +91,7 @@ def converter_status(cache_dir: Optional[str] = None) -> Dict[str, Any]:
             "available": False,
             "reports": [],
             "note": ("converters: bobine not installed "
-                       "(PDF ingest unavailable; pip install bobine)"),
+                       "(PDF ingest unavailable; pip install \"okfgraph[pdf]\")"),
         }
     if not hasattr(bobine, "model_status"):
         try:
@@ -151,7 +151,7 @@ class BobineConverter:
             import bobine  # noqa: PLC0415 — optional dependency, lazy import
         except ImportError:
             raise RuntimeError(
-                "bobine is required for PDF ingestion: pip install bobine"
+                "bobine is required for PDF and Office ingestion: pip install \"okfgraph[pdf]\" (or pip install bobine)"
             ) from None
 
         mode = getattr(bobine.RoutingMode, _BOBINE_ROUTING[self.routing_mode])

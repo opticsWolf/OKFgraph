@@ -203,6 +203,48 @@ v6.8)" and its Design Decisions table.
   older is known) and `effective_at` from their authored date if any.
   `rank="ppr"` now also returns a slice of a 25-row pool, like the others.
 
+## [0.13.1] — 2026-11-11
+
+Setup and CLI fixes. No schema or vector change.
+
+### Added
+- **The agent skills ship in the wheel.** `skills/` moved to
+  `okfgraph/skills/` (package data), and **`okf setup skills`** copies them
+  to `.claude/skills/<name>/SKILL.md` (`--to DIR` for another harness,
+  `--skill NAME` to pick). A rerun updates changed files only.
+- **`okf ingest --kind pdf --pdf-path A B …`** takes several PDF/Office
+  files in one process, so the embedding model loads once for the batch.
+  A failed file is reported and the rest continue; the exit code and the
+  `--json` envelope's `error` carry the first failure, `data.files` each
+  file's result. bobine still opens its converter per file (a warm
+  converter needs bobine 0.9).
+- `okf --help` names where things live: the default database
+  (`.okfgraph/okfgraph.db`) and bundle root, the `okfgraph.toml` lookup
+  order, precedence, and how relative paths resolve.
+
+### Fixed
+- Global flags before the command (`okf --db-path kb.db init`) read the
+  value as the command name. They now work before or after it.
+- A database path whose folder didn't exist failed as `INTERNAL` with
+  Ladybug's raw IO error (CLI, `okf-mcp`, `okf serve`). The commands that
+  create a database (`okf init`, `import`, `ingest`, and `okf-mcp` /
+  `okf serve` on first boot) now create its folders too, for relative and
+  absolute paths alike.
+- Help, MCP instructions and package metadata no longer say "Jina v5";
+  the default engine has been EmbeddingGemma 2 since 0.12.
+
+### Changed
+- **Read commands no longer create a database.** Every `okf` command
+  except `init`, `import` and `ingest` (`search`, `read`, `doctor`,
+  `export`, `shell`, …) refuses a missing database with `FILE_NOT_FOUND`
+  (exit 2) instead of creating an empty one, so a mistyped path leaves
+  nothing behind. Run `okf init` first in a fresh directory.
+- The `pdf` extra requires `bobine>=0.8.1` (same onnxruntime 1.31.1 pin
+  as `cpu`/`gpu`). A missing bobine names `pip install "okfgraph[pdf]"`.
+- README: a table of what each extra installs, why the ONNX Runtime isn't
+  a core dependency, how bobine is loaded, and the path defaults; the
+  core-dependency list no longer names `onnxruntime`.
+
 ## [0.13.0] — 2026-11-10
 
 One ONNX story across embroider, bobine and okfgraph: okfgraph asks

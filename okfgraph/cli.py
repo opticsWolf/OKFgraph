@@ -201,6 +201,7 @@ def _router(args):
     if _INJECTED_ROUTER:
         return _INJECTED_ROUTER[-1]
     settings = _settings(args)
+    _require_db_unless_creating(args.command, settings.db_path)
     if os.environ.get("OKFGRAPH_NO_SERVER") != "1":
         from okfgraph.client import OKFClient, discover
         url = discover(settings.db_path)
@@ -223,6 +224,23 @@ def _router(args):
         raise OKFError("CONFIG_INVALID", str(e)) from None
     _OPEN_ROUTERS.append(router)
     return router
+
+
+#: Commands that may create a missing database (and its folders). Every
+#: other command refuses one, so a mistyped path on a read never leaves an
+#: empty graph behind (0.13.1). okf-mcp and okf serve still create on first
+#: boot; both need the path set explicitly.
+_CREATES_DB = frozenset({"init", "import", "ingest"})
+
+
+def _require_db_unless_creating(command, db_path):
+    if command in _CREATES_DB or db_path == ":memory:" or Path(db_path).exists():
+        return
+    raise OKFError(
+        "FILE_NOT_FOUND", f"no database at {db_path}",
+        op=command, fields={"db_path": str(db_path)},
+        remedy="check --db-path / OKFGRAPH_DB_PATH / okfgraph.toml, or create "
+               "it with 'okf init' (import and ingest also create one)")
 
 
 def _close_routers():
@@ -889,7 +907,23 @@ def _serve(args):
 
 
 def _setup(args):
-    """``okf setup extensions``: fill an offline extension dir (O5)."""
+    """``okf setup extensions``: fill an offline extension dir (O5).
+    ``okf setup skills``: copy the packaged agent skills (0.13.1)."""
+    if args.what == "skills":
+        if args.from_dir or args.no_download:
+            raise OKFError("BAD_VALUE", "--from/--no-download are for 'setup extensions'",
+                           op="setup_skills")
+        result = OKFRouter.setup_skills(args.to, args.skill)
+
+        def render_skills(r):
+            for bucket in ("installed", "updated", "unchanged"):
+                for name in r[bucket]:
+                    print(f"[OK] {name}: {bucket}")
+            print(f"skills in {r['target']}")
+
+        return _out(args, "setup_skills", result, render_skills)
+    if args.skill:
+        raise OKFError("BAD_VALUE", "--skill is for 'setup skills'", op="setup_extensions")
     result = OKFRouter.setup_extensions(args.to, args.from_dir,
                                         download=not args.no_download)
 
@@ -1039,10 +1073,13 @@ def _ingest(args):
                             ("related", args.related or None),
                             ("folder", args.folder))
           if v is not None}
+    pdf_paths = args.pdf_path or [None]
+    if kind == "pdf" and len(pdf_paths) > 1:
+        return _ingest_many_pdfs(args, router, settings, pdf_paths, on_page)
     result = router.ingest(
         kind,
         md_path=args.md_path,
-        pdf_path=args.pdf_path,
+        pdf_path=pdf_paths[0],
         bib_path=args.bib_path,
         thoughts=args.thoughts,
         topic=args.topic,
@@ -1092,6 +1129,61 @@ def _ingest(args):
             print(f"Import with: okf import --all --bundle-path {out_dir}")
 
     return _out(args, "ingest", result, render)
+
+
+def _ingest_many_pdfs(args, router, settings, paths, on_page):
+    """``okf ingest --kind pdf --pdf-path A B …``: one process, one router.
+
+    The embedding model loads once for the whole batch instead of once per
+    ``okf`` invocation (bobine still opens its converter per file). A file
+    that fails is reported and the batch moves on; the exit code is the
+    first failure's. ``--json`` prints one envelope whose ``data.files``
+    lists each file's result or error; a failure also makes the envelope
+    ``ok: false`` with the first error in ``error``.
+    """
+    files, first_error = [], None
+    for n, path in enumerate(paths, 1):
+        if not args.json:
+            print(f"[{n}/{len(paths)}] {path}", file=sys.stderr)
+        try:
+            result = router.ingest(
+                "pdf", pdf_path=path,
+                mode=args.mode or settings.mode,
+                routing_mode=args.routing_mode,
+                extract_images=not args.no_extract_images,
+                auto_import=args.auto_import,
+                output_dir=args.output_dir,
+                batch_size=args.batch_size or settings.batch_size,
+                prune_missing=args.prune_missing,
+                force=args.force,
+                **({"on_page": on_page} if on_page is not None else {}),
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad file must not end the batch
+            err = exc if isinstance(exc, OKFError) else internal_error(exc, op="ingest")
+            first_error = first_error or err
+            files.append({"pdf_path": path, "ok": False,
+                          "error": envelope("ingest", error=err)["error"]})
+            if not args.json:
+                print(f"  [ERROR] {err.titles()}", file=sys.stderr)
+            continue
+        files.append({"pdf_path": path, "ok": True, "result": result})
+        if args.json:
+            continue
+        if on_page is not None:
+            print(file=sys.stderr)  # end the \r progress line
+        if args.auto_import:
+            print(f"  [OK] {len(result['concept_ids'])} concept(s) from "
+                  f"{result['page_count']} page(s): {', '.join(result['concept_ids'])}")
+        else:
+            print(f"  [OK] Converted to {result['md_path']}")
+
+    done = sum(f["ok"] for f in files)
+    if args.json:
+        print(dumps_envelope(envelope("ingest", data={"files": files},
+                                      error=first_error)))
+    else:
+        print(f"[{'OK' if first_error is None else 'ERROR'}] {done}/{len(files)} file(s) ingested")
+    return first_error.exit_code if first_error is not None else None
 
 
 def _images(args):
@@ -1356,7 +1448,27 @@ def _global_options_epilog() -> str:
         body = text.split("options:", 1)[1]
     except IndexError:  # pragma: no cover - Python <3.11 wording
         body = text.split("optional arguments:", 1)[1]
-    return "Global options (every command; may also come from okfgraph.toml):" + body
+    return _PATHS_HELP + (
+        "Global options (before or after the command; "
+        "may also come from okfgraph.toml):") + body
+
+
+_PATHS_HELP = """\
+Where things live:
+  database     --db-path, OKFGRAPH_DB_PATH or [database] db_path;
+               default .okfgraph/okfgraph.db in the current directory
+  bundle root  --bundle-root, OKFGRAPH_BUNDLE_ROOT or bundle_root; default
+               .okfgraph/bundle for a db in a .okfgraph folder, else the
+               current directory
+  config       okfgraph.toml in the current directory, else in the bundle
+               root, else ~/.config/okfgraph/config.toml (first found wins)
+  precedence   flag > environment > okfgraph.toml > default
+  Relative paths count from the current directory (in okfgraph.toml too,
+  except [[roots]], which count from the file). Only init, import and
+  ingest create a missing database (and its folders); other commands
+  refuse it with FILE_NOT_FOUND.
+
+"""
 
 
 _MODES = ["text", "optional", "omni"]
@@ -1365,7 +1477,8 @@ _MODES = ["text", "optional", "omni"]
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="okf",
-        description="OKF Knowledge Graph CLI — LadybugDB + Jina v5 embeddings",
+        description="OKF Knowledge Graph CLI — LadybugDB + embroider "
+                    "(ONNX) embeddings",
         epilog=_global_options_epilog(),
         allow_abbrev=False,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1490,7 +1603,10 @@ def build_parser():
                    help="What to ingest")
     p.add_argument("--md-path", default=None, help="Markdown file (--kind md)")
     p.add_argument("--bib-path", default=None, help="BibTeX file (--kind bib): one concept per entry as refs/<key>")
-    p.add_argument("--pdf-path", default=None, help="File to convert (--kind pdf): PDF or Office (docx/xlsx/pptx, legacy doc/xls/ppt)")
+    p.add_argument("--pdf-path", nargs="+", default=None, metavar="FILE",
+                   help="File(s) to convert (--kind pdf): PDF or Office (docx/xlsx/pptx, "
+                   "legacy doc/xls/ppt). Several files run in one process on one loaded "
+                   "embedding model; a failed file is reported and the rest continue")
     p.add_argument("--thoughts", default=None, help="Raw reasoning text (--kind thoughts)")
     p.add_argument("--topic", default=None, help="Topic (--kind thoughts)")
     p.add_argument("--concept-id", default=None, help="Explicit concept ID (--kind md/thoughts; slashes are namespaces; thoughts default to thoughts/<topic>/<ts>_<id>)")
@@ -1642,13 +1758,18 @@ def build_parser():
                    help="HOST:PORT or unix:///path/okf.sock (default: 127.0.0.1:8765)")
 
     p = command("setup", "One-time setup tasks")
-    p.add_argument("what", choices=["extensions"],
+    p.add_argument("what", choices=["extensions", "skills"],
                    help="extensions: copy/download the vector + fts extensions "
-                   "into a local dir for offline use")
+                   "into a local dir for offline use; skills: copy the packaged "
+                   "agent skills (okfgraph-mcp, okfgraph-cli, okfgraph-ingest)")
     p.add_argument("--from", dest="from_dir", default=None,
                    help="Directory holding libvector/libfts .lbug_extension files")
     p.add_argument("--to", default=None,
-                   help="Target directory (default: ~/.local/share/okfgraph/extensions/...)")
+                   help="Target directory (extensions default: "
+                   "~/.local/share/okfgraph/extensions/...; skills default: "
+                   ".claude/skills)")
+    p.add_argument("--skill", action="append", default=None, metavar="NAME",
+                   help="With skills: copy only this one (repeatable; default all three)")
     p.add_argument("--no-download", action="store_true",
                    help="Never download; copy from --from or Ladybug's cache only")
 
@@ -1756,10 +1877,34 @@ def _force_utf8_streams():
             pass  # already detached / redirected; render as-is
 
 
+def _hoist_globals(argv):
+    """Move global flags typed before the command to just after it.
+
+    The global flags live on each subcommand's parser (so the slim help can
+    hide them), which left ``okf --db-path X init`` reading ``X`` as the
+    command. Only a run of known global flags (with their values) is
+    moved; anything else leaves argv to argparse untouched.
+    """
+    probe = argparse.ArgumentParser(add_help=False)
+    _add_global(probe, mark=False)
+    takes_value = {s: act.nargs != 0
+                   for act in probe._actions for s in act.option_strings}
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token in _COMMANDS:
+            return [token, *argv[:i], *argv[i + 1:]] if i else argv
+        flag, has_eq, _ = token.partition("=")
+        if flag not in takes_value:
+            return argv
+        i += 2 if takes_value[flag] and not has_eq else 1
+    return argv
+
+
 def main():
     _force_utf8_streams()
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(_hoist_globals(sys.argv[1:]))
 
     if not args.command:
         parser.print_help()

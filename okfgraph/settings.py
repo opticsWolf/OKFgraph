@@ -118,12 +118,16 @@ class Setting:
 SETTINGS = [
     # ── database ────────────────────────────────────────────────────────────
     Setting("db_path", "str", DEFAULT_DB_PATH, "database",
-            "Path to the Ladybug database file", required_mcp=True),
+            "Path to the Ladybug database file, relative to the current "
+            "directory; init/import/ingest create it and its folders (okf default: "
+            f"{DEFAULT_DB_PATH}; okf-mcp needs it set)", required_mcp=True),
     # Top-level TOML key (not inside [database]); no default here — see
     # Settings.default_bundle_root (``<home>/bundle`` for a db inside a
     # .okfgraph home, else the CLI's "." / serve's and MCP's db parent).
     Setting("bundle_root", "str", None, "",
-            "Primary bundle root directory"),
+            "Primary bundle root directory (default: bundle/ beside a db "
+            "inside a .okfgraph folder, else okf uses the current "
+            "directory and okf-mcp / okf serve the db's folder)"),
     Setting("wal_mode", "bool", False, "database",
             "Enable WAL mode for concurrent reads"),
     Setting("extension_dir", "str", None, "database",

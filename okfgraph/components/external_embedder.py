@@ -40,6 +40,13 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from okfgraph.components._http import (
+    auth_headers,
+    normalize_endpoint as _normalize_endpoint,
+    tokenize_url as _tokenize_url,
+)
+from okfgraph.components._http import post_json as _post_json
+
 #: Jina-map task names → per-side prefix declarations. The declared table
 #: is the *only* prefix source; the router never prepends anything an
 #: external engine's spec does not carry (nomic-v1.5's mandatory
@@ -190,12 +197,7 @@ class ExternalEmbedEngine:
         Accepts ``http://host:port``, ``.../v1`` or ``.../v1/embeddings``;
         llama.cpp and LM Studio/OpenAI servers all mount under ``/v1``.
         """
-        base = url.rstrip("/")
-        if base.endswith("/embeddings"):
-            base = base[: -len("/embeddings")]
-        if not base.endswith("/v1"):
-            base = base + "/v1"
-        return base
+        return _normalize_endpoint(url)
 
     @staticmethod
     def _tokenize_url(normalized: str) -> str:
@@ -203,8 +205,7 @@ class ExternalEmbedEngine:
         under ``/v1`` — llama.cpp b12110 serves ``POST /tokenize`` at the
         top level (LM Studio / TEI do not serve it at all and the declared
         counter degrades, loudly, to the heuristic)."""
-        base = normalized[:-3] if normalized.endswith("/v1") else normalized
-        return base.rstrip("/") + "/tokenize"
+        return _tokenize_url(normalized)
 
     # ── crate-shape surface ───────────────────────────────────────────────
     @property
@@ -319,15 +320,12 @@ class ExternalEmbedEngine:
     def _probe_tokenize(self) -> bool:
         """Does the host answer ``POST /tokenize``? Asked exactly once."""
         url = self._tokenize_url(self.endpoint_url)
-        req = urllib.request.Request(
-            url,
-            data=json.dumps({"content": "okfgraph tokenize probe "
-                                         "for exact batch budgets"}).encode("utf-8"),
-            headers=dict(self._headers))
         try:
-            with urllib.request.urlopen(
-                    req, timeout=min(self.timeout, 10.0)) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
+            body = _post_json(
+                url, {"content": "okfgraph tokenize probe for exact batch "
+                                 "budgets"},
+                headers=self._headers, timeout=min(self.timeout, 10.0),
+                error_cls=ExternalEmbeddingError)
             tokens = body.get("tokens") if isinstance(body, dict) else None
             if not isinstance(tokens, list) and not isinstance(
                     body.get("count") if isinstance(body, dict) else None, int):
@@ -341,12 +339,11 @@ class ExternalEmbedEngine:
     def _count_on_server(self, text: str) -> int:
         """The exact count, as the host's own tokenizer reports it."""
         url = self._tokenize_url(self.endpoint_url)
-        req = urllib.request.Request(
-            url, data=json.dumps({"content": text or ""}).encode("utf-8"),
-            headers=dict(self._headers))
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
+            body = _post_json(
+                url, {"content": text or ""},
+                headers=self._headers, timeout=self.timeout,
+                error_cls=ExternalEmbeddingError)
             if isinstance(body, dict) and isinstance(body.get("count"), int):
                 return body["count"]    # embroider: the model's own count
             tokens = (body.get("tokens") if isinstance(body, dict)
@@ -411,25 +408,16 @@ class ExternalEmbedEngine:
         return text
 
     def _request(self, payload: Dict[str, Any]) -> Any:
-        req = urllib.request.Request(
-            f"{self.endpoint_url}/embeddings",
-            data=json.dumps(payload).encode("utf-8"),
-            headers=dict(self._headers))
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", "replace")[:400]
-            except Exception:  # noqa: BLE001
-                pass
-            raise ExternalEmbeddingError(
-                f"{self.endpoint_url}/embeddings refused {exc.code}: "
-                f"{detail or exc}") from exc
-        except urllib.error.URLError as exc:
-            raise ExternalEmbeddingError(
-                f"{self.endpoint_url}/embeddings unreachable: {exc}") from exc
+        # A refusal is per-request (the caller may degrade); an outage is
+        # typed EXTERNAL_UNAVAILABLE and never degrades per item (0.14.0).
+        return _post_json(
+            f"{self.endpoint_url}/embeddings", payload,
+            headers=self._headers, timeout=self.timeout,
+            error_cls=ExternalEmbeddingError,
+            outage_remedy=("start the embedding host, or set "
+                           "embedding.backend='embroider' to run the "
+                           "crate lane in this process"),
+        )
 
     @staticmethod
     def _slice_renorm(vec: List[float], dim: int) -> List[float]:
@@ -608,19 +596,6 @@ def engine_from_settings(*, backend: str, model_id: str, embedding_dim: int,
         chars_per_token=float(embed_chars_per_token or 0.0),
         api_key_env=api_key_env,
     )
-
-
-def auth_headers(api_key_env: str) -> Dict[str, str]:
-    """The bearer header for *api_key_env*, or none when it is unset."""
-    import os
-    if not api_key_env:
-        return {}
-    key = os.environ.get(api_key_env, "")
-    if not key:
-        raise ValueError(
-            f"[embedding] api_key_env={api_key_env} is set but the "
-            f"environment variable is empty or missing")
-    return {"Authorization": f"Bearer {key}"}
 
 
 def probe_identity(endpoint_url: str, *, headers: Optional[Dict[str, str]] = None,

@@ -63,6 +63,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from okfgraph.components._http import post_json as _post_json
+
 __all__ = [
     "RerankSpec",
     "RerankDownError",
@@ -127,7 +129,7 @@ class ExternalRerankEngine:
                  count: str = "heuristic",
                  timeout: float = 120.0,
                  identity: Optional[Dict[str, Any]] = None):
-        from okfgraph.components.external_embedder import auth_headers
+        from okfgraph.components._http import auth_headers
         if not endpoint_url or not str(endpoint_url).strip():
             raise ValueError(
                 "rerank backend='external' needs rerank_endpoint_url")
@@ -438,25 +440,12 @@ class ExternalRerankEngine:
         """POST *payload* as JSON, answer the parsed body — a dict or a
         list; refusals raise :class:`ExternalRerankError` with the body.
         Carries the session headers (the bearer key when declared)."""
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=dict(self._headers))
-        try:
-            with urllib.request.urlopen(
-                    req, timeout=timeout or 120.0) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", "replace")[:300]
-            except Exception:  # noqa: BLE001
-                pass
-            raise ExternalRerankError(
-                f"{url} refused {exc.code}: {detail or exc}") from exc
-        except urllib.error.URLError as exc:
-            raise ExternalRerankError(
-                f"{url} unreachable: {exc}") from exc
+        return _post_json(
+            url, payload, headers=self._headers, timeout=timeout or 120.0,
+            error_cls=ExternalRerankError,
+            outage_remedy=("start the rerank host, or set "
+                           "search.rerank_backend='embroider'"),
+        )
 
     def _cover(self, rows: List[Any], n_docs: int, where: str) -> List[float]:
         """Rows → full-coverage score list, order of the documents."""

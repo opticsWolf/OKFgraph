@@ -58,7 +58,7 @@ def _stub_embed(monkeypatch, calls):
     monkeypatch.setitem(sys.modules, "embroider", stub)
     # The router pre-checks for an ORT install before touching the backend;
     # a bare module stand-in keeps the stubbed world self-consistent on
-    # ORT-less CI (resolve_ort_dylib skips modules without __file__).
+    # ORT-less CI (no real runtime is touched).
     monkeypatch.setitem(sys.modules, "onnxruntime", types.ModuleType("onnxruntime"))
     return stub
 

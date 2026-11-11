@@ -152,6 +152,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         rerank_endpoint_url: str = "",
         rerank_api_key_env: str = "",
         rerank_family: str = "",
+        rerank_identity: str = "auto",
         rerank_max_tokens: int = 8192,
         rerank_count: str = "heuristic",
         efs: Optional[int] = None,
@@ -165,6 +166,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         embed_counter: str = "heuristic",
         embed_counter_gguf: str = "",
         embed_chars_per_token: float = 0.0,
+        embed_identity: str = "auto",
     ):
         """Open (or create) the graph database and wire up all managers.
 
@@ -172,9 +174,13 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             embed_backend: "embroider" (default, the crate) or "external"
                 (an OpenAI-shaped /embeddings HTTP endpoint owns the model
                 and this process owns none of the ONNX). External open
-                requires endpoint_url + embed_family; vectors are pinned
-                by family:model like any other space and reopened with a
-                different family refuses.
+                requires endpoint_url; vectors are pinned by model like any
+                other space and reopened with a different one refuses.
+            embed_identity: "auto" (default) asks an external endpoint who
+                it is (``GET /v1/models``): an embroider host supplies the
+                family, width, ceiling, precision and space itself, and
+                everything else keeps the declared contract, which then
+                needs embed_family. "declared" skips the question.
 
         Args:
             db_path: Path to the Ladybug database file.
@@ -259,32 +265,25 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             efs: Default vector index search breadth (16..1000) for
                 searches that pass none; ``None`` = ladybug's default.
         """
-        from okfgraph.components.embedding import resolve_ort_dylib
-        # Resolve first: the native module loads ORT dynamically, so the
-        # shared runtime choice must be fixed before importing it. Imported
-        # here (not lazily below) so validation above can read its constants.
-        # With backend='external' the crate is optional: the graph's only
-        # requirement then is the HTTP endpoint it is about to talk to.
-        self.ort_dylib = None
-        self.embroider = None
-        try:
-            self.ort_dylib = resolve_ort_dylib()
-        except Exception:  # noqa: BLE001 — external backend never needs ort
-            if embed_backend != "external":
-                raise
-            logger.warning(
-                "backend='external': no ONNX runtime resolved (fine — the "
-                "embeddings live behind %s)", endpoint_url or "the endpoint"  )
+        from okfgraph.components.embedding import locate_ort_runtime
+        # The runtime choice must be fixed before the first ORT session;
+        # embroider's locator (run again here to keep its answer) does that
+        # without importing onnxruntime. Imported here (not lazily below) so
+        # validation above can read its constants. With backend='external'
+        # the crate is optional: the graph's only requirement then is the
+        # HTTP endpoint it is about to talk to.
         try:
             import embroider as _embroider
         except ImportError:
             if embed_backend != "external":
                 raise RuntimeError(
                     "the embroider wheel is required for text embeddings: "
-                    "pip install 'embroider>=0.12,<0.13'"
+                    "pip install 'embroider>=0.15,<0.16'"
                 ) from None
             _embroider = None
         self.embroider = _embroider
+        self.ort_runtime = locate_ort_runtime()
+        self.ort_dylib = self.ort_runtime["dylib"]
         if embedding_dim > 1024:
             raise ValueError(f"embedding_dim must be <= 1024 (model output), got {embedding_dim}")
         if embedding_dim < 32:
@@ -474,14 +473,19 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # purpose, because a reembed under the new model is about to run
         # (the op re-pins on success). Declared via env, loudly warned.
         reembed_override = bool(os.environ.get("OKFGRAPH_ALLOW_REPIN"))
+        #: The graph's embedding_space pin once the first open checked it.
+        self.pinned_space = None
 
         def _enforce_pins(encoder):
-            """Precision + model pins at first embed/first encode. External
-            engines carry no numeric precision, so only the model pin."""
+            """Precision, model and space pins at first embed/first encode.
+            A declared external engine carries no numeric precision and no
+            space, so only the model pin; an embroider host carries both."""
             from okfgraph.components.embedding import (
                 _PRECISION_CODE,
                 enforce_model_pin,
                 enforce_precision_pin,
+                enforce_space_pin,
+                stored_precision,
             )
             pin_precision = getattr(encoder, "precision", None) or self.precision
             if reembed_override:
@@ -489,10 +493,18 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                     "OKFGRAPH_ALLOW_REPIN: opening graph under pin-exempt "
                     "mode; run the reembed op to re-pin the model")
                 return None
+            prior_precision = stored_precision(self.conn)
             pinned = None
             if pin_precision in _PRECISION_CODE:
                 pinned = enforce_precision_pin(self.conn, pin_precision)
             enforce_model_pin(self.conn, model_id)
+            # Reached only when model and precision agreed. A pre-0.13 graph
+            # adopts the space only when its precision was pinned before
+            # this open: a graph a declared engine (no precision) filled
+            # must not be blessed by the first embroider session to open it.
+            self.pinned_space = enforce_space_pin(
+                self.conn, getattr(encoder, "space", None),
+                adopt=pinned is not None and prior_precision == pinned)
             return pinned
 
         def _report_encoder_open(encoder) -> None:
@@ -561,7 +573,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             )
         else:
             def _open_session():
-                return self.embroider.JinaV5.open(
+                session = self.embroider.JinaV5.open(
                     model_id,
                     # See above: adopted dimension, resolved at first encode.
                     truncate_dim=self.embedding_dim,
@@ -571,6 +583,13 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                     precision=self.precision,
                     cpu_arena=self.cpu_arena,
                 )
+                # embroider's Model wrapper names the session's `space`
+                # (the space pin); every other attribute falls through.
+                model = getattr(self.embroider, "Model", None)
+                if model is None:
+                    return session
+                return model("embed", model_id, session,
+                             {"cache_dir": cache_dir})
             tokenizer_factory = lambda: self.embroider.Tokenizer.open(
                 model_id,
                 cache_dir=cache_dir,
@@ -678,17 +697,23 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             from okfgraph.components.external_reranker import (
                 rerank_engine_from_settings,
             )
-            self.reranker = rerank_engine_from_settings(
-                backend="external", model_id=rerank_model_id,
-                family=rerank_family, endpoint_url=rerank_endpoint_url,
-                api_key_env=rerank_api_key_env,
-                max_tokens=rerank_max_tokens, count=rerank_count,
-            )
+            try:
+                self.reranker = rerank_engine_from_settings(
+                    backend="external", model_id=rerank_model_id,
+                    family=rerank_family, endpoint_url=rerank_endpoint_url,
+                    api_key_env=rerank_api_key_env,
+                    max_tokens=rerank_max_tokens, count=rerank_count,
+                    identity=rerank_identity,
+                )
+            except BaseException:
+                self.close()        # a refusal ends construction
+                raise
             logger.info(
                 "rerank (external): %s via %s family=%s max_tokens=%s "
-                "count=%s",
-                rerank_model_id, rerank_endpoint_url, rerank_family,
-                rerank_max_tokens, rerank_count,
+                "count=%s identity=%s",
+                rerank_model_id, rerank_endpoint_url, self.reranker.spec.family,
+                self.reranker.max_length, self.reranker.spec.count,
+                self.reranker.identity_source,
             )
         else:
             from okfgraph.components.embedding import LazyReranker
@@ -719,24 +744,33 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         self.rerank_top_n = rerank_top_n
         if embed_backend == "external":
             from okfgraph.components.external_embedder import engine_from_settings
-            self.encoder = engine_from_settings(
-                backend="external", model_id=self.model_id,
-                embedding_dim=self.embedding_dim,
-                endpoint_url=endpoint_url, api_key_env=api_key_env,
-                embed_family=embed_family, embed_pooling=embed_pooling,
-                embed_prefixes=embed_prefixes,
-                embed_max_tokens=embed_max_tokens,
-                embed_counter=embed_counter,
-                embed_counter_gguf=embed_counter_gguf,
-                embed_chars_per_token=embed_chars_per_token,
-            )
-            # Mirrors the crate lane's first-embed hooks for the pins:
-            # external engines carry no numeric precision, so the model
-            # pin only (boot-time, both lanes equally fail-closed).
-            _enforce_pins(self.encoder)
+            # A refusal below (a declaration the host contradicts, a pin)
+            # ends construction, so it releases the database handle too.
+            try:
+                self.encoder = engine_from_settings(
+                    backend="external", model_id=self.model_id,
+                    embedding_dim=self.embedding_dim,
+                    endpoint_url=endpoint_url, api_key_env=api_key_env,
+                    embed_family=embed_family, embed_pooling=embed_pooling,
+                    embed_prefixes=embed_prefixes,
+                    embed_max_tokens=embed_max_tokens,
+                    embed_counter=embed_counter,
+                    embed_counter_gguf=embed_counter_gguf,
+                    embed_chars_per_token=embed_chars_per_token,
+                    embed_identity=embed_identity,
+                )
+                # Mirrors the crate lane's first-embed hooks for the pins:
+                # a declared engine carries no numeric precision, so the
+                # model pin only; an embroider host adds precision and
+                # space (boot-time, both lanes equally fail-closed).
+                _enforce_pins(self.encoder)
+            except BaseException:
+                self.close()
+                raise
             logger.info(
-                "text embeddings (external): %s dim=%d family=%s",
-                self.model_id, self.embedding_dim, embed_family,
+                "text embeddings (external): %s dim=%d family=%s "
+                "identity=%s", self.model_id, self.embedding_dim,
+                self.encoder.family, self.encoder.identity_source,
             )
         # else: the crate lane mounted LazyRustEncoder earlier; keep it.
         self.embed_engine = EmbeddingEngine(

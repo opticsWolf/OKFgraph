@@ -32,7 +32,8 @@ class TestCodeTable:
                      "DETACHED", "PURGE_REFUSED_ABSENT_ROOT",
                      "SEARCH_UNAVAILABLE", "WRITE_LOCK_TIMEOUT", "DB_LOCKED",
                      "DIM_MISMATCH", "MODEL_PIN_MISMATCH",
-                     "PRECISION_PIN_MISMATCH", "IMAGE_PIN_MISMATCH",
+                     "PRECISION_PIN_MISMATCH", "SPACE_PIN_MISMATCH",
+                     "IMAGE_PIN_MISMATCH",
                      "VISION_INCOMPATIBLE", "NO_ORT_RUNTIME"):
             assert OKFError(code, "x").exit_code == 1, code
 

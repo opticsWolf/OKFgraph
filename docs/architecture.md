@@ -259,11 +259,11 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 > numerics (tokenize → last-token pooling → L2 → Matryoshka truncate →
 > re-normalise) live in the `embroider` Rust crate; nothing is computed in
 > Python. The Python side owns orchestration: dylib resolution
-> (`resolve_ort_dylib()` → `ORT_DYLIB_PATH`), lazy session lifecycle
+> (`locate_ort_runtime()` → embroider's `locate_runtime()`), lazy session lifecycle
 > (`LazyRustEncoder`), and explicit air-gapped model paths.
 
 **Verified versions** (0.11.0 tree, re-resolved + full suite green):
-- `ladybug==0.22.1`, `onnxruntime==1.31.1` (via `cpu`|`gpu` extra), `embroider>=0.14,<0.15`, `mordant` (Rust GFM parser)
+- `ladybug==0.22.1`, `onnxruntime==1.31.1` (via `cpu`|`gpu` extra), `embroider>=0.15,<0.16`, `mordant` (Rust GFM parser)
 - Single pinned ORT binary shared by bobine + embroider — do not float.
 
 ### PDF conversion (optional — bobine)
@@ -573,7 +573,7 @@ class OKFRouter:
 ```
 
 Router construction stays cheap: importing the `embroider` wheel does not
-open any ONNX session, and `resolve_ort_dylib()` fixes the shared runtime
+open any ONNX session, and `locate_ort_runtime()` (embroider's locator) fixes the shared runtime
 choice (single pinned `onnxruntime==1.31.1`, `ORT_DYLIB_PATH`-overridable; embroider 0.14 self-serves the CUDA loader dirs)
 *before* the native module is first used.
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "okfgraph"
-version = "0.12.1"
+version = "0.13.0"
 description = "Ladybug-backed OKF knowledge graph with ONNX + Jina v5 embeddings"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,10 +22,13 @@ dependencies = [
     # self-service (cuDNN64_9 discovery from venv nvidia dists + the
     # ORT_DYLIB_PATH delivery) first ships inside 0.14.0; 0.14 then adds
     # Tokenizer (the JinaTokenizer handle grown) and the GemmaVision
-    # slot, whose image vectors share the gemma-2 text space.
+    # slot, whose image vectors share the gemma-2 text space. 0.15 (okf
+    # 0.13) adds the shared runtime locator, `Model.describe()` and its
+    # `space` identity (the `embedding_space` pin), and the host wire an
+    # external embroider lane is probed through.
     # Upper-bounded so the model registry and wheel matrix move
     # together with releases.
-    "embroider>=0.14,<0.15",
+    "embroider>=0.15,<0.16",
     "pydantic>=2.0",
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",

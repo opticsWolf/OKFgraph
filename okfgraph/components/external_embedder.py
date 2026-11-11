@@ -16,6 +16,15 @@ does not match the spec it is asked to reopen with. Cross-family vectors
 are a different vector space and must never mix (the same rule the
 precision pin has enforced since 0.10).
 
+**Or asked (0.13).** With ``embed_identity = 'auto'`` (the default) the
+engine first asks the endpoint ``GET /v1/models``. An embroider host
+(``python -m embroider.serve``) answers with its identity: family, width,
+token ceiling, the precision it landed on and its ``space``. The spec then
+comes from that answer, the wire sends ``task`` instead of prefixes (the
+host applies the model's prompts), token counts are the host's exact
+``/tokenize`` count, and the graph pins precision and space as the
+in-process lane does. Any other server keeps the declared contract.
+
 **Numerics stay with the engine's owner.** The embedder fails with real
 exceptions; hosts that want fail-to-silence degradation wrap it (Silk's
 ``Embedder.embed`` discipline lives on the host side, not here).
@@ -23,6 +32,7 @@ exceptions; hosts that want fail-to-silence degradation wrap it (Silk's
 from __future__ import annotations
 
 import json
+import logging
 import math
 import threading
 import urllib.error
@@ -53,6 +63,12 @@ _HONOURS: List[str] = []  # one-shot warnings for the heuristic counter
 #: ``heuristic-fallback`` — same arithmetic as ``heuristic``, but named
 #: for honesty and warned about exactly once.
 COUNTER_SOURCES = ("server-tokenize", "gguf-meta", "declared", "heuristic")
+
+#: How an external engine learns what it talks to (0.13): ``auto`` asks
+#: ``GET /v1/models`` first, ``declared`` trusts the settings alone.
+IDENTITY_MODES = ("auto", "declared")
+
+logger = logging.getLogger("okfgraph.embedding")
 
 
 @dataclass(frozen=True)
@@ -119,8 +135,8 @@ class ExternalEmbedEngine:
                  prefixes: Optional[Dict[str, str]] = None,
                  counter: str = "heuristic", counter_gguf: str = "",
                  chars_per_token: float = 0.0, api_key_env: str = "",
-                 timeout: float = 120.0, batch_size: int = 32):
-        import os
+                 timeout: float = 120.0, batch_size: int = 32,
+                 identity: Optional[Dict[str, Any]] = None):
         if counter not in COUNTER_SOURCES:
             raise ValueError(
                 f"[embedding] embed_counter must be one of "
@@ -153,14 +169,10 @@ class ExternalEmbedEngine:
                 f"{family}: embedding_dim={self.embedding_dim} is neither "
                 f"its native dim {self.spec.native_dim} nor on its declared "
                 f"Matryoshka ladder {self.spec.matryoshka}")
-        self._headers = {"Content-Type": "application/json"}
-        if api_key_env:
-            key = os.environ.get(api_key_env, "")
-            if not key:
-                raise ValueError(
-                    f"[embedding] api_key_env={api_key_env} is set but the "
-                    f"environment variable is empty or missing")
-            self._headers["Authorization"] = f"Bearer {key}"
+        #: An embroider host's ``/v1/models`` row, or None (declared).
+        self.identity = dict(identity) if identity else None
+        self._headers = {"Content-Type": "application/json",
+                         **auth_headers(api_key_env)}
         self.timeout = float(timeout)
         self.batch_size = max(1, int(batch_size))
         self._renorm_fallback = False   # the server refused `dimensions`
@@ -205,8 +217,25 @@ class ExternalEmbedEngine:
 
     @property
     def precision(self) -> str:
-        """The numeric identity this engine stores (its owner's business)."""
+        """The weights an embroider host landed on (``fp16``/``fp32``, so
+        the graph's precision pin applies); ``external`` for a declared
+        engine, whose numerics are its owner's business."""
+        if self.identity is not None:
+            return str(self.identity.get("precision") or "external")
         return "external"
+
+    @property
+    def space(self) -> Optional[str]:
+        """An embroider host's vector-space identity, else ``None``."""
+        if self.identity is None:
+            return None
+        space = self.identity.get("space")
+        return space if isinstance(space, str) else None
+
+    @property
+    def identity_source(self) -> str:
+        """``embroider`` when the host named itself, else ``declared``."""
+        return "embroider" if self.identity is not None else "declared"
 
     @property
     def honours_dimensions(self) -> bool:
@@ -300,7 +329,8 @@ class ExternalEmbedEngine:
                     req, timeout=min(self.timeout, 10.0)) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
             tokens = body.get("tokens") if isinstance(body, dict) else None
-            if not isinstance(tokens, list):
+            if not isinstance(tokens, list) and not isinstance(
+                    body.get("count") if isinstance(body, dict) else None, int):
                 raise ValueError("answer carried no token list")
         except Exception as exc:  # noqa: BLE001 — the degrade is the contract
             self._counter_failure = (
@@ -317,6 +347,8 @@ class ExternalEmbedEngine:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
+            if isinstance(body, dict) and isinstance(body.get("count"), int):
+                return body["count"]    # embroider: the model's own count
             tokens = (body.get("tokens") if isinstance(body, dict)
                       else None) or []
             return len(tokens)      # ints, or dicts when with_pieces is set
@@ -351,7 +383,14 @@ class ExternalEmbedEngine:
             "prefixes": self.spec.prefixes,
             **self.spec.counting_parameters(),
             "counter_effective": self.counter,
+            "identity": self.identity_source,
         }
+        if self.identity is not None:
+            report.update({
+                "precision": self.precision, "space": self.space,
+                "engine_version": self.identity.get("engine_version"),
+                "device": self.identity.get("device"),
+            })
         if self.spec.counter == "gguf-meta" and self._cpt:
             # the measured prior belongs in the report even though it
             # is engine state, not a spec declaration (W4)
@@ -408,6 +447,8 @@ class ExternalEmbedEngine:
             payload: Dict[str, Any] = {
                 "model": self.endpoint_model, "input": batch_texts,
             }
+            if self.identity is not None:
+                payload["task"] = task     # the host applies the prompts
             if want_mrl and not self._renorm_fallback:
                 payload["dimensions"] = self.embedding_dim
             body = self._request(payload)
@@ -453,8 +494,15 @@ def engine_from_settings(*, backend: str, model_id: str, embedding_dim: int,
                          embed_counter: str = "heuristic",
                          embed_counter_gguf: str = "",
                          embed_chars_per_token: float = 0.0,
+                         embed_identity: str = "auto",
                          **_ignored) -> ExternalEmbedEngine:
     """Build an :class:`ExternalEmbedEngine` from the settings rows.
+
+    With ``embed_identity='auto'`` the endpoint is asked first
+    (:func:`probe_identity`); an embroider host's answer becomes the spec
+    and the declarations below only have to agree with it. A host that
+    can't be reached falls back to the declared contract when
+    ``embed_family`` is set, and is an error otherwise.
 
     ``embed_prefixes`` is the TOML-friendly declaration: ``none``, a
     built-in family name (e.g. ``nomic-v1.5``), or ``Task=prefix|Task=prefix``
@@ -467,13 +515,41 @@ def engine_from_settings(*, backend: str, model_id: str, embedding_dim: int,
         raise ValueError(
             f"[embedding] endpoint_url must be an http(s) URL for backend "
             f"'external', got '{endpoint_url}'")
-    if not embed_family or "/" in embed_family:
-        raise ValueError(
-            f"[embedding] embed_family must be a short declared family name "
-            f"(no '/'), got '{embed_family}'")
     if "/" not in model_id:
         raise ValueError(
             f"embedding.model_id must be 'owner/name', got '{model_id}'")
+    if embed_identity not in IDENTITY_MODES:
+        raise ValueError(
+            f"[embedding] embed_identity must be one of {IDENTITY_MODES}, "
+            f"got '{embed_identity}'")
+    if embed_family and "/" in embed_family:
+        raise ValueError(
+            f"[embedding] embed_family must be a short declared family name "
+            f"(no '/'), got '{embed_family}'")
+    if embed_identity == "auto":
+        try:
+            identity = probe_identity(
+                endpoint_url, headers=auth_headers(api_key_env))
+        except ExternalEmbeddingError as exc:
+            if not embed_family:
+                raise ValueError(
+                    f"[embedding] can't ask the endpoint who it is ({exc}) "
+                    f"and no embed_family is declared: start the host, or "
+                    f"declare the family") from exc
+            logger.warning(
+                "[embedding] identity probe failed (%s); using the declared "
+                "'%s' contract", exc, embed_family)
+            identity = None
+        if identity is not None:
+            return _engine_from_identity(
+                identity, model_id=model_id, embedding_dim=embedding_dim,
+                endpoint_url=endpoint_url, api_key_env=api_key_env,
+                embed_family=embed_family, embed_prefixes=embed_prefixes)
+    if not embed_family:
+        raise ValueError(
+            f"[embedding] embed_family must be a short declared family name "
+            f"(no '/'), got '{embed_family}' (only an embroider host names "
+            f"its own family)")
 
     prefixes: Optional[Dict[str, str]] = None
     if embed_prefixes.startswith("{"):
@@ -532,6 +608,96 @@ def engine_from_settings(*, backend: str, model_id: str, embedding_dim: int,
         chars_per_token=float(embed_chars_per_token or 0.0),
         api_key_env=api_key_env,
     )
+
+
+def auth_headers(api_key_env: str) -> Dict[str, str]:
+    """The bearer header for *api_key_env*, or none when it is unset."""
+    import os
+    if not api_key_env:
+        return {}
+    key = os.environ.get(api_key_env, "")
+    if not key:
+        raise ValueError(
+            f"[embedding] api_key_env={api_key_env} is set but the "
+            f"environment variable is empty or missing")
+    return {"Authorization": f"Bearer {key}"}
+
+
+def probe_identity(endpoint_url: str, *, headers: Optional[Dict[str, str]] = None,
+                   timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+    """Ask an external endpoint who it is: ``GET <base>/v1/models``.
+
+    Returns the model's identity row when an embroider host answers (a row
+    with ``engine == "embroider"``), and ``None`` when another server
+    answers (llama.cpp, TEI, Ollama ...) or the route doesn't exist: the
+    declared contract applies to those. Raises
+    :class:`ExternalEmbeddingError` when the endpoint can't be reached or
+    refuses the question (e.g. 401).
+    """
+    url = ExternalEmbedEngine._normalize_endpoint(endpoint_url) + "/models"
+    req = urllib.request.Request(url, headers=dict(headers or {}))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 405, 501):     # no such route: not embroider
+            return None
+        raise ExternalEmbeddingError(
+            f"{url} refused {exc.code}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise ExternalEmbeddingError(f"{url} unreachable: {exc}") from exc
+    except ValueError:                      # not JSON: not embroider
+        return None
+    rows = body.get("data") if isinstance(body, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get("engine") == "embroider":
+            return dict(row)
+    return None
+
+
+def _engine_from_identity(identity: Dict[str, Any], *, model_id: str,
+                          embedding_dim: int, endpoint_url: str,
+                          api_key_env: str, embed_family: str,
+                          embed_prefixes: str) -> ExternalEmbedEngine:
+    """The engine an embroider host described; declarations must agree."""
+    served = str(identity.get("id") or "")
+    if identity.get("kind", "embed") != "embed":
+        raise ValueError(
+            f"[embedding] {endpoint_url} serves a '{identity.get('kind')}' "
+            f"model ({served}), not text embeddings")
+    if served != model_id:
+        raise ValueError(
+            f"[embedding] {endpoint_url} serves {served}, but "
+            f"embedding.model_id is {model_id}: point endpoint_url at a host "
+            f"for {model_id}, or set model_id to {served}")
+    dim = int(identity.get("dim") or 0)
+    if dim != int(embedding_dim):
+        raise ValueError(
+            f"[embedding] {endpoint_url} serves {dim}-wide vectors but the "
+            f"graph is {embedding_dim}-wide: open the host at width "
+            f"{embedding_dim} (embroider.serve --dim {embedding_dim})")
+    family = str(identity.get("family") or model_id.rsplit("/", 1)[-1])
+    if embed_family and embed_family != family:
+        raise ValueError(
+            f"[embedding] embed_family='{embed_family}' but the embroider "
+            f"host at {endpoint_url} serves family '{family}': drop "
+            f"embed_family or make it agree")
+    if embed_prefixes not in (None, "", "none"):
+        raise ValueError(
+            f"[embedding] embed_prefixes='{embed_prefixes}', but the "
+            f"embroider host at {endpoint_url} applies {model_id}'s own "
+            f"prompts: drop embed_prefixes")
+    engine = ExternalEmbedEngine(
+        endpoint_url=endpoint_url, model_id=model_id, family=family,
+        embedding_dim=dim, native_dim=dim,
+        max_tokens=max(64, int(identity.get("max_length") or 0) or 32768),
+        pooling="host", counter="server-tokenize", api_key_env=api_key_env,
+        identity=identity,
+    )
+    logger.info(
+        "[embedding] %s is an embroider host: %s %s dim=%d space=%s",
+        endpoint_url, model_id, engine.precision, dim, engine.space)
+    return engine
 
 
 def _validate_prefix_keys(prefixes: Dict[str, str]) -> None:

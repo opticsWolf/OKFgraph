@@ -103,7 +103,7 @@ Skip both extras and point `ORT_DYLIB_PATH` at your onnxruntime 1.29
 library instead — but never rely on bare OS-loader discovery: a stale
 system DLL (e.g. in `System32`) fails the load instead of being used.
 
-Core dependencies are deliberately few: `ladybug==0.22.1`, `embroider>=0.14,<0.15`
+Core dependencies are deliberately few: `ladybug==0.22.1`, `embroider>=0.15,<0.16`
 (the shared embedding engine — github.com/opticsWolf/embroider, also used by
 bobine), `onnxruntime==1.31.1` (one pinned ORT binary shared by bobine +
 embroider; `ORT_DYLIB_PATH`-overridable), `mordant`, `mcp>=2.0`, `pydantic`,
@@ -446,7 +446,7 @@ okfgraph/
 
 ## Requirements
 
-Core (`uv sync`): `ladybug==0.22.1`, `embroider>=0.14,<0.15` (PyPI wheels,
+Core (`uv sync`): `ladybug==0.22.1`, `embroider>=0.15,<0.16` (PyPI wheels,
 github.com/opticsWolf/embroider), `mordant>=0.9`,
 `mcp>=2.0`, `pydantic>=2`, `pyyaml>=6`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.

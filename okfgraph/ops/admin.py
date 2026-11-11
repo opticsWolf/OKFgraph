@@ -185,6 +185,18 @@ class AdminOps:
         fixed = self.doctor_mgr.fix() if fix else None
         report = self.doctor_mgr.diagnose(stale_days=stale_days,
                                           cache_dir=cache_dir)
+        for name, lane in self.lanes().items():
+            where = lane["endpoint"] or "in-process"
+            message = (f"{lane['model_id']} via {where} "
+                       f"(identity={lane['identity']}")
+            if lane.get("family"):
+                message += f", family={lane['family']}"
+            if lane.get("precision"):
+                message += f", precision={lane['precision']}"
+            if lane.get("space"):
+                message += f", space={lane['space']}"
+            report["info"].append({"rule": f"{name}_lane",
+                                   "message": message + ")"})
         result = {"report": report, "fixed": fixed}
         if strict and report["findings"]:
             raise OKFError(
@@ -445,7 +457,8 @@ class AdminOps:
 
     def _reembed_inner(self, *, dry_run: bool = False,
                        progress=None, cancelled=None) -> dict:
-        from okfgraph.components.embedding import MODEL_META_KEY, _PRECISION_CODE
+        from okfgraph.components.embedding import (
+            MODEL_META_KEY, SPACE_META_KEY, _PRECISION_CODE, parse_space)
         from okfgraph.errors import StateError
         encoder = getattr(self, "encoder", None)
         if encoder is None:
@@ -600,6 +613,19 @@ class AdminOps:
                 f"MERGE (m:Meta {{key: 'embedding_precision'}}) "
                 f"SET m.value = {_PRECISION_CODE[precision]}"
             )
+        # The old space no longer describes the vectors: record the new one,
+        # or none when this engine can't name it.
+        space = getattr(encoder, "space", None)
+        if parse_space(space) is not None:
+            self.conn.execute(
+                f"MERGE (m:MetaText {{key: '{SPACE_META_KEY}'}}) SET m.value = $v",
+                {"v": space},
+            )
+        else:
+            space = None
+            self.conn.execute(
+                f"MATCH (m:MetaText {{key: '{SPACE_META_KEY}'}}) DELETE m")
+        self.pinned_space = space
         took = _tt.time() - t0
         self.schema_mgr._set_meta(
             "indexed_epoch", self.schema_mgr._get_meta("write_epoch"))
@@ -613,6 +639,65 @@ class AdminOps:
                     nc, nch, model_id, took)
         return report
 
+    def lanes(self) -> dict:
+        """Who serves each model lane, without opening a session or
+        reading the database (``/health`` and ``doctor`` show it).
+
+        Reading shape::
+
+            {"embed": {"backend", "model_id", "endpoint", "identity",
+                       "family", "precision", "space", "pinned_space"},
+             "rerank": {"backend", "model_id", "endpoint", "identity",
+                        "family", "precision"}}
+
+        ``identity`` is ``in-process`` (the crate lane), ``embroider`` (a
+        host that named itself) or ``declared`` (settings alone).
+        ``precision`` and ``space`` are None until known: a cold crate
+        session reports the requested precision and no space.
+        """
+        def _lane(engine, backend):
+            if backend == "external":
+                ident = getattr(engine, "identity", None) or {}
+                spec = getattr(engine, "spec", None)
+                return {
+                    "backend": "external",
+                    "model_id": getattr(engine, "model_id", None)
+                    or getattr(spec, "model_id", None),
+                    "endpoint": getattr(engine, "endpoint_url", None),
+                    "identity": getattr(engine, "identity_source", "declared"),
+                    "family": getattr(spec, "family", None)
+                    or getattr(engine, "family", None),
+                    "precision": ident.get("precision"),
+                }
+            # Crate lane: read an open session, never open a cold one.
+            session = (getattr(engine, "_encoder", None)
+                       or getattr(engine, "_session", None))
+            precision = getattr(session, "precision", None)
+            return {
+                "backend": "embroider",
+                "model_id": getattr(engine, "model_id", None),
+                "endpoint": None,
+                "identity": "in-process",
+                "family": getattr(session, "family", None),
+                "precision": precision if isinstance(precision, str) else None,
+            }
+
+        encoder = getattr(self, "encoder", None)
+        embed_backend = getattr(self, "embed_backend", None) or (
+            "external" if getattr(encoder, "spec", None) is not None
+            else "embroider")
+        embed = _lane(encoder, embed_backend)
+        if embed["precision"] is None and embed_backend != "external":
+            embed["precision"] = (None if self.precision == "auto"
+                                  else self.precision)
+        space = getattr(encoder, "space", None)
+        embed["space"] = space if isinstance(space, str) else None
+        embed["pinned_space"] = getattr(self, "pinned_space", None)
+        reranker = getattr(self, "reranker", None)
+        rerank_backend = ("external" if getattr(reranker, "spec", None)
+                          is not None else "embroider")
+        return {"embed": embed, "rerank": _lane(reranker, rerank_backend)}
+
     def pin_info(self) -> dict:
         """What the vectors are pinned to, against what this server runs
         with (the Silk/Weave node's pin display flows over this).
@@ -620,11 +705,11 @@ class AdminOps:
         Reading shape::
 
             {"pinned": {"model_id": str|None, "precision": str|None,
-                        "embedding_dim": int},
+                        "embedding_dim": int, "space": str|None},
              "configured": {"model_id": str, "expected_precision": str|None,
-                            "embedding_dim": int, "backend": str,
-                            "embedding_family": str},
-             "mismatch": ["model_id"|"precision", ...],
+                            "embedding_dim": int, "space": str|None,
+                            "backend": str, "embedding_family": str},
+             "mismatch": ["model_id"|"precision"|"space", ...],
              "empty": bool, "concepts": n, "chunks": n}
 
         ``embedding_dim`` never appears in ``mismatch``: the graph adopts
@@ -632,7 +717,8 @@ class AdminOps:
         width change needs a fresh database, not a re-embed.
         """
         from okfgraph.components.embedding import (
-            MODEL_META_KEY, PRECISION_META_KEY)
+            MODEL_META_KEY, PRECISION_META_KEY, SPACE_META_KEY, parse_space,
+            _space_differences)
 
         def _meta_str(table, key):
             try:
@@ -686,15 +772,25 @@ class AdminOps:
                 and not empty
                 and pinned_precision != configured_precision):
             mismatch.append("precision")
+        pinned_space = _meta_str("MetaText", SPACE_META_KEY)
+        # Known once the session opened (crate lane) or at boot (host).
+        configured_space = getattr(encoder, "space", None)
+        if not isinstance(configured_space, str):
+            configured_space = None
+        a, b = parse_space(pinned_space), parse_space(configured_space)
+        if a and b and not empty and _space_differences(a, b):
+            mismatch.append("space")
         return {
             "pinned": {
                 "model_id": pinned_model, "precision": pinned_precision,
                 "embedding_dim": int(self.schema_mgr.embedding_dim),
+                "space": pinned_space,
             },
             "configured": {
                 "model_id": self.model_id,
                 "expected_precision": configured_precision,
                 "embedding_dim": int(self.embedding_dim),
+                "space": configured_space,
                 "backend": backend,
                 "embedding_family": getattr(
                     getattr(encoder, "spec", None), "family", ""),

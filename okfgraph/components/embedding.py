@@ -146,6 +146,17 @@ _PRECISION_CODE = {"fp16": 16, "fp32": 32}
 MODEL_META_KEY = "embedding_model"
 
 
+def stored_precision(conn) -> Optional[str]:
+    """The graph's precision pin (``fp16``/``fp32``), or ``None``."""
+    try:
+        rows = conn.execute(
+            f"MATCH (m:Meta {{key: '{PRECISION_META_KEY}'}}) RETURN m.value AS v"
+        ).rows_as_dict().get_all()
+    except Exception:
+        return None
+    return {16: "fp16", 32: "fp32"}.get(rows[0]["v"]) if rows else None
+
+
 def enforce_precision_pin(conn, precision: str) -> str:
     """Fail-closed precision pin for a graph (0.5.0).
 
@@ -251,6 +262,124 @@ def enforce_model_pin(conn, model_id: str) -> str:
     )
     logger.debug("graph pinned to model=%s", model_id)
     return model_id
+
+
+#: MetaText key pinning the vector space a graph's text vectors live in
+#: (0.13.0): embroider's ``space`` identity, read from ``describe()`` in
+#: process and from ``GET /v1/models`` on an embroider host, so one graph
+#: moves between the two without a re-embed when the strings agree.
+SPACE_META_KEY = "embedding_space"
+_SPACE_FIELDS = ("model", "revision", "precision", "dim", "max_length",
+                 "tuning", "contract")
+
+
+def parse_space(space) -> Optional[Dict[str, str]]:
+    """The fields of an embroider ``space`` string, or ``None``.
+
+    ``embroider/<model>@<revision>:<precision>:<dim>:<max_length>:<tuning>:<contract>``.
+    A space whose revision is unknown (``?``) parses to ``None``: it can
+    never be shown equal to a known one, so it neither pins nor is checked.
+    """
+    if not isinstance(space, str) or not space.startswith("embroider/"):
+        return None
+    model, sep, tail = space[len("embroider/"):].rpartition("@")
+    parts = tail.split(":")
+    if not sep or not model or len(parts) != len(_SPACE_FIELDS) - 1:
+        return None
+    fields = dict(zip(_SPACE_FIELDS, [model, *parts]))
+    if fields["revision"] in ("", "?"):
+        return None
+    return fields
+
+
+def _space_differences(pinned: Dict[str, str], landed: Dict[str, str]) -> List[str]:
+    # max_length is left out: the chunker caps every stored text at the
+    # session's max_length, so no stored vector was ever truncated by it
+    # and the vectors don't depend on it (a query can be, which is per
+    # call and stores nothing).
+    return [f for f in _SPACE_FIELDS
+            if f != "max_length" and pinned[f] != landed[f]]
+
+
+def _graph_is_empty(conn) -> bool:
+    try:
+        return not conn.execute(
+            "MATCH (c:Concept) RETURN c.id AS cid LIMIT 1"
+        ).rows_as_dict().get_all()
+    except Exception:
+        return True
+
+
+def enforce_space_pin(conn, space, *, adopt: bool) -> Optional[str]:
+    """Fail-closed vector-space pin for a graph (0.13.0).
+
+    Runs after the model and precision pins. With a space stored, a
+    session landing in another space is refused (an empty graph re-pins),
+    naming each field that differs; ``max_length`` never counts (see
+    :func:`_space_differences`). With none stored, the session's space is
+    recorded when the graph is empty or *adopt* says the model and
+    precision pins just agreed (how a pre-0.13 graph adopts it), and is
+    otherwise left unrecorded.
+
+    A session that can't name its space (explicit files, a host that is
+    not embroider, an unresolved revision) checks nothing here: the model
+    and precision pins still apply. Returns the pinned space, or ``None``.
+    """
+    landed = parse_space(space)
+    conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS MetaText (key STRING PRIMARY KEY, value STRING)"
+    )
+    try:
+        rows = conn.execute(
+            f"MATCH (m:MetaText {{key: '{SPACE_META_KEY}'}}) RETURN m.value AS v"
+        ).rows_as_dict().get_all()
+    except Exception:
+        rows = []
+    stored = rows[0]["v"] if rows else None
+    if landed is None:
+        if stored:
+            logger.warning(
+                "graph is pinned to space %s but this session can't name "
+                "its own: checking model and precision only", stored)
+        return stored or None
+
+    def _pin():
+        conn.execute(
+            f"MERGE (m:MetaText {{key: '{SPACE_META_KEY}'}}) SET m.value = $v",
+            {"v": space},
+        )
+
+    if stored:
+        pinned = parse_space(stored)
+        differ = (_space_differences(pinned, landed) if pinned is not None
+                  else ["space"])
+        if not differ:
+            return stored
+        if _graph_is_empty(conn):
+            _pin()
+            logger.info("empty graph re-pinned to space=%s", space)
+            return space
+        if pinned is None:
+            detail = f"pinned {stored}, landed {space}"
+        else:
+            detail = "; ".join(
+                f"pinned {f}={pinned[f]}, landed {landed[f]}" for f in differ)
+        hint = ""
+        if "precision" in differ and pinned is not None and pinned["precision"] == "fp16":
+            hint = (" fp16 weights load only on CUDA: an auto or CPU session "
+                    "lands fp32, so open this graph on a CUDA device.")
+        raise OKFError(
+            "SPACE_PIN_MISMATCH",
+            f"graph vectors live in another space than this session's "
+            f"({detail}). Vectors from different spaces must never mix.{hint} "
+            f"Reopen with the pinned settings, or reembed / reimport into a "
+            f"fresh database."
+        )
+    if adopt or _graph_is_empty(conn):
+        _pin()
+        logger.debug("graph pinned to space=%s", space)
+        return space
+    return None
 
 
 #: MetaText key pinning the vision model a graph's image vectors use.
@@ -652,100 +781,6 @@ from okfgraph.errors import OKFError
 
 logger = logging.getLogger(__name__)
 
-# `onnxruntime-gpu` installs the same `onnxruntime` module name — one entry suffices.
-_ORT_MODULE_NAMES = ("onnxruntime",)
-
-
-def _candidate_ort_library_names(os_name=None, sys_platform=None):
-    """Return the ORT library filenames for an OS/platform pair.
-
-    Takes explicit arguments so unit tests can cover Windows/macOS/Linux
-    from any host. Linux uses a versioned ``libonnxruntime.so.*`` glob
-    (handled by :func:`_find_runtime_in_package`); this helper returns the
-    unversioned fallback name for that platform.
-    """
-    import os
-    import sys
-    if os_name is None:
-        os_name = os.name
-    if sys_platform is None:
-        sys_platform = sys.platform
-    if os_name == "nt":
-        return ("onnxruntime.dll",)
-    if sys_platform == "darwin":
-        return ("libonnxruntime.dylib",)
-    return ("libonnxruntime.so",)
-
-
-def _find_runtime_in_package(package_dir, os_name=None, sys_platform=None):
-    """Find an ORT shared library inside a pip-installed package directory.
-
-    Returns a :class:`Path` or ``None``. Prefers versioned Linux libraries
-    (``libonnxruntime.so.*``) over the unversioned ``libonnxruntime.so``.
-    """
-    import os
-    import sys
-    if os_name is None:
-        os_name = os.name
-    if sys_platform is None:
-        sys_platform = sys.platform
-    capi_dir = Path(package_dir) / "capi"
-    if not capi_dir.is_dir():
-        return None
-    if os_name == "nt" or sys_platform == "darwin":
-        candidate = capi_dir / _candidate_ort_library_names(os_name, sys_platform)[0]
-        return candidate if candidate.is_file() else None
-    versioned = sorted(capi_dir.glob("libonnxruntime.so.*"))
-    if versioned:
-        return versioned[-1]
-    candidate = capi_dir / "libonnxruntime.so"
-    return candidate if candidate.is_file() else None
-
-
-def _configure_windows_ort_dll_directory(runtime_path) -> bool:
-    """Add the ORT ``capi`` directory to Windows DLL resolution.
-
-    Best-effort only: returns ``False`` (never raises) when unavailable.
-    """
-    import os
-    if os.name != "nt":
-        return False
-    add_dll_directory = getattr(os, "add_dll_directory", None)
-    if not callable(add_dll_directory):
-        return False
-    try:
-        add_dll_directory(str(Path(runtime_path).parent))
-        return True
-    except OSError as exc:
-        logger.debug("ORT DLL directory configuration failed: %s", exc)
-        return False
-
-
-def _warm_ort_gpu_dlls(module) -> bool:
-    """Preload NVIDIA DLLs when the installed ORT package exposes CUDA.
-
-    This mirrors bobine's GPU bootstrap: only attempt the preload when the
-    package reports a CUDA execution provider, and never let it fail
-    runtime discovery.
-    """
-    preload = getattr(module, "preload_dlls", None)
-    if not callable(preload):
-        return False
-    try:
-        providers = list(module.get_available_providers())
-    except Exception as exc:
-        logger.debug("ORT provider query failed: %s", exc)
-        return False
-    if "CUDAExecutionProvider" not in providers:
-        return False
-    try:
-        preload()
-        return True
-    except Exception as exc:
-        logger.debug("ORT GPU DLL preload failed: %s", exc)
-        return False
-
-
 def ort_info() -> Dict[str, Any]:
     """Snapshot of the ONNX Runtime situation (Phase 3, plan-onnx-only).
 
@@ -873,50 +908,52 @@ def ort_missing_hint(ort: Dict[str, Any]) -> Optional[str]:
             "(exactly one), or set ORT_DYLIB_PATH to an onnxruntime 1.29 library")
 
 
-def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None) -> Optional[str]:
-    """Point ``ORT_DYLIB_PATH`` at a pip-installed ORT build when unset.
+def locate_ort_runtime() -> Dict[str, Any]:
+    """Find the ONNX Runtime library and point ``ORT_DYLIB_PATH`` at it.
 
-    Both bobine and embroider load ONNX Runtime dynamically; sharing one
-    binary avoids version/CUDA drift between the two runtimes. Explicit
-    user configuration always wins — this only fills the gap.
+    Delegates to :func:`embroider.locate_runtime` (embroider 0.15), the
+    locator every embroider model open runs, so okfgraph, bobine and
+    embroider agree on one library. It never imports ``onnxruntime`` (which
+    would load a second copy of the runtime) and never raises.
 
-    Resolution order:
+    Returns ``{"dylib", "source", "version"}``:
 
-    1. Existing ``ORT_DYLIB_PATH``.
-    2. Pip-installed ``onnxruntime`` or ``onnxruntime-gpu`` package.
-    3. OS loader path (represented by returning ``None``) — diagnostics
-       only. Encoding never relies on it: the router refuses before opening
-       a session when no runtime resolves, so a stale system DLL (e.g. an
-       old ``onnxruntime.dll`` in System32) can't poison the load.
+    1. An explicit ``ORT_DYLIB_PATH`` always wins (``source="env"``).
+    2. A pip-installed ``onnxruntime`` / ``onnxruntime-gpu`` where Python
+       would import it from (``source="pip:<dist>"``, ``version`` from its
+       dist-info); the path becomes ``ORT_DYLIB_PATH``.
+    3. Nothing (``dylib=None``, ``source="os"``): diagnostics only.
+       Encoding never relies on the OS loader path: the router refuses
+       before opening a session when no runtime resolves, so a stale system
+       DLL (e.g. an old ``onnxruntime.dll`` in System32) can't poison the
+       load.
 
-    Missing runtimes never raise here; session creation or encoding is the
-    fail-fast boundary. ``os_name``/``sys_platform`` are explicit so unit
-    tests can cover every platform from any host (patching ``os.name``
-    would break ``pathlib`` dispatch on Windows).
+    Without the embroider wheel (``backend='external'`` needs none) only an
+    explicit ``ORT_DYLIB_PATH`` is reported.
     """
     import os
-    explicit = os.environ.get("ORT_DYLIB_PATH")
-    if explicit:
-        return explicit
-    for module_name in _ORT_MODULE_NAMES:
-        try:
-            module = __import__(module_name)
-        except ImportError:
-            continue
-        try:
-            package_dir = Path(str(module.__file__)).parent
-        except Exception:
-            continue
-        found = _find_runtime_in_package(package_dir, os_name, sys_platform)
-        if found is None:
-            continue
-        os.environ["ORT_DYLIB_PATH"] = str(found)
-        _configure_windows_ort_dll_directory(found)
-        if warm_gpu:
-            _warm_ort_gpu_dlls(module)
-        logger.debug("resolved ORT runtime: %s", found)
-        return str(found)
-    return None
+    try:
+        from embroider import locate_runtime
+    except ImportError:
+        explicit = os.environ.get("ORT_DYLIB_PATH")
+        return {"dylib": explicit, "source": "env" if explicit else "os",
+                "version": None}
+    return dict(locate_runtime())
+
+
+def resolve_ort_dylib(*, warm_gpu: bool = True, os_name=None, sys_platform=None) -> Optional[str]:
+    """Deprecated (0.13): use :func:`locate_ort_runtime`; removed in 0.14.
+
+    Returns the library path :func:`locate_ort_runtime` resolved, or
+    ``None``. ``warm_gpu``, ``os_name`` and ``sys_platform`` are accepted
+    and ignored: embroider puts the CUDA libraries on the search path
+    itself, and its own tests cover every platform branch.
+    """
+    import warnings
+    warnings.warn(
+        "resolve_ort_dylib() is deprecated: use locate_ort_runtime()",
+        DeprecationWarning, stacklevel=2)
+    return locate_ort_runtime()["dylib"]
 
 
 class LazyRustEncoder:
@@ -967,6 +1004,13 @@ class LazyRustEncoder:
     def used_cuda(self) -> bool:
         """Effective device — opens the session on first access."""
         return bool(self._get_encoder().used_cuda)
+
+    @property
+    def space(self):
+        """The open session's embroider ``space``; ``None`` while cold
+        (never opens it) or when the session can't name one."""
+        space = getattr(self._encoder, "space", None)
+        return space if isinstance(space, str) else None
 
     def encode(self, text: str, task: str = "Document"):
         return self._get_encoder().encode(text, task=task)

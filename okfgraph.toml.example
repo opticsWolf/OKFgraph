@@ -28,6 +28,9 @@ db_path = "kb.db"
 # 0.12 external-lane options (the embroider crate stays the default):
 # backend = "external"          # an OpenAI-shaped POST /embeddings host owns the model
 # endpoint_url = "http://127.0.0.1:8931"
+# embed_identity = "auto"       # 0.13: ask the host GET /v1/models first; an
+#                               # embroider host names family, dim, precision and
+#                               # space (embed_family optional); "declared" skips it
 # embed_family = "nomic-v1.5"   # declared contract: prefixes, pooling, dim ladder
 # api_key_env = "MY_KEY_VAR"    # name of the env var holding the bearer key
 # Counting ladder (batch budgets): embed_counter = "server-tokenize" asks the

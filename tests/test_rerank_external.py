@@ -242,6 +242,7 @@ def test_settings_checks_rerank_external():
     s = Settings()
     s.db_path = "t.db"
     s.rerank_backend = "external"
+    s.rerank_identity = "declared"     # 'auto' lets an embroider host name it
     errs, _ = s.checks()
     assert any("rerank_endpoint_url" in e for e in errs)
     assert any("rerank_family" in e for e in errs)

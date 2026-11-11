@@ -45,6 +45,13 @@ the session on the first failure** (``down=True`` + one loud warning +
 answering, and ``SearchEngine._cross_scores`` answers unranked. No graph
 pins: rerank scores are order-only; identity lives in boot logs and the
 spec report.
+
+Identity (0.13.0): with ``rerank_identity = 'auto'`` (the default) the
+factory first asks the host ``GET /v1/models``, as the embed lane does. An
+embroider host names its family and per-pair ceiling, so
+``rerank_family`` and ``rerank_max_tokens`` become optional (given, the
+family must agree), and counts are its exact ``/tokenize`` count. Any
+other server keeps the declared contract.
 """
 from __future__ import annotations
 
@@ -118,8 +125,9 @@ class ExternalRerankEngine:
     def __init__(self, *, endpoint_url: str, model_id: str, family: str,
                  max_tokens: int = 8192, api_key_env: str = "",
                  count: str = "heuristic",
-                 timeout: float = 120.0):
-        import os
+                 timeout: float = 120.0,
+                 identity: Optional[Dict[str, Any]] = None):
+        from okfgraph.components.external_embedder import auth_headers
         if not endpoint_url or not str(endpoint_url).strip():
             raise ValueError(
                 "rerank backend='external' needs rerank_endpoint_url")
@@ -150,14 +158,13 @@ class ExternalRerankEngine:
         if self.spec.max_tokens < 64:
             raise ValueError(
                 f"rerank_max_tokens must be >= 64, got {self.spec.max_tokens}")
-        self._headers = {"Content-Type": "application/json"}
-        if api_key_env:
-            key = os.environ.get(api_key_env, "")
-            if not key:
-                raise ValueError(
-                    f"[rerank] api_key_env={api_key_env} is set but the "
-                    f"environment variable is empty or missing")
-            self._headers["Authorization"] = f"Bearer {key}"
+        #: An embroider host's ``/v1/models`` row, or None (declared).
+        self.identity = dict(identity) if identity else None
+        try:
+            self._headers = {"Content-Type": "application/json",
+                             **auth_headers(api_key_env)}
+        except ValueError as exc:
+            raise ValueError(str(exc).replace("[embedding]", "[rerank]")) from None
         self.timeout = float(timeout)
         self._target_warned = False
         self._counter_warned = False
@@ -182,6 +189,11 @@ class ExternalRerankEngine:
     @property
     def used_cuda(self) -> bool:
         return False          # the cross-encoder lives in another process
+
+    @property
+    def identity_source(self) -> str:
+        """``embroider`` when the host named itself, else ``declared``."""
+        return "embroider" if self.identity is not None else "declared"
 
     @property
     def is_loaded(self) -> bool:
@@ -277,6 +289,8 @@ class ExternalRerankEngine:
     def _tokenize_count(self, text: str, timeout: float) -> int:
         body = self._request_json(
             self.count_url, {"content": text}, timeout=timeout)
+        if isinstance(body, dict) and isinstance(body.get("count"), int):
+            return body["count"]        # embroider: the model's own count
         tokens = body.get("tokens") if isinstance(body, dict) else None
         if not isinstance(tokens, list):
             raise ExternalRerankError(
@@ -309,6 +323,13 @@ class ExternalRerankEngine:
         out["dialect"] = self._dialect
         out["down"] = self.down
         out["down_reason"] = self._down_reason
+        out["identity"] = self.identity_source
+        if self.identity is not None:
+            out.update({
+                "precision": self.identity.get("precision"),
+                "device": self.identity.get("device"),
+                "engine_version": self.identity.get("engine_version"),
+            })
         return out
 
     # ── the wire ──────────────────────────────────────────────────────────
@@ -474,13 +495,77 @@ class ExternalRerankEngine:
 def rerank_engine_from_settings(*, backend: str, model_id: str, family: str,
                                 endpoint_url: str, api_key_env: str = "",
                                 max_tokens: int = 8192,
-                                count: str = "heuristic") -> ExternalRerankEngine:
-    """Settings-shaped factory (mirrors engine_from_settings for embeds)."""
+                                count: str = "heuristic",
+                                identity: str = "auto") -> ExternalRerankEngine:
+    """Settings-shaped factory (mirrors engine_from_settings for embeds).
+
+    With *identity* ``'auto'`` the host is asked first; an embroider host
+    supplies family, ceiling and exact counts. A host that can't be
+    reached falls back to the declared contract when *family* is set, and
+    is an error otherwise.
+    """
+    from okfgraph.components.external_embedder import (
+        IDENTITY_MODES, ExternalEmbeddingError, auth_headers, probe_identity)
     if backend != "external":
         raise ValueError(
             f"rerank_engine_from_settings needs backend='external', "
             f"got {backend!r}")
+    if identity not in IDENTITY_MODES:
+        raise ValueError(
+            f"rerank_identity must be one of {IDENTITY_MODES}, got {identity!r}")
+    if identity == "auto" and endpoint_url:
+        base = str(endpoint_url).rstrip("/")
+        for tail in ("/rerank", "/v1"):
+            if base.endswith(tail):
+                base = base[: -len(tail)]
+        try:
+            row = probe_identity(base, headers=auth_headers(api_key_env))
+        except ExternalEmbeddingError as exc:
+            if not family:
+                raise ValueError(
+                    f"[rerank] can't ask the endpoint who it is ({exc}) and "
+                    f"no rerank_family is declared: start the host, or "
+                    f"declare the family") from exc
+            logger.warning(
+                "[rerank] identity probe failed (%s); using the declared "
+                "'%s' contract", exc, family)
+            row = None
+        if row is not None:
+            return _engine_from_identity(
+                row, model_id=model_id, family=family,
+                endpoint_url=endpoint_url, api_key_env=api_key_env)
     return ExternalRerankEngine(
         endpoint_url=endpoint_url, model_id=model_id, family=family,
         max_tokens=max_tokens, api_key_env=api_key_env or "", count=count,
     )
+
+
+def _engine_from_identity(row: Dict[str, Any], *, model_id: str, family: str,
+                          endpoint_url: str,
+                          api_key_env: str) -> ExternalRerankEngine:
+    """The engine an embroider host described; declarations must agree."""
+    served = str(row.get("id") or "")
+    if row.get("kind") != "rerank":
+        raise ValueError(
+            f"[rerank] {endpoint_url} serves a '{row.get('kind')}' model "
+            f"({served}), not a reranker")
+    if served != model_id:
+        raise ValueError(
+            f"[rerank] {endpoint_url} serves {served}, but rerank_model_id "
+            f"is {model_id}: point rerank_endpoint_url at a host for "
+            f"{model_id}, or set rerank_model_id to {served}")
+    host_family = str(row.get("family") or served.rsplit("/", 1)[-1])
+    if family and family != host_family:
+        raise ValueError(
+            f"[rerank] rerank_family='{family}' but the embroider host at "
+            f"{endpoint_url} serves family '{host_family}': drop "
+            f"rerank_family or make it agree")
+    engine = ExternalRerankEngine(
+        endpoint_url=endpoint_url, model_id=model_id, family=host_family,
+        max_tokens=max(64, int(row.get("max_length") or 0) or 8192),
+        api_key_env=api_key_env or "", count="server-tokenize", identity=row,
+    )
+    logger.info("[rerank] %s is an embroider host: %s %s max_tokens=%d",
+                endpoint_url, model_id, row.get("precision"),
+                engine.max_length)
+    return engine

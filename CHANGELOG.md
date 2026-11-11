@@ -203,6 +203,47 @@ v6.8)" and its Design Decisions table.
   older is known) and `effective_at` from their authored date if any.
   `rank="ppr"` now also returns a slice of a 25-row pool, like the others.
 
+## [0.13.0] — 2026-11-10
+
+One ONNX story across embroider, bobine and okfgraph: okfgraph asks
+embroider where the runtime is, which vector space a session landed in,
+and who an external host is. Requires `embroider>=0.15,<0.16`.
+
+### Added
+- **Vector-space pin.** A graph now records the embroider `space` its
+  vectors live in (`MetaText embedding_space`: model, revision,
+  precision, dim, tuning, contract). Opening it with a session that
+  landed elsewhere refuses with `SPACE_PIN_MISMATCH` and names the
+  difference (e.g. `pinned precision=fp16, landed fp32`, with a CUDA hint
+  for fp16 graphs). `max_length` is not compared — stored texts are
+  chunked below it. Empty graphs re-pin; graphs a declared engine filled
+  are never adopted. A session that can't name its space warns instead of
+  refusing. `reembed` re-pins the space; `pin_info` reports
+  `pinned.space`, `configured.space` and a `space` mismatch.
+- **Identity probe for external lanes.** New settings `embed_identity` and
+  `rerank_identity` (`auto` | `declared`, default `auto`). In `auto` the
+  router first asks the host `GET /v1/models`; an embroider host names
+  its model, family, dim, ceiling, precision and space, so `embed_family`
+  / `rerank_family` become optional (given, they must agree), counts use
+  the host's exact `/tokenize` count, and embeds send `task`. Any other
+  server keeps the declared 0.12 contract; an unreachable host falls back
+  to it when a family is declared and refuses otherwise.
+- **`lanes()` (op, `/health`, `okf doctor`).** Per lane (embed, rerank):
+  backend, model, endpoint, identity (`in-process` | `embroider` |
+  `declared`), family, precision, and for embeds the session and pinned
+  space. It never opens a session or reads the database; `doctor` adds
+  `embed_lane` / `rerank_lane` info rows.
+
+### Changed
+- **Runtime discovery is embroider's.** `locate_ort_runtime()` returns
+  embroider's `{dylib, source, version}` (`env`, `pip:<dist>` or `os`)
+  without importing `onnxruntime`; okfgraph's own DLL search and GPU-DLL
+  warm-up are gone. `resolve_ort_dylib()` is a deprecated shim.
+- Crate sessions are wrapped in `embroider.Model`, which carries the
+  `space`.
+- A constructor refusal (pin, identity disagreement) releases the
+  database handle.
+
 ## [0.12.1] — 2026-11-08
 
 ### Changed

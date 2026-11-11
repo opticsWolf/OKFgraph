@@ -135,9 +135,9 @@ class TestRouter:
 
     def test_short_text_identical_across_limits(self):
         import embroider
-        from okfgraph.components.embedding import resolve_ort_dylib
+        from okfgraph.components.embedding import locate_ort_runtime
 
-        resolve_ort_dylib()
+        locate_ort_runtime()
         kwargs = {"truncate_dim": 512, "device": "cpu"}
         a = embroider.JinaV5.open(
             "jinaai/jina-embeddings-v5-text-small-retrieval", **kwargs,

@@ -1,12 +1,14 @@
-"""Cross-platform ONNX Runtime discovery tests.
+"""ONNX Runtime discovery tests.
 
-Pure filesystem/import-behavior coverage: no model download, no ORT shared
+okfgraph finds the runtime through embroider's locator (0.13); the
+per-platform library search is embroider's and tested there. These cover
+the delegation: pure filesystem coverage, no model download, no ORT shared
 library load, no encoder initialization.
 """
 
 import os
 import sys
-import types
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +21,7 @@ _MISSING = object()
 def _isolate_ort_dylib_path():
     """Save/restore `ORT_DYLIB_PATH` around every test.
 
-    `resolve_ort_dylib()` assigns `os.environ` directly (that is its job -
+    `locate_ort_runtime()` assigns `os.environ` directly (that is its job -
     ort reads the variable at load), which `monkeypatch.delenv` cannot
     reliably undo when the variable starts absent. Without this fixture a
     fake runtime path leaks into later tests in the same process and real
@@ -36,162 +38,81 @@ def _isolate_ort_dylib_path():
             os.environ["ORT_DYLIB_PATH"] = old
 
 
-def _make_package(tmp_path, dirname="ortpkg", files=()):
-    pkg = tmp_path / dirname
-    capi = pkg / "capi"
-    capi.mkdir(parents=True, exist_ok=True)
-    for name in files:
-        (capi / name).write_bytes(b"fake-runtime")
-    return pkg
+# The library name embroider looks for on this host.
+if os.name == "nt":
+    _LIBRARY = "onnxruntime.dll"
+elif sys.platform == "darwin":
+    _LIBRARY = "libonnxruntime.dylib"
+else:
+    _LIBRARY = "libonnxruntime.so.1.31.1"
 
 
-def _fake_module(monkeypatch, name, package_dir, providers=(), preload=None):
-    module = types.ModuleType(name)
-    module.__file__ = str(package_dir / "__init__.py")
-    calls = {"preload": 0}
-
-    def _providers():
-        return list(providers)
-
-    def _preload():
-        calls["preload"] += 1
-        if isinstance(preload, Exception):
-            raise preload
-
-    module.get_available_providers = _providers
-    module.preload_dlls = _preload
-    monkeypatch.setitem(sys.modules, name, module)
-    return calls
-
-
-def test_candidate_names_cover_supported_platforms():
-    assert emb._candidate_ort_library_names("nt", "win32") == ("onnxruntime.dll",)
-    assert emb._candidate_ort_library_names("posix", "darwin") == (
-        "libonnxruntime.dylib",
-    )
-    assert emb._candidate_ort_library_names("posix", "linux") == (
-        "libonnxruntime.so",
-    )
-
-
-def test_find_runtime_windows_exact(tmp_path):
-    pkg = _make_package(tmp_path, files=("onnxruntime.dll",))
-    found = emb._find_runtime_in_package(pkg, "nt", "win32")
-    assert found == pkg / "capi" / "onnxruntime.dll"
-
-
-def test_find_runtime_macos_exact(tmp_path):
-    pkg = _make_package(tmp_path, files=("libonnxruntime.dylib",))
-    found = emb._find_runtime_in_package(pkg, "posix", "darwin")
-    assert found == pkg / "capi" / "libonnxruntime.dylib"
-
-
-def test_find_runtime_linux_prefers_versioned(tmp_path):
-    pkg = _make_package(
-        tmp_path,
-        files=("libonnxruntime.so", "libonnxruntime.so.1", "libonnxruntime.so.2"),
-    )
-    found = emb._find_runtime_in_package(pkg, "posix", "linux")
-    assert found == pkg / "capi" / "libonnxruntime.so.2"
-
-
-def test_find_runtime_linux_unversioned_fallback(tmp_path):
-    pkg = _make_package(tmp_path, files=("libonnxruntime.so",))
-    found = emb._find_runtime_in_package(pkg, "posix", "linux")
-    assert found == pkg / "capi" / "libonnxruntime.so"
-
-
-def test_find_runtime_missing_returns_none(tmp_path):
-    pkg = tmp_path / "empty-pkg"
-    pkg.mkdir()
-    assert emb._find_runtime_in_package(pkg, "nt", "win32") is None
+def _site_packages(monkeypatch, tmp_path, *, library=True,
+                   dist_info="onnxruntime_gpu-1.31.1.dist-info"):
+    """A site-packages folder holding an ``onnxruntime`` package, first on
+    ``sys.path`` so ``find_spec`` resolves it. Its ``__init__`` raises: the
+    locator must find the library without importing the module."""
+    site = tmp_path / "site"
+    capi = site / "onnxruntime" / "capi"
+    capi.mkdir(parents=True)
+    (site / "onnxruntime" / "__init__.py").write_text(
+        "raise ImportError('the locator imported onnxruntime')\n")
+    if library:
+        (capi / _LIBRARY).write_bytes(b"fake-runtime")
+    if dist_info:
+        (site / dist_info).mkdir()
+    monkeypatch.delitem(sys.modules, "onnxruntime", raising=False)
+    monkeypatch.syspath_prepend(str(site))
+    monkeypatch.setattr(os, "add_dll_directory", lambda path: None,
+                        raising=False)
+    return capi
 
 
 def test_explicit_env_path_always_wins(monkeypatch, tmp_path):
     monkeypatch.setenv("ORT_DYLIB_PATH", str(tmp_path / "explicit.so"))
-    monkeypatch.delitem(sys.modules, "onnxruntime", raising=False)
-    monkeypatch.delitem(sys.modules, "onnxruntime-gpu", raising=False)
-    assert emb.resolve_ort_dylib() == str(tmp_path / "explicit.so")
+    _site_packages(monkeypatch, tmp_path)
+    got = emb.locate_ort_runtime()
+    assert got["dylib"] == str(tmp_path / "explicit.so")
+    assert got["source"] == "env"
 
 
-def test_resolve_windows_package(monkeypatch, tmp_path):
-    monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
-    pkg = _make_package(tmp_path, files=("onnxruntime.dll",))
-    preload_calls = _fake_module(monkeypatch, "onnxruntime", pkg)
-    monkeypatch.delitem(sys.modules, "onnxruntime-gpu", raising=False)
-    dll_dirs = []
-    monkeypatch.setattr(
-        os, "add_dll_directory", lambda path: dll_dirs.append(path), raising=False
-    )
+def test_pip_runtime_found_without_importing_it(monkeypatch, tmp_path):
+    capi = _site_packages(monkeypatch, tmp_path)
 
-    got = emb.resolve_ort_dylib(os_name="nt", sys_platform="win32")
+    got = emb.locate_ort_runtime()
 
-    assert got == str(pkg / "capi" / "onnxruntime.dll")
-    assert os.environ["ORT_DYLIB_PATH"] == got
-    # DLL-directory setup is Windows-only; elsewhere it must stay a no-op.
-    assert dll_dirs == ([str(pkg / "capi")] if os.name == "nt" else [])
-    assert preload_calls["preload"] == 0
+    assert Path(got["dylib"]) == capi / _LIBRARY
+    assert got["source"] == "pip:onnxruntime-gpu"
+    assert got["version"] == "1.31.1"
+    assert os.environ["ORT_DYLIB_PATH"] == got["dylib"]
+    assert "onnxruntime" not in sys.modules
 
 
-def test_resolve_macos_package(monkeypatch, tmp_path):
-    monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
-    pkg = _make_package(tmp_path, files=("libonnxruntime.dylib",))
-    preload_calls = _fake_module(monkeypatch, "onnxruntime", pkg)
-    monkeypatch.delitem(sys.modules, "onnxruntime-gpu", raising=False)
+def test_missing_runtime_reports_os(monkeypatch, tmp_path):
+    _site_packages(monkeypatch, tmp_path, library=False, dist_info=None)
 
-    got = emb.resolve_ort_dylib(os_name="posix", sys_platform="darwin")
+    got = emb.locate_ort_runtime()
 
-    assert got == str(pkg / "capi" / "libonnxruntime.dylib")
-    assert os.environ["ORT_DYLIB_PATH"] == got
-    assert preload_calls["preload"] == 0
-
-
-def test_resolve_linux_gpu_preload_failure_is_nonfatal(monkeypatch, tmp_path):
-    monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
-    pkg = _make_package(
-        tmp_path,
-        files=("libonnxruntime.so.1", "libonnxruntime.so.2"),
-    )
-    preload_calls = _fake_module(
-        monkeypatch,
-        "onnxruntime",
-        pkg,
-        providers=("CUDAExecutionProvider", "CPUExecutionProvider"),
-        preload=RuntimeError("missing CUDA DLL"),
-    )
-    monkeypatch.delitem(sys.modules, "onnxruntime-gpu", raising=False)
-
-    got = emb.resolve_ort_dylib(os_name="posix", sys_platform="linux")
-
-    assert got == str(pkg / "capi" / "libonnxruntime.so.2")
-    assert os.environ["ORT_DYLIB_PATH"] == got
-    assert preload_calls["preload"] == 1
-
-
-def test_resolve_single_module_name(monkeypatch, tmp_path):
-    # 0.7.0 (D6): `onnxruntime-gpu` installs the SAME `onnxruntime` module —
-    # there is no second importable name, so the resolver probes one module.
-    # A module whose package carries no runtime under capi/ falls through to
-    # the OS loader (None) instead of importing anything else real.
-    monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
-    empty = tmp_path / "no-runtime"
-    empty.mkdir()
-    _fake_module(monkeypatch, "onnxruntime", empty)
-    monkeypatch.setattr(os, "add_dll_directory", lambda path: None, raising=False)
-
-    assert emb.resolve_ort_dylib(os_name="nt", sys_platform="win32") is None
+    assert got["dylib"] is None and got["source"] == "os"
     assert "ORT_DYLIB_PATH" not in os.environ
 
 
-def test_resolve_missing_runtime_returns_none(monkeypatch, tmp_path):
-    monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
-    pkg = tmp_path / "no-capi"
-    pkg.mkdir()
-    _fake_module(monkeypatch, "onnxruntime", pkg)
-    monkeypatch.delitem(sys.modules, "onnxruntime-gpu", raising=False)
+def test_without_embroider_only_the_env_counts(monkeypatch, tmp_path):
+    # backend='external' needs no wheel; a stand-in without the locator
+    # behaves like a missing one.
+    monkeypatch.setitem(sys.modules, "embroider", object())
+    assert emb.locate_ort_runtime() == {
+        "dylib": None, "source": "os", "version": None}
+    monkeypatch.setenv("ORT_DYLIB_PATH", str(tmp_path / "explicit.so"))
+    assert emb.locate_ort_runtime()["source"] == "env"
 
-    assert emb.resolve_ort_dylib() is None
-    assert "ORT_DYLIB_PATH" not in os.environ
+
+def test_resolve_ort_dylib_is_a_deprecated_shim(monkeypatch, tmp_path):
+    capi = _site_packages(monkeypatch, tmp_path)
+    with pytest.warns(DeprecationWarning, match="locate_ort_runtime"):
+        got = emb.resolve_ort_dylib(warm_gpu=False, os_name="nt",
+                                    sys_platform="win32")
+    assert Path(got) == capi / _LIBRARY
 
 
 def test_ort_info_reports_distributions(monkeypatch):

@@ -150,9 +150,16 @@ SETTINGS = [
     Setting("api_key_env", "str", "", "embedding",
             "Name of the env var carrying the external endpoint's bearer "
             "key (optional)"),
+    Setting("embed_identity", "str", "auto", "embedding",
+            "How an external engine is identified: 'auto' asks the endpoint "
+            "(GET /v1/models; an embroider host names its family, width, "
+            "precision and space, anything else keeps the declared "
+            "contract), 'declared' trusts the embed_* settings alone",
+            choices=("auto", "declared")),
     Setting("embed_family", "str", "", "embedding",
             "Declared family id for an external engine, e.g. 'nomic-v1.5' "
-            "(required for backend='external')"),
+            "(required for backend='external' unless an embroider host "
+            "answers the identity probe; must agree with it if given)"),
     Setting("embed_pooling", "str", "mean", "embedding",
             "Declared pooling identity of the external engine",
             choices=("mean", "last", "cls")),
@@ -255,9 +262,16 @@ SETTINGS = [
     Setting("rerank_api_key_env", "str", "", "search",
             "Name of the env var carrying the external rerank endpoint's "
             "bearer key (optional)"),
+    Setting("rerank_identity", "str", "auto", "search",
+            "How an external reranker is identified: 'auto' asks the host "
+            "(GET /v1/models; an embroider host names its family and "
+            "ceiling and counts exactly), 'declared' trusts the rerank_* "
+            "settings alone",
+            choices=("auto", "declared")),
     Setting("rerank_family", "str", "", "search",
             "Declared rerank family label for provenance, e.g. 'bge-v2-m3' "
-            "(required for rerank_backend='external')"),
+            "(required for rerank_backend='external' unless an embroider "
+            "host answers the identity probe; must agree with it if given)"),
     Setting("rerank_max_tokens", "int", 8192, "search",
             "The external engine's declared per-pair token ceiling (the "
             "short/long split point)", cli=False, mcp=False),
@@ -363,6 +377,7 @@ class Settings:
     backend: str = "embroider"
     endpoint_url: str = ""
     api_key_env: str = ""
+    embed_identity: str = "auto"
     embed_family: str = ""
     embed_pooling: str = "mean"
     embed_prefixes: str = "none"
@@ -391,6 +406,7 @@ class Settings:
     rerank_backend: str = "embroider"
     rerank_endpoint_url: str = ""
     rerank_api_key_env: str = ""
+    rerank_identity: str = "auto"
     rerank_family: str = ""
     rerank_max_tokens: int = 8192
     rerank_count: str = "heuristic"
@@ -528,10 +544,14 @@ class Settings:
                 errors.append(
                     "embedding.endpoint_url must be an http(s) URL for "
                     "backend='external'")
-            if not self.embed_family or "/" in self.embed_family:
+            # With embed_identity='auto' an embroider host may supply the
+            # family at boot; the engine refuses then if nobody does.
+            if "/" in self.embed_family or (
+                    not self.embed_family
+                    and self.embed_identity == "declared"):
                 errors.append(
                     "embedding.embed_family must be a short declared name "
-                    "for backend='external'")
+                    "for backend='external' with embed_identity='declared'")
             if not 64 <= self.embed_max_tokens <= 1048576:
                 errors.append(
                     "embedding.embed_max_tokens must be within 64..1048576")
@@ -559,7 +579,9 @@ class Settings:
                 errors.append(
                     "search.rerank_endpoint_url must be an http(s) URL for "
                     "rerank_backend='external'")
-            if not self.rerank_family or "/" in self.rerank_family:
+            if "/" in self.rerank_family or (
+                    not self.rerank_family
+                    and self.rerank_identity == "declared"):
                 errors.append(
                     "search.rerank_family must be a short declared label "
                     "for rerank_backend='external'")
@@ -649,6 +671,7 @@ class Settings:
             endpoint_url=self.endpoint_url,
             api_key_env=self.api_key_env,
             embed_family=self.embed_family,
+            embed_identity=self.embed_identity,
             embed_pooling=self.embed_pooling,
             embed_prefixes=self.embed_prefixes,
             embed_max_tokens=self.embed_max_tokens,
@@ -681,6 +704,7 @@ class Settings:
             rerank_endpoint_url=self.rerank_endpoint_url,
             rerank_api_key_env=self.rerank_api_key_env,
             rerank_family=self.rerank_family,
+            rerank_identity=self.rerank_identity,
             rerank_max_tokens=self.rerank_max_tokens,
             efs=self.efs,
         )

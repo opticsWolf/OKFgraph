@@ -55,7 +55,10 @@ def server(tmp_path, stub_encoder):
 
 def test_o4_client_mirrors_the_router_and_errors_cross_typed(server):
     c = OKFClient(server["url"])
-    assert c.health()["db_path"] == str(server["db"].resolve())
+    health = c.health()
+    assert health["db_path"] == str(server["db"].resolve())
+    assert set(health["lanes"]) == {"embed", "rerank"}
+    assert "lanes" in health["ops"]
     assert c.import_bundle()["concept_ids"] == ["a"]
     assert [h["id"] for h in c.search("zebra")] == ["a"]
     assert [h["id"] for h in c.search("zebra", rank="ppr")] == ["a"]

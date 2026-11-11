@@ -215,20 +215,20 @@ MINI_TOKENIZER = {
 
 class TestEmbeddingErrors:
     def test_bogus_dylib_path_passes_through(self, monkeypatch):
-        """resolve_ort_dylib never raises: a bogus explicit path is returned
+        """locate_ort_runtime never raises: a bogus explicit path is returned
         verbatim; session creation is the fail-fast boundary."""
-        from okfgraph.components.embedding import resolve_ort_dylib
+        from okfgraph.components.embedding import locate_ort_runtime
 
         monkeypatch.setenv("ORT_DYLIB_PATH", "/nonexistent/ort.dll")
-        assert resolve_ort_dylib() == "/nonexistent/ort.dll"
+        assert locate_ort_runtime()["dylib"] == "/nonexistent/ort.dll"
 
     def test_corrupt_onnx_fails_cleanly(self, tmp_path):
         """Garbage ONNX bytes must raise a Python exception — never abort
         the process (the stale-System32 class of failure)."""
         embroider = pytest.importorskip("embroider")
-        from okfgraph.components.embedding import resolve_ort_dylib
+        from okfgraph.components.embedding import locate_ort_runtime
 
-        if resolve_ort_dylib() is None:
+        if locate_ort_runtime()["dylib"] is None:
             pytest.skip("no ONNX Runtime dylib resolvable")
         bad_onnx = tmp_path / "model.onnx"
         bad_onnx.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096)

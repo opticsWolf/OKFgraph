@@ -303,6 +303,7 @@ def build_app(router, settings=None):
             "db_path": str(Path(router.db_path).resolve()),
             "pid": os.getpid(),
             "ops": list(OPS),
+            "lanes": router.lanes(),   # no DB read, no session opened
         }))
 
     @mcp.custom_route("/ops/{op}", methods=["POST"])

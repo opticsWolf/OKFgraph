@@ -13,14 +13,14 @@ import pytest
 embroider = pytest.importorskip("embroider")
 pytest.importorskip("mordant")
 
-from okfgraph.components.embedding import EmbeddingEngine, resolve_ort_dylib
+from okfgraph.components.embedding import EmbeddingEngine, locate_ort_runtime
 
 MODEL = "jinaai/jina-embeddings-v5-text-small-retrieval"
 
 
 @pytest.fixture(scope="module")
 def encoder():
-    resolve_ort_dylib()
+    locate_ort_runtime()
     return embroider.JinaV5.open(MODEL, truncate_dim=64, device="cpu")
 
 
@@ -56,9 +56,9 @@ def test_count_tokens_matches_transformers(encoder):
         )
 
 
-def test_resolve_ort_dylib(monkeypatch):
+def test_locate_ort_runtime(monkeypatch):
     monkeypatch.delenv("ORT_DYLIB_PATH", raising=False)
-    got = resolve_ort_dylib()
+    got = locate_ort_runtime()["dylib"]
     assert got is None or got.endswith(("onnxruntime.dll", "libonnxruntime.dylib", ".so")) or ".so." in got
     if got is not None:
         assert os.environ["ORT_DYLIB_PATH"] == got

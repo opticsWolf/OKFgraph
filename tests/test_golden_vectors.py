@@ -17,7 +17,7 @@ import pytest
 
 embroider = pytest.importorskip("embroider")
 
-from okfgraph.components.embedding import EmbeddingEngine, resolve_ort_dylib
+from okfgraph.components.embedding import EmbeddingEngine, locate_ort_runtime
 
 FIXTURE = (
     Path(__file__).resolve().parent / "fixtures" / "golden_jina_v5_text_small.json"
@@ -35,7 +35,7 @@ def golden():
 
 @pytest.fixture(scope="module")
 def snap_paths():
-    resolve_ort_dylib()
+    locate_ort_runtime()
     hub = Path(EmbeddingEngine.default_cache_dir())  # already the hub dir
     cached = hub / ("models--" + MODEL.replace("/", "--")) / "snapshots"
     assert cached.is_dir(), f"model not cached locally: {MODEL}"

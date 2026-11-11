@@ -13,13 +13,14 @@ it touches, the tests and docs it owes, and what "done" means.
 | A. Release 0.13.1 | 0.13.1 | green suite | small |
 | B. External image lane (O3) | 0.14.0 | embroider ≥ 0.15 (`serve` vision route, `prepare_image`) | medium |
 | C. In-process image prep on `embroider.prepare_image` (E6 tail) | 0.14.0 | B's encoder seam | small |
+| H. Caption fallback covers the encode call (declared-lane hardening) | 0.14.0 | B's encoder seam | small |
 | D. Typed conversion errors | 0.14.0 | — | small |
 | E. bobine device/precision vocabulary (O6, part 1) | 0.14.1 | bobine 0.9 (B3) | small |
 | F. Warm PDF converter with a bounded lifetime (O6, part 2) | 0.14.1 | bobine 0.9 (B4) | medium |
 | G. Open questions | — | a decision | — |
 
-Steps B–D can ship together without bobine. E and F wait for bobine 0.9
-and ship together, because both change the converter construction.
+Steps B–D and H can ship together without bobine. E and F wait for bobine
+0.9 and ship together, because both change the converter construction.
 
 Standing rules that apply to every step:
 
@@ -99,7 +100,9 @@ New keys in the `embedding` group, mirroring the text and rerank lanes:
   vectors are only useful against their text partner. The host must be
   embroider and must answer `/v1/models`; otherwise the lane refuses to
   open (see below). This keeps the first version small; a declared mode
-  can follow if a non-embroider vision host ever matters.
+  can follow if a non-embroider vision host ever matters — that is a
+  **stated long-term goal** (see H, "Long-term goal: vision on the GGUF
+  lane"), not a closed door.
 - `image_model_id` stays meaningful: when set, the host's `id` must equal
   it. `image_precision` likewise: when not `auto`, the host's
   `precision` must equal it.
@@ -320,6 +323,130 @@ of a resize contract drift.
 
 ---
 
+## H. Caption fallback covers the encode call (declared-lane hardening)
+
+Ships with B and C in 0.14.0. It is the declared (GGUF) lane's half of
+B's robustness, and it must land in the same release: B fixes the
+external-embroider branch of the image lane, while the failure below is
+the *declared* branch's, and a `mode=omni` import on a GGUF graph would
+otherwise keep dying exactly as it does today.
+
+### The defect (measured on 0.13.1)
+
+The caption fallback wraps preparation only (`image_assets.py:139`,
+`except (ValueError, RuntimeError)` around `self._prepare_vision(img)`).
+The encode call (`:165`, `self._encode_vision_image(rgb, rh, rw)`) sits
+outside any try, and every open-side refusal is a `StateError` — which
+subclasses `RuntimeError`, so it *would* be caught if the try reached
+fifteen lines further:
+
+- `NO_ORT_RUNTIME` (no runtime in the process),
+- `VISION_INCOMPATIBLE` (the graph's text model is not the vision
+  model's `text_partner` — always true on a declared lane, whose model
+  has no partner at all),
+- `IMAGE_PIN_MISMATCH`,
+- `ExternalEmbeddingError` from a vision host (B).
+
+Reproduced against a llama.cpp-shaped fake host with
+`backend='external'`, `embed_family='nomic-v1.5'`, a 640×480 PNG and
+`mode=omni`:
+
+```
+RAISED: StateError VISION_INCOMPATIBLE | image-content search needs a
+jinaai/jina-embeddings-v5-text-nano-retrieval graph; this graph uses
+owner/text-model — use mode=text (captions)
+```
+
+So the error names a remedy the code does not take. What the user sees
+then depends on the caller: a warning plus that concept's images dropped
+(`import_.py:1184`, bundle import), silently zero images
+(`import_.py:1534`, `except Exception: pass`), or a hard error
+(`import_.py:2258`, `okf ingest`). No test combines an external backend
+with images, which is why this survived 0.8 → 0.13.
+
+### What changes
+
+The caption decision moves out to cover the whole vision attempt, and
+the vision hash is computed only for an image that actually embeds as
+vision:
+
+```python
+if route is EmbedRoute.VISION:
+    try:
+        embedding = ve.encode_image_bytes(img.data)   # prepare + encode
+        content_hash = vision_content_hash(ve.model_id, self._vision_precision(), img.data)
+    except (ValueError, RuntimeError) as exc:
+        self._note_vision_fallback(exc)               # one summary line per import
+        route = EmbedRoute.TEXT
+        caption = img.alt_text if img.has_alt_text else fallback_caption(...)
+        content_hash = self._content_hash(route, caption.encode("utf-8"))
+        embedding = self.embed_engine._encode(caption or img.filename, task="Document")
+```
+
+Three details that are easy to get wrong:
+
+1. **Hash ordering.** The vision hash must not be stored for a row whose
+   vector is a caption. Computing it inside the try (after a successful
+   encode) keeps `content_hash` and `embedding` describing the same
+   thing; the reuse check then still works, and a later import on a
+   working lane re-embeds by hash miss.
+2. **One warning, not N.** Record the first failure's message and the
+   count; log a single line at the end of `_ingest_concept_images`
+   (`"%d image(s) embedded as captions: %s"`). A hundred-image document
+   on a declared lane must not write a hundred identical warnings.
+3. **A dead host is not a per-image failure (B's rule).** Only open and
+   per-image refusals degrade to captions. A connection failure stays
+   `EXTERNAL_UNAVAILABLE` and aborts the import — silently turning every
+   image into a caption because the host is down is the failure mode B
+   exists to prevent.
+
+### Tests
+
+- Fake external vision host, `mode=omni`, bytes-bearing alt-less image
+  → captions land, `route='text'`, no exception, one summary warning.
+- The same through each caller (bundle import, single file, `okf ingest`)
+  → identical outcome, no swallowed-exception path still hides one.
+- Hash correctness: the stored `content_hash` equals the text hash, and
+  re-importing while the lane is broken reuses (no churn).
+- In-process lane with `sys.modules["onnxruntime"] = None` → captions,
+  not `NO_ORT_RUNTIME`.
+- Vision host unreachable mid-import → `EXTERNAL_UNAVAILABLE` (B), not a
+  caption for every image.
+- `mode=omni` on a graph whose text model *is* a valid partner → still
+  `route='vision-onnx'` (the fallback must not swallow a healthy lane).
+
+### Long-term goal: vision on the GGUF lane
+
+The end state is deliberately **not** "declared lanes are caption-only
+forever". The target is a declared image lane as well:
+
+> A graph whose text model comes from a GGUF host should be able to embed
+> images through a declared vision host, exactly as it embeds text
+> through a declared text host.
+
+What that requires, and why it is not in 0.14.0:
+
+- **A declared partner.** Image vectors live in the text model's space
+  (one `ImageAsset.embedding` column, one `image_omni_idx`), so a
+  declared vision lane needs an explicit `image_text_partner` claim —
+  "these two models were trained together" — in place of the registry's
+  `text_partner`. Without it, mixing vectors is silent garbage.
+- **A declared space.** The image space pin (`IMAGE_SPACE_META_KEY`, B)
+  is cheap once a host names its `space`; a declared lane must supply
+  the string itself, and the pin then compares declarations, not proofs.
+- **A host route.** `POST /v1/images/embeddings` answered by a non-
+  embroider host (llama.cpp's multimodal / mtmd path, a TEI vision
+  endpoint), with the resize contract declared by whoever serves it.
+- **The honest failure mode.** Where B refuses a vision lane it cannot
+  verify, the declared lane accepts it with `identity=declared` and the
+  same fail-closed pins over the declared values.
+
+Until that lands, H makes the declared lane *safe* (captions, one
+warning, correct hashes) rather than *broken*, which is the whole point
+of shipping it now.
+
+---
+
 ## D. Typed conversion errors
 
 Today a bobine failure inside `BobineConverter.convert` (a corrupt PDF, an
@@ -437,8 +564,13 @@ output_dir, on_page=, should_continue=)` plus a way to release it
    `DIR/*.pdf` (not recursive), so bulk PDF matches bulk markdown
    (`import` over `.md/.markdown/.txt`). Cheap once F lands; skip until
    someone asks.
-3. **Declared image identity.** Only if a non-embroider vision host
-   matters (see B).
+3. **Declared image identity.** Deferred out of 0.14.0 by decision (B:
+   "no `image_identity = declared` mode"), but it is a **stated
+   long-term goal**, not a rejection: a GGUF text graph should eventually
+   embed images through a declared vision host too. H names what that
+   needs (`image_text_partner`, a declared `image_space`, a non-embroider
+   `/v1/images/embeddings` host) and H makes the meanwhile safe
+   (captions, one warning, correct hashes).
 
 ---
 

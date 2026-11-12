@@ -470,9 +470,22 @@ reads like an okfgraph bug.
 
 ## E. bobine device/precision vocabulary (O6, part 1)
 
-Waits for bobine 0.9 (Silk plan B3: `ConverterConfig(device=,
-precision=)` using the same `auto|cpu|cuda` and `auto|fp32|fp16|int8`
-words as embroider).
+**Unblocked: bobine 0.9.0 is published** (crates.io + PyPI, 2026-11-11,
+tag `v0.9.0`). Raise the `pdf` extra floor to `bobine>=0.9` as part of this
+step. What 0.9 exposes, checked against its docs and code:
+
+- `ConverterConfig(device="auto|cpu|cuda", precision="auto|fp32|fp16|int8")`
+  — parsed through embroider's `DeviceReq`, so the words mean what they
+  mean in embroider and okfgraph. `q8` is refused by name (bobine has no
+  q8 artifact).
+- `bobine.DEVICES` / `bobine.PRECISIONS` — the tuples to validate against
+  (read them; no local copy).
+- `HybridConverter.describe()` → `{device_requested, precision_requested,
+  passes: {encoder, decoder, layout, ocr, table, potatr: {providers,
+  policy, precision, landed}}}`; `providers` is `None` for an auto-CUDA
+  slot before it opens.
+- `bobine.runtime_info()` → `{dylib, source, version, set_by, cuda_dirs}`
+  (useful for the converter status row when bobine is installed).
 
 - Settings in the `ingest` group: `pdf_device` (default `auto`) and
   `pdf_precision` (default `auto`), validated against bobine's
@@ -499,9 +512,19 @@ words as embroider).
 
 ## F. Warm PDF converter with a bounded lifetime (O6, part 2)
 
-Waits for bobine 0.9 (Silk plan B4): `HybridConverter.ingest_document(path,
-output_dir, on_page=, should_continue=)` plus a way to release it
-(`close()` or context manager).
+**Unblocked: shipped in bobine 0.9.0.** `HybridConverter.ingest_document(path,
+output_dir, on_page=, should_continue=)` reuses the sessions it already
+opened; `close()` (also `with`, and dropping the object) releases them and
+is idempotent. Two contracts from the bobine side that F has to respect:
+
+- A closed converter **refuses** work (`RuntimeError: converter was closed;
+  construct a new HybridConverter`) instead of silently rebuilding — so
+  okfgraph's `close()` then rebuild on key change is exactly right.
+- One document at a time per converter; a concurrent call raises rather
+  than waiting (bobine cannot block on a mutex while holding the GIL), so
+  okfgraph's `threading.Lock` is load-bearing, not redundant.
+- `describe()` keeps answering after `close()` (`landed` goes false), so
+  the `pdf_converter` doctor row can render at any time.
 
 ### The rule (confirmed)
 

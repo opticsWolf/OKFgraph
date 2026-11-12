@@ -477,11 +477,18 @@ words as embroider).
 - Settings in the `ingest` group: `pdf_device` (default `auto`) and
   `pdf_precision` (default `auto`), validated against bobine's
   vocabulary. Read the allowed values from bobine if it exposes them,
-  else from a local tuple that a test checks against bobine.
+  else from a local tuple that a test checks against bobine. **bobine 0.9
+  will expose them** (`bobine.DEVICES`, `bobine.PRECISIONS`, per its
+  `docs/plan-0.9.md` §3), so read the source and keep no duplicate tuple.
+  The precision words are `auto|fp32|fp16|int8` — bobine has no `q8`
+  artifact, so don't offer one.
 - `BobineConverter(routing_mode, extract_images, device, precision)`,
   passed into `ConverterConfig`.
 - `converter_status()` (line 74) reports the resolved device and
-  precision once bobine reports them.
+  precision once bobine reports them — from **`describe()` on the
+  converter**, not from `bobine.model_status()`, which is cache status and
+  stays cache-only. `describe()` is answerable before the first
+  conversion (requested filled, landed `None`) and after.
 - The `pdf` extra floor becomes `bobine>=0.9`. That is okfgraph's own
   extra, so it's okfgraph's call. Weave's floors are raised separately,
   in Weave.

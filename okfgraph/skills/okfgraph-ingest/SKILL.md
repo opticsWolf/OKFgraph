@@ -100,6 +100,9 @@ re-extracting it from files.
   reported, the rest continue): prefer one call over a loop.
   `--pdf-device auto|cpu|cuda` and `--pdf-precision auto|fp32|fp16|int8`
   pick the converter's own lane (independent of the embedding device).
+  A folder expands to the convertible files directly inside it (no
+  recursion) and `*`/`?` patterns expand in-process — PowerShell does not
+  glob for programs, so `--pdf-path 'papers/*.pdf'` works there (0.14.2).
   Bulk markdown (`.md`/`.markdown`/`.txt`): `okf import --all [--bundle-path DIR]`
   (`--prune-missing` drops concepts whose files vanished from disk).
 - `--json` prints the same `data` as the MCP tool inside the envelope.

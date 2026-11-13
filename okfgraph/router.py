@@ -335,6 +335,11 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # The db's folder is created on first use: the .okfgraph/ home
         # (0.12.0) and, since 0.13.1, any other parent, relative or absolute
         # (a missing one surfaced as ladybug's raw IO error, an INTERNAL).
+        # Whether the *file* existed before this boot is recorded first: a
+        # long-running host (okf-mcp, okf serve) warns while a graph it just
+        # created is still empty, because a mistyped path otherwise looks
+        # exactly like a healthy empty graph (0.14.2, G1).
+        self.db_created = db_path == ":memory:" or not Path(db_path).exists()
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -932,6 +937,30 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def concept_count(self) -> int:
+        """Concepts in the graph (0 when empty; never raises for a query)."""
+        try:
+            rows = self.conn.execute(
+                "MATCH (c:Concept) RETURN count(c) AS n"
+            ).rows_as_dict().get_all()
+        except Exception:  # pragma: no cover - a count must answer
+            return 0
+        return int(rows[0]["n"]) if rows else 0
+
+    def creation_notice(self) -> Optional[str]:
+        """The "this graph is new and empty" warning, or None.
+
+        Only a graph this boot created qualifies, and only while nothing has
+        been written: once anything is ingested the notice is gone for good
+        (the host's process is the only place this state lives).
+        """
+        if not getattr(self, "db_created", False) or self.concept_count():
+            return None
+        where = ":memory:" if self.db_path == ":memory:" else str(
+            Path(self.db_path).resolve())
+        return (f"graph created at {where} on this boot and is still empty. "
+                f"If you expected existing knowledge, check OKFGRAPH_DB_PATH.")
 
     def close(self) -> None:
         """Checkpoint and close the database connection.

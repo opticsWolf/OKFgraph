@@ -185,6 +185,17 @@ class AdminOps:
         fixed = self.doctor_mgr.fix() if fix else None
         report = self.doctor_mgr.diagnose(stale_days=stale_days,
                                           cache_dir=cache_dir)
+        # A graph this boot created is reported first (0.14.2): the same
+        # fact the MCP tools warn about, so a human sees it too.
+        if getattr(self, "db_created", False):
+            where = ":memory:" if self.db_path == ":memory:" else str(
+                Path(self.db_path).resolve())
+            n = self.concept_count()
+            state = "still empty" if not n else f"{n} concepts"
+            report["info"].insert(0, {
+                "rule": "db_created",
+                "message": f"database created at {where} on this boot, {state}",
+            })
         for name, lane in self.lanes().items():
             where = lane["endpoint"] or "in-process"
             # An external lane may not know its model until it opens: the

@@ -15,6 +15,7 @@ import argparse
 import os
 import base64
 import cProfile
+import glob
 import io
 import json
 import logging
@@ -1091,6 +1092,10 @@ def _ingest(args):
                             ("folder", args.folder))
           if v is not None}
     pdf_paths = args.pdf_path or [None]
+    if kind == "pdf" and args.pdf_path:
+        # Folders and *? patterns expand here, in-process (0.14.2, G2):
+        # PowerShell hands "docs\*.pdf" through literally.
+        pdf_paths = _expand_pdf_paths(args.pdf_path)
     if kind == "pdf" and len(pdf_paths) > 1:
         return _ingest_many_pdfs(args, router, settings, pdf_paths, on_page)
     result = router.ingest(
@@ -1148,13 +1153,74 @@ def _ingest(args):
     return _out(args, "ingest", result, render)
 
 
+#: Extensions bobine converts (its ``SUPPORTED_EXTENSIONS``, pipeline.rs).
+#: bobine does not export the list to Python yet, so this is a copy pinned by
+#: ``tests/test_created_graph_and_pdf_paths.py``; when B6 exports it, the test
+#: compares instead.
+PDF_EXTENSIONS = ("pdf", "docx", "xlsx", "pptx", "doc", "xls", "ppt")
+
+
+def _is_convertible(path: Path) -> bool:
+    return (path.is_file()
+            and path.suffix.lower().lstrip(".") in PDF_EXTENSIONS)
+
+
+def _expand_pdf_paths(raw_paths):
+    """Expand folders and shell patterns for ``--pdf-path`` (0.14.2).
+
+    PowerShell does not expand ``*``/``?`` for programs, so
+    ``--pdf-path docs/*.pdf`` arrives literally and used to be a missing
+    file. A folder expands to the convertible files directly inside it (no
+    recursion); patterns expand through :mod:`glob` (absolute ones too) and
+    keep only extensions bobine converts, sorted by name. A literal path is
+    passed through untouched — bobine's own refusal is the better error for
+    a file the user named explicitly. Nothing matched is ``FILE_NOT_FOUND``
+    naming the folder or pattern (0.14.2, G2).
+    """
+    expanded: list[str] = []
+    for raw in raw_paths:
+        text = str(raw)
+        path = Path(text)
+        if path.is_dir():
+            matches = sorted((p for p in path.iterdir() if _is_convertible(p)),
+                             key=lambda p: p.name.lower())
+            if not matches:
+                raise OKFError(
+                    "FILE_NOT_FOUND",
+                    f"no convertible files in folder: {text}",
+                    op="ingest",
+                    fields={"path": text,
+                            "extensions": list(PDF_EXTENSIONS)},
+                    remedy="pass a PDF/Office file, a folder that contains "
+                           "one, or a pattern such as 'dir/*.pdf'",
+                )
+            expanded.extend(str(p) for p in matches)
+        elif any(ch in text for ch in "*?"):
+            matches = sorted(
+                (Path(p) for p in glob.glob(text) if _is_convertible(Path(p))),
+                key=lambda p: p.name.lower())
+            if not matches:
+                raise OKFError(
+                    "FILE_NOT_FOUND",
+                    f"no convertible files match: {text}",
+                    op="ingest",
+                    fields={"pattern": text,
+                            "extensions": list(PDF_EXTENSIONS)},
+                    remedy="check the pattern, or pass the files directly",
+                )
+            expanded.extend(str(p) for p in matches)
+        else:
+            expanded.append(text)
+    return expanded
+
+
 def _ingest_many_pdfs(args, router, settings, paths, on_page):
     """``okf ingest --kind pdf --pdf-path A B …``: one process, one router.
 
     The embedding model loads once for the whole batch instead of once per
-    ``okf`` invocation (bobine still opens its converter per file). A file
-    that fails is reported and the batch moves on; the exit code is the
-    first failure's. ``--json`` prints one envelope whose ``data.files``
+    ``okf`` invocation, and (0.14.1) one warm bobine converter serves every
+    file. A file that fails is reported and the batch moves on; the exit code
+    is the first failure's. ``--json`` prints one envelope whose ``data.files``
     lists each file's result or error; a failure also makes the envelope
     ``ok: false`` with the first error in ``error``.
     """
@@ -1621,9 +1687,12 @@ def build_parser():
     p.add_argument("--md-path", default=None, help="Markdown file (--kind md)")
     p.add_argument("--bib-path", default=None, help="BibTeX file (--kind bib): one concept per entry as refs/<key>")
     p.add_argument("--pdf-path", nargs="+", default=None, metavar="FILE",
-                   help="File(s) to convert (--kind pdf): PDF or Office (docx/xlsx/pptx, "
-                   "legacy doc/xls/ppt). Several files run in one process on one loaded "
-                   "embedding model; a failed file is reported and the rest continue")
+                   help="File(s), folder(s) or *? patterns to convert (--kind pdf): PDF or "
+                   "Office (docx/xlsx/pptx, legacy doc/xls/ppt). A folder expands to the "
+                   "convertible files directly inside it (no recursion); patterns expand "
+                   "in-process because PowerShell does not glob for programs. Several files "
+                   "run in one process on one loaded model and one warm converter; a failed "
+                   "file is reported and the rest continue")
     p.add_argument("--thoughts", default=None, help="Raw reasoning text (--kind thoughts)")
     p.add_argument("--topic", default=None, help="Topic (--kind thoughts)")
     p.add_argument("--concept-id", default=None, help="Explicit concept ID (--kind md/thoughts; slashes are namespaces; thoughts default to thoughts/<topic>/<ts>_<id>)")

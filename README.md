@@ -325,8 +325,10 @@ Only commands that embed text (`search` except `--rank ppr`, `import`,
 queries in cold sessions. Bulk input: many Markdown files go through
 `okf import --all` (or `okf import FILE...`) — `.md`, `.markdown` and
 `.txt`, one model load, batched writes. PDF and Office files go through
-`okf ingest --kind pdf --pdf-path A.pdf B.docx …`: one model load for the
-batch, and since 0.14.1 one warm bobine converter for the whole batch too —
+`okf ingest --kind pdf --pdf-path A.pdf B.docx …` (a folder or a `*.pdf`
+pattern works too — patterns expand in-process, which matters in
+PowerShell): one model load for the batch, and since 0.14.1 one warm bobine
+converter for the whole batch too —
 layout/OCR sessions open once, and a long-running host releases them after
 `pdf_idle_seconds` (300 by default; `--pdf-device` / `--pdf-precision` pick
 the converter's device and weight precision). With `okf serve` running,

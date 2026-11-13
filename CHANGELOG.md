@@ -4,6 +4,38 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.14.2] — unreleased
+
+Two operational fixes for the surfaces that run unattended, plus the design
+decision for images on a GGUF text graph.
+
+- **A graph this boot created says so (G1).** `okf-mcp` and `okf serve`
+  create a missing database on first boot, which is right for new projects —
+  but a mistyped `OKFGRAPH_DB_PATH` then looks exactly like a healthy empty
+  graph, and an agent sees `data: []`. The router now records whether the
+  file existed before this boot; while that graph is still empty, **every
+  MCP tool envelope carries a warning** naming the absolute path and the
+  setting to check, `okf serve`'s `/health` reports `created`, `okf doctor`
+  leads with a `db_created` line, and the server logs a WARNING at boot. The
+  warning stops as soon as anything is ingested; `--create`/failing to boot
+  would break every existing setup, and an agent cannot run `okf init`.
+- **`--pdf-path` takes folders and patterns (G2).** PowerShell does not
+  expand `*`/`?` for programs, so `--pdf-path docs\*.pdf` used to be a
+  missing file. A folder now expands to the convertible files directly
+  inside it (no recursion) and patterns expand in-process — both keep only
+  the extensions bobine converts (pdf, docx, xlsx, pptx, doc, xls, ppt),
+  sorted by name, and a folder or pattern matching nothing is
+  `FILE_NOT_FOUND` naming it. A literal path is passed through untouched, so
+  bobine's own refusal still names the file. CLI only: MCP ingest stays one
+  file per call, where each write is its own approval.
+- **Design note for declared image identity.** `docs/plan-declared-image-identity.md`:
+  llama-server's `/v1/embeddings` accepts images with `--mmproj`, so a GGUF
+  graph keeps both lanes in one runtime and the declared image lane becomes
+  the right shape again. Records the checks (name agreement via `--alias`,
+  the `multimodal` capability, a two-image probe for the reported
+  identical-vector bug, truncation/normalization) and the open questions to
+  settle on a current build. No code until those are answered.
+
 ## [0.14.1] — 2026-11-13
 
 The converter-control release: PDF conversion gets the same device and

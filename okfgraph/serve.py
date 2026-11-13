@@ -301,6 +301,7 @@ def build_app(router, settings=None):
     async def health(request: Request) -> JSONResponse:
         return JSONResponse(envelope("health", data={
             "db_path": str(Path(router.db_path).resolve()),
+            "created": bool(getattr(router, "db_created", False)),
             "pid": os.getpid(),
             "ops": list(OPS),
             "lanes": router.lanes(),   # no DB read, no session opened
@@ -404,6 +405,12 @@ def serve(settings, listen: str, *, ready: Optional[threading.Event] = None,
         bundle_root=settings.default_bundle_root(str(Path(settings.db_path).parent)),
         **settings.router_kwargs(),
     )
+    # A first boot created this database; say so once, for the human who
+    # started the server (0.14.2, G1). The per-request surfaces — /health's
+    # ``created`` and doctor's ``db_created`` row — cover everyone else.
+    notice = router.creation_notice()
+    if notice:
+        logger.warning("%s", notice)
     sf = serve_file_for(settings.db_path)
     try:
         app, _locked = build_app(router, settings)

@@ -616,12 +616,14 @@ is idempotent. Two contracts from the bobine side that F has to respect:
    (`import` over `.md/.markdown/.txt`). Cheap once F lands; skip until
    someone asks.
 3. **Declared image identity.** Deferred out of 0.14.0 by decision (B:
-   "no `image_identity = declared` mode"), but it is a **stated
-   long-term goal**, not a rejection: a GGUF text graph should eventually
-   embed images through a declared vision host too. H names what that
-   needs (`image_text_partner`, a declared `image_space`, a non-embroider
-   `/v1/images/embeddings` host) and H makes the meanwhile safe
-   (captions, one warning, correct hashes).
+   "no `image_identity = declared` mode"), then re-opened deliberately:
+   llama-server can embed images through `/v1/embeddings` once loaded with
+   `--mmproj`, so a GGUF graph needs no embroider pairing at all and a
+   same-model declaration is true by construction. Shape and open questions
+   live in **`docs/plan-declared-image-identity.md`**; no code until a
+   current build passes the two-image probe and one GGUF model + mmproj is
+   chosen. Until then H keeps the declared lane safe (captions, one warning,
+   correct hashes).
 
 ---
 

@@ -90,6 +90,7 @@ def make_lifespan(settings: Settings, given_router=None):
             bundle_root=root,
             **settings.router_kwargs(),
         )
+        _record_creation_notice(router)
         logger.info(
             "OKFgraph MCP server started: db=%s model=%s device=%s precision=%s",
             db_path, settings.model_id, settings.device, settings.precision,
@@ -127,22 +128,57 @@ class _ToolFailure(ToolError):
         self.payload = payload
 
 
+#: The router this server booted against, when it created the database
+#: itself (0.14.2, G1). A mistyped ``OKFGRAPH_DB_PATH`` otherwise looks
+#: exactly like a healthy empty graph, and the agent sees ``data: []``.
+_CREATION_NOTICE = None
+
+
+def _record_creation_notice(router) -> None:
+    """Remember the "new empty graph" notice for this boot (MCP only)."""
+    global _CREATION_NOTICE
+    notice = getattr(router, "creation_notice", None)
+    _CREATION_NOTICE = notice if callable(notice) else None
+    message = _CREATION_NOTICE() if _CREATION_NOTICE is not None else None
+    if message:
+        # The log is for the human who started the server; the per-tool
+        # warning below is for the agent that can actually act on it.
+        logger.warning("%s", message)
+
+
+def _warn_created_graph() -> None:
+    """Attach the boot notice to a tool result while the graph is empty."""
+    if _CREATION_NOTICE is None:
+        return
+    try:
+        message = _CREATION_NOTICE()
+    except Exception:  # pragma: no cover - a warning must never fail a tool
+        return
+    if message:
+        warnings.warn(message, stacklevel=3)
+
+
 def _tool_result(op: str, produce):
     """Envelope adapter (§4): success → success envelope; failure → raise.
 
     Non-OKFError exceptions never cross as bare tracebacks: they are
     wrapped as ``INTERNAL`` with the type name. Warnings recorded during
-    the call ride on the envelope.
+    the call ride on the envelope — including the "graph created empty on
+    this boot" notice, so an agent reading ``warnings`` learns the path it
+    opened is new (0.14.2).
     """
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         try:
             data = produce()
         except OKFError as exc:
+            _warn_created_graph()   # a failed call left the graph as it was
             raise _ToolFailure(envelope(op, error=exc, warnings=caught)) from None
         except Exception as exc:  # noqa: BLE001 — catch-all is the point (§4)
+            _warn_created_graph()
             raise _ToolFailure(envelope(
                 op, error=internal_error(exc, op=op), warnings=caught)) from None
+        _warn_created_graph()
     return dumps_envelope(envelope(op, data=data, warnings=caught))
 
 

@@ -129,7 +129,11 @@ budgeted section list (self first, then PPR-ranked neighbours).
   `delete` (remove a node or nested tree).
 - Wire contract (D7): a success result is the envelope string
   (`{ok: true, op, data, warnings}`); a failure raises, so the result
-  carries `isError: true` and the text is the error envelope — typed code,
+  carries `isError: true` and the text is the error envelope. `warnings` is
+  not decoration: since 0.14.2 a server that just created its database warns
+  on every tool result while the graph is empty ("graph created at … check
+  OKFGRAPH_DB_PATH"), and a harness that surfaces warnings lets the agent
+  catch a wrong path before writing into it — typed code,
   message, fields, remedy; untyped component exceptions arrive wrapped as
   `INTERNAL` with the type name (no bare tracebacks).
 - Params a tool path ignores are refused with `BAD_VALUE` naming them in

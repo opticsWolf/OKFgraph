@@ -35,7 +35,9 @@ tools (8 read/ingest + 3 write).
 3. `ingest`, `export_bundle` and `export_concept` write: they need
    harness approval unless pre-approved. On a detached graph
    (`okf detach`) everything serves, but `ingest` refuses (`DETACHED`).
-4. Verify: `search` anything (an empty graph returns `data: []`).
+4. Verify: `search` anything (an empty graph returns `data: []` together
+   with the "created … still empty" warning, which confirms the path is
+   new rather than mistyped).
 
 ## Which tool when
 
@@ -70,6 +72,12 @@ tools (8 read/ingest + 3 write).
 
 - Every tool returns the envelope `{ok, op, data, warnings, error}` as
   JSON text. Read `data`; `warnings` carries non-fatal notes.
+- **"graph created at … and is still empty" in `warnings`** (0.14.2) means
+  the server created the database on this boot: the path it opened was new.
+  If the user expected existing knowledge, stop and check
+  `OKFGRAPH_DB_PATH` / `--db-path` before ingesting anything — writing into
+  the wrong graph is how knowledge ends up split. The warning goes away
+  once the graph has a concept.
 - Failures set `isError: true` and carry the error envelope:
   `error: {code, message, fields, remedy}`. Act on `remedy`:
   `UNKNOWN_CONCEPT` → search first to find IDs; `BAD_VALUE` names the

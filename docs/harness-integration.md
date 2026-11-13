@@ -129,13 +129,15 @@ budgeted section list (self first, then PPR-ranked neighbours).
   `delete` (remove a node or nested tree).
 - Wire contract (D7): a success result is the envelope string
   (`{ok: true, op, data, warnings}`); a failure raises, so the result
-  carries `isError: true` and the text is the error envelope. `warnings` is
-  not decoration: since 0.14.2 a server that just created its database warns
-  on every tool result while the graph is empty ("graph created at … check
-  OKFGRAPH_DB_PATH"), and a harness that surfaces warnings lets the agent
-  catch a wrong path before writing into it — typed code,
+  carries `isError: true` and the text is the error envelope — typed code,
   message, fields, remedy; untyped component exceptions arrive wrapped as
   `INTERNAL` with the type name (no bare tracebacks).
+- `warnings` is not decoration: since 0.14.2 a server that just created its
+  database (`okf-mcp`, or `okf serve`'s `/mcp`) warns on every tool result
+  while the graph is empty ("graph created at … check OKFGRAPH_DB_PATH"),
+  and a harness that surfaces warnings lets the agent catch a wrong path
+  before writing into it. `okf-mcp --connect` does not repeat it; the
+  owning `okf serve` logs it and reports `created` on `/health`.
 - Params a tool path ignores are refused with `BAD_VALUE` naming them in
   `fields.ignored` (e.g. `context_hops` without `expand`, filters on
   `target="images"`, `title` on `kind="thoughts"`), so an agent learns the

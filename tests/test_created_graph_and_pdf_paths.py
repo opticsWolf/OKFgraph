@@ -248,6 +248,93 @@ def test_cli_folder_ingest_converts_every_file(tmp_path, capsys, monkeypatch):
     assert all("md_path" in f["result"] for f in out["data"]["files"])
 
 
+def test_the_notice_latches_off_and_a_failed_count_says_nothing(tmp_path):
+    router = _router(tmp_path)
+    try:
+        router.ingest("thoughts", thoughts="first concept", topic="t")
+        assert router.creation_notice() is None
+        # Latched: an empty count later (all concepts deleted) cannot revive it.
+        router._count_concepts = lambda: 0
+        assert router.creation_notice() is None
+    finally:
+        router.close()
+
+    fresh = _router(tmp_path, name="fresh.db")
+    fresh.close()
+    # A closed connection is not evidence of an empty graph.
+    assert fresh.creation_notice() is None
+
+
+def test_okf_serve_mcp_mount_carries_the_warning(tmp_path):
+    """okf serve hands its locked router to the MCP lifespan: still warned."""
+    import asyncio
+
+    from okfgraph import mcp_server
+    from okfgraph.serve import LockedRouter
+
+    router = _router(tmp_path)
+    try:
+        lifespan = mcp_server.make_lifespan(None, LockedRouter(router))
+
+        async def one_session():
+            async with lifespan(None):
+                return json.loads(mcp_server._tool_result(
+                    "read", lambda: router.concept_count()))
+
+        payload = asyncio.run(one_session())
+        assert any("created at" in w for w in payload["warnings"])
+    finally:
+        mcp_server._CREATION_NOTICE = None
+        router.close()
+
+
+def test_mcp_shutdown_forgets_the_notice(tmp_path, stub_encoder):
+    import asyncio
+
+    from okfgraph import mcp_server
+    from okfgraph.settings import Settings
+
+    settings = Settings(db_path=str(tmp_path / "kb.db"),
+                        bundle_root=str(tmp_path))
+    lifespan = mcp_server.make_lifespan(settings)
+
+    async def one_session():
+        async with lifespan(None):
+            assert mcp_server._CREATION_NOTICE is not None
+
+    asyncio.run(one_session())
+    assert mcp_server._CREATION_NOTICE is None
+
+
+def test_office_owner_and_hidden_files_are_skipped(tmp_path):
+    _touch(tmp_path, "report.docx")
+    _touch(tmp_path, "~$report.docx")     # Word's owner file while open
+    _touch(tmp_path, ".hidden.pdf")
+    names = [p.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+             for p in _expand_pdf_paths([str(tmp_path)])]
+    assert names == ["report.docx"]
+    names = [p.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+             for p in _expand_pdf_paths([str(tmp_path / "*.docx")])]
+    assert names == ["report.docx"]
+
+
+def test_a_file_reached_twice_is_converted_once(tmp_path):
+    one = _touch(tmp_path, "one.pdf")
+    _touch(tmp_path, "two.pdf")
+    expanded = _expand_pdf_paths(
+        [str(one), str(tmp_path), str(tmp_path / "*.pdf")])
+    assert [p.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] for p in expanded] == [
+        "one.pdf", "two.pdf"]
+
+
+def test_brackets_in_a_pattern_are_literal(tmp_path):
+    folder = tmp_path / "papers [2024]"
+    folder.mkdir()
+    _touch(folder, "a.pdf")
+    expanded = _expand_pdf_paths([str(folder / "*.pdf")])
+    assert len(expanded) == 1 and expanded[0].endswith("a.pdf")
+
+
 def test_a_failed_tool_carries_the_notice_too(tmp_path):
     """Failures are results: the agent still learns the path is new."""
     from okfgraph import mcp_server

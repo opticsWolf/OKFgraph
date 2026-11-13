@@ -79,6 +79,13 @@ def make_lifespan(settings: Settings, given_router=None):
     @asynccontextmanager
     async def _lifespan(mcp: MCPServer):
         if given_router is not None:
+            # okf serve's locked router forwards creation_notice (and logged
+            # it at its own boot); an OKFClient has none, so --connect stays
+            # quiet here — the owning okf serve warns its own clients. Not
+            # cleared on exit: every HTTP session runs this lifespan against
+            # the one router its owner keeps open, so one session ending must
+            # not silence the others.
+            _record_creation_notice(given_router, log=False)
             yield GraphContext(router=given_router, settings=settings)
             return
         db_path = settings.db_path
@@ -98,6 +105,7 @@ def make_lifespan(settings: Settings, given_router=None):
         try:
             yield GraphContext(router=router, settings=settings)
         finally:
+            _record_creation_notice(None)   # never ask a closed router
             router.close()
             logger.info("OKFgraph MCP server shutdown complete")
 
@@ -134,12 +142,17 @@ class _ToolFailure(ToolError):
 _CREATION_NOTICE = None
 
 
-def _record_creation_notice(router) -> None:
-    """Remember the "new empty graph" notice for this boot (MCP only)."""
+def _record_creation_notice(router, *, log: bool = True) -> None:
+    """Remember the "new empty graph" notice for this boot (MCP only).
+
+    ``None`` forgets it, which the lifespan does on shutdown.
+    """
     global _CREATION_NOTICE
     notice = getattr(router, "creation_notice", None)
     _CREATION_NOTICE = notice if callable(notice) else None
-    message = _CREATION_NOTICE() if _CREATION_NOTICE is not None else None
+    if not log or _CREATION_NOTICE is None:
+        return
+    message = _CREATION_NOTICE()
     if message:
         # The log is for the human who started the server; the per-tool
         # warning below is for the agent that can actually act on it.

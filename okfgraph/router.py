@@ -340,6 +340,8 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         # created is still empty, because a mistyped path otherwise looks
         # exactly like a healthy empty graph (0.14.2, G1).
         self.db_created = db_path == ":memory:" or not Path(db_path).exists()
+        # Latched off by creation_notice() at the first concept it sees.
+        self._creation_pending = self.db_created
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -938,24 +940,36 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def concept_count(self) -> int:
-        """Concepts in the graph (0 when empty; never raises for a query)."""
+    def _count_concepts(self) -> Optional[int]:
+        """Concepts in the graph, or None when the count itself failed."""
         try:
             rows = self.conn.execute(
                 "MATCH (c:Concept) RETURN count(c) AS n"
             ).rows_as_dict().get_all()
-        except Exception:  # pragma: no cover - a count must answer
-            return 0
+        except Exception:  # noqa: BLE001 - a closed or busy connection
+            return None
         return int(rows[0]["n"]) if rows else 0
+
+    def concept_count(self) -> int:
+        """Concepts in the graph (0 when empty; never raises for a query)."""
+        return self._count_concepts() or 0
 
     def creation_notice(self) -> Optional[str]:
         """The "this graph is new and empty" warning, or None.
 
         Only a graph this boot created qualifies, and only while nothing has
-        been written: once anything is ingested the notice is gone for good
-        (the host's process is the only place this state lives).
+        been written: the first concept seen latches the notice off for good,
+        so later calls skip the count (the host's process is the only place
+        this state lives). A count that fails says nothing — a closed or
+        broken connection is not evidence of an empty graph.
         """
-        if not getattr(self, "db_created", False) or self.concept_count():
+        if not getattr(self, "_creation_pending", False):
+            return None
+        n = self._count_concepts()
+        if n is None:
+            return None
+        if n:
+            self._creation_pending = False
             return None
         where = ":memory:" if self.db_path == ":memory:" else str(
             Path(self.db_path).resolve())

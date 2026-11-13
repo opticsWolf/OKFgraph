@@ -15,16 +15,21 @@ decision for images on a GGUF text graph.
   graph, and an agent sees `data: []`. The router now records whether the
   file existed before this boot; while that graph is still empty, **every
   MCP tool envelope carries a warning** naming the absolute path and the
-  setting to check, `okf serve`'s `/health` reports `created`, `okf doctor`
-  leads with a `db_created` line, and the server logs a WARNING at boot. The
-  warning stops as soon as anything is ingested; `--create`/failing to boot
-  would break every existing setup, and an agent cannot run `okf init`.
+  setting to check (from `okf-mcp` and from `okf serve`'s `/mcp`; a
+  `--connect` client relies on the owning server), `okf serve`'s `/health`
+  reports `created`, `okf doctor` leads with a `db_created` line, and the
+  server logs a WARNING at boot. The warning stops for good at the first
+  concept, and a concept count that fails never reads as "empty";
+  `--create`/failing to boot would break every existing setup, and an agent
+  cannot run `okf init`.
 - **`--pdf-path` takes folders and patterns (G2).** PowerShell does not
   expand `*`/`?` for programs, so `--pdf-path docs\*.pdf` used to be a
   missing file. A folder now expands to the convertible files directly
   inside it (no recursion) and patterns expand in-process — both keep only
   the extensions bobine converts (pdf, docx, xlsx, pptx, doc, xls, ppt),
-  sorted by name, and a folder or pattern matching nothing is
+  sorted by name, skipping Office owner files (`~$…`) and hidden files, and
+  converting a file reached twice only once. Only `*` and `?` are wildcards
+  (`papers [2024]\*.pdf` works). A folder or pattern matching nothing is
   `FILE_NOT_FOUND` naming it. A literal path is passed through untouched, so
   bobine's own refusal still names the file. CLI only: MCP ingest stays one
   file per call, where each write is its own approval.

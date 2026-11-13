@@ -1161,7 +1161,10 @@ PDF_EXTENSIONS = ("pdf", "docx", "xlsx", "pptx", "doc", "xls", "ppt")
 
 
 def _is_convertible(path: Path) -> bool:
+    # "~$report.docx" is the owner file Office keeps beside a document that
+    # is open; a dot file is hidden. Neither is a document to convert.
     return (path.is_file()
+            and not path.name.startswith(("~$", "."))
             and path.suffix.lower().lstrip(".") in PDF_EXTENSIONS)
 
 
@@ -1172,12 +1175,23 @@ def _expand_pdf_paths(raw_paths):
     ``--pdf-path docs/*.pdf`` arrives literally and used to be a missing
     file. A folder expands to the convertible files directly inside it (no
     recursion); patterns expand through :mod:`glob` (absolute ones too) and
-    keep only extensions bobine converts, sorted by name. A literal path is
-    passed through untouched — bobine's own refusal is the better error for
-    a file the user named explicitly. Nothing matched is ``FILE_NOT_FOUND``
-    naming the folder or pattern (0.14.2, G2).
+    keep only extensions bobine converts, sorted by name. Only ``*`` and
+    ``?`` are wildcards: a ``[`` is literal, so ``papers [2024]/*.pdf``
+    matches that folder. Office owner files (``~$…``) and hidden files are
+    skipped. A literal path is passed through untouched — bobine's own
+    refusal is the better error for a file the user named explicitly. A file
+    reached twice (a file and its folder) is converted once. Nothing matched
+    is ``FILE_NOT_FOUND`` naming the folder or pattern (0.14.2, G2).
     """
     expanded: list[str] = []
+    seen: set[str] = set()
+
+    def add(item: str) -> None:
+        key = os.path.normcase(str(Path(item).resolve()))
+        if key not in seen:
+            seen.add(key)
+            expanded.append(item)
+
     for raw in raw_paths:
         text = str(raw)
         path = Path(text)
@@ -1194,10 +1208,13 @@ def _expand_pdf_paths(raw_paths):
                     remedy="pass a PDF/Office file, a folder that contains "
                            "one, or a pattern such as 'dir/*.pdf'",
                 )
-            expanded.extend(str(p) for p in matches)
+            for p in matches:
+                add(str(p))
         elif any(ch in text for ch in "*?"):
+            pattern = text.replace("[", "[[]")   # "[" is literal, not a class
             matches = sorted(
-                (Path(p) for p in glob.glob(text) if _is_convertible(Path(p))),
+                (Path(p) for p in glob.glob(pattern)
+                 if _is_convertible(Path(p))),
                 key=lambda p: p.name.lower())
             if not matches:
                 raise OKFError(
@@ -1208,9 +1225,10 @@ def _expand_pdf_paths(raw_paths):
                             "extensions": list(PDF_EXTENSIONS)},
                     remedy="check the pattern, or pass the files directly",
                 )
-            expanded.extend(str(p) for p in matches)
+            for p in matches:
+                add(str(p))
         else:
-            expanded.append(text)
+            add(text)
     return expanded
 
 

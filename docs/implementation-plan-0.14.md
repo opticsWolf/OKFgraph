@@ -1,8 +1,9 @@
 # OKFgraph implementation plan: 0.13.1 release → 0.14.x
 
 Status, 2026-11-13: A released as 0.13.1. B, C, D and H done and
-released as 0.14.0. E and F unblocked by bobine 0.9.1, next for 0.14.1.
-G open.
+released as 0.14.0. E and F done and **released as 0.14.1** (`v0.14.1` on
+`main`, wheel + sdist on PyPI; built against bobine 0.9.1). G open — the
+db-creation question is the only one that needs a decision.
 
 This plan covers the okfgraph side of the ONNX unification
 (`plugins/silk/docs/ONNX_UNIFICATION_PLAN.md` in Weave: items **O3** and

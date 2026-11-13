@@ -4,7 +4,7 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [0.14.1] — unreleased
+## [0.14.1] — 2026-11-13
 
 The converter-control release: PDF conversion gets the same device and
 precision words the embedding and rerank lanes already take, and one

@@ -65,7 +65,7 @@ gpu = [
 # none of this). 0.8.1: bobine's own runtime extras pin the same
 # onnxruntime 1.31.1 as cpu/gpu above, so the two never conflict.
 pdf = [
-    "bobine>=0.8.1",
+    "bobine>=0.9",
 ]
 
 [tool.uv]

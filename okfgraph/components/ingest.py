@@ -264,7 +264,8 @@ def _auto_thought_title(text: str, topic: str, now: datetime) -> str:
 
 class IngestManager:
     def __init__(self, _write_lock_ctx, bundle_root, device, import_mgr, delta_mgr,
-                 converter=None):
+                 converter=None, *, cache_dir=None, pdf_device="auto",
+                 pdf_precision="auto", pdf_idle_seconds=300):
         self._write_lock_ctx = _write_lock_ctx
         self.bundle_root = bundle_root
         self.device = device
@@ -274,6 +275,15 @@ class IngestManager:
         # default BobineConverter, built lazily so router construction
         # never requires bobine — only actual conversion does.
         self._converter = converter
+        # Warm converter (0.14.1): the default BobineConverter is cached here
+        # by its knobs so a batch keeps one set of ONNX sessions. A knob
+        # change closes the old one instead of holding two sets.
+        self._warm = None
+        self._warm_key = None
+        self.cache_dir = cache_dir
+        self.pdf_device = pdf_device
+        self.pdf_precision = pdf_precision
+        self.pdf_idle_seconds = pdf_idle_seconds
 
     def _ingest_md_inner(
         self,
@@ -1043,23 +1053,72 @@ class IngestManager:
 
 
     def _resolve_converter(self, converter, routing_mode="auto", extract_images=True):
-        """Per-call override → manager default → lazy BobineConverter.
+        """Per-call override → warm default → a fresh ad-hoc converter.
 
         ``routing_mode``/``extract_images`` only apply when a BobineConverter
-        is built here; an explicit ``converter`` instance is used verbatim.
+        is built here; an explicit ``converter`` instance is used verbatim
+        (the router does not own its lifetime). The warm converter is keyed on
+        those per-call knobs plus the ``pdf_*`` settings, so a batch reuses
+        one set of ONNX sessions and a knob change closes the old set.
         """
         if converter is not None:
             return converter
-        if (routing_mode != "auto" or not extract_images):
-            # Non-default converter knobs: build ad hoc, never cache —
-            # a cached converter would pin one call's routing for all.
-            from okfgraph.components.converters import BobineConverter
-            return BobineConverter(routing_mode=routing_mode,
-                                   extract_images=extract_images)
-        if self._converter is None:
-            from okfgraph.components.converters import BobineConverter
-            self._converter = BobineConverter()
-        return self._converter
+        if self._converter is not None:
+            # Router-wide injected pipeline (the caller owns its lifetime).
+            return self._converter
+        key = (routing_mode, bool(extract_images), self.pdf_device,
+               self.pdf_precision)
+        if self._warm is not None and self._warm_key == key:
+            return self._warm
+        self.close_converter()
+        from okfgraph.components.converters import BobineConverter
+        self._warm = BobineConverter(
+            routing_mode=routing_mode,
+            extract_images=extract_images,
+            device=self.pdf_device,
+            precision=self.pdf_precision,
+            cache_dir=self.cache_dir,
+            idle_seconds=self.pdf_idle_seconds,
+        )
+        self._warm_key = key
+        return self._warm
+
+    def close_converter(self) -> None:
+        """Release the warm converter's sessions (idempotent)."""
+        warm, self._warm, self._warm_key = self._warm, None, None
+        if warm is not None:
+            try:
+                warm.close()
+            except Exception as exc:  # pragma: no cover - close must not raise
+                logger.debug("closing warm converter failed: %s", exc)
+
+    def pdf_status(self) -> Dict[str, Any]:
+        """Live PDF-converter state for the doctor row.
+
+        Answers before anything is warm too: the configured words and the
+        plan they resolve to, with ``held=False``. Building that plan never
+        opens a model (bobine's ``describe()`` is config-level).
+        """
+        if self._converter is not None:
+            # A custom DocumentConverter owns its own lifetime and has no
+            # bobine plan to report.
+            return {"held": False, "custom": True, "release_after": None,
+                    "conversions": 0, "plan": None}
+        warm = self._warm
+        if warm is not None:
+            return warm.status()
+        from okfgraph.components.converters import converter_plan
+        return {
+            "held": False,
+            "idle_seconds": None,
+            "release_after": self.pdf_idle_seconds,
+            "conversions": 0,
+            "routing_mode": None,
+            "device": self.pdf_device,
+            "precision": self.pdf_precision,
+            "plan": converter_plan(self.pdf_device, self.pdf_precision,
+                                   self.cache_dir),
+        }
 
     def _import_work_dir(self, work_dir, batch_size, mode, prune_missing, pdf_path, force=False):
         """Import a converted-PDF work dir, keeping bundle_root overrides in sync."""

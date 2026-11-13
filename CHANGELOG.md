@@ -4,6 +4,41 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [0.14.1] — unreleased
+
+The converter-control release: PDF conversion gets the same device and
+precision words the embedding and rerank lanes already take, and one
+command builds bobine's ONNX sessions once instead of once per file.
+
+- **`pdf_device` / `pdf_precision` (plan E).** Two settings in the `import`
+  group, defaults `auto`, validated against the same vocabulary bobine
+  exports (`bobine.DEVICES` / `bobine.PRECISIONS`: `auto|cpu|cuda`,
+  `auto|fp32|fp16|int8`; `q8` does not exist in the stack and is refused by
+  name). They reach `bobine.ConverterConfig` through
+  `BobineConverter(device=…, precision=…)`, so conversion can run on a
+  different device than embedding — `--pdf-device cpu` while the graph
+  embeds on CUDA, or `int8` for the formula pair on a small machine.
+  The `pdf` extra floor rises to `bobine>=0.9`, the release that introduced
+  the vocabulary.
+- **`converter_status()` reports the plan.** `okf model-info --converters`
+  and `okf doctor` show what the words resolve to per pass, from bobine's
+  `describe()` — requested words before the first session, landed provider
+  after. `model_status()` stays cache status only; the two are never mixed.
+- **Warm PDF converter (plan F).** `BobineConverter` holds one native
+  `HybridConverter` and calls `ingest_document` on it, so
+  `okf ingest --kind pdf --pdf-path a.pdf b.pdf c.pdf` builds the
+  layout/OCR sessions once. A `threading.Lock` serialises conversions —
+  load-bearing, because bobine raises on a concurrent call rather than
+  waiting (it cannot block on a native mutex while holding the GIL).
+- **Bounded lifetime.** `pdf_idle_seconds` (import group, default 300, `0` =
+  release after every conversion) arms one daemon timer per held converter;
+  `okf serve` and `okf-mcp` therefore release layout and OCR weights when
+  nothing converts, and a one-shot CLI command releases them on exit
+  (`OKFRouter.close()`). A knob change closes the warm converter instead of
+  holding two sets. `okf doctor` gains a `pdf_converter` line: warm or
+  released, which device/precision it resolves to, the last conversion, and
+  the pending release.
+
 ## [0.14.0] — 2026-11-13
 
 The image-lane release: the vision model can run in an `embroider.serve`

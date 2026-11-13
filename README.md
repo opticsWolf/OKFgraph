@@ -52,7 +52,7 @@ Requires Python ≥ 3.11. The extras decide what you get:
 | Extra | Installs | Gives you |
 |---|---|---|
 | `cpu` **or** `gpu` (pick exactly one) | `onnxruntime==1.31.1` / `onnxruntime-gpu[cuda,cudnn]==1.31.1` | the ONNX Runtime that embedding, search and rerank run on |
-| `pdf` | `bobine>=0.8.1` | `okf ingest --kind pdf`: PDF and Office files (docx/xlsx/pptx, legacy doc/xls/ppt) converted to markdown, then imported |
+| `pdf` | `bobine>=0.9` | `okf ingest --kind pdf`: PDF and Office files (docx/xlsx/pptx, legacy doc/xls/ppt) converted to markdown, then imported |
 | `dev` | `pytest` | the test suite |
 
 **Why the runtime isn't installed by default.** `onnxruntime` and
@@ -326,7 +326,10 @@ queries in cold sessions. Bulk input: many Markdown files go through
 `okf import --all` (or `okf import FILE...`) — `.md`, `.markdown` and
 `.txt`, one model load, batched writes. PDF and Office files go through
 `okf ingest --kind pdf --pdf-path A.pdf B.docx …`: one model load for the
-batch, but bobine opens its converter per file. With `okf serve` running,
+batch, and since 0.14.1 one warm bobine converter for the whole batch too —
+layout/OCR sessions open once, and a long-running host releases them after
+`pdf_idle_seconds` (300 by default; `--pdf-device` / `--pdf-precision` pick
+the converter's device and weight precision). With `okf serve` running,
 every `okf` call reuses the server's loaded model. Omit `--bundle-root` entirely for file-free mode: thoughts ingest,
 search, read, traverse, doctor, and export work from the DB alone (file-side
 ops fail fast naming the missing root). Thought IDs are namespaced
@@ -535,7 +538,7 @@ bobine via `ORT_DYLIB_PATH`. embroider finds the pip-installed runtime
 itself (`locate_runtime()`, 0.15) and self-serves the CUDA EP's loader
 dirs.
 
-- `--extra pdf`: `bobine>=0.8.1` (default PDF and Office converter; 0.8.1 pinned in the lock).
+- `--extra pdf`: `bobine>=0.9` (default PDF and Office converter; 0.9.1 pinned in the lock).
 - `--extra dev`: `pytest>=8`.
 
 ### Upgrading ladybug (0.22.1)

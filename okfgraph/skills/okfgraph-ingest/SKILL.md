@@ -95,8 +95,11 @@ re-extracting it from files.
 - `--kind pdf --pdf-path F [F ...] [--routing-mode ...]` — auto-imports by
   default; `--no-auto-import` converts only (next to the source, or
   `--output-dir DIR`), then `okf import --all --bundle-path DIR`. Several
-  files run in one process on one loaded model (a failed file is
+  files run in one process on one loaded model **and one warm converter**
+  (0.14.1: bobine's layout/OCR sessions open once; a failed file is
   reported, the rest continue): prefer one call over a loop.
+  `--pdf-device auto|cpu|cuda` and `--pdf-precision auto|fp32|fp16|int8`
+  pick the converter's own lane (independent of the embedding device).
   Bulk markdown (`.md`/`.markdown`/`.txt`): `okf import --all [--bundle-path DIR]`
   (`--prune-missing` drops concepts whose files vanished from disk).
 - `--json` prints the same `data` as the MCP tool inside the envelope.
@@ -113,7 +116,10 @@ re-extracting it from files.
 
 ## Converter modes (pdf/office)
 
-`routing_mode` controls when the converter spends ONNX compute:
+`routing_mode` controls when the converter spends ONNX compute. One warm
+converter serves a batch, a host keeps it until `pdf_idle_seconds` (default
+300; `0` = release after each conversion) and `okf doctor` reports it as the
+informational `pdf_converter` line:
 
 - `never` — fast path, text extraction only. Default choice for text PDFs.
 - `auto` — ONNX only where the fast path looks insufficient.

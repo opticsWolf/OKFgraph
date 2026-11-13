@@ -44,26 +44,22 @@ wheels = [
 
 [[package]]
 name = "bobine"
-version = "0.8.1"
+version = "0.9.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4e/fb/e8766f0d59c59dc0b7a0ca3ca30d8314be49a5f200d628f591d34cbe82a0/bobine-0.8.1.tar.gz", hash = "sha256:9f1014dc1571086381d5b5bfa757a3f7eac0717fcf5bad263bb20f61e84648fa", size = 1597152, upload-time = "2026-11-11T09:21:25.549Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/5d/e085d7af15dc31542f5da1aed0863e0dcbe48672d19835ec7909e0c5ac88/bobine-0.9.1.tar.gz", hash = "sha256:e19c6e12a90cb14b3c55e12bc0ba8d3fe69426ff52b1e5674919e5a7c2dc830e", size = 1637785, upload-time = "2026-11-13T07:08:37.586Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/44/bea95272887663c268f3693f7c33dc4a65a858466fe0a2be40ce7cb76ea5/bobine-0.8.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:206fa9dbcceaf586890e9fb3890a2196a0475cb8aa380019a8c341a90d80bacc", size = 17373207, upload-time = "2026-11-11T09:20:44.493Z" },
-    { url = "https://files.pythonhosted.org/packages/9a/e7/74f2cc8e9ffd86e994507cd270ae15e42c0fd106016f9424d633334060f6/bobine-0.8.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:c4f4b15a62bad74cc27f99cfa28dd81d1fca94ce8704ab86ab1db1a93120d766", size = 17807302, upload-time = "2026-11-11T09:20:47.172Z" },
-    { url = "https://files.pythonhosted.org/packages/ac/ba/0d328fb2a6c9e63a1ceede2dcb258c168e28ba43cb7278d3f73ce6fa0eed/bobine-0.8.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:fa47a51d33ce4144b2bc27f99a8b2663e4bb211b474fb76ca66ba7063c9b3428", size = 19413392, upload-time = "2026-11-11T09:20:49.669Z" },
-    { url = "https://files.pythonhosted.org/packages/93/61/62267fe1d96a1e0cdb8753288ac5e2724f02d628452990cf99e407853008/bobine-0.8.1-cp311-cp311-win_amd64.whl", hash = "sha256:cefb6680dbf47c1b469fdeb46562014f837cbe2c52c5b01d4d9f8e2a7849d7a4", size = 18721730, upload-time = "2026-11-11T09:20:52.274Z" },
-    { url = "https://files.pythonhosted.org/packages/1a/83/7a956793dcabc9a0674035bf2fce18fd7983f60913d23873473b1e413e56/bobine-0.8.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:5eff7ad163f269342e73abd1cc65ded59f8b57c334e1bdaff15a51312ddc53db", size = 17364299, upload-time = "2026-11-11T09:20:54.661Z" },
-    { url = "https://files.pythonhosted.org/packages/f5/a5/65fe7a43b3f73a0e267fb6bbf49e3aab09bdfaeadf9d8ec91a25fc437102/bobine-0.8.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:bc36b5f7bdef480cb3516ea672e77080bad23d5933051e8a3fde44f3be350a65", size = 17813771, upload-time = "2026-11-11T09:20:57.093Z" },
-    { url = "https://files.pythonhosted.org/packages/98/0f/a03387ad920a51dc52c29ab0fb01bc1fef866fe0f4ae5038955a69b9ace1/bobine-0.8.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:42eccc85741a6629360ac678e09ac02457d3167fcd890cb8f9c1895e9f046452", size = 19404368, upload-time = "2026-11-11T09:20:59.536Z" },
-    { url = "https://files.pythonhosted.org/packages/1e/1e/3dfc5915dd8b62f596b6e9b643bad93023b50475e6cbf7b0c9f41ad400ca/bobine-0.8.1-cp312-cp312-win_amd64.whl", hash = "sha256:410f2d5812773b0a39d3b774d79aad737591852b041add092735f62cb4a7e0c5", size = 18738611, upload-time = "2026-11-11T09:21:02.281Z" },
-    { url = "https://files.pythonhosted.org/packages/fc/94/8e0a55630387024b0c5b50a5d099c5f5a8aa278afb01d0ba730d08388589/bobine-0.8.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:e9f8ea4b07bee709e2d251628a2124ff04ab1501cbef1cd8fdd66887828d7ca9", size = 17362956, upload-time = "2026-11-11T09:21:04.661Z" },
-    { url = "https://files.pythonhosted.org/packages/4d/0c/83e316ea3a47c19ed44893e1471e4712cad3b908da7f012cd1d22f2a59f1/bobine-0.8.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:f399e5e532803a2a45861055e2c8ac13c3d5c9a7b632a00e025e9e03b6a088c7", size = 17809408, upload-time = "2026-11-11T09:21:07.282Z" },
-    { url = "https://files.pythonhosted.org/packages/68/d4/c8a9ac959bb92c4b017255f2c416a11fcbc9c252cff98c4dfd105b876ef0/bobine-0.8.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:d17aaab329b1d90e6fc4b1db3bfb7b074d5988844c9f8640acaa1875b63600d0", size = 19409534, upload-time = "2026-11-11T09:21:09.872Z" },
-    { url = "https://files.pythonhosted.org/packages/45/fa/7aa26302369f471f28a401937d8472e7e479e323f2901cede6d13cc9e89f/bobine-0.8.1-cp313-cp313-win_amd64.whl", hash = "sha256:360202df1985fed30096a0545f580d6ca8e52af19e96c3e7c5a229c85d07693f", size = 18721679, upload-time = "2026-11-11T09:21:12.678Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/7f/6ddb7f2ae114a208b8f1f88c6bbdb0a8a1b979107f2bb7b4d1c23dc4cf7b/bobine-0.8.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:688a69c8a5d2a22006c9e292049378854974739cac4f3c3242ae986400e92e9e", size = 17365388, upload-time = "2026-11-11T09:21:15.279Z" },
-    { url = "https://files.pythonhosted.org/packages/bd/49/602a9411336dea60079b29f5011adf0f2085cdb46d37f174e088e027f12d/bobine-0.8.1-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:900aa8bc7fbe2f44d49b86cfee8dac80e2130ec2557f9a371621e7a98f8ed95d", size = 17809194, upload-time = "2026-11-11T09:21:17.972Z" },
-    { url = "https://files.pythonhosted.org/packages/86/4f/c2f33b3f4c25688dbc4d2af233ae0fbd4ba39461fab2f572cb529afd00fa/bobine-0.8.1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:c7a49a4a7805eea6b7b1f443ab813557ad529e75afbea27a2d12ceea3e7fcf6a", size = 19411660, upload-time = "2026-11-11T09:21:20.67Z" },
-    { url = "https://files.pythonhosted.org/packages/fb/f9/6afc4c1beb514c01c4952c91b225a4ca93a22a1d44080946ab60c1fbe350/bobine-0.8.1-cp314-cp314-win_amd64.whl", hash = "sha256:6cd0a9959c3d6479d5959cce9b7ea77012da23c4a4437c38c13e013ba4e932ad", size = 18718351, upload-time = "2026-11-11T09:21:23.271Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/6a/f1af74bca41c309683e0a86ff106b489a676ccb1bd617515531dae2d224f/bobine-0.9.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:431a3b80d9bb11a35be839a55cc948edacbc390e971e0ff45e02b109043a7462", size = 17464116, upload-time = "2026-11-13T07:08:09.561Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/8c/3c9f9e8fcdca8a5bb427d7edfa4e3fa6306290783740d62bf61908d3fda3/bobine-0.9.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:addf7ef5a6f2f40bec3a50b2ad7c1a92b428426330e889699eee99734b90d756", size = 19450535, upload-time = "2026-11-13T07:08:11.767Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/42/56f638fa4369af421aedc3335077f005d6efc496c7824b6b6be51eabcab7/bobine-0.9.1-cp311-cp311-win_amd64.whl", hash = "sha256:af33a998fe21690a2acd4199b456aaf1a1bcb6b84ec27fddf0236bf1be975f0d", size = 18810099, upload-time = "2026-11-13T07:08:14.411Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/e2/a910341d6fdc4be462470e015dc55ee9bd10a0eaa80137a3a7798a73a403/bobine-0.9.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:524ffea101965b6e32e0780e4f06ba593bd7bdf99bc24feb45dd8cddea483a2d", size = 17448980, upload-time = "2026-11-13T07:08:16.624Z" },
+    { url = "https://files.pythonhosted.org/packages/21/3e/11b550a5b3425f3e42d7cc1724dbf3642d6d623befed2ee8fcc7e7b122a4/bobine-0.9.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:25eb55568ec8c39c2112f478c568ee301049c3cd9885336849c30cce050597ff", size = 19448090, upload-time = "2026-11-13T07:08:18.81Z" },
+    { url = "https://files.pythonhosted.org/packages/39/42/f4cc3c56d122bea353e8ede134442e0fb1a832a4937f6f8ea54dde10083d/bobine-0.9.1-cp312-cp312-win_amd64.whl", hash = "sha256:496c9c1eb6922557ecd8f1470151ff7eb5cc99d8229563661916f20826f51ab1", size = 18811280, upload-time = "2026-11-13T07:08:21.314Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/a7/6ec36ce56ad84d8c46d7b307d2eaec5523f575b79abc06e766e16ee283ce/bobine-0.9.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:923041c5e449ebd848a9364e0cdbcd9aa79222398ea08cecce34e44237cc76e4", size = 17448081, upload-time = "2026-11-13T07:08:23.402Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/f1/58520d02bcba0d15bc74711a37e4f6405573dc27776c8949f7a7c53ba3cb/bobine-0.9.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:bebcd724ab1a94894f95f5e0b340dc98609815b7af23fc52ffb1f5ab7f452223", size = 19448213, upload-time = "2026-11-13T07:08:25.885Z" },
+    { url = "https://files.pythonhosted.org/packages/02/eb/419b67a8f6d7a70279d8738fec649d0d0d516a38d32d3baa123a75b98dfa/bobine-0.9.1-cp313-cp313-win_amd64.whl", hash = "sha256:e1681fe423bfee52f275a6f59a67d3c7abcaa4eb68e3665db7fe1c6ea83ca56b", size = 18810278, upload-time = "2026-11-13T07:08:28.549Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/4d/93d6ab74f4059cf9503c9ab2b8cf10b98cda215cfe525e9c69ded8743542/bobine-0.9.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:29d237711bbce2beaa775c27aa4860a75b2285e50187743b64387cd4d7062d6e", size = 17448053, upload-time = "2026-11-13T07:08:30.775Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/e7/6f6af5e7a5b7020d8b5a81e7984dcb65d5ea241e0f3723251581dd195bf9/bobine-0.9.1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:f5ef200be942e6d91b1bc54e8d7a5a675f6295e08030f16830d12470bede909e", size = 19448982, upload-time = "2026-11-13T07:08:33.253Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/1c/cd5d62fa1af67c79297701a5767c8f21bbc078ebbb9faea95711a8cf0730/bobine-0.9.1-cp314-cp314-win_amd64.whl", hash = "sha256:59eeb60fb37438a8bb63455024d1521a45766b0b4605632c36a4bd04f54dac77", size = 18811122, upload-time = "2026-11-13T07:08:35.5Z" },
 ]
 
 [[package]]
@@ -727,7 +723,7 @@ pdf = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bobine", marker = "extra == 'pdf'", specifier = ">=0.8.1" },
+    { name = "bobine", marker = "extra == 'pdf'", specifier = ">=0.9" },
     { name = "embroider", specifier = ">=0.15,<0.16" },
     { name = "fasteners", specifier = ">=0.19" },
     { name = "ladybug", specifier = "==0.22.1" },

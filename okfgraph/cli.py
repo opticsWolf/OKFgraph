@@ -478,7 +478,9 @@ def _model_info(args):
     if args.converters:
         from okfgraph.components.converters import converter_status
         info = {**info, "converters": converter_status(
-            cache_dir=settings.cache_dir)}
+            cache_dir=settings.cache_dir,
+            device=settings.pdf_device,
+            precision=settings.pdf_precision)}
 
     def render(info):
         print(f"model: {info['model_id']}")
@@ -492,6 +494,21 @@ def _model_info(args):
             print("status: not cached (will download on first use)")
         conv = info.get("converters")
         if conv is not None:
+            plan = conv.get("plan")
+            if plan:
+                print(f"converters: device={plan.get('device_requested')} "
+                      f"precision={plan.get('precision_requested')}")
+                for slot in ("encoder", "decoder", "layout", "ocr", "table",
+                             "potatr"):
+                    row = (plan.get("passes") or {}).get(slot) or {}
+                    providers = row.get("providers")
+                    # An unopened auto-CUDA slot has no resolved precision
+                    # yet (bobine reports the CPU default there) — show it
+                    # as unresolved rather than as a decision.
+                    precision = row.get("precision") if providers else "-"
+                    print(f"  {slot:8s} {row.get('policy', '?'):10s} "
+                          f"{precision or '-':5s} "
+                          f"{'+'.join(providers) if providers else 'unopened'}")
             if conv["available"]:
                 reps = conv["reports"]
                 n = sum(1 for r in reps if r.get("cached"))

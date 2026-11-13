@@ -31,18 +31,43 @@ class _FakeConfig:
         self.kw = kw
 
 
+class _FakeHybrid:
+    """Warm converter stand-in: records the config, raises on demand."""
+
+    instances: list = []
+
+    def __init__(self, config, cache_dir):
+        self.config = config
+        self.cache_dir = cache_dir
+        self.documents: list = []
+        self.closed = False
+        _FakeHybrid.instances.append(self)
+
+    def ingest_document(self, path, out, **kw):
+        self.documents.append((path, out))
+        if _FakeHybrid.raises is not None:
+            raise _FakeHybrid.raises
+        return types.SimpleNamespace(md_path=f"{out}/x.md", image_dir=out,
+                                     page_count=1)
+
+    def describe(self):
+        return {"device_requested": self.config.kw.get("device", "auto"),
+                "precision_requested": self.config.kw.get("precision", "auto"),
+                "passes": {}}
+
+    def close(self):
+        self.closed = True
+
+    raises = None
+
+
 def _fake_bobine(monkeypatch, *, raises):
     module = types.ModuleType("bobine")
     module.RoutingMode = _FakeRoutingMode
     module.ConverterConfig = _FakeConfig
-
-    def ingest_document(path, out, config, **kw):
-        if raises is not None:
-            raise raises
-        return types.SimpleNamespace(md_path=f"{out}/x.md", image_dir=out,
-                                     page_count=1)
-
-    module.ingest_document = ingest_document
+    _FakeHybrid.instances = []
+    _FakeHybrid.raises = raises
+    module.HybridConverter = _FakeHybrid
     monkeypatch.setitem(sys.modules, "bobine", module)
     return module
 

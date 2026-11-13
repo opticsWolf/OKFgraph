@@ -38,7 +38,7 @@ def test_missing_bobine_is_data_not_error():
     with patch.dict(sys.modules, {"bobine": None}):
         st = converter_status()
     assert st == {"available": False, "reports": [],
-                  "note": st["note"]}
+                  "plan": None, "note": st["note"]}
     assert "not installed" in st["note"]
 
 

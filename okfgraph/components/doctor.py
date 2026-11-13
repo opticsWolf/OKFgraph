@@ -72,9 +72,13 @@ def is_reviewed(extra: Any) -> bool:
 class DoctorManager:
     """Health scan + safe repairs over the live graph."""
 
-    def __init__(self, conn, import_mgr):
+    def __init__(self, conn, import_mgr, pdf_status=None):
         self.conn = conn
         self.import_mgr = import_mgr
+        # Live PDF-converter state (0.14.1): a callable returning
+        # ``BobineConverter.status()``-shaped data, or None in router-free
+        # uses (a status probe never opens a converter by itself).
+        self.pdf_status = pdf_status
 
     # -- data ---------------------------------------------------------
 
@@ -363,6 +367,50 @@ class DoctorManager:
                 })
         else:
             info.append({"rule": "converter_cache", "message": cs["note"]})
+
+        # Warm PDF converter (0.14.1): is a converter held, what does it
+        # resolve to, and how long until the idle release? Informational —
+        # a released converter is the normal state of a one-shot command.
+        status = self.pdf_status() if self.pdf_status is not None else None
+        if status is not None and status.get("custom"):
+            info.append({
+                "rule": "pdf_converter",
+                "message": "pdf converter: custom pipeline injected "
+                             "(its lifetime belongs to the caller; bobine is "
+                             "not used)",
+            })
+        elif status is not None:
+            plan = status.get("plan") or {}
+            where = f"device={status.get('device')}"
+            if status.get("precision"):
+                where += f", precision={status['precision']}"
+            # What the words resolve to, when bobine can say it before any
+            # session opens (policy name or the provider it landed on).
+            layout = (plan.get("passes") or {}).get("layout") or {}
+            if layout.get("providers"):
+                where += f", layout={layout['providers'][0]}"
+            elif layout.get("policy"):
+                where += f", layout={layout['policy']}"
+            if status.get("held"):
+                idle = status.get("idle_seconds")
+                after = status.get("release_after")
+                idle_txt = "just now" if not idle else f"{idle:.0f}s ago"
+                info.append({
+                    "rule": "pdf_converter",
+                    "message": f"pdf converter: warm (routing="
+                                 f"{status.get('routing_mode')}, {where}); "
+                                 f"last conversion {idle_txt}, releases after "
+                                 f"{after}s idle "
+                                 f"[{status.get('conversions')} conversion(s)]",
+                })
+            else:
+                info.append({
+                    "rule": "pdf_converter",
+                    "message": f"pdf converter: released ({where}); the next "
+                                 "PDF ingest builds its sessions once and "
+                                 f"keeps them for {status.get('release_after')}s "
+                                 "idle",
+                })
 
         # Cache hygiene (0.10.0): legacy snapshot-only repos look unused
         # by cache-mode; report-only, never a finding, never deletes.

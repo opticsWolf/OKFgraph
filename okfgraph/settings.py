@@ -54,6 +54,13 @@ DEFAULT_RERANK_MODEL_ID = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 #: warns (not errors) off-ladder, so the settings layer warns the same way.
 _DIM_LADDER = (32, 64, 128, 256, 512, 768, 1024)
 
+#: Device and weight-precision words the ONNX lanes accept. Bobine exports the
+#: same tuples (``bobine.DEVICES`` / ``bobine.PRECISIONS``); a test pins them,
+#: so the table can validate on machines without the pdf extra and never drift
+#: from the converter's own vocabulary.
+DEVICES = ("auto", "cpu", "cuda")
+PRECISIONS = ("auto", "fp32", "fp16", "int8")
+
 #: A graph's home (0.12.0): the database and its bundle tree live in one
 #: hidden directory, ``.okfgraph/okfgraph.db`` + ``.okfgraph/bundle``.
 GRAPH_HOME = ".okfgraph"
@@ -142,7 +149,7 @@ SETTINGS = [
             "Text embedding model id (registry; switching forces a fresh reimport)"),
     Setting("device", "str", "auto", "embedding",
             "Inference device: auto (CUDA when present), cpu or cuda",
-            choices=("auto", "cpu", "cuda")),
+            choices=DEVICES),
     Setting("backend", "str", "embroider", "embedding",
             "Embedding engine: 'embroider' (the crate, ONNX in this "
             "process) or 'external' (an OpenAI-shaped /embeddings HTTP "
@@ -190,7 +197,7 @@ SETTINGS = [
     Setting("precision", "str", "auto", "embedding",
             "Weight precision: auto follows device (CUDA->FP16, CPU->FP32); "
             "int8 explicit only, needs a measured artifact",
-            choices=("auto", "fp32", "fp16", "int8")),
+            choices=PRECISIONS),
     Setting("image_model_id", "str", None, "embedding",
             "Vision model id for image-content search (None follows the text "
             "model's registry vision pairing — the gemma-2 vision slot for "
@@ -239,6 +246,21 @@ SETTINGS = [
             "Concept identity: path (ids from file paths) or frontmatter "
             "(a frontmatter id: is the concept id; moves keep links)",
             choices=("path", "frontmatter")),
+    # PDF / Office conversion (bobine, the pdf extra). The device and
+    # precision words are the converter's own (0.14.1); the fast "never"
+    # routing loads no ONNX at all, so they only matter for ONNX routes.
+    Setting("pdf_device", "str", "auto", "import",
+            "PDF/Office conversion device: auto (CUDA when present), cpu or "
+            "cuda (bobine, the pdf extra)",
+            choices=DEVICES),
+    Setting("pdf_precision", "str", "auto", "import",
+            "PDF/Office converter weight precision: auto follows device "
+            "(CUDA->FP16, CPU->FP32), fp32, fp16 or int8 (bobine)",
+            choices=PRECISIONS),
+    Setting("pdf_idle_seconds", "int", 300, "import",
+            "Seconds a long-running host (okf serve, okf-mcp) keeps the warm "
+            "PDF converter's ONNX sessions after the last conversion; 0 "
+            "releases them after every conversion", cli=False, mcp=False),
     # ── search ──────────────────────────────────────────────────────────────
     # TOML/env only: `search --exclude-tags` is the per-call spelling, and
     # a global flag of the same name would collide with it.
@@ -412,6 +434,9 @@ class Settings:
     mode: str = "text"
     batch_size: int = 32
     identity: str = "path"
+    pdf_device: str = "auto"
+    pdf_precision: str = "auto"
+    pdf_idle_seconds: int = 300
     exclude_tags: List[str] = field(default_factory=list)
     rerank_model_id: str = DEFAULT_RERANK_MODEL_ID
     rerank_device: str = "auto"
@@ -552,6 +577,9 @@ class Settings:
                 f"{self.max_length}")
         if self.cache_dir and not Path(self.cache_dir).is_absolute():
             errors.append("embedding.cache_dir must be an absolute path")
+        if self.pdf_idle_seconds < 0:
+            errors.append(
+                f"import.pdf_idle_seconds must be >= 0, got {self.pdf_idle_seconds}")
 
         if self.backend == "external":
             if not self.endpoint_url.lower().startswith(("http://", "https://")):
@@ -720,6 +748,9 @@ class Settings:
             roots=dict(self.roots) or None,
             extension_dir=self.extension_dir,
             identity=self.identity,
+            pdf_device=self.pdf_device,
+            pdf_precision=self.pdf_precision,
+            pdf_idle_seconds=self.pdf_idle_seconds,
             exclude_tags=list(self.exclude_tags),
             rerank_model_id=self.rerank_model_id,
             rerank_device=self.rerank_device,

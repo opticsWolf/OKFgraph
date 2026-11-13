@@ -142,6 +142,9 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         roots: Optional[Dict[str, str]] = None,
         extension_dir: Optional[str] = None,
         identity: str = "path",
+        pdf_device: str = "auto",
+        pdf_precision: str = "auto",
+        pdf_idle_seconds: int = 300,
         exclude_tags: Optional[List[str]] = None,
         rerank_model_id: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
         rerank_device: str = "auto",
@@ -247,6 +250,14 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 O3): with ``frontmatter`` a file's frontmatter ``id:`` is
                 its concept id, so moving the file keeps the concept and
                 every link to it.
+            pdf_device: ``auto`` / ``cpu`` / ``cuda`` for the PDF converter's
+                ONNX passes (0.14.1; bobine ``DEVICES``). ``never`` routing
+                loads none.
+            pdf_precision: ``auto`` / ``fp32`` / ``fp16`` / ``int8`` for the
+                converter's weights (0.14.1; bobine ``PRECISIONS``).
+            pdf_idle_seconds: Seconds a long-running host keeps the warm PDF
+                converter after the last conversion before releasing its ONNX
+                sessions (0.14.1; ``0`` releases after every conversion).
             exclude_tags: Tags ``search`` hides unless a call passes its own
                 ``exclude_tags`` (0.11.0, O7) — e.g. ``["superseded"]``.
             rerank_model_id: Cross-encoder for opt-in search rerank
@@ -386,6 +397,9 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         self.model_id = model_id
         self.cache_dir = cache_dir
         self.device = device
+        self.pdf_device = pdf_device
+        self.pdf_precision = pdf_precision
+        self.pdf_idle_seconds = pdf_idle_seconds
         self.allow_remote_images = allow_remote_images
         self.allowed_image_domains = allowed_image_domains or []
 
@@ -902,9 +916,14 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         self.ingest_mgr = IngestManager(
             self._write_lock_ctx, self.bundle_root, self.device,
             self.import_mgr, self.delta_mgr, converter,
+            cache_dir=cache_dir,
+            pdf_device=pdf_device,
+            pdf_precision=pdf_precision,
+            pdf_idle_seconds=pdf_idle_seconds,
         )
         self.export_mgr = ExportManager(self.conn, self.search_engine)
-        self.doctor_mgr = DoctorManager(self.conn, self.import_mgr)
+        self.doctor_mgr = DoctorManager(self.conn, self.import_mgr,
+                                        pdf_status=self.ingest_mgr.pdf_status)
         self.diff_mgr = DiffManager(
             self.conn, roots=self.roots, primary=self.bundle_root,
             identity=identity,
@@ -923,6 +942,11 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
         this (or use the router as a context manager) so the store is flushed
         before another process — e.g. the search browser — opens it.
         """
+        ingest_mgr = getattr(self, "ingest_mgr", None)
+        if ingest_mgr is not None:
+            # Warm PDF sessions are a resource like the db handle: release
+            # them even when the connection is already closed (idempotent).
+            ingest_mgr.close_converter()
         if getattr(self, "conn", None) is None:
             return
         try:

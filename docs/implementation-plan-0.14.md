@@ -471,6 +471,16 @@ reads like an okfgraph bug.
 
 ## E. bobine device/precision vocabulary (O6, part 1)
 
+**Landed in 0.14.1.** Settings `pdf_device` / `pdf_precision` (validated
+against the local `DEVICES` / `PRECISIONS` tuples, pinned to bobine's exports
+by `tests/test_pdf_converter.py::test_vocabulary_never_drifts_from_bobine`),
+`BobineConverter(..., device, precision)`, the `pdf` floor at `bobine>=0.9`,
+and the resolved plan in `converter_status()` / `okf model-info --converters`
+(and the doctor’s `pdf_converter` line). One deliberate deviation: the
+settings table validates with local tuples instead of reading bobine at load
+time — settings load on machines without the pdf extra, but the drift test
+(and the plan row) are the guard.
+
 **Unblocked: bobine 0.9.0 is published** (crates.io + PyPI, 2026-11-11,
 tag `v0.9.0`). Raise the `pdf` extra floor to `bobine>=0.9` as part of this
 step. What 0.9 exposes, checked against its docs and code:
@@ -512,6 +522,15 @@ step. What 0.9 exposes, checked against its docs and code:
 ---
 
 ## F. Warm PDF converter with a bounded lifetime (O6, part 2)
+
+**Landed in 0.14.1.** `BobineConverter` holds one `HybridConverter` and calls
+`ingest_document`; `threading.Lock` serialises conversions; `pdf_idle_seconds`
+arms one daemon timer per held converter (0 = release after each call);
+`OKFRouter.close()` releases it (CLI, serve, shell all reach it through
+`_close_routers` / `serve`’s `finally`, so no `with router.pdf_converter()`
+was needed); a knob change closes the warm converter instead of holding two;
+`okf doctor` reports warm/released, the resolved words, the last conversion
+and the pending release as an informational `pdf_converter` row.
 
 **Unblocked: shipped in bobine 0.9.0.** `HybridConverter.ingest_document(path,
 output_dir, on_page=, should_continue=)` reuses the sessions it already

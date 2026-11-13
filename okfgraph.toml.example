@@ -24,6 +24,11 @@ db_path = "kb.db"
 [import]
 # identity = "frontmatter"   # a frontmatter `id:` is the concept id (moves keep links)
 
+# PDF/Office conversion (needs `okfgraph[pdf]` = bobine >= 0.9):
+# pdf_device = "auto"        # auto | cpu | cuda for the converter's ONNX passes
+# pdf_precision = "auto"     # auto | fp32 | fp16 | int8 (no q8 artifact exists)
+# pdf_idle_seconds = 300     # release warm sessions after this idle time (0 = every call)
+
 [embedding]
 # 0.12 external-lane options (the embroider crate stays the default):
 # backend = "external"          # an OpenAI-shaped POST /embeddings host owns the model

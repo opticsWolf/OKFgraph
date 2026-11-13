@@ -4,206 +4,7 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [0.11.0] — 2026-11-03
-
-The findings-store release: OKFgraph safe to update continuously from
-producers and agents (Silk). Schema **v8 → v10** in two migrating steps
-(typed links · link diagnostics · producer cursors, then graph-kept
-concept times for recency; both run on first open). The single-writer
-rule holds: every new write path writes a bundle file and imports it.
-Design record: `docs/architecture.md` "Summary of Changes (v6.7 →
-v6.8)" and its Design Decisions table.
-
-### Added
-- **`okf serve` (O4).** One process owns the database and serves MCP over
-  streamable HTTP (`/mcp`) plus the ops as JSON (`POST /ops/<op>`,
-  `GET /health`), on TCP or a Unix socket. **`OKFClient(url)`** mirrors the
-  router's ops and raises the same `OKFError`s; **`okf-mcp --connect URL`**
-  is a stdio proxy for existing `.mcp.json` setups; the CLI uses a running
-  owner automatically (`<db>.serve.json` + `/health`; opt out with
-  `OKFGRAPH_NO_SERVER=1`).
-- **Offline extensions (O5).** `[database] extension_dir` loads
-  `libvector`/`libfts` by path and never downloads; `okf setup extensions
-  [--from DIR] [--to DIR] [--no-download]` fills and verifies it.
-- **Typed relations (O6).** Frontmatter `relations: {kind: [targets]}`
-  creates `LINKS_TO {kind}` edges (targets by id, path or wiki name); body
-  links are `kind: mention`. `traverse(link_kinds=...)`, `search(rank="hub"
-  | "ppr", link_kinds=...)`; export round-trips `relations:`.
-- **Search filters (O7).** `where={extra_key: value}`, `since`/`until`
-  (on `timestamp`), `exclude_tags`; `[search] exclude_tags` default
-  (e.g. `["superseded"]`), overridden per call (`[]` = everything). CLI
-  `--where K=V --since --until --exclude-tags`; MCP `search` parameters.
-- **Neighbourhood search and paging.** `search(near_id=ID, hops=1..3)`
-  (default 2; CLI `--near ID --hops N`) keeps results within that many
-  links of a concept, either direction, itself included. The
-  neighbourhood is scored exactly against stored embeddings, so a small
-  one is never starved by the index window. `offset=N` (CLI `--offset`)
-  skips results. Concepts (every `rank`) and plain chunks.
-- **Exact pages.** Every search ranks at least `PAGE_WINDOW` (25) rows
-  and RRF ties break by id, so pages within the first 25 results are
-  exact slices of one ranking, in any process. The index window grows
-  accordingly (unfiltered 30 → 75 hits per index at `limit=10`,
-  filtered 100 → 250), and `rank="hub"` reranks that 25-row pool, so a
-  well-linked concept from ranks 11–25 can now reach the top 10.
-- **Every concept has a date.** The graph keeps `created_at` (first
-  import; kept across re-imports), `updated_at` (the last import that
-  changed body or frontmatter, by content hash, not file mtime) and
-  `effective_at`: the authored date when the frontmatter has one
-  (`timestamp`, else `updated` / `date` / `created`, the Obsidian
-  conventions), otherwise `updated_at`. `read` shows them; export never
-  writes them. Thoughts are dated by when they were first written.
-- **Recency boost.** `search(recency=DAYS)` (CLI `--recency 30`) blends
-  how recent each result is into its order:
-  `(1 - w) * relevance + w * 0.5 ** (age / DAYS)`, age from
-  `effective_at`, `w = recency_weight` (default 0.3). Off by default.
-  Concepts (every `rank`) and plain chunks; rows carry `recency_score`.
-- **Cross-encoder rerank (opt-in).** `search(target="chunks", rerank=True)`
-  (CLI `--rerank`; also after `hub_rerank`) and `search(rank="cross")` for
-  concepts let a cross-encoder reread the top hits against the query and
-  reorder them. Off by default: nothing changes, and no model loads,
-  unless a search asks. Only the filtered top `rerank_top_n` (default 30)
-  are rescored; they gain `cross_score` (the model's raw logit, not a
-  probability, never mixed into the other scores). The scored text is
-  always whole: chunks are re-read past the 500-char display cut, concepts
-  are scored on their body, long texts in windows (best window wins).
-  Settings under `[search]`: `rerank_model_id` (default
-  `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, multilingual;
-  `cross-encoder/ms-marco-MiniLM-L-6-v2` is smaller and English-only),
-  `rerank_device`, `rerank_precision` (`auto` = fp32, or `q8`),
-  `rerank_top_n`, `rerank_window` / `rerank_stride`. No reimport, no pins:
-  the reranker writes no vectors. Not combined with `recency`. One model
-  load per process, so `okf shell` / `okf serve` keep it warm.
-- **Vector search breadth.** `search(efs=N)` (CLI `--efs N`, MCP `efs`),
-  16–1000, widens the vector index search for that call: slower, finds
-  near misses the default skips. `[search] efs` sets a default; unset,
-  ladybug's own applies. Concepts (not `rank="ppr"`, which uses no vector
-  index) and plain / `hub_rerank` chunks; refused with `near_id`, whose
-  neighbourhood is scored exactly anyway.
-- **Near-duplicate collapse (opt-in).** `search(target="chunks",
-  dedupe=True)` (CLI `--dedupe`, MCP `dedupe`; plain and `hub_rerank`
-  chunks) drops a passage that repeats a higher-ranked hit, such as a
-  section copied from a plan into its successor: stored embeddings at
-  cosine >= 0.97, so no model call. The kept hit lists the dropped chunk
-  ids in `collapsed`. Runs last, after any rerank; off by default.
-- **Search eval harness.** `scripts/eval_search.py LABELS --db DB` runs a
-  JSONL label set (graded concept ids per query, `target`, `lang`,
-  `split`) against configs such as `rrf,hub,cross,cross:mmarco@q8,
-  rrf+dedupe` and reports nDCG/MRR/recall@k, wins/losses per query
-  against the first config, p50/p95 latency, the share of texts scored
-  in windows, and nDCG per target/language slice (`--md`, `--json`).
-  `--copy` works on a copy of the graph; `--offline` uses cached weights
-  only. `noul[:decider2b|laya|laya-ml]` configs try an embroider
-  typed-decision classifier as the reranker (one yes/no question per
-  passage, scored by P(true)). `scripts/eval_labels_okfgraph.jsonl` is a 28-query starter set
-  for this repo's own notes. No thresholds or defaults change.
-- **Index policy and batch import (O8).** `rebuild="auto"|"defer"|"force"`
-  on `import_bundle`, `import_file`, `import_files`, `ingest`;
-  **`import_files(paths)`** imports a list with one index step (CLI
-  `import FILE FILE ...`).
-- **Typed, idempotent ingest (O9).** `type`, `extra`, `materialize` for
-  `kind="md"|"thoughts"`; an explicit `concept_id` upserts;
-  `materialize=True` writes `<concept_id>.md` into the bundle and imports
-  that file. MCP `ingest` takes the same parameters.
-- **Thoughts link to what they are about.** `ingest(kind="thoughts",
-  related=[ids])` (CLI `--related ID`, repeatable; MCP `related`) writes
-  typed `related` links (O6) to those concepts, by id, path or title, so
-  `traverse` walks from a thought and `rank="hub"|"ppr"` see it. Targets
-  that resolve to nothing come back as `unresolved_related` and link
-  automatically once they exist. The ingest skill now tells agents to
-  write `[[Title]]` links in thought text and pass `related`.
-- **Thoughts into a folder.** `ingest(kind="thoughts", folder="decisions/perf",
-  title="Cache per file")` (CLI `--folder DIR`, MCP `folder`) writes
-  `decisions/perf/cache-per-file.md` into the bundle and imports it, in
-  the same call: `concept_id` + `materialize=True` without naming the
-  file. Untitled thoughts get a timestamp name; `@alias/dir` targets
-  another root; `..`, absolute paths, `concept_id` beside it and
-  `materialize=False` are refused.
-- **Producer plugins with a cursor (O10).** Entry-point group
-  `okfgraph.producers`; `produce(..., cursor=)` returns
-  `ProducedBundle(cursor, written)`; **`sync(producer, source)`** (CLI
-  `produce --sync`) imports exactly the written files and stores the cursor
-  after the import succeeds. The SQLite producer's cursor is the source
-  file's hash.
-- **Write ops (O11).** `update(concept_id, title=, description=, type=,
-  tags=|add_tags=|remove_tags=, extra=, relations=)` and
-  `supersede(old, new)` edit the bundle file, then import it;
-  `delete(remove_file=True)` moves the file to `.okf-trash/<ts>/` and
-  soft-deletes; `recover_deleted` moves it back. MCP gains `update`,
-  `supersede`, `delete` (11 tools). CLI `okf update`, `okf supersede`,
-  `delete --remove-file`.
-- `[import] identity = "frontmatter"` (O3) — see Changed.
-
-### Changed
-- **bobine floor 0.6 → 0.7; stacks ride 0.7.5.** The PDF/Office converter
-  lane now pairs with the 0.7.x era (TexTeller fp32 default, fp16 decode
-  fix); okfgraph's API floor stays `bobine.model_status()` (0.6+).
-  Lock refreshed; the published-stack tables follow the lock.
-- **`traverse(a, target=b)` is one breadth-first query.** `find_path`
-  uses Ladybug's `SHORTEST` path match instead of re-running the match
-  once per length (up to 10 queries, each listing every path). Same
-  edges, same 1–10 cap, same result shape. An unknown `start_id` or
-  `target` now raises `UNKNOWN_CONCEPT` instead of returning `[]`, so
-  `[]` means "no path".
-- **Doctor reports the search indexes.** One `search_index` info line
-  per index (table, type, properties; metric and dimension for vector
-  indexes) and a `missing_index` warning, with no score deduction, for an
-  expected index that is absent. Remedy: `okf reindex`.
-- **Re-import keeps incoming links (O1).** Links into a re-imported
-  concept from unchanged files are restored in the same transaction;
-  purging a concept turns links into it into `BrokenLink` rows (kind kept)
-  instead of dropping them; every import repairs earlier misses it now
-  satisfies (`repair_links` by hand is rarely needed).
-- **Path links read source-relative first (O1).** `[t](t.md)` in
-  `findings/a.md` means `findings/t`; the pre-0.11 root-relative reading is
-  the fallback, so existing bundles keep resolving. A miss records the
-  source-relative target and the link as written (`BrokenLink.raw`).
-- **Per-file change detection (O2).** Inside a changed directory only new
-  or changed files (or files whose concept is missing) re-import;
-  `import_file` and `ingest(kind="md")` on a bundle file record its hash.
-  **Behaviour change:** `import_bundle` returns only the re-imported ids.
-- **Frontmatter identity, opt-in (O3).** With `identity = "frontmatter"` a
-  file's `id:` is its concept id and `source_path` records the file; moving
-  it keeps the concept and its links; two files with one id → the second is
-  refused (`import_bundle` returns `duplicates` and `moved`; lint
-  `duplicate_id`).
-- **Index step (O8).** Measured on Ladybug 0.21.2: vector and FTS indexes
-  are maintained in place, so writes only create missing indexes; `okf
-  reindex` now really drops and recreates them (it silently did nothing
-  before).
-- **Ambiguous wikilinks (O12)** are `BrokenLink {reason: ambiguous,
-  candidates}`; doctor reports `ambiguous_link`, lint names the candidates.
-- `doctor`: missing search extensions are an error (`search_unavailable`,
-  −20), no longer a log line.
-- `list_broken_links()` rows gain `kind`, `reason`, `candidates`, `raw`, `id`.
-- MCP `delete` is exposed (soft, recoverable, destructive-annotated);
-  hard purge stays CLI/Python.
-
-### Fixed
-- `okf serve` on Windows: asyncio has no Unix-socket server there, so a
-  `unix://` listen falls back to TCP loopback on a free port (logged).
-  `<db>.serve.json` now records the port actually bound (also for an
-  explicit `HOST:0`).
-- Server discovery on Windows: the liveness check no longer calls
-  `os.kill(pid, 0)`, which there sends `CTRL_C_EVENT` instead of probing;
-  it queries the process exit code.
-- Import report: `moved` lists bundle paths with forward slashes on
-  Windows (was `evidence\x.md`).
-- `since` / `until` matched only concepts with a frontmatter `timestamp:`
-  (few have one); they now read `effective_at`, so every concept is in
-  range of a time filter.
-- A YAML date in frontmatter (`date: 2024-01-02`) failed the import
-  (not JSON-serializable); it is stored as an ISO string.
-
-### Migration
-- v8 → v9 on open: `LINKS_TO.kind` (existing edges become `mention`),
-  `BrokenLink.kind/reason/candidates/raw`, new `ProducerCursor` table.
-  Probe-before-ALTER, so an interrupted migration finishes on the next open.
-- v9 → v10 on open: `Concept.created_at/updated_at/effective_at/content_sig`.
-  Existing concepts get the migration time as created/updated (nothing
-  older is known) and `effective_at` from their authored date if any.
-  `rank="ppr"` now also returns a slice of a 25-row pool, like the others.
-
-## [0.14.0] — 2026-11-11
+## [0.14.0] — 2026-11-13
 
 The image-lane release: the vision model can run in an `embroider.serve`
 host, so a process that must not load ONNX can embed image content
@@ -263,6 +64,13 @@ key (`embedding_image_space`) and one new error code.
   after a byte-for-byte equivalence check across both slots and seven
   image shapes (JPEG, alpha PNG, palette PNG, 1×1, very wide, very tall,
   EXIF-rotated). `VISION_CONTRACT` is unchanged, so no graph re-embeds.
+
+### Docs
+- README "Models in another process" covers all three external lanes and
+  the vision host command; the README, architecture, converters and the
+  three skills name `EXTERNAL_UNAVAILABLE` and `CONVERSION_FAILED`.
+- This changelog is newest first again (the 0.11.0 block had drifted to
+  the top).
 
 ## [0.13.1] — 2026-11-11
 
@@ -573,6 +381,205 @@ and who an external host is. Requires `embroider>=0.15,<0.16`.
 - **Vanished sources are named (R29-G').** An import without
   `--prune-missing` that finds a recorded source file gone warns once,
   listing up to five, and drops nothing.
+
+## [0.11.0] — 2026-11-03
+
+The findings-store release: OKFgraph safe to update continuously from
+producers and agents (Silk). Schema **v8 → v10** in two migrating steps
+(typed links · link diagnostics · producer cursors, then graph-kept
+concept times for recency; both run on first open). The single-writer
+rule holds: every new write path writes a bundle file and imports it.
+Design record: `docs/architecture.md` "Summary of Changes (v6.7 →
+v6.8)" and its Design Decisions table.
+
+### Added
+- **`okf serve` (O4).** One process owns the database and serves MCP over
+  streamable HTTP (`/mcp`) plus the ops as JSON (`POST /ops/<op>`,
+  `GET /health`), on TCP or a Unix socket. **`OKFClient(url)`** mirrors the
+  router's ops and raises the same `OKFError`s; **`okf-mcp --connect URL`**
+  is a stdio proxy for existing `.mcp.json` setups; the CLI uses a running
+  owner automatically (`<db>.serve.json` + `/health`; opt out with
+  `OKFGRAPH_NO_SERVER=1`).
+- **Offline extensions (O5).** `[database] extension_dir` loads
+  `libvector`/`libfts` by path and never downloads; `okf setup extensions
+  [--from DIR] [--to DIR] [--no-download]` fills and verifies it.
+- **Typed relations (O6).** Frontmatter `relations: {kind: [targets]}`
+  creates `LINKS_TO {kind}` edges (targets by id, path or wiki name); body
+  links are `kind: mention`. `traverse(link_kinds=...)`, `search(rank="hub"
+  | "ppr", link_kinds=...)`; export round-trips `relations:`.
+- **Search filters (O7).** `where={extra_key: value}`, `since`/`until`
+  (on `timestamp`), `exclude_tags`; `[search] exclude_tags` default
+  (e.g. `["superseded"]`), overridden per call (`[]` = everything). CLI
+  `--where K=V --since --until --exclude-tags`; MCP `search` parameters.
+- **Neighbourhood search and paging.** `search(near_id=ID, hops=1..3)`
+  (default 2; CLI `--near ID --hops N`) keeps results within that many
+  links of a concept, either direction, itself included. The
+  neighbourhood is scored exactly against stored embeddings, so a small
+  one is never starved by the index window. `offset=N` (CLI `--offset`)
+  skips results. Concepts (every `rank`) and plain chunks.
+- **Exact pages.** Every search ranks at least `PAGE_WINDOW` (25) rows
+  and RRF ties break by id, so pages within the first 25 results are
+  exact slices of one ranking, in any process. The index window grows
+  accordingly (unfiltered 30 → 75 hits per index at `limit=10`,
+  filtered 100 → 250), and `rank="hub"` reranks that 25-row pool, so a
+  well-linked concept from ranks 11–25 can now reach the top 10.
+- **Every concept has a date.** The graph keeps `created_at` (first
+  import; kept across re-imports), `updated_at` (the last import that
+  changed body or frontmatter, by content hash, not file mtime) and
+  `effective_at`: the authored date when the frontmatter has one
+  (`timestamp`, else `updated` / `date` / `created`, the Obsidian
+  conventions), otherwise `updated_at`. `read` shows them; export never
+  writes them. Thoughts are dated by when they were first written.
+- **Recency boost.** `search(recency=DAYS)` (CLI `--recency 30`) blends
+  how recent each result is into its order:
+  `(1 - w) * relevance + w * 0.5 ** (age / DAYS)`, age from
+  `effective_at`, `w = recency_weight` (default 0.3). Off by default.
+  Concepts (every `rank`) and plain chunks; rows carry `recency_score`.
+- **Cross-encoder rerank (opt-in).** `search(target="chunks", rerank=True)`
+  (CLI `--rerank`; also after `hub_rerank`) and `search(rank="cross")` for
+  concepts let a cross-encoder reread the top hits against the query and
+  reorder them. Off by default: nothing changes, and no model loads,
+  unless a search asks. Only the filtered top `rerank_top_n` (default 30)
+  are rescored; they gain `cross_score` (the model's raw logit, not a
+  probability, never mixed into the other scores). The scored text is
+  always whole: chunks are re-read past the 500-char display cut, concepts
+  are scored on their body, long texts in windows (best window wins).
+  Settings under `[search]`: `rerank_model_id` (default
+  `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, multilingual;
+  `cross-encoder/ms-marco-MiniLM-L-6-v2` is smaller and English-only),
+  `rerank_device`, `rerank_precision` (`auto` = fp32, or `q8`),
+  `rerank_top_n`, `rerank_window` / `rerank_stride`. No reimport, no pins:
+  the reranker writes no vectors. Not combined with `recency`. One model
+  load per process, so `okf shell` / `okf serve` keep it warm.
+- **Vector search breadth.** `search(efs=N)` (CLI `--efs N`, MCP `efs`),
+  16–1000, widens the vector index search for that call: slower, finds
+  near misses the default skips. `[search] efs` sets a default; unset,
+  ladybug's own applies. Concepts (not `rank="ppr"`, which uses no vector
+  index) and plain / `hub_rerank` chunks; refused with `near_id`, whose
+  neighbourhood is scored exactly anyway.
+- **Near-duplicate collapse (opt-in).** `search(target="chunks",
+  dedupe=True)` (CLI `--dedupe`, MCP `dedupe`; plain and `hub_rerank`
+  chunks) drops a passage that repeats a higher-ranked hit, such as a
+  section copied from a plan into its successor: stored embeddings at
+  cosine >= 0.97, so no model call. The kept hit lists the dropped chunk
+  ids in `collapsed`. Runs last, after any rerank; off by default.
+- **Search eval harness.** `scripts/eval_search.py LABELS --db DB` runs a
+  JSONL label set (graded concept ids per query, `target`, `lang`,
+  `split`) against configs such as `rrf,hub,cross,cross:mmarco@q8,
+  rrf+dedupe` and reports nDCG/MRR/recall@k, wins/losses per query
+  against the first config, p50/p95 latency, the share of texts scored
+  in windows, and nDCG per target/language slice (`--md`, `--json`).
+  `--copy` works on a copy of the graph; `--offline` uses cached weights
+  only. `noul[:decider2b|laya|laya-ml]` configs try an embroider
+  typed-decision classifier as the reranker (one yes/no question per
+  passage, scored by P(true)). `scripts/eval_labels_okfgraph.jsonl` is a 28-query starter set
+  for this repo's own notes. No thresholds or defaults change.
+- **Index policy and batch import (O8).** `rebuild="auto"|"defer"|"force"`
+  on `import_bundle`, `import_file`, `import_files`, `ingest`;
+  **`import_files(paths)`** imports a list with one index step (CLI
+  `import FILE FILE ...`).
+- **Typed, idempotent ingest (O9).** `type`, `extra`, `materialize` for
+  `kind="md"|"thoughts"`; an explicit `concept_id` upserts;
+  `materialize=True` writes `<concept_id>.md` into the bundle and imports
+  that file. MCP `ingest` takes the same parameters.
+- **Thoughts link to what they are about.** `ingest(kind="thoughts",
+  related=[ids])` (CLI `--related ID`, repeatable; MCP `related`) writes
+  typed `related` links (O6) to those concepts, by id, path or title, so
+  `traverse` walks from a thought and `rank="hub"|"ppr"` see it. Targets
+  that resolve to nothing come back as `unresolved_related` and link
+  automatically once they exist. The ingest skill now tells agents to
+  write `[[Title]]` links in thought text and pass `related`.
+- **Thoughts into a folder.** `ingest(kind="thoughts", folder="decisions/perf",
+  title="Cache per file")` (CLI `--folder DIR`, MCP `folder`) writes
+  `decisions/perf/cache-per-file.md` into the bundle and imports it, in
+  the same call: `concept_id` + `materialize=True` without naming the
+  file. Untitled thoughts get a timestamp name; `@alias/dir` targets
+  another root; `..`, absolute paths, `concept_id` beside it and
+  `materialize=False` are refused.
+- **Producer plugins with a cursor (O10).** Entry-point group
+  `okfgraph.producers`; `produce(..., cursor=)` returns
+  `ProducedBundle(cursor, written)`; **`sync(producer, source)`** (CLI
+  `produce --sync`) imports exactly the written files and stores the cursor
+  after the import succeeds. The SQLite producer's cursor is the source
+  file's hash.
+- **Write ops (O11).** `update(concept_id, title=, description=, type=,
+  tags=|add_tags=|remove_tags=, extra=, relations=)` and
+  `supersede(old, new)` edit the bundle file, then import it;
+  `delete(remove_file=True)` moves the file to `.okf-trash/<ts>/` and
+  soft-deletes; `recover_deleted` moves it back. MCP gains `update`,
+  `supersede`, `delete` (11 tools). CLI `okf update`, `okf supersede`,
+  `delete --remove-file`.
+- `[import] identity = "frontmatter"` (O3) — see Changed.
+
+### Changed
+- **bobine floor 0.6 → 0.7; stacks ride 0.7.5.** The PDF/Office converter
+  lane now pairs with the 0.7.x era (TexTeller fp32 default, fp16 decode
+  fix); okfgraph's API floor stays `bobine.model_status()` (0.6+).
+  Lock refreshed; the published-stack tables follow the lock.
+- **`traverse(a, target=b)` is one breadth-first query.** `find_path`
+  uses Ladybug's `SHORTEST` path match instead of re-running the match
+  once per length (up to 10 queries, each listing every path). Same
+  edges, same 1–10 cap, same result shape. An unknown `start_id` or
+  `target` now raises `UNKNOWN_CONCEPT` instead of returning `[]`, so
+  `[]` means "no path".
+- **Doctor reports the search indexes.** One `search_index` info line
+  per index (table, type, properties; metric and dimension for vector
+  indexes) and a `missing_index` warning, with no score deduction, for an
+  expected index that is absent. Remedy: `okf reindex`.
+- **Re-import keeps incoming links (O1).** Links into a re-imported
+  concept from unchanged files are restored in the same transaction;
+  purging a concept turns links into it into `BrokenLink` rows (kind kept)
+  instead of dropping them; every import repairs earlier misses it now
+  satisfies (`repair_links` by hand is rarely needed).
+- **Path links read source-relative first (O1).** `[t](t.md)` in
+  `findings/a.md` means `findings/t`; the pre-0.11 root-relative reading is
+  the fallback, so existing bundles keep resolving. A miss records the
+  source-relative target and the link as written (`BrokenLink.raw`).
+- **Per-file change detection (O2).** Inside a changed directory only new
+  or changed files (or files whose concept is missing) re-import;
+  `import_file` and `ingest(kind="md")` on a bundle file record its hash.
+  **Behaviour change:** `import_bundle` returns only the re-imported ids.
+- **Frontmatter identity, opt-in (O3).** With `identity = "frontmatter"` a
+  file's `id:` is its concept id and `source_path` records the file; moving
+  it keeps the concept and its links; two files with one id → the second is
+  refused (`import_bundle` returns `duplicates` and `moved`; lint
+  `duplicate_id`).
+- **Index step (O8).** Measured on Ladybug 0.21.2: vector and FTS indexes
+  are maintained in place, so writes only create missing indexes; `okf
+  reindex` now really drops and recreates them (it silently did nothing
+  before).
+- **Ambiguous wikilinks (O12)** are `BrokenLink {reason: ambiguous,
+  candidates}`; doctor reports `ambiguous_link`, lint names the candidates.
+- `doctor`: missing search extensions are an error (`search_unavailable`,
+  −20), no longer a log line.
+- `list_broken_links()` rows gain `kind`, `reason`, `candidates`, `raw`, `id`.
+- MCP `delete` is exposed (soft, recoverable, destructive-annotated);
+  hard purge stays CLI/Python.
+
+### Fixed
+- `okf serve` on Windows: asyncio has no Unix-socket server there, so a
+  `unix://` listen falls back to TCP loopback on a free port (logged).
+  `<db>.serve.json` now records the port actually bound (also for an
+  explicit `HOST:0`).
+- Server discovery on Windows: the liveness check no longer calls
+  `os.kill(pid, 0)`, which there sends `CTRL_C_EVENT` instead of probing;
+  it queries the process exit code.
+- Import report: `moved` lists bundle paths with forward slashes on
+  Windows (was `evidence\x.md`).
+- `since` / `until` matched only concepts with a frontmatter `timestamp:`
+  (few have one); they now read `effective_at`, so every concept is in
+  range of a time filter.
+- A YAML date in frontmatter (`date: 2024-01-02`) failed the import
+  (not JSON-serializable); it is stored as an ISO string.
+
+### Migration
+- v8 → v9 on open: `LINKS_TO.kind` (existing edges become `mention`),
+  `BrokenLink.kind/reason/candidates/raw`, new `ProducerCursor` table.
+  Probe-before-ALTER, so an interrupted migration finishes on the next open.
+- v9 → v10 on open: `Concept.created_at/updated_at/effective_at/content_sig`.
+  Existing concepts get the migration time as created/updated (nothing
+  older is known) and `effective_at` from their authored date if any.
+  `rank="ppr"` now also returns a slice of a 25-row pool, like the others.
 
 ## [0.10.2] — 2026-10-07
 

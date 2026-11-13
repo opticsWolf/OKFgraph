@@ -1,7 +1,8 @@
 # OKFgraph implementation plan: 0.13.1 release → 0.14.x
 
-Status: draft, 2026-11-11. Branch `dev_silk` (0.13.1 committed at
-28515d1; `main` still at 3febe85).
+Status, 2026-11-13: A released as 0.13.1. B, C, D and H done and
+released as 0.14.0. E and F unblocked by bobine 0.9.1, next for 0.14.1.
+G open.
 
 This plan covers the okfgraph side of the ONNX unification
 (`plugins/silk/docs/ONNX_UNIFICATION_PLAN.md` in Weave: items **O3** and

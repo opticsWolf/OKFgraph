@@ -1185,7 +1185,10 @@ through it), `NO_ORT_RUNTIME` (no or broken ONNX Runtime; an
 installed-but-unimportable runtime gets a reinstall hint, not the
 install-an-extra hint), `EMBROIDER_TOO_OLD` (`model-info` on an
 embroider < 0.3.2 without `cache_info`), plus the pin set
-(`MODEL_PIN_MISMATCH` et al.) and `WRITE_LOCK_TIMEOUT`.
+(`MODEL_PIN_MISMATCH` et al.) and `WRITE_LOCK_TIMEOUT`. Since 0.14:
+`EXTERNAL_UNAVAILABLE` (an external embedding/rerank/vision host is
+unreachable, endpoint in `fields`) and `CONVERSION_FAILED` (bobine could
+not convert that file, `fields={"path", "converter"}`).
 Handlers are parse → op → render: the op owns validation and refusals,
 `_out` prints the envelope (`--json`) or the command's human renderer, and
 one catch-all (`_main_catchall`) turns any `OKFError` into `[ERROR] CODE:
@@ -1525,8 +1528,9 @@ model is the **registry vision pairing of the graph's text model**
 (`image_model_id=None`): an **embeddinggemma-2 graph selects the gemma-2
 vision slot** (`GemmaVision` over `onnx-community/embeddinggemma-2-vision`
 — Apache-2.0, the SigLIP-style tower fused through the text tower behind
-`text_partner`, so image vectors share the gemma-2 **text space**; host
-resize via `gemma_vision_target_size`); a **text-nano graph keeps the jina
+`text_partner`, so image vectors share the gemma-2 **text space**; since
+0.14 both slots resize through `embroider.prepare_image`, the same function
+an `embroider.serve` vision host uses); a **text-nano graph keeps the jina
 omni slot** (`JinaV5Vision` over `opticsWolf/jina-embeddings-v5-omni-nano-retrieval-onnx`).
 Both fail closed on the graph's `text_partner` pin, and both refuse
 fp16-on-CPU (the vision towers NaN under emulated fp16 — the jina and
@@ -1564,7 +1568,6 @@ The `okfgraph.images` module handles image extraction, resolution, and embedding
 | `asset_id_for(concept_id, index, src)` | Deterministic asset id (re-uses `okf-asset://` ids, generates UUID5 otherwise) |
 | `build_extracted_images(concept_id, body, search_dirs, allow_remote)` | Extract every image ref and resolve bytes/metadata |
 | `plan_embedding(img, mode)` | Decide how a single image should be embedded — returns `(route, caption)` (`optional`/`omni` → `VISION` on text-nano graphs) |
-| `prepare_vision_rgb(data)` | Decode + Pillow bicubic RGB resize to the contract target (`VISION_CONTRACT`); non-target arrays are rejected, never embedded |
 | `sniff_mime(data, filename)` | Best-effort MIME detection: magic bytes first, then filename extension |
 | `fallback_caption(filename, index, concept_id)` | Caption for text path when image has no alt-text |
 | `load_image_bytes(src, search_dirs, allow_remote)` | Resolve raw image bytes for a markdown src (data URIs, local files, optional remote) |

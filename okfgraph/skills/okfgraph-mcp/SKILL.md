@@ -74,7 +74,9 @@ tools (8 read/ingest + 3 write).
   `error: {code, message, fields, remedy}`. Act on `remedy`:
   `UNKNOWN_CONCEPT` → search first to find IDs; `BAD_VALUE` names the
   offending param in `fields`; `SEARCH_UNAVAILABLE` → the vector/FTS
-  extensions failed to load (graph reads still work).
+  extensions failed to load (graph reads still work);
+  `EXTERNAL_UNAVAILABLE` → a model host named in `fields` is down (tell
+  the user; reads and `rank="ppr"` search still work).
 - The server holds the database for its lifetime: a shell `okf` on the
   same db fails with `DB_LOCKED`, so query through these tools instead.
 - Params a path ignores are refused, never silently dropped:

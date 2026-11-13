@@ -134,6 +134,34 @@ After installing, copy the agent skills into your harness:
 `okf setup skills` writes them to `.claude/skills/` (Claude Code);
 `--to DIR` for another harness, `--skill NAME` for one of them.
 
+### Models in another process
+
+Each model can run in its own server instead of inside okfgraph:
+`[embedding] backend = "external"` (text), `[search] rerank_backend =
+"external"` (reranker) and, since 0.14, `[embedding] image_backend =
+"external"` (vision), each with its endpoint URL (`endpoint_url`,
+`rerank_endpoint_url`, `image_endpoint_url`). An embroider host serves
+any of them:
+
+```bash
+python -m embroider.serve --kind vision --model <image model id> --dim <graph dim> --port 8091
+```
+
+```toml
+[embedding]
+image_backend = "external"
+image_endpoint_url = "http://127.0.0.1:8091"
+```
+
+The image lane has no declared mode: the host must be embroider and
+report its model, width, precision, vector space and text partner on
+`GET /v1/models`; okfgraph refuses a host whose model, width or text
+partner doesn't match the graph. okfgraph sends the original image bytes
+and the host resizes them, so vectors match the in-process lane and a
+graph can switch lanes without re-embedding. With all three lanes
+external, neither ONNX Runtime nor the `embroider` wheel needs to load in
+the okfgraph process. An unreachable host is `EXTERNAL_UNAVAILABLE`.
+
 ---
 
 ## Quick start
@@ -247,7 +275,10 @@ usage. Outcomes (`lint` errors, `diff` differences, `doctor --strict`
 findings) still render their report before exiting 1. Typed state codes
 include `DB_LOCKED` (the db is open in another process — `okf` commands
 run one at a time per database; when `okf-mcp` is serving, query through
-it), `NO_ORT_RUNTIME` (no/broken ONNX Runtime), and the pin set.
+it), `NO_ORT_RUNTIME` (no/broken ONNX Runtime), `EXTERNAL_UNAVAILABLE`
+(an external embedding/rerank/vision host doesn't answer; 0.14),
+`CONVERSION_FAILED` (bobine could not convert that file; 0.14), and the
+pin set.
 Concurrency: one process per db file; the 0-byte `<db>.lock` beside it is
 ladybug's own lock marker and is harmless when no process holds it.
 A leftover after a crash/kill is indistinguishable from a live hold at first

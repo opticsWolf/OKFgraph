@@ -7,6 +7,13 @@ level, and the router builds fine without it installed. Only converting a
 PDF with the *default* converter raises a `RuntimeError` naming
 `pip install "okfgraph[pdf]"`.
 
+A file bobine cannot convert (a corrupt PDF, an unsupported format) is
+`CONVERSION_FAILED` (exit 1, since 0.14) with `fields={"path",
+"converter": "bobine"}` and bobine's message, not `INTERNAL`. A missing
+file is `FILE_NOT_FOUND`, checked before conversion starts. With several
+`--pdf-path` files, each failure is reported for its file and the rest
+still convert.
+
 ## The contract
 
 ```python

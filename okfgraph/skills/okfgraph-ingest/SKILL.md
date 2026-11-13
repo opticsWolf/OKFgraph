@@ -63,6 +63,8 @@ re-extracting it from files.
   IDs are `refs/<key>`; `data` → `{concept_ids, entry_count,
   skipped_entries}`.
 - `kind="pdf"`: `pdf_path` (+ `routing_mode`, `extract_images`, `mode`).
+  A file bobine can't convert is `CONVERSION_FAILED` (that file only:
+  tell the user, move on), not a bug to retry.
 - Omitted `mode` follows the configured `[import] mode` (default `text`).
 - `data` per kind: md → `{concept_id, title, chunk_count, image_count,
   lint_issues, ...}`; thoughts → `{concept_id, topic, chunk_count, ...}`;

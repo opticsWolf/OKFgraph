@@ -96,8 +96,9 @@ filters on `--target images`) instead of silently dropping them.
   stderr (`-q` silences logs, never results).
 - Failures print `[ERROR] CODE: message (remedy)` on stderr. Exit 2 =
   usage (`BAD_VALUE`, `MISSING_PARAM`, `FILE_NOT_FOUND`,
-  `CONFIG_INVALID`), 1 = state (`UNKNOWN_CONCEPT`, `DETACHED`, ...) or
-  outcome.
+  `CONFIG_INVALID`), 1 = state (`UNKNOWN_CONCEPT`, `DETACHED`,
+  `EXTERNAL_UNAVAILABLE` — a model host isn't answering, `CONVERSION_FAILED`
+  — bobine couldn't convert that file, ...) or outcome.
 - Outcomes still render their report: `lint` with errors
   (`LINT_ERRORS`), `diff` that differs (`DIFF_DIFFERENT`), `doctor
   --strict` with findings (`DOCTOR_FINDINGS`) exit 1 with the report on

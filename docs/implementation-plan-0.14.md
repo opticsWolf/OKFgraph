@@ -2,8 +2,9 @@
 
 Status, 2026-11-13: A released as 0.13.1. B, C, D and H done and
 released as 0.14.0. E and F done and **released as 0.14.1** (`v0.14.1` on
-`main`, wheel + sdist on PyPI; built against bobine 0.9.1). G open — the
-db-creation question is the only one that needs a decision.
+`main`, wheel + sdist on PyPI; built against bobine 0.9.1). G1 and G2
+decided and **released as 0.14.2**; G3 is a design note
+(`docs/plan-declared-image-identity.md`), no code yet.
 
 This plan covers the okfgraph side of the ONNX unification
 (`plugins/silk/docs/ONNX_UNIFICATION_PLAN.md` in Weave: items **O3** and
@@ -599,7 +600,7 @@ is idempotent. Two contracts from the bobine side that F has to respect:
 
 ---
 
-## G. Open questions (need a decision, not code yet)
+## G. Open questions (G1, G2 decided in 0.14.2; G3 a design note)
 
 1. **Should `okf-mcp` / `okf serve` keep creating a missing database on
    first boot?** Today they do, unlike CLI read commands. A mistyped
@@ -609,12 +610,18 @@ is idempotent. Two contracts from the bobine side that F has to respect:
      `created: true` in the first `doctor` / health answer;
    - (b) refuse unless `--create` / `OKFGRAPH_CREATE=1`.
 
-   Recommendation: (a) in 0.14.0, since (b) breaks existing MCP configs
-   that rely on first-boot creation. Revisit (b) for 1.0.
-2. **Folders as `--pdf-path` input.** `--pdf-path DIR` could expand to
-   `DIR/*.pdf` (not recursive), so bulk PDF matches bulk markdown
-   (`import` over `.md/.markdown/.txt`). Cheap once F lands; skip until
-   someone asks.
+   **Decided, 0.14.2: (a), plus the agent-facing half.** The server still
+   creates the database; while that new graph is empty, every MCP tool
+   envelope (okf-mcp and okf serve's `/mcp`) carries a "graph created at …
+   still empty" warning, `/health` reports `created`, `okf doctor` leads
+   with a `db_created` row, and boot logs a WARNING. (b) stays a 1.0
+   question.
+2. **Folders as `--pdf-path` input.** **Decided, 0.14.2:** a folder
+   expands to the convertible files directly inside it (no recursion) and
+   `*`/`?` patterns expand in-process (PowerShell does not glob), filtered
+   to bobine's extensions, Office owner (`~$…`) and hidden files skipped,
+   duplicates converted once; nothing matched is `FILE_NOT_FOUND`. CLI
+   only — MCP ingest stays one file per call.
 3. **Declared image identity.** Deferred out of 0.14.0 by decision (B:
    "no `image_identity = declared` mode"), then re-opened deliberately:
    llama-server can embed images through `/v1/embeddings` once loaded with

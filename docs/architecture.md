@@ -1220,7 +1220,7 @@ so the guard loads without the router.
 | `okf export --all\|--concept-id ID --output-dir <dir>` | Export entire bundle (filters: `--concept-type`, `--tags`, `--directory-id`) or one concept; OKF or Obsidian flavor |
 | `okf images <id>` / `okf image <asset-id> [--output-path F]` | List a concept's image assets; dump one asset's bytes |
 | `okf diff` | Structural diff: concepts/edges/broken-link deltas |
-| `okf doctor` | Health scan: score, findings, safe `--fix`; informational entries (`converter_cache`, `cache_hygiene`, `ort_gpu_unused`, and since 0.13 `embed_lane` / `rerank_lane`: who serves each model, its identity, precision and space) never score |
+| `okf doctor` | Health scan: score, findings, safe `--fix`; informational entries (`converter_cache`, `cache_hygiene`, `ort_gpu_unused`, and since 0.13 `embed_lane` / `rerank_lane`: who serves each model, its identity, precision and space; since 0.14.1 `pdf_converter`; since 0.14.2 `db_created`, first, when this boot created the database — absolute path and concept count) never score |
 | `okf lint` | Validate bundle frontmatter + links before import |
 | `okf broken-links` / `okf repair-links` | List / repair links to not-yet-imported concepts |
 | `okf reindex` | Rebuild vector + FTS search indexes |

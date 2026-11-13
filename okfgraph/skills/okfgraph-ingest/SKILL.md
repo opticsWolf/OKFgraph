@@ -19,7 +19,7 @@ early, feed it structured.
 |---|---|---|
 | Decision, insight, or reasoning from this session | `thoughts` | Cheapest, highest value. Always set `topic`. |
 | Existing markdown (docs, notes, ADRs) | `md` | One file per call; bulk dirs via `okf import`. |
-| Papers, reports, scans | `pdf` (`--pdf-path` also takes Office: docx/xlsx/pptx, legacy doc/xls/ppt — bobine dispatches on extension) | See converter modes below. |
+| Papers, reports, scans | `pdf` (`--pdf-path` also takes Office: docx/xlsx/pptx, legacy doc/xls/ppt — bobine dispatches on extension; on the CLI also a folder or `*.pdf` pattern) | See converter modes below. |
 | Bibliography file | `bib` | One `reference` concept per `@entry` as `refs/<key>` (stable IDs — re-ingesting the same file upserts); malformed entries are reported, never fatal. |
 | Whole bundle directory changed | `okf import` (CLI) | Delta-aware: only changed files re-embed. |
 
@@ -62,8 +62,9 @@ re-extracting it from files.
 - `kind="bib"`: `bib_path` (+ optional `tags`, applied to every entry).
   IDs are `refs/<key>`; `data` → `{concept_ids, entry_count,
   skipped_entries}`.
-- `kind="pdf"`: `pdf_path` (+ `routing_mode`, `extract_images`, `mode`).
-  A file bobine can't convert is `CONVERSION_FAILED` (that file only:
+- `kind="pdf"`: `pdf_path` (+ `routing_mode`, `extract_images`, `mode`),
+  one file per call — folders and patterns are CLI-only, so for many files
+  suggest `okf ingest --kind pdf --pdf-path DIR` to the user. A file bobine can't convert is `CONVERSION_FAILED` (that file only:
   tell the user, move on), not a bug to retry.
 - Omitted `mode` follows the configured `[import] mode` (default `text`).
 - `data` per kind: md → `{concept_id, title, chunk_count, image_count,
@@ -92,7 +93,7 @@ re-extracting it from files.
   unless `--apply`; CLI-only
 - `--kind md --md-path F [--concept-id ID] [--title T] [--tags a,b]`
 - `--kind bib --bib-path F [--tags a,b]` — one `refs/<key>` concept per entry
-- `--kind pdf --pdf-path F [F ...] [--routing-mode ...]` — auto-imports by
+- `--kind pdf --pdf-path F|DIR|PATTERN [...] [--routing-mode ...]` — auto-imports by
   default; `--no-auto-import` converts only (next to the source, or
   `--output-dir DIR`), then `okf import --all --bundle-path DIR`. Several
   files run in one process on one loaded model **and one warm converter**
@@ -103,6 +104,9 @@ re-extracting it from files.
   A folder expands to the convertible files directly inside it (no
   recursion) and `*`/`?` patterns expand in-process — PowerShell does not
   glob for programs, so `--pdf-path 'papers/*.pdf'` works there (0.14.2).
+  Word's `~$…` owner files and hidden files are skipped, a file reached
+  twice converts once, `[` is literal, and a folder or pattern with no
+  matches is `FILE_NOT_FOUND`. For subfolders, pass each folder.
   Bulk markdown (`.md`/`.markdown`/`.txt`): `okf import --all [--bundle-path DIR]`
   (`--prune-missing` drops concepts whose files vanished from disk).
 - `--json` prints the same `data` as the MCP tool inside the envelope.
@@ -130,8 +134,9 @@ informational `pdf_converter` line:
 
 `extract_images=false` skips embedded images (pure-text import). Image
 *embedding* depth is separate: `mode=text` (captions) or
-`optional`/`omni` (image-content via the ONNX vision model, needs a
-text-nano graph). Converted markdown is
+`optional`/`omni` (image-content via the vision model paired with the
+graph's text model — gemma-2 or text-nano graphs; a GGUF text graph keeps
+captions). Converted markdown is
 mordant-linted and temp dirs are cleaned automatically.
 
 ## Conventions

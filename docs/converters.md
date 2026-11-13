@@ -12,7 +12,10 @@ A file bobine cannot convert (a corrupt PDF, an unsupported format) is
 "converter": "bobine"}` and bobine's message, not `INTERNAL`. A missing
 file is `FILE_NOT_FOUND`, checked before conversion starts. With several
 `--pdf-path` files, each failure is reported for its file and the rest
-still convert.
+still convert. A folder or `*`/`?` pattern on `--pdf-path` (0.14.2)
+expands to the files with bobine's extensions (pdf, docx, xlsx, pptx, doc,
+xls, ppt), skipping Office owner files (`~$…`) and hidden files; a folder or
+pattern that matches nothing is `FILE_NOT_FOUND` naming it.
 
 ## The contract
 

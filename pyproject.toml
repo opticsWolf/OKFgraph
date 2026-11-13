@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "okfgraph"
-version = "0.14.1"
+version = "0.14.2"
 description = "Ladybug-backed OKF knowledge graph with ONNX (embroider) embeddings"
 readme = "README.md"
 requires-python = ">=3.11"

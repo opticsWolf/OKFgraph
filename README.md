@@ -307,7 +307,7 @@ package import itself.
 | `okf search QUERY [--target concepts\|chunks\|images] [--rank none\|hub\|ppr] [--expand] [--hub-rerank]` | Concepts (RRF hybrid), chunks (passages), images; `--rank ppr` is model-free |
 | `okf read ID [--include body\|chunks\|document\|context] [--max-tokens N]` | Full shapes uncapped; budgeted section list with `--max-tokens` |
 | `okf traverse [ID] [--relationship CONTAINS\|LINKS_TO\|PART_OF\|INCLUDES_ASSET] [--direction …] [--target ID]` | Relationships, directory listing (empty ID = root), shortest path via `--target` |
-| `okf ingest --kind md\|pdf\|thoughts\|bib …` | `--md-path`, `--pdf-path FILE...` (several files in one process on one loaded model; a failed file is reported and the rest continue; `--routing-mode`, auto-imports by default; `--no-auto-import` converts only), `--thoughts --topic`, `--bib-path` (one `refs/<key>` concept per BibTeX entry) |
+| `okf ingest --kind md\|pdf\|thoughts\|bib …` | `--md-path`, `--pdf-path FILE\|DIR\|PATTERN...` (a folder expands to the documents directly inside it, `*`/`?` patterns expand in-process; several files in one process on one loaded model; a failed file is reported and the rest continue; `--routing-mode`, auto-imports by default; `--no-auto-import` converts only), `--thoughts --topic`, `--bib-path` (one `refs/<key>` concept per BibTeX entry) |
 | `okf export --all\|--concept-id ID --output-dir DIR [--flavor okf\|obsidian]` | Bundle or single-concept export; obsidian = `[[Title]]` links, no index files |
 | `okf images CONCEPT_ID` / `okf image ASSET_ID [--output-path F]` | Image assets on a concept; metadata (+ bytes) per asset |
 | `okf diff [OLD] [NEW] [--json]` | Snapshot (two dirs, no model) or drift (graph vs dir); exit 0 identical / 1 different |
@@ -348,7 +348,11 @@ exit 2) since a temp dir means amnesia every session. `--bundle-root`
 defaults to the `bundle/` beside a database inside a `.okfgraph` folder
 (`<root>/.okfgraph/okfgraph.db` → `<root>/.okfgraph/bundle`), else to the
 database's parent directory. First
-boot creates the schema; pre-approve the `ingest` / `export_bundle` /
+boot creates the schema — and, since 0.14.2, while a graph created that way
+is still empty every tool result carries a "graph created at … still empty"
+warning (`okf serve`'s `/health` says `created`, `okf doctor` leads with a
+`db_created` line), so a mistyped path never reads as a healthy empty
+graph. Pre-approve the `ingest` / `export_bundle` /
 `export_concept` write tools for knowledge workflows. `.mcp.json` ships a
 ready config (`uv run --project . okf-mcp`). Every tool returns the result
 envelope (`{ok, op, data, warnings, error}`); failures raise so the result

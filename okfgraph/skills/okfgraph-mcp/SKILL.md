@@ -29,15 +29,17 @@ tools (8 read/ingest + 3 write).
    DB inside a `.okfgraph` home such as `<root>/.okfgraph/okfgraph.db`,
    else the DB's parent dir);
    `--root ALIAS=PATH` (repeatable) joins extra named roots.
-2. The first boot creates the schema; no init call needed. Bulk
+2. The first boot creates the schema; no init call needed (a graph
+   created this way warns while it is empty — see Results). Bulk
    (re)import of a bundle tree is CLI/Python only (`okf import --all`);
    `ingest` adds one file or thought at a time.
 3. `ingest`, `export_bundle` and `export_concept` write: they need
    harness approval unless pre-approved. On a detached graph
    (`okf detach`) everything serves, but `ingest` refuses (`DETACHED`).
-4. Verify: `search` anything (an empty graph returns `data: []` together
-   with the "created … still empty" warning, which confirms the path is
-   new rather than mistyped).
+4. Verify: `search` anything. An empty graph returns `data: []`; on a
+   brand-new setup that comes with the "graph created at … still empty"
+   warning, which is expected. On a project that should already have
+   knowledge, the same warning means the path is wrong.
 
 ## Which tool when
 
@@ -74,17 +76,20 @@ tools (8 read/ingest + 3 write).
   JSON text. Read `data`; `warnings` carries non-fatal notes.
 - **"graph created at … and is still empty" in `warnings`** (0.14.2) means
   the server created the database on this boot: the path it opened was new.
-  If the user expected existing knowledge, stop and check
-  `OKFGRAPH_DB_PATH` / `--db-path` before ingesting anything — writing into
-  the wrong graph is how knowledge ends up split. The warning goes away
-  once the graph has a concept.
+  It rides on every result, failures included. If the user expected
+  existing knowledge, stop and tell them the path it names; don't ingest
+  until `OKFGRAPH_DB_PATH` / `--db-path` is checked — writing into the
+  wrong graph is how knowledge ends up split. The warning stops for good
+  at the first concept.
 - Failures set `isError: true` and carry the error envelope:
   `error: {code, message, fields, remedy}`. Act on `remedy`:
   `UNKNOWN_CONCEPT` → search first to find IDs; `BAD_VALUE` names the
   offending param in `fields`; `SEARCH_UNAVAILABLE` → the vector/FTS
   extensions failed to load (graph reads still work);
   `EXTERNAL_UNAVAILABLE` → a model host named in `fields` is down (tell
-  the user; reads and `rank="ppr"` search still work).
+  the user; reads and `rank="ppr"` search still work);
+  `CONVERSION_FAILED` → `ingest` kind="pdf" could not convert that one file
+  (tell the user, don't retry).
 - The server holds the database for its lifetime: a shell `okf` on the
   same db fails with `DB_LOCKED`, so query through these tools instead.
 - Params a path ignores are refused, never silently dropped:

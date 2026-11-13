@@ -4,7 +4,7 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [0.14.2] — unreleased
+## [0.14.2] — 2026-11-13
 
 Two operational fixes for the surfaces that run unattended, plus the design
 decision for images on a GGUF text graph.
@@ -40,6 +40,19 @@ decision for images on a GGUF text graph.
   the `multimodal` capability, a two-image probe for the reported
   identical-vector bug, truncation/normalization) and the open questions to
   settle on a current build. No code until those are answered.
+
+### Docs
+
+- Skills: the MCP skill tells an agent what to do with the new-graph
+  warning (expected on first setup, a wrong path otherwise) and lists
+  `CONVERSION_FAILED`; the ingest skill documents folder/pattern
+  `--pdf-path`, says MCP pdf ingest is one file per call, and corrects the
+  image-content note (gemma-2 or text-nano graphs; a GGUF graph keeps
+  captions); the CLI skill names the `pdf_converter` and `db_created`
+  doctor rows.
+- README, `docs/converters.md`, `docs/architecture.md` and
+  `docs/harness-integration.md` cover both behaviours; the 0.14 plan
+  records G1/G2 as decided.
 
 ## [0.14.1] — 2026-11-13
 

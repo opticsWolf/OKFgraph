@@ -71,14 +71,14 @@ Same graph and the same ops as the MCP skill, through `okf` commands.
 | Follow CONTAINS / LINKS_TO | `traverse ID [--relationship LINKS_TO] [--depth 1-3]` |
 | How two concepts connect | `traverse ID1 --target ID2` |
 | Browse a directory | `traverse` (root) or `traverse DIR_ID` |
-| Store markdown / PDF / reasoning / bibliography | `ingest --kind md\|pdf\|thoughts\|bib ...` (okfgraph-ingest skill) |
+| Store markdown / PDF / reasoning / bibliography | `ingest --kind md\|pdf\|thoughts\|bib ...` (okfgraph-ingest skill); a folder of PDF/Office files: `ingest --kind pdf --pdf-path DIR` or `'DIR/*.pdf'` |
 | Re-sync a bundle (delta-aware) | `import --all [--bundle-path DIR] [--prune-missing]`; single files: `import F...` |
 | Export | `export --all --output-dir D` or `export --concept-id ID --output-dir D` (`--flavor obsidian`) |
 | Validate a bundle before import (no DB, no model) | `lint [DIR]` |
 | Generate a bundle from SQLite | `produce --from sqlite --source DB [--output-dir D]` |
 | Structural drift | `diff OLD NEW` (dirs) or `diff [DIR]` (graph vs dir / roots) |
 | Health score + safe repairs | `doctor [--fix] [--strict]` |
-| Cache hygiene / what the graph runs on | `reindex` (rebuild vector+FTS indexes); `model-info` (pinned model report, image pins included); `doctor` info rows `embed_lane` / `rerank_lane` / `image_lane` (who serves each model, its precision and space) |
+| Cache hygiene / what the graph runs on | `reindex` (rebuild vector+FTS indexes); `model-info` (pinned model report, image pins included); `doctor` info rows `embed_lane` / `rerank_lane` / `image_lane` (who serves each model, its precision and space), `pdf_converter` (warm converter), and through an `okf serve` that created its database this boot, `db_created` first (the absolute path — check it before writing) |
 | Old titles mature: 'Thought: <topic>' -> first sentence | `retitle-thoughts [--topic T] [--apply]` (dry run until --apply) |
 | Re-embed a graph under a NEW model (0.12) | `okf reembed [--dry-run]` — boot with `OKFGRAPH_ALLOW_REPIN=1` when the model pin disagrees with the configured model; refuses dim migrations and image-bearing graphs. It also re-pins the vector space (0.13), the cure for `SPACE_PIN_MISMATCH` (another revision or precision than the graph's vectors) |
 | End the mirror: the DB becomes the artifact | `detach [--bundle-path D] [--no-verify] [--force]` |

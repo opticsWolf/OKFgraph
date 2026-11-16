@@ -436,8 +436,9 @@ class AdminOps:
         exists), read the stored texts, embed with the router's active
         engine, SET `Concept.embedding`/`Chunk.embedding`, recreate the
         indexes with the schema lane's width DDL, re-pin the model
-        MetaText row (numeric precision untouched — the crate lane
-        enforces its own, external engines have none).
+        MetaText row (a named precision is re-pinned; an engine that
+        cannot name one clears the old precision and space pins instead
+        of leaving a lie).
 
         Refuses:
         * graphs with ImageAsset rows (``IMAGE_PIN_MISMATCH``): the omni
@@ -486,7 +487,8 @@ class AdminOps:
     def _reembed_inner(self, *, dry_run: bool = False,
                        progress=None, cancelled=None) -> dict:
         from okfgraph.components.embedding import (
-            MODEL_META_KEY, SPACE_META_KEY, _PRECISION_CODE, parse_space)
+            MODEL_META_KEY, PRECISION_META_KEY, SPACE_META_KEY,
+            _PRECISION_CODE, parse_space)
         from okfgraph.errors import StateError
         encoder = getattr(self, "encoder", None)
         if encoder is None:
@@ -517,6 +519,18 @@ class AdminOps:
                 "leave the omni space under the old weights",
                 op="reembed",
                 remedy="re-import into a fresh database instead",
+            )
+        precision = getattr(encoder, "precision", None) or (
+            None if self.precision == "auto" else self.precision)
+        if (precision not in _PRECISION_CODE
+                and precision not in (None, "external")):
+            raise StateError(
+                "PRECISION_PIN_MISMATCH",
+                f"embed engine reports precision={precision!r}, which this "
+                "build cannot pin; refusing to rebuild vectors without a "
+                "name for their space",
+                op="reembed",
+                remedy="upgrade okfgraph, or reopen with fp32, fp16 or int8",
             )
         crows = self.conn.execute(
             "MATCH (c:Concept) RETURN c.id AS id, c.title AS t, "
@@ -635,12 +649,21 @@ class AdminOps:
             f"MERGE (m:MetaText {{key: '{MODEL_META_KEY}'}}) SET m.value = $v",
             {"v": model_id},
         )
-        precision = getattr(encoder, "precision", None)
+        precision = getattr(encoder, "precision", None) or (
+            None if self.precision == "auto" else self.precision)
         if precision in _PRECISION_CODE:
             self.conn.execute(
-                f"MERGE (m:Meta {{key: 'embedding_precision'}}) "
+                f"MERGE (m:Meta {{key: '{PRECISION_META_KEY}'}}) "
                 f"SET m.value = {_PRECISION_CODE[precision]}"
             )
+        else:
+            # The engine cannot name its numerics: keeping the old pin would
+            # claim a space the rebuilt vectors do not have.
+            self.conn.execute(
+                f"MATCH (m:Meta {{key: '{PRECISION_META_KEY}'}}) DELETE m")
+            logger.warning(
+                "reembed: engine reports no named precision; cleared the "
+                "graph's precision pin")
         # The old space no longer describes the vectors: record the new one,
         # or none when this engine can't name it.
         space = getattr(encoder, "space", None)
@@ -778,7 +801,14 @@ class AdminOps:
              "configured": {"model_id": str, "expected_precision": str|None,
                             "embedding_dim": int, "space": str|None,
                             "backend": str, "embedding_family": str},
-             "mismatch": ["model_id"|"precision"|"space", ...],
+             "image": {"pinned_model": str|None, "pinned_precision": str|None,
+                       "pinned_space": str|None, "backend": str,
+                       "configured_model": str|None,
+                       "configured_precision": str|None,
+                       "configured_space": str|None},
+             "image_mismatch": ["model_id"|"precision"|"space", ...],
+             "mismatch": ["model_id"|"precision"|"space"|"image_model_id"|
+                          "image_precision"|"image_space", ...],
              "empty": bool, "concepts": n, "chunks": n}
 
         ``embedding_dim`` never appears in ``mismatch``: the graph adopts
@@ -786,14 +816,16 @@ class AdminOps:
         width change needs a fresh database, not a re-embed.
         """
         from okfgraph.components.embedding import (
-            MODEL_META_KEY, PRECISION_META_KEY, SPACE_META_KEY, parse_space,
-            _space_differences)
+            IMAGE_MODEL_META_KEY, IMAGE_PRECISION_META_KEY,
+            IMAGE_SPACE_META_KEY, MODEL_META_KEY, PRECISION_META_KEY,
+            SPACE_META_KEY, parse_space, _space_differences)
 
         def _image_pin_precision(raw):
             if raw is None:
                 return None
             try:
-                return {16: "fp16", 32: "fp32"}.get(int(raw), str(raw))
+                return {8: "int8", 16: "fp16", 32: "fp32"}.get(
+                    int(raw), str(raw))
             except (TypeError, ValueError):
                 return str(raw)
 
@@ -814,7 +846,7 @@ class AdminOps:
             pinned_model = None
         pinned_precision = _meta_str("Meta", PRECISION_META_KEY)
         if pinned_precision is not None:
-            pinned_precision = {16: "fp16", 32: "fp32"}.get(
+            pinned_precision = {8: "int8", 16: "fp16", 32: "fp32"}.get(
                 int(pinned_precision))
         encoder = getattr(self, "encoder", None)
         if embed_backend := getattr(self, "embed_backend", None):
@@ -827,6 +859,10 @@ class AdminOps:
             configured_precision = getattr(
                 encoder, "precision", None) or (
                 None if self.precision == "auto" else self.precision)
+        else:
+            configured_precision = getattr(encoder, "precision", None)
+            if configured_precision in (None, "", "external"):
+                configured_precision = None
         try:
             empty_rows = self.conn.execute(
                 "MATCH (c:Concept) RETURN count(c) AS n"
@@ -857,6 +893,32 @@ class AdminOps:
         a, b = parse_space(pinned_space), parse_space(configured_space)
         if a and b and not empty and _space_differences(a, b):
             mismatch.append("space")
+        vision = getattr(self, "vision_encoder", None)
+        pinned_image_model = _meta_str("MetaText", IMAGE_MODEL_META_KEY)
+        pinned_image_precision = _image_pin_precision(
+            _meta_str("Meta", IMAGE_PRECISION_META_KEY))
+        pinned_image_space = _meta_str("MetaText", IMAGE_SPACE_META_KEY)
+        image_configured_model = (
+            getattr(vision, "model_id", None)
+            or getattr(self, "image_model_id", None))
+        image_configured_precision = getattr(vision, "precision", None)
+        if (image_configured_precision is None
+                and getattr(self, "image_precision", "auto") != "auto"):
+            image_configured_precision = self.image_precision
+        image_configured_space = getattr(vision, "space", None)
+        image_mismatch = []
+        if not empty:
+            if (pinned_image_model and image_configured_model
+                    and pinned_image_model != image_configured_model):
+                image_mismatch.append("model_id")
+            if (pinned_image_precision and image_configured_precision
+                    and pinned_image_precision != image_configured_precision):
+                image_mismatch.append("precision")
+            ia, ib = (parse_space(pinned_image_space),
+                      parse_space(image_configured_space))
+            if ia and ib and _space_differences(ia, ib):
+                image_mismatch.append("space")
+        mismatch.extend("image_" + m for m in image_mismatch)
         return {
             "pinned": {
                 "model_id": pinned_model, "precision": pinned_precision,
@@ -873,14 +935,15 @@ class AdminOps:
                     getattr(encoder, "spec", None), "family", ""),
             },
             "image": {
-                "pinned_model": _meta_str("MetaText", "embedding_image_model"),
-                "pinned_precision": _image_pin_precision(_meta_str(
-                    "Meta", "embedding_image_precision")),
-                "pinned_space": _meta_str("MetaText",
-                                          "embedding_image_space"),
+                "pinned_model": pinned_image_model,
+                "pinned_precision": pinned_image_precision,
+                "pinned_space": pinned_image_space,
                 "backend": getattr(self, "image_backend", "embroider"),
-                "configured_model": getattr(self, "image_model_id", None),
+                "configured_model": image_configured_model,
+                "configured_precision": image_configured_precision,
+                "configured_space": image_configured_space,
             },
+            "image_mismatch": image_mismatch,
             "mismatch": mismatch,
             "empty": empty,
             "concepts": concepts, "chunks": chunks,

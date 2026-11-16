@@ -317,8 +317,9 @@ class ImageAssetManager:
         Mirrors the session's `auto`-follows-device resolution (embroiders
         `Precision::resolve` against the landed device): an opened session
         reports itself, otherwise the device request plus the CUDA probe
-        predicts it. The image-precision pin still fails closed on a real
-        mismatch at open; the hash only separates reuse buckets.
+        predicts it (int8/fp16/fp32). The image-precision pin still fails
+        closed on a real mismatch at open; the hash only separates reuse
+        buckets.
         """
         ve = self.embed_engine.vision_encoder
         cfg = (ve._precision_cfg if ve is not None else "auto") or "auto"
@@ -330,7 +331,7 @@ class ImageAssetManager:
         if ve is not None and (ve.is_loaded
                                or getattr(ve, "backend", "embroider") == "external"):
             landed = getattr(ve, "precision", None)
-            if isinstance(landed, str) and landed in ("fp16", "fp32"):
+            if isinstance(landed, str) and landed in ("int8", "fp16", "fp32"):
                 return landed
             return "fp16" if ve.used_cuda else "fp32"
         device = ve._device if ve is not None else "auto"

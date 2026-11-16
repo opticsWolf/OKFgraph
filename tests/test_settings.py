@@ -228,7 +228,8 @@ def test_precision_checks():
 
 
 def test_image_precision_checks():
-    errors, _ = Settings(image_precision="int8").checks()
+    assert Settings(image_precision="int8").checks() == ([], [])
+    errors, _ = Settings(image_precision="int4").checks()
     assert any("embedding.image_precision" in e for e in errors)
 
 

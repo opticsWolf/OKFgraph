@@ -204,3 +204,37 @@ def test_refuses_graph_with_image_rows(tmp_path):
     with pytest.raises(Exception) as ei:
         r.reembed()
     assert "ImageAsset" in str(ei.value) or "image" in str(ei.value).lower()
+
+
+def _precision_pin(router):
+    from okfgraph.components.embedding import PRECISION_META_KEY
+    rows = router.conn.execute(
+        f"MATCH (m:Meta {{key: '{PRECISION_META_KEY}'}}) RETURN m.value AS v"
+    ).rows_as_dict().get_all()
+    return rows[0]["v"] if rows else None
+
+
+def test_reembed_refuses_unknown_precision_without_repinning(
+        tmp_path, monkeypatch):
+    r = _router_files(tmp_path, "stub/old")
+    before = _pin(r)
+    monkeypatch.setattr(
+        type(r.encoder), "precision", property(lambda self: "int4"))
+    with pytest.raises(Exception, match="int4"):
+        r.reembed()
+    assert _pin(r) == before
+    assert _precision_pin(r) is None
+    r.close()
+
+
+def test_reembed_clears_old_precision_when_engine_cannot_name_it(tmp_path):
+    r = _router_files(tmp_path, "stub/old")
+    r.conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS Meta "
+        "(key STRING PRIMARY KEY, value INT64)")
+    r.conn.execute(
+        "MERGE (m:Meta {key: 'embedding_precision'}) SET m.value = 16")
+    assert _precision_pin(r) == 16
+    r.reembed()
+    assert _precision_pin(r) is None, "an unnamed engine must not keep a lying pin"
+    r.close()

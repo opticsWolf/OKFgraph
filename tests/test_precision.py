@@ -161,3 +161,61 @@ def test_pin_empty_graph_repins(tmp_path):
         assert _pin_value(r) == 16
     finally:
         r.close()
+
+
+def test_pin_int8_sets_and_matches(tmp_path):
+    r = _router(tmp_path, "pin5.db")
+    try:
+        assert enforce_precision_pin(r.conn, "int8") == "int8"
+        assert _pin_value(r) == 8
+        assert enforce_precision_pin(r.conn, "int8") == "int8"
+    finally:
+        r.close()
+
+
+def test_pin_int8_refuses_fp16_with_vectors(tmp_path):
+    r = _router(tmp_path, "pin6.db")
+    try:
+        enforce_precision_pin(r.conn, "int8")
+        r.conn.execute(
+            "CREATE (c:Concept {id: 't', embedding: $vec})",
+            {"vec": [0.0] * 512},
+        )
+        with pytest.raises(RuntimeError, match="pinned to precision=int8"):
+            enforce_precision_pin(r.conn, "fp16")
+        assert _pin_value(r) == 8
+    finally:
+        r.close()
+
+
+def test_pin_fp16_refuses_int8_with_vectors(tmp_path):
+    r = _router(tmp_path, "pin7.db")
+    try:
+        enforce_precision_pin(r.conn, "fp16")
+        r.conn.execute(
+            "CREATE (c:Concept {id: 't', embedding: $vec})",
+            {"vec": [0.0] * 512},
+        )
+        with pytest.raises(RuntimeError, match="pinned to precision=fp16"):
+            enforce_precision_pin(r.conn, "int8")
+        assert _pin_value(r) == 16
+    finally:
+        r.close()
+
+
+def test_pin_unknown_code_refuses(tmp_path):
+    r = _router(tmp_path, "pin8.db")
+    try:
+        enforce_precision_pin(r.conn, "fp32")
+        r.conn.execute(
+            f"MATCH (m:Meta {{key: '{PRECISION_META_KEY}'}}) "
+            "SET m.value = 7")
+        r.conn.execute(
+            "CREATE (c:Concept {id: 't', embedding: $vec})",
+            {"vec": [0.0] * 512},
+        )
+        with pytest.raises(RuntimeError, match="unknown precision code"):
+            enforce_precision_pin(r.conn, "fp32")
+        assert _pin_value(r) == 7
+    finally:
+        r.close()

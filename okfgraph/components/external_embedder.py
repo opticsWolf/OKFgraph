@@ -218,9 +218,9 @@ class ExternalEmbedEngine:
 
     @property
     def precision(self) -> str:
-        """The weights an embroider host landed on (``fp16``/``fp32``, so
-        the graph's precision pin applies); ``external`` for a declared
-        engine, whose numerics are its owner's business."""
+        """The weights an embroider host landed on (``int8``/``fp16``/
+        ``fp32``, so the graph's precision pin applies); ``external`` for
+        a declared engine, whose numerics are its owner's business."""
         if self.identity is not None:
             return str(self.identity.get("precision") or "external")
         return "external"

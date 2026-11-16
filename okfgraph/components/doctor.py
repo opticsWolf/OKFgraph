@@ -298,7 +298,8 @@ class DoctorManager:
             except Exception:
                 im, ip = [], []
             model = im[0]["v"] if im else "(unpinned)"
-            prec = {16: "fp16", 32: "fp32"}.get(ip[0]["v"], "(unpinned)") if ip else "(unpinned)"
+            prec = {8: "int8", 16: "fp16", 32: "fp32"}.get(
+                ip[0]["v"], "(unpinned)") if ip else "(unpinned)"
             info.append({
                 "rule": "image_routes",
                 "message": f"image assets: {counts}; image model={model} precision={prec}",

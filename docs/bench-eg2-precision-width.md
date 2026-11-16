@@ -113,10 +113,12 @@ the file at both widths. Image storage policy was not changed.
   needs nothing here.
 - **int8 embeddings have no database-size story** (same column, same
   file) and their quality is within noise at 768/512 on this 50-query
-  set. The blocker remains the pin: `_PRECISION_CODE` has only
-  `fp16: 16` and `fp32: 32`, so an int8 graph would carry no precision
-  pin and could be reopened under another precision. That codec change
-  is still the prerequisite, and a labelled query set is still the gate.
+  set. The artifact is now registered on the self-hosted mirror
+  (`opticsWolf/embeddinggemma-2-onnx-int8`); the blocker remains the
+  pin: `_PRECISION_CODE` has only `fp16: 16` and `fp32: 32`, so an
+  int8 graph would carry no precision pin and could be reopened under
+  another precision. That codec change is still the prerequisite, and
+  a labelled query set is still the gate.
 - **256d is a real, supported lever** for a fresh import (a width change
   is a new database, not a re-embed): 26% smaller file, ~1–2 points of
   R@1 on this set, officially ~98.5% text / ~95% multimodal quality.
@@ -131,6 +133,53 @@ the file at both widths. Image storage policy was not changed.
   prints row counts, vector bytes by table, BLOB bytes and largest
   assets, text bytes, index/page overhead, and the same at a candidate
   width. It answers "does 256d pay for this graph" without building one.
+
+## okfgraph int8 pin — landed
+
+The artifact is registered on the mirror and the codec/image paths are
+in. The remaining gate is retrieval on a labelled set (plan §3.1–§3.2);
+the 50-query run is a signal only. The checklist below records what
+changed, with file/line anchors.
+
+1. `_PRECISION_CODE` (`okfgraph/components/embedding.py:141`) gains
+   `"int8": 8`; `stored_precision` (`:149`), both pin enforcers
+   (`:160`, `:456`), `_stored_image_precision`
+   (`okfgraph/router.py:710`), `_image_pin_precision`
+   (`okfgraph/ops/admin.py:792`) and the doctor report
+   (`okfgraph/components/doctor.py:301`) decode it.
+2. `_enforce_pins` (`okfgraph/router.py:539-548`) then stops skipping
+   the check for an unknown value. Until then an int8 graph writes no
+   precision pin and reopens under fp16/fp32. Make an unknown stored
+   code **fail closed** in both enforcers (`embedding.py:181`, `:468`)
+   instead of returning the requested precision.
+3. The image lane has gates beyond the codec:
+   `router.py:434` currently refuses `image_precision="int8"`;
+   `settings.py:209` does not offer it; the vision pin caller
+   (`router.py:729`) only calls for `("fp16", "fp32")`; and
+   `image_assets.py:332` maps a landed int8 into the fp16/fp32
+   content-hash bucket. All four must learn int8.
+4. `pin_info` (`ops/admin.py:875-883`) reports image pins but never
+   compares them: add configured precision/space and an image mismatch
+   list. For backend=external it also leaves `configured_precision`
+   `None` (`:825-831`); use the host's `identity.precision`.
+5. `reembed` (`ops/admin.py:631-643`) writes the model pin before
+   checking precision. Validate the precision first; refuse (or clear
+   both pins) when the encoder cannot name it, instead of leaving a new
+   model next to an old precision. The `ImageAsset` refusal
+   (`:511-519`) stays: an image graph is a fresh database plus a
+   re-encode, never an in-place reembed.
+6. Tests: an int8 graph refuses an fp16/fp32 reopen; reembed to int8
+   writes 8 and `pin_info()` reports it; an image graph still refuses
+   in-place reembed; empty graphs still adopt; router/settings accept
+   `image_precision="int8"`; `pin_info` reports an image mismatch; an
+   unknown stored code refuses; a reembed whose encoder cannot name its
+   precision refuses without touching either pin.
+7. The model pin cannot distinguish the tiers: int8 is the same
+   `google/embeddinggemma-2` id. Do not add a fake `-int8` id — the
+   precision pin is the guard, and one id per space stays the rule.
+8. Then reembed a copy (fresh DB for image graphs) and compare
+   recall@k / NDCG on the labelled set. The graph file will not shrink;
+   int8 is a model-footprint choice, and 256d is the database lever.
 
 ## Throughput (RTX 3090, docs/s)
 

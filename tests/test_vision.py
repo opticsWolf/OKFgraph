@@ -160,15 +160,79 @@ def test_vision_unknown_image_model_refused(registry):
         E.vision_text_partner("someone/else")
 
 
-def test_router_rejects_int8_image_precision():
+def test_router_accepts_int8_image_precision():
     d = tempfile.mkdtemp()
     try:
-        with pytest.raises(ValueError, match="image_precision"):
-            OKFRouter(
-                db_path=str(Path(d) / "v.db"),
-                bundle_root=d,
-                image_precision="int8",
+        r = OKFRouter(
+            db_path=str(Path(d) / "v.db"),
+            bundle_root=d,
+            image_precision="int8",
+        )
+        try:
+            assert r.image_precision == "int8"
+            assert r.pin_info()["configured"]["expected_precision"] is None
+        finally:
+            r.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_image_pin_int8_refuses_fp16_and_unknown_codes():
+    d = tempfile.mkdtemp()
+    try:
+        r = OKFRouter(db_path=str(Path(d) / "p.db"), bundle_root=d)
+        try:
+            from okfgraph.components.embedding import (
+                IMAGE_PRECISION_META_KEY, enforce_image_precision_pin)
+            assert enforce_image_precision_pin(r.conn, "int8") == "int8"
+            assert enforce_image_precision_pin(r.conn, "int8") == "int8"
+            r.conn.execute(
+                "CREATE (c:Concept {id: 't', embedding: $vec})",
+                {"vec": [0.0] * 512},
             )
+            with pytest.raises(RuntimeError, match="pinned to image precision=int8"):
+                enforce_image_precision_pin(r.conn, "fp16")
+            r.conn.execute(
+                f"MATCH (m:Meta {{key: '{IMAGE_PRECISION_META_KEY}'}}) "
+                "SET m.value = 7")
+            with pytest.raises(RuntimeError, match="unknown image precision code"):
+                enforce_image_precision_pin(r.conn, "int8")
+        finally:
+            r.close()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_pin_info_reports_image_mismatches():
+    d = tempfile.mkdtemp()
+    try:
+        r = OKFRouter(
+            db_path=str(Path(d) / "i.db"),
+            bundle_root=d,
+            image_precision="fp16",
+        )
+        try:
+            r.conn.execute(
+                "CREATE (c:Concept {id: 't', embedding: $vec})",
+                {"vec": [0.0] * 512},
+            )
+            r.conn.execute(
+                "CREATE NODE TABLE IF NOT EXISTS MetaText "
+                "(key STRING PRIMARY KEY, value STRING)")
+            r.conn.execute(
+                "MERGE (m:MetaText {key: 'embedding_image_model'}) "
+                "SET m.value = 'stub/other-vision'")
+            r.conn.execute(
+                "MERGE (m:Meta {key: 'embedding_image_precision'}) "
+                "SET m.value = 32")
+            info = r.pin_info()
+            assert info["image"]["configured_precision"] == "fp16"
+            assert "model_id" in info["image_mismatch"]
+            assert "precision" in info["image_mismatch"]
+            assert "image_model_id" in info["mismatch"]
+            assert "image_precision" in info["mismatch"]
+        finally:
+            r.close()
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

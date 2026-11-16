@@ -220,9 +220,9 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 model's text-partner space — a non-partner text model is
                 refused at first vision encode (use mode=text captions).
             image_precision: "auto" (default, follows device: CUDA →
-                FP16, CPU → FP32), "fp32" or "fp16". Explicit fp16 on
-                CPU fails fast (the vision graph stalls on CPU). Pinned
-                per graph like the text precision — never mix.
+                FP16, CPU → FP32), "fp32", "fp16" or "int8". Explicit
+                fp16 on CPU fails fast (the vision graph stalls on CPU).
+                Pinned per graph like the text precision — never mix.
             image_backend: "embroider" (default: the vision session opens
                 in this process) or "external" (an embroider.serve vision
                 host over HTTP — no ONNX loads here). An external lane
@@ -431,10 +431,10 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             raise ValueError(
                 f"precision must be 'auto', 'fp32', 'fp16' or 'int8', got '{precision}'"
             )
-        if image_precision not in ("auto", "fp32", "fp16"):
+        if image_precision not in ("auto", "fp32", "fp16", "int8"):
             raise ValueError(
-                f"image_precision must be 'auto', 'fp32' or 'fp16', got "
-                f"'{image_precision}' (vision ships no int8 artifact)"
+                f"image_precision must be 'auto', 'fp32', 'fp16' or 'int8', "
+                f"got '{image_precision}'"
             )
         # Default vision id comes off the installed wheel when it knows
         # the contract (>=0.14); unknown ids fail closed at compat with
@@ -717,11 +717,12 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 return None
             if not rows:
                 return None
-            return {16: "fp16", 32: "fp32"}.get(int(rows[0]["v"]))
+            return {8: "int8", 16: "fp16", 32: "fp32"}.get(int(rows[0]["v"]))
 
         def _report_vision_open(encoder) -> None:
             from okfgraph.components.embedding import (
                 IMAGE_PRECISION_META_KEY,      # noqa: F401  (documented)
+                _PRECISION_CODE,
                 enforce_image_space_pin,
             )
             prior = _stored_image_precision()
@@ -729,7 +730,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             # that omits it) pins only the model and the space.
             pinned = None
             precision = getattr(encoder, "precision", None)
-            if precision in ("fp16", "fp32"):
+            if precision in _PRECISION_CODE:
                 pinned = enforce_image_precision_pin(self.conn, precision)
             enforce_image_model_pin(
                 self.conn, getattr(encoder, "model_id", None) or image_model_id)

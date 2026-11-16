@@ -136,9 +136,20 @@ def _cap_chunk_budget(
 
 
 #: Meta key pinning the weight precision a graph was imported with.
-#: Stored as INT64 (16/32) — the Meta value column is integer-typed.
+#: Stored as INT64 (8/16/32) — the Meta value column is integer-typed.
 PRECISION_META_KEY = "embedding_precision"
-_PRECISION_CODE = {"fp16": 16, "fp32": 32}
+_PRECISION_CODE = {"int8": 8, "fp16": 16, "fp32": 32}
+_PRECISION_NAMES = {v: k for k, v in _PRECISION_CODE.items()}
+
+
+def _decode_precision(value):
+    """Decode a stored precision code; ``None`` for an unknown code."""
+    try:
+        return _PRECISION_NAMES.get(int(value))
+    except (TypeError, ValueError):
+        return None
+
+
 #: Meta key pinning the text model a graph was imported with. Model ids
 #: are strings, so this lives in its own MetaText table (Meta.value is
 #: INT64). Same fail-closed adoption semantics as the precision pin:
@@ -147,27 +158,35 @@ MODEL_META_KEY = "embedding_model"
 
 
 def stored_precision(conn) -> Optional[str]:
-    """The graph's precision pin (``fp16``/``fp32``), or ``None``."""
+    """The graph's precision pin (``int8``/``fp16``/``fp32``), or ``None``."""
     try:
         rows = conn.execute(
             f"MATCH (m:Meta {{key: '{PRECISION_META_KEY}'}}) RETURN m.value AS v"
         ).rows_as_dict().get_all()
     except Exception:
         return None
-    return {16: "fp16", 32: "fp32"}.get(rows[0]["v"]) if rows else None
+    return _decode_precision(rows[0]["v"]) if rows else None
 
 
 def enforce_precision_pin(conn, precision: str) -> str:
     """Fail-closed precision pin for a graph (0.5.0).
 
-    FP16 and FP32 vectors share the dimension but live in different
-    spaces — delta hashes would never catch a precision switch, so the
+    Vectors from different weight precisions share the dimension but live
+    in different spaces — delta hashes would never catch a precision
+    switch, so the
     first session open records the precision in Meta and every later
     open refuses on mismatch. Empty graphs re-pin silently (adoption,
     no migration); explicit local files always report ``fp32``.
 
     Returns the pinned precision. Raises RuntimeError on mismatch.
     """
+    if precision not in _PRECISION_CODE:
+        raise OKFError(
+            "PRECISION_PIN_MISMATCH",
+            f"cannot pin precision={precision!r}: not in the codec",
+            op="open",
+            remedy="reopen with fp32, fp16 or int8",
+        )
     conn.execute(
         "CREATE NODE TABLE IF NOT EXISTS Meta (key STRING PRIMARY KEY, value INT64)"
     )
@@ -178,9 +197,19 @@ def enforce_precision_pin(conn, precision: str) -> str:
     except Exception:
         rows = []
     if rows:
-        pinned = {16: "fp16", 32: "fp32"}.get(rows[0]["v"], None)
-        if pinned is None or pinned == precision:
-            return precision if pinned is None else pinned
+        raw = rows[0]["v"]
+        pinned = _decode_precision(raw)
+        if pinned is None:
+            raise OKFError(
+                "PRECISION_PIN_MISMATCH",
+                f"graph carries an unknown precision code {raw!r}; this build "
+                "cannot tell which space its vectors live in. Open with a "
+                "newer okfgraph, or re-import into a fresh database.",
+                op="open",
+                remedy="upgrade okfgraph, or re-import into a fresh database",
+            )
+        if pinned == precision:
+            return pinned
         # Mismatch — but an empty graph carries no vectors, so re-pin.
         try:
             n = conn.execute(
@@ -199,8 +228,9 @@ def enforce_precision_pin(conn, precision: str) -> str:
         raise OKFError(
             "PRECISION_PIN_MISMATCH",
             f"graph is pinned to precision={pinned} but the session opened "
-            f"with precision={precision}: FP16 and FP32 vectors share the "
-            f"dimension but live in different spaces and must never mix. "
+            f"with precision={precision}: vectors from different weight "
+            f"precisions share the dimension but live in different spaces "
+            f"and must never mix. "
             f"Reimport into a fresh database with precision={precision}, or "
             f"reopen with precision={pinned}."
         )
@@ -388,9 +418,9 @@ def enforce_space_pin(conn, space, *, adopt: bool) -> Optional[str]:
 #: re-pin. A second image model in one graph is refused — image vectors
 #: only compare within one (model, precision, contract) triple.
 IMAGE_MODEL_META_KEY = "embedding_image_model"
-#: Meta key pinning the vision weight precision (INT64 16/32, reuses
-#: `_PRECISION_CODE`). FP16 and FP32 vision weights live in different
-#: spaces, same as text.
+#: Meta key pinning the vision weight precision (INT64 8/16/32, reuses
+#: `_PRECISION_CODE`). Different vision weight precisions live in
+#: different spaces, same as text.
 IMAGE_PRECISION_META_KEY = "embedding_image_precision"
 #: MetaText key pinning the vector space a graph's image vectors live in
 #: (0.14.0). The image twin of `SPACE_META_KEY`: set by whichever lane
@@ -455,6 +485,13 @@ def enforce_image_precision_pin(conn, precision: str) -> str:
 
     Mirrors `enforce_precision_pin` under `IMAGE_PRECISION_META_KEY`.
     """
+    if precision not in _PRECISION_CODE:
+        raise OKFError(
+            "IMAGE_PIN_MISMATCH",
+            f"cannot pin vision precision={precision!r}: not in the codec",
+            op="open",
+            remedy="reopen with fp32, fp16 or int8",
+        )
     conn.execute(
         "CREATE NODE TABLE IF NOT EXISTS Meta (key STRING PRIMARY KEY, value INT64)"
     )
@@ -465,9 +502,20 @@ def enforce_image_precision_pin(conn, precision: str) -> str:
     except Exception:
         rows = []
     if rows:
-        pinned = {16: "fp16", 32: "fp32"}.get(rows[0]["v"], None)
-        if pinned is None or pinned == precision:
-            return precision if pinned is None else pinned
+        raw = rows[0]["v"]
+        pinned = _decode_precision(raw)
+        if pinned is None:
+            raise OKFError(
+                "IMAGE_PIN_MISMATCH",
+                f"graph carries an unknown image precision code {raw!r}; this "
+                "build cannot tell which space its image vectors live in. "
+                "Open with a newer okfgraph, or re-import into a fresh "
+                "database.",
+                op="open",
+                remedy="upgrade okfgraph, or re-import into a fresh database",
+            )
+        if pinned == precision:
+            return pinned
         try:
             n = conn.execute(
                 "MATCH (c:Concept) RETURN c.id AS cid LIMIT 1"
@@ -484,9 +532,10 @@ def enforce_image_precision_pin(conn, precision: str) -> str:
         raise OKFError(
             "IMAGE_PIN_MISMATCH",
             f"graph is pinned to image precision={pinned} but the vision session "
-            f"opened with precision={precision}: FP16 and FP32 vision vectors "
-            f"live in different spaces and must never mix. Reimport into a fresh "
-            f"database with precision={precision}, or reopen with precision={pinned}."
+            f"opened with precision={precision}: vision vectors from different "
+            f"weight precisions live in different spaces and must never mix. "
+            f"Reimport into a fresh database with precision={precision}, or "
+            f"reopen with precision={pinned}."
         )
     conn.execute(
         f"MERGE (m:Meta {{key: '{IMAGE_PRECISION_META_KEY}'}}) "
@@ -1162,6 +1211,17 @@ class LazyRustEncoder:
         return bool(self._get_encoder().used_cuda)
 
     @property
+    def precision(self):
+        """The open session's landed precision; ``None`` while cold.
+
+        Never opens the session: the pins fall back to the configured
+        precision until then, and reembed re-reads this after encoding.
+        """
+        if self._encoder is None:
+            return None
+        return getattr(self._encoder, "precision", None)
+
+    @property
     def space(self):
         """The open session's embroider ``space``; ``None`` while cold
         (never opens it) or when the session can't name one."""
@@ -1531,8 +1591,8 @@ class EmbeddingEngine:
         names to absolute paths (None until downloaded).
 
         ``precision=None``/``"auto"`` follows the device (CUDA usable →
-        fp16 mirror, else fp32); an explicit ``"fp16"``/``"fp32"`` pins
-        it. ``cache_dir=None`` (the default) is passed through untouched
+        fp16 mirror, else fp32); an explicit ``"int8"``/``"fp16"``/
+        ``"fp32"`` pins it. ``cache_dir=None`` (the default) is passed through untouched
         so embroider resolves the effective hub cache itself; the returned
         ``cache_dir`` is that effective dir. An embroider without
         ``cache_info`` (before 0.3.2) raises typed ``EMBROIDER_TOO_OLD``

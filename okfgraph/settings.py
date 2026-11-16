@@ -205,8 +205,8 @@ SETTINGS = [
             "embroider>=0.14)"),
     Setting("image_precision", "str", "auto", "embedding",
             "Vision weight precision: auto follows device; explicit fp16 on "
-            "CPU fails fast",
-            choices=("auto", "fp32", "fp16")),
+            "CPU fails fast; int8 is explicit-only",
+            choices=("auto", "fp32", "fp16", "int8")),
     Setting("image_backend", "str", "embroider", "embedding",
             "Vision engine: 'embroider' (the crate, ONNX in this process) or "
             "'external' (an embroider.serve vision host over HTTP, so no "

@@ -297,7 +297,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             if embed_backend != "external":
                 raise RuntimeError(
                     "the embroider wheel is required for text embeddings: "
-                    "pip install 'embroider>=0.15,<0.16'"
+                    "pip install 'embroider>=0.15.1,<0.16'"
                 ) from None
             _embroider = None
         self.embroider = _embroider

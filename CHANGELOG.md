@@ -26,9 +26,8 @@ the W3 fusion pin, and the labelled text/image gates.
 - **W3 fusion pin.** Image vectors now carry the partner text space in
   `embedding_image_text_space`; a mismatch with the graph's text space
   refuses. Gemma text and image precision must match because the host
-  fuses at the image precision. The fusion identity needs embroider
-  0.15.1; with 0.15.0 the existing model/precision pins still apply and
-  the fusion identity is skipped.
+  fuses at the image precision. The fusion identity requires embroider
+  0.15.1, which is the release floor.
 - **Downgrade check passed.** okfgraph 0.14.2 refuses a new int8 graph
   through the space pin (pinned int8, landed fp32); no schema floor was
   needed. Record: `docs/compat.md`.

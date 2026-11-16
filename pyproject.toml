@@ -16,14 +16,14 @@ dependencies = [
     # unbounded FTS, 0.21.2 DB copies) before the move.
     "ladybug==0.22.1",
     # Embedding engine — external crate (github.com/opticsWolf/embroider).
-    # Floor-pinned >=0.15: the shared runtime locator, `Model.describe()`
+    # Floor-pinned >=0.15.1: the shared runtime locator, `Model.describe()`
     # and its `space` identity (the `embedding_space` pin), and the host
     # wire an external embroider lane is probed through. 0.15.1 adds the
-    # Gemma fusion identity (`text_partner_space` → W3); 0.15.0 remains
-    # acceptable and applies the existing model/precision pins.
+    # Gemma fusion identity (`text_partner_space` → W3), so the floor
+    # guarantees the mixed-precision refusal is live.
     # Upper-bounded so the model registry and wheel matrix move
     # together with releases.
-    "embroider>=0.15,<0.16",
+    "embroider>=0.15.1,<0.16",
     "pydantic>=2.0",
     "python-frontmatter>=1.0",
     "pyyaml>=6.0",

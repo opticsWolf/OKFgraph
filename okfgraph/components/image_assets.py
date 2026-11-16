@@ -366,7 +366,7 @@ class ImageAssetManager:
         prepare = getattr(embroider, "prepare_image", None)
         if prepare is None:
             raise RuntimeError(
-                "image-content search needs embroider>=0.15 "
+                "image-content search needs embroider>=0.15.1 "
                 "(embroider.prepare_image); use mode=text (captions)"
             )
         ve = self.embed_engine.vision_encoder

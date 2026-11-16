@@ -263,7 +263,7 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 > (`LazyRustEncoder`), and explicit air-gapped model paths.
 
 **Verified versions** (0.11.0 tree, re-resolved + full suite green):
-- `ladybug==0.22.1`, `onnxruntime==1.31.1` (via `cpu`|`gpu` extra), `embroider>=0.15,<0.16`, `mordant` (Rust GFM parser)
+- `ladybug==0.22.1`, `onnxruntime==1.31.1` (via `cpu`|`gpu` extra), `embroider>=0.15.1,<0.16`, `mordant` (Rust GFM parser)
 - Single pinned ORT binary shared by bobine + embroider — do not float.
 
 ### PDF conversion (optional — bobine)
@@ -974,7 +974,7 @@ def model_info(cls, model_id: str = "...", cache_dir: Optional[str] = None) -> D
 
 Inspection follows the same device selection: `auto`/CUDA without a usable
 CUDA provider inspects the fp32 repo (paths normalized; the too-old-embroider
-remedy names the `>=0.15,<0.16` floor).
+remedy names the `>=0.15.1,<0.16` floor).
 
 ---
 
@@ -1510,7 +1510,7 @@ mcp.run(transport="stdio")
 | Feature | Detail |
 |---|---|
 | **Model (default)** | `google/embeddinggemma-2` — mean pooling (per its model card), Apache-2.0; `jinaai/jina-embeddings-v5-text-small-retrieval` remains registered |
-| **Framework** | External `embroider` crate (Rust/ORT — no Python ML stack in core, floor 0.15.0: the EmbeddingGemma 2 registry entry + ORT 1.31.1 goldens) |
+| **Framework** | External `embroider` crate (Rust/ORT — no Python ML stack in core, floor 0.15.1: the image fusion identity + ORT 1.31.1 goldens) |
 | **Dimensions** | **768** native for gemma-2 (Matryoshka ladder 128/256/512/768), **1024** native for jina-small (`ALLOWED_DIMS`); default **512**, on-ladder for both |
 | **Context Window** | 8192 tokens for both (tokenizer-only counts via `Tokenizer`, no session) |
 | **Prefix Logic** | `Query:` / `Document:` (frozen contract); EmbeddingGemma prompts are applied inside the crate |
@@ -1934,7 +1934,7 @@ with it. What remains are standing constraints, not gaps:
 | **Ladybug three-clause MERGE** | Vector upserts must avoid `MERGE … SET` on indexed columns (runtime abort — see the quarantine at §2). Reported upstream; watch `macrame-db` 0.18 |
 | **Single pinned ORT** | `onnxruntime==1.31.1` shared by bobine + embroider; a stray system DLL still fails session creation with `BadVersion` (the crate pin now also delivers the venv's own dylib when `ORT_DYLIB_PATH` is unset). Entry points resolve before first use |
 | **Frozen vector space** | Jina contract (prefixes, last-token pooling, truncation order) is identical across okfgraph 0.2.x and embroider 0.1.x — enforced by golden parity tests, never by convention alone |
-| **Floor-pinned embroider** | `embroider>=0.15,<0.16` (0.15.1 adds the image fusion identity): a newer patch within the pinned minor is a *supported* state, and the suite proves the floor still passes (contract fixtures in the embroider repo `fixtures/`, vendored at `tests/fixtures/golden_jina_v5_text_small.json` + `tests/test_golden_vectors.py`; matrix: embroider `docs/compat.md`) |
+| **Floor-pinned embroider** | `embroider>=0.15.1,<0.16`: a newer patch within the pinned minor is a *supported* state, and the suite proves the floor still passes (contract fixtures in the embroider repo `fixtures/`, vendored at `tests/fixtures/golden_jina_v5_text_small.json` + `tests/test_golden_vectors.py`; matrix: embroider `docs/compat.md`) |
 | **Schema v6** | `DeletedConcept` carries a full-fidelity snapshot (embeddings + metadata survive soft-delete → recover); v5 DBs migrate on open (ALTER existing table or CREATE it — 0.2.x fresh DBs never had it) |
 | **Schema v8** | `FileHash.dir` / `DeletedPath.dir` store the exact parent DirHash key (multi-root namespacing makes path-string math ambiguous); v7 DBs migrate on open with legacy-math backfill (exact for all pre-0.4.0 rows) |
 

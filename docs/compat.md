@@ -1,5 +1,12 @@
 # Compatibility notes
 
+## Image fusion identity and okfgraph 0.15.0
+
+The W3 fusion pin needs `GemmaVision.text_space` from embroider
+**0.15.1**. The dependency floor is therefore
+`embroider>=0.15.1,<0.16`; 0.15.0 predates the fusion-space
+identity and cannot verify that text and image precision match.
+
 ## int8-pinned graphs and okfgraph 0.14.2
 
 Checked **2026-11-16**; full record in

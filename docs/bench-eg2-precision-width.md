@@ -112,13 +112,12 @@ the file at both widths. Image storage policy was not changed.
   and identical top-10 rankings. The existing `fp16`/`fp32` pin codec
   needs nothing here.
 - **int8 embeddings have no database-size story** (same column, same
-  file) and their quality is within noise at 768/512 on this 50-query
-  set. The artifact is now registered on the self-hosted mirror
-  (`opticsWolf/embeddinggemma-2-onnx-int8`); the blocker remains the
-  pin: `_PRECISION_CODE` has only `fp16: 16` and `fp32: 32`, so an
-  int8 graph would carry no precision pin and could be reopened under
-  another precision. That codec change is still the prerequisite, and
-  a labelled query set is still the gate.
+  file), but their quality is within noise at 768/512 on this 50-query
+  set. The artifact is registered on the self-hosted mirror
+  (`opticsWolf/embeddinggemma-2-onnx-int8`), the codec landed in
+  `4eaf1e2`, and the labelled retrieval gate passed on scifact and
+  nfcorpus at 768/512 (`docs/eg2-int8-gates.md`). int8 remains
+  explicit-only; the 50-query run is corroboration, not the gate.
 - **256d is a real, supported lever** for a fresh import (a width change
   is a new database, not a re-embed): 26% smaller file, ~1–2 points of
   R@1 on this set, officially ~98.5% text / ~95% multimodal quality.
@@ -137,9 +136,10 @@ the file at both widths. Image storage policy was not changed.
 ## okfgraph int8 pin — landed
 
 The artifact is registered on the mirror and the codec/image paths are
-in. The remaining gate is retrieval on a labelled set (plan §3.1–§3.2);
-the 50-query run is a signal only. The consolidated target architecture
-and execution plan is `embroider/docs/plan-eg2-rollout.md`. The checklist
+in. The labelled retrieval gate passed on 2026-11-16 (scifact +
+nfcorpus; `docs/eg2-int8-gates.md`); the 50-query run was the signal.
+The consolidated target architecture and execution plan is
+`embroider/docs/plan-eg2-rollout.md`. The checklist
 below records what changed, with file/line anchors.
 
 1. `_PRECISION_CODE` (`okfgraph/components/embedding.py:141`) gains

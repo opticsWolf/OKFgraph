@@ -269,7 +269,7 @@ pydantic >= 2.0, python-frontmatter, pyyaml, numpy, fasteners
 ### PDF conversion (optional — bobine)
 
 ```bash
-pip install "okfgraph[pdf]"   # bobine>=0.7: PDF/Office/text → Markdown engine
+pip install "okfgraph[pdf]"   # bobine>=0.9: PDF/Office/text → Markdown engine
 ```
 
 PDF conversion runs through the `bobine` Rust engine behind the
@@ -974,7 +974,7 @@ def model_info(cls, model_id: str = "...", cache_dir: Optional[str] = None) -> D
 
 Inspection follows the same device selection: `auto`/CUDA without a usable
 CUDA provider inspects the fp32 repo (paths normalized; the too-old-embroider
-remedy names the `>=0.3.2,<0.4` floor).
+remedy names the `>=0.15,<0.16` floor).
 
 ---
 
@@ -1934,7 +1934,7 @@ with it. What remains are standing constraints, not gaps:
 | **Ladybug three-clause MERGE** | Vector upserts must avoid `MERGE … SET` on indexed columns (runtime abort — see the quarantine at §2). Reported upstream; watch `macrame-db` 0.18 |
 | **Single pinned ORT** | `onnxruntime==1.31.1` shared by bobine + embroider; a stray system DLL still fails session creation with `BadVersion` (the crate pin now also delivers the venv's own dylib when `ORT_DYLIB_PATH` is unset). Entry points resolve before first use |
 | **Frozen vector space** | Jina contract (prefixes, last-token pooling, truncation order) is identical across okfgraph 0.2.x and embroider 0.1.x — enforced by golden parity tests, never by convention alone |
-| **Floor-pinned embroider** | `embroider>=0.3.2,<0.4`: a new embroider minor without an okfgraph release is a *supported* state, and the suite proves the floor still passes (contract fixtures in the embroider repo `fixtures/`, vendored at `tests/fixtures/golden_jina_v5_text_small.json` + `tests/test_golden_vectors.py`; matrix: embroider `COMPAT.md`) |
+| **Floor-pinned embroider** | `embroider>=0.15,<0.16` (0.15.1 adds the image fusion identity): a newer patch within the pinned minor is a *supported* state, and the suite proves the floor still passes (contract fixtures in the embroider repo `fixtures/`, vendored at `tests/fixtures/golden_jina_v5_text_small.json` + `tests/test_golden_vectors.py`; matrix: embroider `docs/compat.md`) |
 | **Schema v6** | `DeletedConcept` carries a full-fidelity snapshot (embeddings + metadata survive soft-delete → recover); v5 DBs migrate on open (ALTER existing table or CREATE it — 0.2.x fresh DBs never had it) |
 | **Schema v8** | `FileHash.dir` / `DeletedPath.dir` store the exact parent DirHash key (multi-root namespacing makes path-string math ambiguous); v7 DBs migrate on open with legacy-math backfill (exact for all pre-0.4.0 rows) |
 

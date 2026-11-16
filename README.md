@@ -38,7 +38,7 @@ a swappable `DocumentConverter` seam. What isn't needed isn't installed.
 | **Diff** | `okf diff`: structural snapshot (dir vs dir, no model load) and drift (graph vs dir) modes; CI exit codes + `--json` |
 | **Doctor** | `okf doctor`: 0–100 health score (broken/orphan/stale/duplicate-title/missing-description), safe `--fix` that never touches `reviewed: true`, `--strict` CI gate |
 | **Export** | OKF round-trip with See Also / Cited By enrichment + index files, or `--flavor obsidian` (`[[Title]]` wikilinks, no index files, edge-lossless re-import) |
-| **Images** | Caption-based (`mode=text`) or image-content (`mode=optional`/`omni` via the ONNX vision model — the registry vision pairing of the graph's text model: the gemma-2 vision slot on gemma-2 graphs, the jina omni slot on text-nano graphs; needs embroider>=0.14; since 0.14 the vision model may also run in an `embroider.serve` host, so no ONNX loads here) content-hash dedup, `okf-asset://` protocol |
+| **Images** | Caption-based (`mode=text`) or image-content (`mode=optional`/`omni` via the ONNX vision model — the registry vision pairing of the graph's text model: the gemma-2 vision slot on gemma-2 graphs, the jina omni slot on text-nano graphs; needs embroider>=0.15; since 0.14 the vision model may also run in an `embroider.serve` host, so no ONNX loads here) content-hash dedup, `okf-asset://` protocol |
 | **MCP** | 11 tools (`search`, `read`, `traverse`, `ingest`, `export_bundle`, `export_concept`, `list_images`, `get_image`, and since 0.11 `update`, `supersede`, `delete`), MCP ≥ 2.0 (`MCPServer` + `ToolAnnotations`), stdio transport — or one shared owner via `okf serve` + `okf-mcp --connect URL`; success result = envelope, failures = `isError: true` + error envelope (D7) |
 | **CLI** | Same 8 core verbs (`search`, `read`, `traverse`, `ingest`, `import`, `export`, `diff`, `doctor`) plus maintenance (`shell`, `lint`, `produce`, `reindex`, `broken-links`, `deleted-*`, `delete`, `images`, `image`, …), global `--json` (D5), slim per-command help, `okfgraph.toml` config |
 | **Skills** | 3 harness-neutral skills (`okfgraph-mcp`, `okfgraph-cli`, `okfgraph-ingest`), `.mcp.json` wiring included |
@@ -535,7 +535,8 @@ okfgraph/
 ## Requirements
 
 Core (`uv sync`): `ladybug==0.22.1`, `embroider>=0.15,<0.16` (PyPI wheels,
-github.com/opticsWolf/embroider), `mordant>=0.9`,
+github.com/opticsWolf/embroider; 0.15.1 adds the image fusion identity,
+while 0.15.0 still applies the model/precision pins), `mordant>=0.9`,
 `mcp>=2.0`, `pydantic>=2`, `pyyaml>=6`,
 `numpy>=1.26`, `python-frontmatter>=1`, `fasteners>=0.19`. Python ≥ 3.11.
 Plus exactly one ORT provider: `okfgraph[cpu]` (`onnxruntime==1.31.1`)

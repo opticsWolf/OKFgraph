@@ -16,16 +16,11 @@ dependencies = [
     # unbounded FTS, 0.21.2 DB copies) before the move.
     "ladybug==0.22.1",
     # Embedding engine — external crate (github.com/opticsWolf/embroider).
-    # Floor-pinned >=0.14: the EmbeddingGemma 2 registry entry (the default
-    # embedding engine) rides 0.13.0, which re-goldens on onnxruntime
-    # 1.31.1 — but 0.13.1 was never published, so the CUDA loader
-    # self-service (cuDNN64_9 discovery from venv nvidia dists + the
-    # ORT_DYLIB_PATH delivery) first ships inside 0.14.0; 0.14 then adds
-    # Tokenizer (the JinaTokenizer handle grown) and the GemmaVision
-    # slot, whose image vectors share the gemma-2 text space. 0.15 (okf
-    # 0.13) adds the shared runtime locator, `Model.describe()` and its
-    # `space` identity (the `embedding_space` pin), and the host wire an
-    # external embroider lane is probed through.
+    # Floor-pinned >=0.15: the shared runtime locator, `Model.describe()`
+    # and its `space` identity (the `embedding_space` pin), and the host
+    # wire an external embroider lane is probed through. 0.15.1 adds the
+    # Gemma fusion identity (`text_partner_space` → W3); 0.15.0 remains
+    # acceptable and applies the existing model/precision pins.
     # Upper-bounded so the model registry and wheel matrix move
     # together with releases.
     "embroider>=0.15,<0.16",

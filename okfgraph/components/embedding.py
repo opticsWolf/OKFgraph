@@ -754,7 +754,7 @@ def vision_text_partner(image_model_id: str) -> str:
         raise OKFError(
             "NO_ORT_RUNTIME",
             "the embroider wheel is required for image embeddings: "
-            "pip install 'embroider>=0.3,<0.4'",
+            "pip install 'embroider>=0.15,<0.16'",
         ) from None
     for m in embroider.available_models():
         if m.get("id") == image_model_id:
@@ -769,7 +769,7 @@ def vision_text_partner(image_model_id: str) -> str:
             return partner
     raise OKFError(
         "IMAGE_PIN_MISMATCH",
-        f"unknown image model {image_model_id!r} (needs embroider>=0.3, "
+        f"unknown image model {image_model_id!r} (needs embroider>=0.15, "
         "which registers the vision contract)",
         fields={"image_model": image_model_id},
     )
@@ -1732,7 +1732,7 @@ class EmbeddingEngine:
                 "EMBROIDER_TOO_OLD",
                 f"embroider {ver} has no cache_info (needs >= 0.3.2)",
                 op="model_info",
-                remedy="upgrade: pip install 'embroider>=0.3.2,<0.4' "
+                remedy="upgrade: pip install 'embroider>=0.15,<0.16' "
                        "(or reinstall with 'okfgraph[cpu]')",
             )
         effective_id = model_id or "google/embeddinggemma-2"

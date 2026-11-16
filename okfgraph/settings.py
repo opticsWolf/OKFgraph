@@ -202,7 +202,7 @@ SETTINGS = [
             "Vision model id for image-content search (None follows the text "
             "model's registry vision pairing — the gemma-2 vision slot for "
             "gemma-2 graphs, the jina omni slot for text-nano graphs; needs "
-            "embroider>=0.14)"),
+            "embroider>=0.15)"),
     Setting("image_precision", "str", "auto", "embedding",
             "Vision weight precision: auto follows device; explicit fp16 on "
             "CPU fails fast; int8 is explicit-only",

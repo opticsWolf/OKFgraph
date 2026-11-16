@@ -2,7 +2,7 @@
 
 **Version**: 6.8 (as-built for okfgraph 0.11.0 — the findings-store changes in the v6.7 → v6.8 summary below: links survive re-import, per-file change detection, opt-in frontmatter identity, `okf serve` (one owner, many clients), offline extensions, typed relations, filters, typed ingest, producer cursors, MCP write tools; schema v9. Earlier: 6.7 for okfgraph 0.10.2 — v6.6 surface per `docs/surface-unification-plan.md` plus the v6.6 → v6.7 summary below: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)
 **Based on**: Architecture v6.5 (0.8.x–0.9.0 tree)  
-**Verified against**: LadybugDB v0.22.1, Python 3.11–3.14, `embroider 0.15.x`, `bobine 0.8.1`, `onnxruntime==1.31.1`
+**Verified against**: LadybugDB v0.22.1, Python 3.11–3.14, `embroider 0.15.x`, `bobine 0.9.1`, `onnxruntime==1.31.1`
 
 > **Scope note.** The v5.x lineage (and `docs/gap-analysis.md`,
 > `docs/OKF Graph V6.0.md`, `docs/Okfgraph 6.0 amendment.md`,
@@ -1510,7 +1510,7 @@ mcp.run(transport="stdio")
 | Feature | Detail |
 |---|---|
 | **Model (default)** | `google/embeddinggemma-2` — mean pooling (per its model card), Apache-2.0; `jinaai/jina-embeddings-v5-text-small-retrieval` remains registered |
-| **Framework** | External `embroider` crate (Rust/ORT — no Python ML stack in core, floor 0.13.0: the EmbeddingGemma 2 registry entry + ORT 1.31.1 goldens) |
+| **Framework** | External `embroider` crate (Rust/ORT — no Python ML stack in core, floor 0.15.0: the EmbeddingGemma 2 registry entry + ORT 1.31.1 goldens) |
 | **Dimensions** | **768** native for gemma-2 (Matryoshka ladder 128/256/512/768), **1024** native for jina-small (`ALLOWED_DIMS`); default **512**, on-ladder for both |
 | **Context Window** | 8192 tokens for both (tokenizer-only counts via `Tokenizer`, no session) |
 | **Prefix Logic** | `Query:` / `Document:` (frozen contract); EmbeddingGemma prompts are applied inside the crate |

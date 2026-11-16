@@ -4,7 +4,10 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [Unreleased]
+## [0.15.0] — 2026-11-16
+
+The EmbeddingGemma 2 precision release: explicit int8 text and vision,
+the W3 fusion pin, and the labelled text/image gates.
 
 ### Added
 
@@ -23,7 +26,9 @@ commit history, newest first.
 - **W3 fusion pin.** Image vectors now carry the partner text space in
   `embedding_image_text_space`; a mismatch with the graph's text space
   refuses. Gemma text and image precision must match because the host
-  fuses at the image precision.
+  fuses at the image precision. The fusion identity needs embroider
+  0.15.1; with 0.15.0 the existing model/precision pins still apply and
+  the fusion identity is skipped.
 - **Downgrade check passed.** okfgraph 0.14.2 refuses a new int8 graph
   through the space pin (pinned int8, landed fp32); no schema floor was
   needed. Record: `docs/compat.md`.

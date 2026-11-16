@@ -662,7 +662,8 @@ import refuses rather than fork the vector space. Vision vectors land in
 the same `ImageAsset.embedding` space (6.4a parity: cos ≥ 0.9999 vs
 torch over 191 images; 6.3 in-situ: 1.00000 on stored vectors).
 Frozen contract: fp32 on CPU, fp16 on CUDA, plus explicit int8 (the
-vision q8 graph); fp16-on-CPU is a hard error — it stalls, not slows;
+vision q8 graph; its cross-modal quality gate is still open);
+fp16-on-CPU is a hard error — it stalls, not slows;
 Pillow bicubic RGB resize caller-side;
 `VISION_CONTRACT=smart32/min262144/max1310720/bicubic-rgb`.
 
@@ -1516,7 +1517,7 @@ mcp.run(transport="stdio")
 | **Air-gapped** | `model_path` + `tokenizer_path` pin both files (zero network, fail-fast on missing) |
 | **Acquisition** | HF hub into the model cache, or explicit paths — identical vectors, pinned by test |
 | **GPU Support** | `--device auto` (default; CUDA when present, else CPU) against the single pinned ORT; CUDA is opportunistic, CPU always works |
-| **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`/`int8` (int8 explicit-only, nano and gemma-2 text; gemma-2 vision q8); explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
+| **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`/`int8` (int8 explicit-only, labelled text gate passed on scifact + nfcorpus at 768/512; gemma-2 vision q8's cross-modal gate is open); explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
 | **Model registry (0.6.0)** | `embedding.model_id` on every surface (default text-small, frozen); registry resolves (model, precision) → artifact with per-model ladder/ceiling (nano: 768 dim max, 8192 ctx); graph pins the id in MetaText fail-closed (mismatch refuses, empty re-pins) — a model switch forces a fresh reimport, never a silent space fork; 0.13 adds the embroider `space` pin (`SPACE_PIN_MISMATCH`) |
 | **CPU Arena** | Off by default (`--cpu-arena` opts in): 8x lower peak RSS for ~1.4x encode time (measured) |
 

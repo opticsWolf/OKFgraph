@@ -4,6 +4,34 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [Unreleased]
+
+### Added
+
+- **EmbeddingGemma 2 int8 is a supported explicit precision.** The
+  precision codec learned `int8: 8`; unknown stored codes fail closed. The
+  image lane accepts `image_precision=int8`, the vision content-hash and
+  doctor paths decode it, `pin_info` compares the image model/precision/
+  space, and reembed validates precision before it rewrites (it clears an
+  unnamed pin rather than leaving a lie). `auto` still never selects
+  int8; an unmeasured request falls back to fp32.
+- **Labelled retrieval gate passed.** Text int8 stayed inside the 0.5 pt
+  NDCG@10 / recall@20 bar against fp32 at 768 and 512 on BEIR scifact
+  and nfcorpus. Record: `docs/eg2-int8-gates.md`.
+- **Downgrade check passed.** okfgraph 0.14.2 refuses a new int8 graph
+  through the space pin (pinned int8, landed fp32); no schema floor was
+  needed. Record: `docs/compat.md`.
+
+### Docs
+
+- `docs/bench-eg2-precision-width.md` now records the codec landing and
+  the labelled gate; `docs/eg2-int8-gates.md` carries the full method and
+  numbers, and `scripts/eval_precision.py` reproduces them.
+- Vision int8's cross-modal gate is still open; the artifact is
+  registered but image retrieval is not quality-approved yet. Int8 stays
+  a model-footprint choice, not a database-size one, and image graphs
+  still need a fresh database plus re-encode.
+
 ## [0.14.2] — 2026-11-13
 
 Two operational fixes for the surfaces that run unattended, plus the design

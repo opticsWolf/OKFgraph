@@ -179,8 +179,9 @@ below records what changed, with file/line anchors.
    `google/embeddinggemma-2` id. Do not add a fake `-int8` id — the
    precision pin is the guard, and one id per space stays the rule.
 8. Then reembed a copy (fresh DB for image graphs) and compare
-   recall@k / NDCG on the labelled set. The graph file will not shrink;
-   int8 is a model-footprint choice, and 256d is the database lever.
+   recall@k / NDCG; the labelled gate already passed, so this is the
+   reembed-path check. The graph file will not shrink; int8 is a
+   model-footprint choice, and 256d is the database lever.
 
 ## Throughput (RTX 3090, docs/s)
 
@@ -199,8 +200,8 @@ portability statement, not a hardware one.
 ## Caveats
 
 - 50 queries with one target each: a 2-point difference is one query.
-  This is a signal, not a shipping gate; a labelled set (the cached BeIR
-  suites are a candidate) is the next step.
+  This is a signal; the labelled scifact/nfcorpus gate passed on
+  2026-11-16 (`docs/eg2-int8-gates.md`).
 - Exact cosine, not HNSW recall: the 20 DBs have indexes and were
   spot-checked, but approximate-search recall is not measured across the
   matrix.

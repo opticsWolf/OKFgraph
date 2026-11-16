@@ -186,6 +186,9 @@ first image open if the graph was not served by Silk.
 - Older hosts that cannot name a fusion space still check model and
   precision and warn when a fusion pin exists; the W3 guarantee requires
   the new host.
+- Image graphs built before W3 have no fusion pin and are not
+  retroactively verified. Re-encode their images to claim the pair; the
+  model/precision/text pins still guard the text side.
 
 ### Caveats
 

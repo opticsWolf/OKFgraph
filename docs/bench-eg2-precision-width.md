@@ -138,8 +138,9 @@ the file at both widths. Image storage policy was not changed.
 
 The artifact is registered on the mirror and the codec/image paths are
 in. The remaining gate is retrieval on a labelled set (plan §3.1–§3.2);
-the 50-query run is a signal only. The checklist below records what
-changed, with file/line anchors.
+the 50-query run is a signal only. The consolidated target architecture
+and execution plan is `embroider/docs/plan-eg2-rollout.md`. The checklist
+below records what changed, with file/line anchors.
 
 1. `_PRECISION_CODE` (`okfgraph/components/embedding.py:141`) gains
    `"int8": 8`; `stored_precision` (`:149`), both pin enforcers

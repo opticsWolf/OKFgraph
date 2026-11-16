@@ -175,7 +175,7 @@ Integrated into `load_image_bytes()` in `images.py`:
 Added `validate()` methods to all config dataclasses:
 
 - `DatabaseConfig`: path non-empty, dim in [32, 1024], recommended Matryoshka dims
-- `EmbeddingConfig`: device in [cpu, cuda, mps, auto], precision in [auto, fp32, fp16], cache_dir absolute
+- `EmbeddingConfig`: device in [cpu, cuda, mps, auto], precision in [auto, fp32, fp16, int8], cache_dir absolute
 - `ImportConfig`: mode in [text, optional, omni] (captions vs ONNX vision since 0.8.0), batch_size in [1, 256], chunk_size in [64, 8192] (tokens, 0.5.1+)
 - `OKFConfig`: aggregates all section validations
 
@@ -661,8 +661,9 @@ registry `text_partner` of the text model (the gemma-2 or jina pairing), or
 import refuses rather than fork the vector space. Vision vectors land in
 the same `ImageAsset.embedding` space (6.4a parity: cos ≥ 0.9999 vs
 torch over 191 images; 6.3 in-situ: 1.00000 on stored vectors).
-Frozen contract: fp32 on CPU, fp16 on CUDA (fp16-on-CPU is a hard
-error — it stalls, not slows); Pillow bicubic RGB resize caller-side;
+Frozen contract: fp32 on CPU, fp16 on CUDA, plus explicit int8 (the
+vision q8 graph); fp16-on-CPU is a hard error — it stalls, not slows;
+Pillow bicubic RGB resize caller-side;
 `VISION_CONTRACT=smart32/min262144/max1310720/bicubic-rgb`.
 
 ### Batch Encoding Algorithm
@@ -1474,7 +1475,7 @@ mcp.run(transport="stdio")
 | `--db-path` | **(required)** | Path to the Ladybug database file — flag, `OKFGRAPH_DB_PATH` or `[database] db_path` in `okfgraph.toml`; none set → `[ERROR] CONFIG_INVALID`, exit 2 |
 | `--bundle-root` | db parent | Root directory for the OKF bundle |
 | `--device` | `auto` | Device for ONNX inference (`auto` = CUDA when present, else CPU; `cpu`/`cuda` pin it) |
-| `--precision` | `auto` | Weight precision: `auto` follows the resolved device (CUDA→FP16 mirror, CPU→FP32); `fp32`/`fp16` pin it; pinned per graph in Meta (fail-closed) |
+| `--precision` | `auto` | Weight precision: `auto` follows the resolved device (CUDA→FP16 mirror, CPU→FP32); `fp32`/`fp16`/`int8` pin it (int8 explicit-only, measured artifact); pinned per graph in Meta (fail-closed) |
 | `--cpu-arena` | off | Enable the CPU arena allocator (default off: ~8x lower peak RSS for ~1.4x encode time) |
 | `--embedding-dim` | `512` | Dimension of the embedding vectors (Matryoshka ladder 32–1024) |
 | `--max-length` | `8192` | Token truncation ceiling 1..=32768 (model truth 32768) |
@@ -1515,7 +1516,7 @@ mcp.run(transport="stdio")
 | **Air-gapped** | `model_path` + `tokenizer_path` pin both files (zero network, fail-fast on missing) |
 | **Acquisition** | HF hub into the model cache, or explicit paths — identical vectors, pinned by test |
 | **GPU Support** | `--device auto` (default; CUDA when present, else CPU) against the single pinned ORT; CUDA is opportunistic, CPU always works |
-| **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`/`int8` (int8 explicit-only, needs a measured artifact); explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
+| **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`/`int8` (int8 explicit-only, nano and gemma-2 text; gemma-2 vision q8); explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
 | **Model registry (0.6.0)** | `embedding.model_id` on every surface (default text-small, frozen); registry resolves (model, precision) → artifact with per-model ladder/ceiling (nano: 768 dim max, 8192 ctx); graph pins the id in MetaText fail-closed (mismatch refuses, empty re-pins) — a model switch forces a fresh reimport, never a silent space fork; 0.13 adds the embroider `space` pin (`SPACE_PIN_MISMATCH`) |
 | **CPU Arena** | Off by default (`--cpu-arena` opts in): 8x lower peak RSS for ~1.4x encode time (measured) |
 

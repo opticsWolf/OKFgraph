@@ -260,6 +260,83 @@ def test_image_precision_pin_refuses_mix(router):
         E.enforce_image_precision_pin(router.conn, "fp16")
 
 
+TEXT_SPACE = ("embroider/google/embeddinggemma-2@"
+              "52614d767029dd71817689c0bde0a0146c5cc0f0:fp16:512:8192:"
+              "text_embed:v1")
+TEXT_SPACE_INT8 = ("embroider/google/embeddinggemma-2@"
+                   "52614d767029dd71817689c0bde0a0146c5cc0f0:int8:512:8192:"
+                   "text_embed:v1")
+
+
+def test_image_text_space_pin_adopts_and_matches(router):
+    assert E.enforce_image_text_space_pin(
+        router.conn, TEXT_SPACE, adopt=False) == TEXT_SPACE
+    assert E.enforce_image_text_space_pin(
+        router.conn, TEXT_SPACE, adopt=False) == TEXT_SPACE
+
+
+def test_image_text_space_pin_refuses_a_different_graph_text_space(router):
+    router.conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS MetaText "
+        "(key STRING PRIMARY KEY, value STRING)")
+    router.conn.execute(
+        "MERGE (m:MetaText {key: 'embedding_space'}) SET m.value = $v",
+        {"v": TEXT_SPACE},
+    )
+    router.conn.execute("CREATE (c:Concept {id: 'x'})")
+    with pytest.raises(RuntimeError, match="another text space"):
+        E.enforce_image_text_space_pin(
+            router.conn, TEXT_SPACE_INT8, adopt=True)
+
+
+def test_image_text_space_pin_refuses_a_different_fusion(router):
+    router.conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS MetaText "
+        "(key STRING PRIMARY KEY, value STRING)")
+    router.conn.execute(
+        "MERGE (m:MetaText {key: 'embedding_image_text_space'}) SET m.value = $v",
+        {"v": TEXT_SPACE},
+    )
+    router.conn.execute(
+        "CREATE (i:ImageAsset {id: 'a', embed_route: 'vision-onnx'})")
+    with pytest.raises(RuntimeError, match="fused through another text space"):
+        E.enforce_image_text_space_pin(
+            router.conn, TEXT_SPACE_INT8, adopt=True)
+
+
+def test_image_text_space_pin_repins_a_graph_without_vision_vectors(router):
+    router.conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS MetaText "
+        "(key STRING PRIMARY KEY, value STRING)")
+    router.conn.execute(
+        "MERGE (m:MetaText {key: 'embedding_image_text_space'}) SET m.value = $v",
+        {"v": TEXT_SPACE},
+    )
+    assert E.enforce_image_text_space_pin(
+        router.conn, TEXT_SPACE_INT8, adopt=False) == TEXT_SPACE_INT8
+
+
+def test_lazy_vision_does_not_use_an_encoder_whose_pins_refused():
+    calls = []
+
+    def factory():
+        calls.append("open")
+        return object()
+
+    def refuse(_encoder):
+        raise RuntimeError("fusion mismatch")
+
+    encoder = E.LazyVisionEncoder(
+        image_model_id=GEMMA_VISION_ID, truncate_dim=512, device="cpu",
+        session_factory=factory, on_open=refuse)
+    with pytest.raises(RuntimeError, match="fusion mismatch"):
+        encoder.encode_image(b"rgb", 1, 1)
+    assert not encoder.is_loaded, "a refused encoder is not usable"
+    with pytest.raises(RuntimeError, match="fusion mismatch"):
+        encoder.encode_image(b"rgb", 1, 1)
+    assert calls == ["open"], "the factory is not retried"
+
+
 def test_vision_hash_covers_spec():
     from okfgraph.images import VISION_CONTRACT
 

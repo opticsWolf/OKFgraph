@@ -696,7 +696,6 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             enforce_image_precision_pin,
             enforce_vision_compat,
             LazyVisionEncoder,
-            vision_loader_class,
         )
 
         def _stored_image_precision():
@@ -724,8 +723,18 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 IMAGE_PRECISION_META_KEY,      # noqa: F401  (documented)
                 _PRECISION_CODE,
                 enforce_image_space_pin,
+                enforce_image_text_space_pin,
             )
             prior = _stored_image_precision()
+            # The fusion check runs FIRST: a refused text space must not
+            # leave image model/precision/space pins behind (a graph with
+            # concepts could never recover from a stale image precision).
+            # It may write only the fusion pin, which is repinnable while
+            # the graph has no vision vectors.
+            self.image_pinned_text_space = enforce_image_text_space_pin(
+                self.conn, getattr(encoder, "text_space", None),
+                adopt=False, graph_space=self.pinned_space,
+            )
             # A lane that cannot name a weight precision (an external host
             # that omits it) pins only the model and the space.
             pinned = None
@@ -739,10 +748,11 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 adopt=pinned is not None and prior == pinned,
             )
             logger.info(
-                "image embeddings: %s dim=%d cuda=%s precision=%s space=%s",
+                "image embeddings: %s dim=%d cuda=%s precision=%s space=%s "
+                "text_space=%s",
                 getattr(encoder, "model_id", None) or image_model_id,
                 self.embedding_dim, encoder.used_cuda, pinned,
-                self.image_pinned_space,
+                self.image_pinned_space, self.image_pinned_text_space,
             )
 
         def _vision_session_factory():
@@ -782,9 +792,12 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
                 embedding_dim=self.embedding_dim,
                 image_model_id=image_model_id,
             )
-            loader = getattr(self.embroider, vision_loader_class(image_model_id))
-            return loader.open(
-                image_model_id,
+            # `embroider.open` returns the Model wrapper, which adds the
+            # partner text space to `describe()`/`text_space`. The crate
+            # loader's own object cannot name the fusion identity, and W3
+            # pins the (text fusion, tower) pair.
+            return self.embroider.open(
+                "vision", image_model_id,
                 truncate_dim=self.embedding_dim,
                 device=rust_device,
                 cache_dir=cache_dir,
@@ -802,6 +815,7 @@ class OKFRouter(AdminOps, ExportOps, IngestOps, QueryOps, WriteOps):
             backend=image_backend,
         )
         self.image_pinned_space = None
+        self.image_pinned_text_space = None
         # Same pre-adoption sync as the text encoder above: the factory
         # reads the adopted dim lazily, the stored dim follows it here.
         self.vision_encoder._truncate_dim = self.embedding_dim

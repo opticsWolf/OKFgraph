@@ -662,7 +662,7 @@ import refuses rather than fork the vector space. Vision vectors land in
 the same `ImageAsset.embedding` space (6.4a parity: cos ≥ 0.9999 vs
 torch over 191 images; 6.3 in-situ: 1.00000 on stored vectors).
 Frozen contract: fp32 on CPU, fp16 on CUDA, plus explicit int8 (the
-vision q8 graph; its cross-modal quality gate is still open);
+vision q8 graph; its COCO cross-modal gate passed 2026-11-16);
 fp16-on-CPU is a hard error — it stalls, not slows;
 Pillow bicubic RGB resize caller-side;
 `VISION_CONTRACT=smart32/min262144/max1310720/bicubic-rgb`.
@@ -1298,14 +1298,17 @@ CLI > env > TOML > defaults, per key. Invalid configuration is
 > `vision_content_hash`, and a graph moves between them with no re-embed.
 > There is no declared mode for this lane: the host must answer
 > `GET /v1/models` with `engine: embroider`, `kind: vision`, its width,
-> landed precision, `space` and `text_partner`, and every mismatch is
+> landed precision, `space`, `text_partner` and (for the fused Gemma
+> slot) `text_partner_space`, and every mismatch is
 > refused with the remedy named (`IMAGE_PIN_MISMATCH` when the host names
 > no partner). The compat check runs against the host's `text_partner`
 > without importing the crate, and the branch skips `_require_ort`
 > entirely — an import with images succeeds with no ONNX runtime and no
 > `embroider` in the process, which is the lane's proof. Graphs pin
-> `MetaText embedding_image_space` beside the image model and precision;
-> `lanes()` gains an `image` row, so `okf doctor` prints `image_lane`.
+> `MetaText embedding_image_space` beside the image model and precision,
+> and `embedding_image_text_space` for the fusion pair; the image text
+> space must match the graph's text space. `lanes()` gains an `image`
+> row, so `okf doctor` prints `image_lane`.
 > One refusal (a host answering 400 for a corrupt image) falls back to
 > that image's caption; an **outage** raises `EXTERNAL_UNAVAILABLE` — the
 > same typed code the text and rerank lanes now surface — and latches the
@@ -1517,7 +1520,7 @@ mcp.run(transport="stdio")
 | **Air-gapped** | `model_path` + `tokenizer_path` pin both files (zero network, fail-fast on missing) |
 | **Acquisition** | HF hub into the model cache, or explicit paths — identical vectors, pinned by test |
 | **GPU Support** | `--device auto` (default; CUDA when present, else CPU) against the single pinned ORT; CUDA is opportunistic, CPU always works |
-| **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`/`int8` (int8 explicit-only, labelled text gate passed on scifact + nfcorpus at 768/512; gemma-2 vision q8's cross-modal gate is open); explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
+| **Precision** | `auto` follows the resolved device (CUDA→FP16 mirror weights, CPU→FP32); `--precision` pins `fp32`/`fp16`/`int8` (int8 explicit-only, labelled text gate passed on scifact + nfcorpus at 768/512; gemma-2 vision q8's COCO cross-modal gate passed; Gemma text/image precision must match); explicit fp16-on-CPU warns (slow, not corrupt); pinned per graph in Meta (fail-closed, empty graphs re-pin); explicit files bypass selection (report fp32) |
 | **Model registry (0.6.0)** | `embedding.model_id` on every surface (default text-small, frozen); registry resolves (model, precision) → artifact with per-model ladder/ceiling (nano: 768 dim max, 8192 ctx); graph pins the id in MetaText fail-closed (mismatch refuses, empty re-pins) — a model switch forces a fresh reimport, never a silent space fork; 0.13 adds the embroider `space` pin (`SPACE_PIN_MISMATCH`) |
 | **CPU Arena** | Off by default (`--cpu-arena` opts in): 8x lower peak RSS for ~1.4x encode time (measured) |
 
@@ -1546,7 +1549,7 @@ Both encoders write into the **same** `ImageAsset.embedding` FLOAT[dim] column i
 - Images embedded via alt-text (text model) can be queried by image
 - Images embedded via vision bytes (vision model) can be queried by text
 - No reindexing needed when mixing embeddings from both models
-- One vector space per graph *including images*: `(text_model_id, image_model_id, image_precision)` pinned in Meta, mismatch refuses
+- One vector space per graph *including images*: `(text_model_id, image_model_id, image_precision, image_text_space)` pinned in Meta, mismatch refuses; Gemma text and image precision must match because the fusion tower runs at the image precision
 
 ---
 

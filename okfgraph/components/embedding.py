@@ -429,6 +429,12 @@ IMAGE_PRECISION_META_KEY = "embedding_image_precision"
 #: are interchangeable with no re-embed, and two different spaces are
 #: refused instead of silently mixing.
 IMAGE_SPACE_META_KEY = "embedding_image_space"
+#: MetaText key pinning the **text space an image vector was fused under**.
+#: A Gemma image vector is made by the vision tower but fused through the
+#: partner text tower, so its space is the pair, not the vision tower alone.
+#: W3 stores that partner space here; the graph's own text space is the
+#: first guard, and this pin keeps a later image open from changing it.
+IMAGE_TEXT_SPACE_META_KEY = "embedding_image_text_space"
 
 
 def enforce_image_model_pin(conn, image_model_id: str) -> str:
@@ -631,6 +637,106 @@ def enforce_image_space_pin(conn, space, *, adopt: bool) -> Optional[str]:
     if adopt or not _graph_has_vision_vectors(conn):
         _pin()
         logger.debug("graph image vectors pinned to space=%s", space)
+        return space
+    return None
+
+
+def enforce_image_text_space_pin(conn, space, *, adopt: bool,
+                                 graph_space: Optional[str] = None
+                                 ) -> Optional[str]:
+    """Fail-closed fusion-space pin for a graph's image vectors (W3).
+
+    Gemma image vectors run through the partner text tower, so the vector
+    space is ``(text fusion, vision tower)``. The graph's text space is
+    checked first; this key then keeps the pair stable across image opens.
+    A session that cannot name its fusion space (an older host) checks
+    nothing here, but warns when a pin exists — the same honest limit as
+    the image-space pin. A graph with no vision vectors may adopt or
+    re-pin; a graph with vectors refuses a different pair.
+
+    *graph_space* is the router's already-known text space; when omitted
+    the stored ``embedding_space`` is read. Returns the pinned fusion
+    space, or ``None``.
+    """
+    landed = parse_space(space)
+    conn.execute(
+        "CREATE NODE TABLE IF NOT EXISTS MetaText (key STRING PRIMARY KEY, value STRING)"
+    )
+    try:
+        rows = conn.execute(
+            f"MATCH (m:MetaText {{key: '{IMAGE_TEXT_SPACE_META_KEY}'}}) "
+            "RETURN m.value AS v"
+        ).rows_as_dict().get_all()
+    except Exception:
+        rows = []
+    stored = rows[0]["v"] if rows else None
+    if graph_space is None:
+        try:
+            graph_rows = conn.execute(
+                f"MATCH (m:MetaText {{key: '{SPACE_META_KEY}'}}) "
+                "RETURN m.value AS v"
+            ).rows_as_dict().get_all()
+        except Exception:
+            graph_rows = []
+        graph_space = graph_rows[0]["v"] if graph_rows else None
+    if landed is None:
+        if stored:
+            logger.warning(
+                "graph image vectors were fused under text space %s but "
+                "this vision session cannot name its fusion space: checking "
+                "the image model and precision only", stored)
+        return stored or None
+
+    graph = parse_space(graph_space)
+    if graph is not None:
+        differ = _space_differences(graph, landed)
+        if differ:
+            detail = "; ".join(
+                f"{f}: graph text={graph[f]}, image fusion={landed[f]}"
+                for f in differ)
+            raise OKFError(
+                "IMAGE_PIN_MISMATCH",
+                f"image vectors would be fused through another text space "
+                f"than this graph's text vectors ({detail}). Image vectors "
+                f"from different text spaces must never mix. Re-encode the "
+                f"images under the graph's text model/precision, or reimport "
+                f"into a fresh database.",
+                fields={"image_text_space": space, "graph_text_space": graph_space},
+                remedy="re-encode images, or reimport into a fresh database",
+            )
+
+    def _pin():
+        conn.execute(
+            f"MERGE (m:MetaText {{key: '{IMAGE_TEXT_SPACE_META_KEY}'}}) "
+            "SET m.value = $v",
+            {"v": space},
+        )
+
+    if stored:
+        pinned = parse_space(stored)
+        differ = (_space_differences(pinned, landed) if pinned is not None
+                  else ["space"])
+        if not differ:
+            return stored
+        if not _graph_has_vision_vectors(conn):
+            _pin()
+            logger.info("graph without vision vectors re-pinned to image "
+                        "text space=%s", space)
+            return space
+        detail = (f"pinned {stored}, landed {space}" if pinned is None else
+                  "; ".join(f"{f}: pinned={pinned[f]}, landed={landed[f]}"
+                            for f in differ))
+        raise OKFError(
+            "IMAGE_PIN_MISMATCH",
+            f"graph image vectors were fused through another text space "
+            f"({detail}). Re-encode the images under the graph's text "
+            f"model/precision, or reimport into a fresh database.",
+            fields={"image_text_space": space},
+            remedy="re-encode images, or reimport into a fresh database",
+        )
+    if adopt or not _graph_has_vision_vectors(conn):
+        _pin()
+        logger.debug("graph image vectors pinned to text space=%s", space)
         return space
     return None
 
@@ -856,6 +962,14 @@ class LazyVisionEncoder:
         space = getattr(self._encoder, "space", None)
         return space if isinstance(space, str) else None
 
+    @property
+    def text_space(self):
+        """The partner text space a fused image vector was made under."""
+        if self._encoder is None:
+            return None
+        space = getattr(self._encoder, "text_space", None)
+        return space if isinstance(space, str) else None
+
     def encode_image(self, rgb: bytes, h: int, w: int):
         """Embed one resized RGB buffer (row-major `[h, w, 3]` uint8)."""
         return self._get_encoder().encode_image(rgb, h, w)
@@ -886,10 +1000,16 @@ class LazyVisionEncoder:
                 # from BaseException and must cache, not retry.
                 self._encoder_error = exc
                 raise
-            self._encoder = encoder
             if self._on_open is not None and not self._open_reported:
+                try:
+                    self._on_open(encoder)
+                except BaseException as exc:
+                    # A pin refusal is part of opening: never cache the
+                    # encoder as usable when its identity was rejected.
+                    self._encoder_error = exc
+                    raise
                 self._open_reported = True
-                self._on_open(encoder)
+            self._encoder = encoder
             return encoder
 
     def __repr__(self) -> str:

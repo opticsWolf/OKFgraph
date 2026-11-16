@@ -4,6 +4,11 @@ Status: **shape decided, no code.** This note replaces the earlier
 "embroider vision pairing" sketch: a GGUF graph can keep both lanes on
 llama.cpp, so no pairing table and no alignment test are involved.
 
+Web check 2026-11-16: the llama.cpp discussion #13666 is still
+unanswered, and the project's multimodal docs describe chat input, not
+a confirmed `/v1/embeddings` image recipe. The runtime probe below is
+still the gate; do not treat the shape as an implementation green light.
+
 Related: `docs/implementation-plan-0.14.md` §G3 (decision), the image-lane
 gateway invariant in §H (one `ImageAsset.embedding` column, one index, one
 space).

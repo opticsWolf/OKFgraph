@@ -817,7 +817,8 @@ class AdminOps:
         """
         from okfgraph.components.embedding import (
             IMAGE_MODEL_META_KEY, IMAGE_PRECISION_META_KEY,
-            IMAGE_SPACE_META_KEY, MODEL_META_KEY, PRECISION_META_KEY,
+            IMAGE_SPACE_META_KEY, IMAGE_TEXT_SPACE_META_KEY,
+            MODEL_META_KEY, PRECISION_META_KEY,
             SPACE_META_KEY, parse_space, _space_differences)
 
         def _image_pin_precision(raw):
@@ -898,6 +899,8 @@ class AdminOps:
         pinned_image_precision = _image_pin_precision(
             _meta_str("Meta", IMAGE_PRECISION_META_KEY))
         pinned_image_space = _meta_str("MetaText", IMAGE_SPACE_META_KEY)
+        pinned_image_text_space = _meta_str(
+            "MetaText", IMAGE_TEXT_SPACE_META_KEY)
         image_configured_model = (
             getattr(vision, "model_id", None)
             or getattr(self, "image_model_id", None))
@@ -906,6 +909,7 @@ class AdminOps:
                 and getattr(self, "image_precision", "auto") != "auto"):
             image_configured_precision = self.image_precision
         image_configured_space = getattr(vision, "space", None)
+        image_configured_text_space = getattr(vision, "text_space", None)
         image_mismatch = []
         if not empty:
             if (pinned_image_model and image_configured_model
@@ -918,6 +922,14 @@ class AdminOps:
                       parse_space(image_configured_space))
             if ia and ib and _space_differences(ia, ib):
                 image_mismatch.append("space")
+            if (pinned_image_text_space and image_configured_text_space):
+                ta = parse_space(pinned_image_text_space)
+                tb = parse_space(image_configured_text_space)
+                if ta and tb and _space_differences(ta, tb):
+                    image_mismatch.append("text_space")
+                elif not ta or not tb:
+                    if pinned_image_text_space != image_configured_text_space:
+                        image_mismatch.append("text_space")
         mismatch.extend("image_" + m for m in image_mismatch)
         return {
             "pinned": {
@@ -938,10 +950,12 @@ class AdminOps:
                 "pinned_model": pinned_image_model,
                 "pinned_precision": pinned_image_precision,
                 "pinned_space": pinned_image_space,
+                "pinned_text_space": pinned_image_text_space,
                 "backend": getattr(self, "image_backend", "embroider"),
                 "configured_model": image_configured_model,
                 "configured_precision": image_configured_precision,
                 "configured_space": image_configured_space,
+                "configured_text_space": image_configured_text_space,
             },
             "image_mismatch": image_mismatch,
             "mismatch": mismatch,

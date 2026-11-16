@@ -188,6 +188,8 @@ class ExternalVisionEngine:
         self.precision = precision or "external"
         space = identity.get("space")
         self.space: Optional[str] = space if isinstance(space, str) else None
+        fusion = identity.get("text_partner_space")
+        self.text_space: Optional[str] = fusion if isinstance(fusion, str) else None
         self.text_partner = partner
         self.used_cuda = str(identity.get("device") or "") == "cuda"
         logger.info(
@@ -215,6 +217,7 @@ class ExternalVisionEngine:
             "kind": self.identity.get("kind"),
             "precision": self.precision,
             "space": self.space,
+            "text_space": self.text_space,
             "text_partner": self.text_partner,
             "dim": self.dim,
             "device": self.identity.get("device"),

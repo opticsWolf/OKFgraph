@@ -15,9 +15,15 @@ commit history, newest first.
   space, and reembed validates precision before it rewrites (it clears an
   unnamed pin rather than leaving a lie). `auto` still never selects
   int8; an unmeasured request falls back to fp32.
-- **Labelled retrieval gate passed.** Text int8 stayed inside the 0.5 pt
-  NDCG@10 / recall@20 bar against fp32 at 768 and 512 on BEIR scifact
-  and nfcorpus. Record: `docs/eg2-int8-gates.md`.
+- **Labelled text and image gates passed.** Text int8 stayed inside the
+  0.5 pt NDCG@10 / recall@20 bar against fp32 at 768 and 512 on BEIR
+  scifact and nfcorpus. Vision int8 stayed inside 0.4 pt in both
+  directions on a 199-image/995-caption COCO subset, with finite CPU and
+  CUDA encodes. Record: `docs/eg2-int8-gates.md`.
+- **W3 fusion pin.** Image vectors now carry the partner text space in
+  `embedding_image_text_space`; a mismatch with the graph's text space
+  refuses. Gemma text and image precision must match because the host
+  fuses at the image precision.
 - **Downgrade check passed.** okfgraph 0.14.2 refuses a new int8 graph
   through the space pin (pinned int8, landed fp32); no schema floor was
   needed. Record: `docs/compat.md`.
@@ -25,12 +31,12 @@ commit history, newest first.
 ### Docs
 
 - `docs/bench-eg2-precision-width.md` now records the codec landing and
-  the labelled gate; `docs/eg2-int8-gates.md` carries the full method and
-  numbers, and `scripts/eval_precision.py` reproduces them.
-- Vision int8's cross-modal gate is still open; the artifact is
-  registered but image retrieval is not quality-approved yet. Int8 stays
-  a model-footprint choice, not a database-size one, and image graphs
-  still need a fresh database plus re-encode.
+  the text gate; `docs/eg2-int8-gates.md` carries the full method and
+  numbers for text, image and downgrade, and `scripts/eval_precision.py`
+  / `eval_image_precision.py` reproduce them.
+- Int8 stays a model-footprint choice, not a database-size one, and image
+  graphs still need a fresh database plus re-encode. Audio remains
+  mirrored but has no slot.
 
 ## [0.14.2] — 2026-11-13
 

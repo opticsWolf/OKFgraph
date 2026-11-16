@@ -1,9 +1,10 @@
-# EG2 int8 — labelled retrieval gate and downgrade check
+# EG2 int8 — text and image gates
 
-Status: **both gates run, 2026-11-16.** The text int8 tier passes the
-shipping bar on two public labelled sets; okfgraph 0.14.2 refuses a new
-int8-pinned graph through the space pin. This record answers N1 and N3 of
-`embroider/docs/plan-eg2-rollout.md`.
+Status: **text, image and downgrade gates run, 2026-11-16.** Text int8
+passes the labelled retrieval bar on two public sets; vision int8 passes
+the cross-modal gate on a public COCO subset; okfgraph 0.14.2 refuses a
+new int8-pinned graph through the space pin. This record answers N1, N2
+and N3 of `embroider/docs/plan-eg2-rollout.md`.
 
 ## N1 — labelled retrieval gate
 
@@ -110,3 +111,98 @@ space pin.
 # N3: create a temp venv with okfgraph==0.14.2, copy an int8 graph,
 # then OKFRouter(db_path=copy, device="cpu", precision="fp32").search(...)
 ```
+
+## N2 — vision int8 live encode and cross-modal gate
+
+### Method
+
+- **Set**: `JotDe/mscoco_1k` (openrail), a public MS-COCO subset: 995
+  rows, **199 unique images**, five captions per image.
+- **Tiers**: `fp32`, `fp16`, `int8` through the Gemma vision slot on
+  CUDA; the caption queries/documents use the matching text model at the
+  same precision.
+- **Directions**: text→image (each caption queries its image) and
+  image→text (each image queries its five captions); exact cosine, no
+  HNSW.
+- **Fusion check**: before scoring, the text model's `space` must equal
+  the vision slot's new `text_partner_space`; the harness aborts on a
+  mismatch. This is the W3 identity, not a naming convention.
+- **Live checks**: one image was encoded through `int8` on CPU and CUDA;
+  output is finite, 768-d and unit norm. CPU and CUDA int8 vectors were
+  identical (cos 1.0); fp16/fp32 were cos 0.99937 against int8.
+- **Harness**: `scripts/eval_image_precision.py`.
+- **Raw output**: `%TEMP%/okf-n2-cache/{results.json,report.md}`.
+
+### Results (CUDA, 199 images, 995 captions)
+
+| tier | direction | n | R@1 / hit@1 | R@5 | R@10 | NDCG@10 | top-1 agree | top-10 overlap |
+|---|---|---|---|---|---|---|---|---|
+| fp32 | text→image | 995 | 0.7789 | 0.9578 | 0.9889 | 0.8917 | 1.0000 | 1.0000 |
+| fp32 | image→text | 199 | 0.8442 | 0.6958 | 0.8660 | 0.9022 | 1.0000 | 1.0000 |
+| fp16 | text→image | 995 | 0.7799 | 0.9578 | 0.9889 | 0.8922 | 0.9960 | 0.9959 |
+| fp16 | image→text | 199 | 0.8442 | 0.6948 | 0.8660 | 0.9019 | 0.9950 | 1.0000 |
+| int8 | text→image | 995 | 0.7779 | 0.9558 | 0.9869 | 0.8905 | 0.9698 | 0.9583 |
+| int8 | image→text | 199 | 0.8442 | 0.6948 | 0.8620 | 0.9027 | 0.9648 | 0.9744 |
+
+Deltas (int8 − fp32, points): text→image R@1 −0.10, R@5 −0.20,
+NDCG@10 −0.12; image→text hit@1 0.00, R@5 −0.10, R@10 −0.40,
+NDCG@10 +0.05. Every gate metric is inside the 0.5 pt bar.
+
+Image-vector parity vs fp32 (same 199 images): mean 1−cos **1.27e-3**,
+p99 3.8e-3, max 1.17e-2. Text vectors are an order of magnitude closer
+(query mean 3.0e-5, document 3.6e-5).
+
+### Verdict
+
+**Pass.** Vision int8 is quality-approved for the image lane on this
+labelled set. The artifact remains explicit-only.
+
+### N2.3 — the mixed-pair rule is now decided
+
+The original plan called text-int8 + vision-fp16 “mechanically safe”.
+The implementation says otherwise: `GemmaVision` runs the **partner text
+tower at the image precision**, so an fp16 vision host fuses images in
+the fp16 text space. Those vectors are not comparable to a text-int8
+graph. W3 now stores the partner text space and refuses the mismatch.
+
+**Product rule: Gemma text and vision precision must match — text int8 +
+vision int8, or no image lane.** Mixed text/vision precision needs a
+separate text-fusion precision feature that does not exist today; it is
+not a setting the current host can honour. Silk’s wiring refuses the
+mismatch before starting the image host; okf refuses it again at the
+first image open if the graph was not served by Silk.
+
+### W3 — the pin, not just a check
+
+- embroider’s vision `describe()` now carries `text_partner_space` (the
+  partner text model’s revision/precision/width space) next to the
+  tower’s `space`.
+- okf stores it in `MetaText.embedding_image_text_space`; a first image
+  open compares it with the graph’s text space, later opens compare it
+  with the stored pair, and `pin_info` reports `text_space` / an
+  `image_text_space` mismatch.
+- A graph with no vision vectors may adopt/re-pin; a graph with vectors
+  must re-encode images or reimport into a fresh database.
+- Older hosts that cannot name a fusion space still check model and
+  precision and warn when a fusion pin exists; the W3 guarantee requires
+  the new host.
+
+### Caveats
+
+- 199 images and 995 captions is a public subset, not the full MIEB or
+  MMEB-v2 suites. It is large enough to catch a quality cliff; not a
+  leaderboard number.
+- Exact cosine, not HNSW; CPU was checked on one image, not the whole
+  matrix.
+- Sources consulted 2026-11-16: the [Gemma model
+  card](https://gemma.ai/models/embeddinggemma/model-card-v2/) (full
+  precision, MIEB/MMEB-v2, fp16 warning), the [ONNX model
+  card](https://huggingface.co/onnx-community/embeddinggemma-2-ONNX)
+  (q8 worst-case cosine 0.9997, per-component dtypes), the [MIEB
+  paper](https://arxiv.org/abs/2504.10471), and the
+  [COCO 1k dataset](https://huggingface.co/datasets/JotDe/mscoco_1k).
+- Official EmbeddingGemma 2 numbers use the full-precision checkpoint;
+  q8 has no published per-benchmark vision quality. The model card’s
+  whole-model q8 parity (worst-case cosine 0.9997) is corroboration, not
+  this gate. The card also recommends bfloat16/float32 and warns about
+  fp16; this stack's fp16 lane is parity-gated, not an official claim.

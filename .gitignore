@@ -13,6 +13,7 @@ __pycache__/
 parity/.venv-oracle/
 parity/out/
 parity/tmp/
+!parity/fixtures/*.db
 
 # Distribution / packaging
 .Python

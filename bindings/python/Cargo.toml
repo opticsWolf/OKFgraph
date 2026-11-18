@@ -1,0 +1,16 @@
+[package]
+name = "okfgraph-py"
+version = "0.16.0-alpha.1"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+okfgraph = { path = "../..", default-features = false, features = ["embed", "external", "vision", "cli", "server", "mcp"] }
+pyo3 = { version = "=0.30.1", features = ["extension-module", "abi3-py312"] }
+serde_json = { version = "1", features = ["preserve_order"] }

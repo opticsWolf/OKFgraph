@@ -166,8 +166,24 @@ a `cxx` wrapper over the same C++ engine the Python wheel uses. It exposes
 Constraints to design around:
 
 - The build downloads a precompiled `liblbug` archive or compiles the C++ source,
-  and links OpenSSL (`ssl`, `crypto`). CI and developer machines need that
-  toolchain; cache `LBUG_PREBUILT_CACHE_DIR`.
+  and links OpenSSL. CI and developer machines need that toolchain; cache
+  `LBUG_PREBUILT_CACHE_DIR`.
+- **Windows OpenSSL is a prerequisite, not a crate pin problem.** `lbug 0.22.1`
+  already contains the Windows resolver from
+  [PR #26](https://github.com/LadybugDB/ladybug-rust/pull/26) (published in the
+  0.20.x line; see [issue #30](https://github.com/LadybugDB/ladybug-rust/issues/30)).
+  Its `build.rs` searches, in order: `OPENSSL_DIR`/`OPENSSL_ROOT_DIR`, vcpkg,
+  `pkg-config --variable=libdir openssl`, Homebrew paths (macOS), then standard
+  Linux paths. On Windows it emits `dylib=libssl` and `dylib=libcrypto`, so the
+  linker must find **`libssl.lib` and `libcrypto.lib`** — do not rename them to
+  `ssl.lib`/`crypto.lib`. Preferred setup is vcpkg `install openssl:x64-windows`
+  with `VCPKG_ROOT` (or vcpkg integration) set; a ShiningLight/Chocolatey OpenSSL 3
+  dev install plus `OPENSSL_DIR` is also supported. The matching
+  `libssl-3-x64.dll`/`libcrypto-3-x64.dll` must be on `PATH` at runtime. Do not
+  switch to `lbug` `main` or change the pin to work around this. On this machine,
+  **do not install ShiningLight, Chocolatey, or any other system OpenSSL without
+  explicit user confirmation**; use an existing install via `OPENSSL_DIR` or ask
+  first.
 - Extensions (`vector`, `fts`) are dynamically loaded `.lbug_extension` files.
   On non-Windows static builds the final binary needs `-rdynamic` (or equivalent)
   so the extension can resolve host symbols. Each binary and the cdylib must emit
@@ -599,7 +615,9 @@ buildable throughout for differential testing and cross-open.
   `bindings/python` PyO3 crate, `python/okfgraph`, and the `addons/pdf` stub;
   toolchain, fmt/clippy/deny, CI stub.
 - **lbug spike:** Python-created v10 DB → Rust open/read/write → Python reopen;
-  load `vector` + `fts`; run both index queries; Windows + Linux.
+  load `vector` + `fts`; run both index queries; Windows + Linux. Windows CI and
+  dev machines must first provision OpenSSL 3 (`vcpkg install
+  openssl:x64-windows` or `OPENSSL_DIR`), as recorded in §3.1.
 - **PyO3 spike:** maturin wheel with `_native.version()` and a blocking call with
   GIL release.
 - **rmcp spike:** stdio server answering one tool; Python `mcp` client connects.
@@ -809,7 +827,7 @@ old test files to the new tests so the parity report can prove coverage.
 
 | ID | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R1 | `lbug` build/extension ABI fails on a target | blocker | M0 spike; pin `=0.22.1`; `-rdynamic` per binary; keep `Store` behind a trait so a C-API shim is possible; test Python↔Rust cross-open |
+| R1 | `lbug` build/extension ABI fails on a target | blocker | M0 spike; pin `=0.22.1`; `-rdynamic` per binary; Windows: provision OpenSSL via vcpkg `openssl:x64-windows` or `OPENSSL_DIR` pointing at `libssl.lib`/`libcrypto.lib`, with DLLs on `PATH`; keep `Store` behind a trait so a C-API shim is possible; test Python↔Rust cross-open |
 | R2 | Python JSON/`str` semantics change `extra`/`content_sig` | silent re-imports, parity failures | `pycompat` module + Python-generated golden cases; property tests; DB dump gate |
 | R3 | PyYAML 1.1 quirks not matched | wrong frontmatter/types | implement PyYAML resolver rules; fixture corpus; differential fuzz against `yaml.safe_load` |
 | R4 | Import/delta/link edge cases diverge | data loss, link loss | port as a state machine; scenario corpus; DB dump + link invariants; run both on copies |

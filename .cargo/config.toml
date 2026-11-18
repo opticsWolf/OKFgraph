@@ -1,0 +1,3 @@
+[env]
+# Shared cache for the prebuilt Ladybug archive across rebuilds.
+LBUG_PREBUILT_CACHE_DIR = { value = "target/lbug-prebuilt", relative = true }

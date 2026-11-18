@@ -1,0 +1,8 @@
+{
+  "name": "minimal",
+  "settings": {"embedding_dim": 3},
+  "setup": {"bundle": "parity/corpus/minimal"},
+  "ops": [
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}}
+  ]
+}

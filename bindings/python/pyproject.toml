@@ -1,0 +1,28 @@
+[build-system]
+requires = ["maturin>=1.14,<2"]
+build-backend = "maturin"
+
+[project]
+name = "okfgraph"
+dynamic = ["version"]
+description = "Rust-backed OKF knowledge graph with a thin Python facade"
+requires-python = ">=3.12"
+license = "Apache-2.0 OR MIT"
+dependencies = ["pydantic>=2.0"]
+
+[project.optional-dependencies]
+cpu = ["onnxruntime==1.31.1"]
+gpu = ["onnxruntime-gpu[cuda,cudnn]==1.31.1"]
+pdf = ["okfgraph-pdf"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+okf = "okfgraph._entry:okf"
+okf-mcp = "okfgraph.mcp_server:main"
+
+[tool.maturin]
+python-source = "../../python"
+module-name = "okfgraph._native"
+
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "gpu" }]]

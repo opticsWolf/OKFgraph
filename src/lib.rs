@@ -1,0 +1,33 @@
+//! OKFgraph Rust core.
+//!
+//! The Python binding in `bindings/python` is a thin adapter over this crate.
+//! All graph, retrieval, ingest, and serialization logic belongs here.
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const SCHEMA_VERSION: u16 = 10;
+
+pub fn version() -> &'static str {
+    VERSION
+}
+
+pub fn schema_version() -> u16 {
+    SCHEMA_VERSION
+}
+
+pub mod error;
+pub mod markdown;
+pub mod model;
+pub mod ops;
+pub mod search;
+pub mod settings;
+pub mod store;
+pub mod util;
+
+#[cfg(feature = "cli")]
+pub mod cli;
+#[cfg(feature = "embed")]
+pub mod embed;
+#[cfg(any(feature = "embed", feature = "pdf"))]
+pub mod ingest;
+#[cfg(feature = "server")]
+pub mod server;

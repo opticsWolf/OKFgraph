@@ -1,0 +1,76 @@
+[workspace]
+members = ["bindings/python", "addons/pdf"]
+default-members = ["."]
+resolver = "2"
+
+[package]
+name = "okfgraph"
+version = "0.16.0-alpha.1"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+description = "Rust core for OKFgraph: Ladybug-backed knowledge graph with ONNX embeddings"
+repository = "https://github.com/opticsWolf/OKFgraph"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+lbug = "=0.22.1"
+time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] }
+sha2 = "0.10"
+url = "2"
+libloading = "0.8"
+tracing = "0.1"
+
+# Optional core capabilities. Versions are pinned to the Python 0.15 oracle.
+# ort must match embroider 0.15.1's API; rc.15 breaks Session::builder().
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false }
+embroider = { version = "=0.15.1", optional = true }
+bobine = { version = "=0.9.1", optional = true }
+mordant = { version = "=0.10.1", optional = true, features = ["chunker", "linter", "meta", "math", "footnotes", "emoji"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+clap = { version = "4", optional = true, features = ["derive"] }
+axum = { version = "0.8", optional = true, default-features = false, features = ["json", "query", "tokio", "http1"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "net"] }
+rmcp = { version = "=3.11.0", optional = true, features = ["server", "transport-async-rw", "macros"] }
+
+[features]
+default = ["embed", "external", "vision"]
+embed = ["dep:embroider", "dep:ort"]
+external = ["dep:reqwest"]
+vision = ["embed"]
+cli = ["dep:clap", "dep:tokio"]
+server = ["dep:axum", "dep:tokio"]
+mcp = ["dep:rmcp", "server", "cli"]
+pdf = ["dep:bobine"]
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+insta = "1"
+proptest = "1"
+criterion = "0.5"
+
+[[bin]]
+name = "okf"
+path = "src/bin/okf.rs"
+required-features = ["cli", "server", "mcp"]
+
+[[bin]]
+name = "okf-mcp"
+path = "src/bin/okf-mcp.rs"
+required-features = ["cli", "server", "mcp"]
+
+[[bin]]
+name = "parity-run"
+path = "src/bin/parity-run.rs"
+
+[lints.cargo]
+# Dependencies are feature-gated scaffolding in M0; they will be used by M1-M4.
+unused_dependencies = "allow"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,30 @@
+name: rust-core
+
+on:
+  push:
+    branches: [rust-core]
+  pull_request:
+    branches: [rust-core]
+
+jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy (core, no optional engines)
+        run: cargo clippy -p okfgraph --no-default-features --all-targets -- -D warnings
+      - name: Check workspace
+        run: cargo check --workspace --no-default-features
+      - name: Parity runner smoke
+        run: cargo run -p okfgraph --bin parity-run -- parity/scenarios/minimal.json

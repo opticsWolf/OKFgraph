@@ -18,6 +18,8 @@
     {"op": "search", "params": {"query": "alpha links", "limit": 5, "rank": "hub", "hub_weight": 0.3}},
     {"op": "search", "params": {"query": "alpha links", "limit": 5, "rank": "ppr"}},
     {"op": "search", "params": {"query": "alpha links", "limit": 5, "target": "chunks"}},
+    {"op": "search", "params": {"query": "alpha links", "limit": 5, "rank": "cross"}},
+    {"op": "search", "params": {"query": "alpha links", "limit": 5, "target": "chunks", "rerank": true}},
     {"op": "search", "params": {"query": "alpha links", "limit": 5, "include_chunks": true}},
     {"op": "embed", "params": {"texts": ["badger diet"], "task": "Query"}},
     {"op": "read", "params": {"concept_id": "alpha", "include": "chunks"}},

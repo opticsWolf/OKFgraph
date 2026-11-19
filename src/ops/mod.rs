@@ -2,6 +2,8 @@
 //!
 //! M1 implements the read-only slice; write/ingest ops land in Stage B.
 
+#[cfg(feature = "embed")]
+use crate::embed::RerankerPool;
 use crate::embed::{check_pins, EmbedderPool, Task};
 use crate::error::{OkfError, Result};
 use crate::markdown;
@@ -72,6 +74,8 @@ pub struct Router {
     store: Store,
     settings: Settings,
     embedder: EmbedderPool,
+    #[cfg(feature = "embed")]
+    reranker: RerankerPool,
 }
 
 impl Router {
@@ -80,6 +84,8 @@ impl Router {
             store: Store::open(settings)?,
             settings: settings.clone(),
             embedder: EmbedderPool::new(),
+            #[cfg(feature = "embed")]
+            reranker: RerankerPool::new(),
         })
     }
 
@@ -192,6 +198,12 @@ impl Router {
                     embedder.space().map_or(Json::Null, Json::String),
                 );
                 embed.insert("pinned_space".into(), pinned_space);
+            }
+        }
+        #[cfg(feature = "embed")]
+        if let Some(precision) = self.reranker.precision() {
+            if let Some(Json::Object(rerank)) = lanes.get_mut("rerank") {
+                rerank.insert("precision".into(), Json::String(precision.into()));
             }
         }
         Ok(lanes)
@@ -457,11 +469,13 @@ impl Router {
         let query_vector = self.query_vector(&params.query, params.query_vector.clone())?;
         match params.target.as_str() {
             "concepts" => self.search_concepts(&params, &query_vector),
-            "chunks" => Ok(Json::Array(self.search_chunks(
-                &params,
-                &query_vector,
-                params.limit,
-            )?)),
+            "chunks" => {
+                let mut rows = self.search_chunks(&params, &query_vector, params.limit)?;
+                if params.rerank {
+                    self.cross_rerank(&mut rows, &params.query)?;
+                }
+                Ok(Json::Array(rows))
+            }
             "images" => Err(OkfError::new(
                 "BAD_VALUE",
                 "image search needs the vision lane; Stage C exposes it",
@@ -511,14 +525,6 @@ impl Router {
             rows.truncate(params.limit);
             return Ok(Json::Array(rows));
         }
-        if params.rank == "cross" {
-            return Err(OkfError::new(
-                "BAD_VALUE",
-                "rank='cross' needs the rerank lane; Stage C exposes it",
-            )
-            .op("search"));
-        }
-
         let want = params.limit + params.offset;
         let filtered = params.filtered();
         let within = match &params.near_id {
@@ -635,6 +641,9 @@ impl Router {
         }
         if params.recency.is_some() {
             self.recency_blend(&mut rows, params)?;
+        }
+        if params.rank == "cross" {
+            self.cross_rerank(&mut rows, &params.query)?;
         }
         let start = params.offset.min(rows.len());
         let end = (start + params.limit).min(rows.len());
@@ -952,6 +961,111 @@ impl Router {
         Ok(search::rrf_fuse(&vec_scores, &fts))
     }
 
+    #[cfg(feature = "embed")]
+    fn cross_rerank(&self, rows: &mut [Json], query: &str) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let top_n = self.settings.rerank_top_n.max(1) as usize;
+        let head_len = rows.len().min(top_n);
+        let (head, _) = rows.split_at_mut(head_len);
+        let chunk_ids: Vec<String> = head
+            .iter()
+            .filter_map(|row| {
+                row.get("chunk_id")
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        let concept_ids: Vec<String> = head
+            .iter()
+            .filter(|row| row.get("chunk_id").is_none())
+            .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+            .collect();
+        let chunks = self.store.chunks_by_ids(&chunk_ids)?;
+        let chunk_text: BTreeMap<String, String> = chunks
+            .into_iter()
+            .filter_map(|row| {
+                let id = row.get("id")?.as_str()?.to_string();
+                let text = row.get("chunk_text")?.as_str().unwrap_or("").to_string();
+                Some((id, text))
+            })
+            .collect();
+        let concepts = self.store.concepts_by_ids(&concept_ids)?;
+        let concept_text: BTreeMap<String, String> = concepts
+            .into_iter()
+            .filter_map(|row| {
+                let id = row.get("id")?.as_str()?.to_string();
+                let text = row
+                    .get("body")
+                    .and_then(Json::as_str)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| row.get("description").and_then(Json::as_str))
+                    .unwrap_or("")
+                    .to_string();
+                Some((id, text))
+            })
+            .collect();
+        let mut docs = Vec::with_capacity(head.len());
+        for row in &*head {
+            let (title, text) = if let Some(chunk_id) = row.get("chunk_id").and_then(Json::as_str) {
+                (
+                    row.get("parent_title").and_then(Json::as_str),
+                    chunk_text
+                        .get(chunk_id)
+                        .map(String::as_str)
+                        .unwrap_or(row.get("chunk_text").and_then(Json::as_str).unwrap_or("")),
+                )
+            } else {
+                let id = row.get("id").and_then(Json::as_str).unwrap_or("");
+                (
+                    row.get("title").and_then(Json::as_str),
+                    concept_text
+                        .get(id)
+                        .map(String::as_str)
+                        .unwrap_or(row.get("description").and_then(Json::as_str).unwrap_or("")),
+                )
+            };
+            docs.push(if let Some(title) = title {
+                format!("{title}: {text}")
+            } else {
+                text.to_string()
+            });
+        }
+        let scores = self.reranker.score(&self.settings, query, &docs)?;
+        for (row, score) in head.iter_mut().zip(scores) {
+            row.as_object_mut()
+                .expect("row object")
+                .insert("cross_score".into(), json_number(score));
+        }
+        head.sort_by(|a, b| {
+            let sa = a.get("cross_score").and_then(Json::as_f64).unwrap_or(0.0);
+            let sb = b.get("cross_score").and_then(Json::as_f64).unwrap_or(0.0);
+            sb.total_cmp(&sa)
+                .then_with(|| {
+                    a.get("id")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .cmp(b.get("id").and_then(Json::as_str).unwrap_or(""))
+                })
+                .then_with(|| {
+                    a.get("chunk_id")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .cmp(b.get("chunk_id").and_then(Json::as_str).unwrap_or(""))
+                })
+        });
+        Ok(())
+    }
+
+    #[cfg(not(feature = "embed"))]
+    fn cross_rerank(&self, _rows: &mut [Json], _query: &str) -> Result<()> {
+        Err(
+            OkfError::new("BAD_VALUE", "rerank requires a build with --features embed")
+                .op("search"),
+        )
+    }
+
     fn recency_blend(&self, rows: &mut [Json], params: &SearchParams) -> Result<()> {
         let Some(half_life) = params.recency else {
             return Ok(());
@@ -1044,6 +1158,7 @@ struct SearchParams {
     recency_weight: f64,
     efs: Option<i64>,
     dedupe: bool,
+    rerank: bool,
     query_vector: Option<Vec<f32>>,
 }
 
@@ -1134,6 +1249,7 @@ impl SearchParams {
             recency_weight,
             efs,
             dedupe: opt_bool(params, "dedupe")?.unwrap_or(false),
+            rerank: opt_bool(params, "rerank")?.unwrap_or(false),
             query_vector,
         })
     }

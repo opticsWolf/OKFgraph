@@ -257,6 +257,85 @@ impl Embedder for NativeEmbedder {
     }
 }
 
+/// Lazy cross-encoder pool. The rerank model only opens on first use.
+#[cfg(feature = "embed")]
+#[derive(Clone, Default)]
+pub struct RerankerPool {
+    inner: Arc<Mutex<Option<Arc<embroider::Reranker>>>>,
+}
+
+#[cfg(feature = "embed")]
+impl fmt::Debug for RerankerPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let loaded = self.inner.lock().map(|g| g.is_some()).unwrap_or(false);
+        f.debug_struct("RerankerPool")
+            .field("loaded", &loaded)
+            .finish()
+    }
+}
+
+#[cfg(feature = "embed")]
+impl RerankerPool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, settings: &Settings) -> Result<Arc<embroider::Reranker>> {
+        if let Some(loaded) = self
+            .inner
+            .lock()
+            .map_err(|_| OkfError::internal("reranker lock poisoned", "mutex"))?
+            .as_ref()
+        {
+            return Ok(Arc::clone(loaded));
+        }
+        NativeEmbedder::configure_runtime()?;
+        let device = DeviceReq::parse(&settings.rerank_device)
+            .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
+        let precision = Precision::parse(&settings.rerank_precision)
+            .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
+        let reranker = embroider::Reranker::open(
+            &settings.rerank_model_id,
+            None,
+            settings.cache_dir.as_ref().map(PathBuf::from),
+            device,
+            settings
+                .rerank_window
+                .and_then(|v| usize::try_from(v).ok())
+                .filter(|v| *v > 0),
+            precision,
+            settings.cpu_arena,
+        )
+        .map_err(|err| OkfError::internal(err.to_string(), "embroider::Reranker"))?;
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| OkfError::internal("reranker lock poisoned", "mutex"))?;
+        Ok(Arc::clone(guard.get_or_insert_with(|| Arc::new(reranker))))
+    }
+
+    pub fn precision(&self) -> Option<&'static str> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|r| r.precision().as_str()))
+    }
+
+    pub fn score(&self, settings: &Settings, query: &str, docs: &[String]) -> Result<Vec<f64>> {
+        if docs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let reranker = self.get(settings)?;
+        let pairs: Vec<(&str, &str)> = docs.iter().map(|doc| (query, doc.as_str())).collect();
+        Ok(reranker
+            .score_many(&pairs)
+            .map_err(|err| OkfError::internal(err.to_string(), "embroider::Reranker::score_many"))?
+            .into_iter()
+            .map(f64::from)
+            .collect())
+    }
+}
+
 /// Validate the graph pins before an embedder is used against stored vectors.
 pub fn check_pins(settings: &Settings, pins: &Json) -> Result<()> {
     let pinned_model = pins

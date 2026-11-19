@@ -97,7 +97,7 @@ parity/.venv-oracle/Scripts/python.exe parity/tools/make_search_oracle.py \
 
 `search.json` uses that fixture with `device=cuda`, `precision=auto`, and the
 real `google/embeddinggemma-2` model at dim 512. Rust host/query vectors match
-the Python oracle exactly; the 13-op scenario currently reports
+the Python oracle exactly; the 15-op scenario currently reports
 **0 differences**. The GPU ORT build is taken from the existing
 `D:\User\Documents\Python\OKFgraph\.venv` — no download. A vendored
 `esaxx-rs` patch keeps tokenizers on the MSVC dynamic CRT so it links with
@@ -107,6 +107,6 @@ Ladybug.
 Python oracle and covers mordant chunk text/offsets, PyYAML 1.1 scalars, and
 `python-frontmatter` metadata/content. Rust tests compare against all cases.
 
-M2 note: full filter matrix, cross rerank, vision/image search, and budgeted
+M2 note: full filter matrix, vision/image search, and budgeted
 reads remain. Windows x64 spikes are green; Linux x86_64 and macOS arm64
 remain.

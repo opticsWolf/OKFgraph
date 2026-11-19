@@ -3,7 +3,7 @@
 **Status:** M2 in progress — Windows spikes green, `pycompat` green,
 52-setting table/errors/models/store/ops/CLI/PyO3 facade landed; 14-op read
 parity is green. Real EmbeddingGemma 2 ONNX inference runs on CUDA and
-13-op search/embed/read/traverse parity is green (0 differences). Linux/macOS
+15-op search/embed/read/traverse parity is green (0 differences). Linux/macOS
 spikes and write/ingest stages remain.  
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
@@ -736,9 +736,12 @@ creates a real GPU-embedded v10 fixture from the minimal corpus (no synthetic
 vectors). `search` now runs Ladybug vector/FTS index queries with RRF(k=60),
 concept/chunk filters, hub blend, lexical-seed PPR, chunk collapse, and
 recency blending; `embed` and all read include modes are wired through the
-GPU embedder. `parity/scenarios/search.json` compares 13 ops — including
-three search queries, hub/PPR, chunks, `include_chunks`, embed, chunks/document/
-context reads, traverse, and lanes — with **0 differences**. GPU setup uses
+GPU embedder. `parity/scenarios/search.json` compares 15 ops — including
+three search queries, hub/PPR, chunks, cross-encoder rerank (concepts and
+chunks), `include_chunks`, embed, chunks/document/context reads, traverse,
+and lanes — with **0 differences**. The configured mMARCO cross-encoder runs
+on the same GPU ORT lane (its `auto` precision falls back to FP32 because no
+FP16 artifact is published). GPU setup uses
 the existing ORT build in `D:\User\Documents\Python\OKFgraph\.venv`; no
 model or runtime download was performed. A vendored `esaxx-rs` patch flips
 `static_crt(false)` because tokenizers' default `esaxx_fast` C++ helper uses
@@ -747,7 +750,7 @@ The markdown layer now has Python goldens for mordant chunking (including
 `+` continuations and exact byte offsets), PyYAML 1.1 scalar resolution, and
 `python-frontmatter` parsing; all are green. `read(include='document')` now
 uses mordant delimiter reconstruction. Remaining M2 gaps: full filter matrix,
-cross-encoder rerank, vision/image search, and budgeted `max_tokens` reads.
+vision/image search, and budgeted `max_tokens` reads.
 
 **Gate:** identical search result IDs/order/scores on the parity corpus
 (floats within 1e-6); vector cosine ≥ 0.99999 for text and ≥ 0.999 for images;

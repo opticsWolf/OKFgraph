@@ -1,0 +1,139 @@
+{
+  "name": "update-supersede",
+  "settings": {
+    "db_path": "parity/out/update-supersede-@RUNNER@.db",
+    "bundle_root": "parity/corpus/update-@RUNNER@",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/update-@RUNNER@"
+    }
+  },
+  "ops": [
+    {
+      "op": "update",
+      "params": {
+        "concept_id": "alpha",
+        "title": "Alpha Updated",
+        "add_tags": [
+          "revised"
+        ],
+        "remove_tags": [
+          "minimal"
+        ],
+        "extra": {
+          "owner": "parity",
+          "stale": "drop"
+        }
+      }
+    },
+    {
+      "op": "update",
+      "params": {
+        "concept_id": "alpha",
+        "extra": {
+          "stale": null
+        }
+      }
+    },
+    {
+      "op": "update",
+      "params": {
+        "concept_id": "alpha",
+        "title": "Alpha Updated"
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "alpha"
+      }
+    },
+    {
+      "op": "supersede",
+      "params": {
+        "old_id": "beta",
+        "new_id": "alpha"
+      }
+    },
+    {
+      "op": "supersede",
+      "params": {
+        "old_id": "beta",
+        "new_id": "alpha"
+      }
+    },
+    {
+      "op": "read",
+      "params": {
+        "concept_id": "beta",
+        "include": "context"
+      }
+    },
+    {
+      "op": "update",
+      "params": {
+        "concept_id": "missing",
+        "title": "Nope"
+      }
+    },
+    {
+      "op": "update",
+      "params": {
+        "concept_id": "alpha",
+        "tags": [
+          "x"
+        ],
+        "add_tags": [
+          "y"
+        ]
+      }
+    },
+    {
+      "op": "update",
+      "params": {
+        "concept_id": "alpha",
+        "extra": {
+          "title": "nope"
+        }
+      }
+    },
+    {
+      "op": "update",
+      "params": {
+        "concept_id": "alpha",
+        "relations": {
+          "mention": "beta"
+        }
+      }
+    },
+    {
+      "op": "supersede",
+      "params": {
+        "old_id": "alpha",
+        "new_id": "alpha"
+      }
+    },
+    {
+      "op": "supersede",
+      "params": {
+        "old_id": "missing-old",
+        "new_id": "alpha"
+      }
+    },
+    {
+      "op": "supersede",
+      "params": {
+        "old_id": "beta",
+        "new_id": "missing-new"
+      }
+    }
+  ]
+}

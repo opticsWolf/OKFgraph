@@ -847,8 +847,14 @@ Stage B also implements `reembed`: dry-run planning reports, full concept and
 chunk vector rebuilds under the active engine, vector-index recreation, pin
 rewrites, and the `IMAGE_PIN_MISMATCH` refusal for graphs with image assets.
 
+Stage B also implements the canonical file-backed write ops `update` and
+`supersede`: frontmatter edits are written with sorted YAML and Windows
+newlines, imported through the single-file path, and preserve body text,
+chunks, embeddings, generations, and epochs. Validation and unknown-concept
+envelopes match the oracle.
+
 Remaining M3 gaps: PDF/Office/bib/thoughts converters, `produce`/`sync`/
-`detach`, and the remaining write ops.
+`detach`, and any remaining write ops.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

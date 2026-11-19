@@ -38,11 +38,11 @@ def main() -> int:
     scenario = json.loads(Path(args.scenario).read_text(encoding="utf-8"))
     from okfgraph import OKFRouter  # oracle import, on purpose
 
-    settings = dict(scenario.get("settings") or {})
+    settings = _expand_runner(dict(scenario.get("settings") or {}), "python")
     setup = scenario.get("setup") or {}
     imported = setup.get("import")
     if imported:
-        corpus = Path(imported["corpus"])
+        corpus = Path(_expand_runner(imported["corpus"], "python"))
         db = Path(settings["db_path"])
         db.unlink(missing_ok=True)
         builder = dict(settings)

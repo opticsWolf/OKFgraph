@@ -362,7 +362,34 @@ fn wikilinks(body: &str) -> Vec<String> {
     out
 }
 
-fn dump_yaml(value: &Json, indent: usize) -> String {
+pub(crate) fn dump_yaml_sorted(value: &Json, indent: usize) -> String {
+    match value {
+        Json::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let mut sorted = Map::new();
+            for key in keys {
+                sorted.insert(key.clone(), map[key].clone());
+            }
+            dump_yaml(&Json::Object(sorted), indent)
+        }
+        Json::Array(items) => {
+            let sorted: Vec<Json> = items
+                .iter()
+                .map(|item| match item {
+                    Json::Object(_) | Json::Array(_) => {
+                        Json::String(dump_yaml_sorted(item, 0).trim_end().to_string())
+                    }
+                    other => other.clone(),
+                })
+                .collect();
+            dump_yaml(&Json::Array(sorted), indent)
+        }
+        other => dump_yaml(other, indent),
+    }
+}
+
+pub(crate) fn dump_yaml(value: &Json, indent: usize) -> String {
     match value {
         Json::Object(map) => {
             let mut out = String::new();
@@ -444,7 +471,7 @@ fn fs_create_dir_all(path: &Path) -> Result<()> {
     })
 }
 
-fn fs_write(path: &Path, content: &str) -> Result<()> {
+pub(crate) fn fs_write(path: &Path, content: &str) -> Result<()> {
     // Python's Path.write_text uses the platform newline on Windows.
     #[cfg(windows)]
     let content = content.replace("\r\n", "\n").replace('\n', "\r\n");

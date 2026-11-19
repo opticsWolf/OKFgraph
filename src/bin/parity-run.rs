@@ -46,11 +46,18 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let settings_map: Map<String, Value> = scenario
-        .get("settings")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    let settings_map: Map<String, Value> = expand_runner(
+        scenario
+            .get("settings")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+            .into(),
+        "rust",
+    )
+    .as_object()
+    .cloned()
+    .unwrap_or_default();
     let settings = match Settings::from_map(&settings_map) {
         Ok(s) => s,
         Err(err) => {
@@ -62,6 +69,8 @@ fn main() -> ExitCode {
         let corpus = imported
             .get("corpus")
             .and_then(Value::as_str)
+            .map(|value| expand_runner(Value::String(value.to_string()), "rust"))
+            .and_then(|value| value.as_str().map(str::to_string))
             .unwrap_or_default();
         let db = PathBuf::from(&settings.db_path);
         let _ = fs::remove_file(&db);

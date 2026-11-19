@@ -822,6 +822,33 @@ impl Store {
             .unwrap_or(0))
     }
 
+    pub fn source_file_for_concept(&self, concept_id: &str) -> Result<Option<PathBuf>> {
+        let rows = self.query(
+            "MATCH (f:FileHash {concept_id: $cid}) RETURN f.path AS p",
+            vec![("cid", Value::String(concept_id.into()))],
+        )?;
+        let Some(root) = self.settings.bundle_root.as_ref() else {
+            return Ok(None);
+        };
+        let root = PathBuf::from(root);
+        for row in rows {
+            let Some(raw) = row.get("p").and_then(Json::as_str) else {
+                continue;
+            };
+            let native = raw.replace('\\', "/");
+            let relative = native
+                .strip_prefix('@')
+                .and_then(|rest| rest.split_once('/'))
+                .map(|(_, rest)| rest)
+                .unwrap_or(&native);
+            let candidate = root.join(relative);
+            if candidate.is_file() {
+                return Ok(Some(candidate));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn reembed_texts(&self, table: &str) -> Result<Vec<(String, String)>> {
         let sql = if table == "concept" {
             "MATCH (c:Concept) RETURN c.id AS id, c.title AS t,              c.description AS d, c.body AS b"

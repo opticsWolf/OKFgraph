@@ -81,6 +81,8 @@ pub const WRITE_OPS: &[&str] = &[
     "purge_deleted",
     "reindex",
     "reembed",
+    "update",
+    "supersede",
 ];
 
 pub fn is_op(name: &str) -> bool {
@@ -348,6 +350,273 @@ impl Router {
         Ok(report)
     }
 
+    fn write_and_import(
+        &self,
+        op: &str,
+        concept_id: &str,
+        edit: impl FnOnce(&mut Map<String, Json>) -> Result<Vec<String>>,
+    ) -> Result<Json> {
+        let concept = self.store.get_by_id(concept_id)?;
+        if concept.is_none() {
+            return Err(unknown_write_concept(op, concept_id));
+        }
+        let concept = concept.expect("checked");
+        let source = self.store.source_file_for_concept(concept_id)?;
+        let (mut meta, body) = if let Some(path) = &source {
+            let text = std::fs::read_to_string(path).map_err(|err| {
+                OkfError::new("IO_ERROR", format!("cannot read {}: {err}", path.display()))
+            })?;
+            let parsed = markdown::parse_frontmatter(&text);
+            (
+                parsed.metadata.as_object().cloned().unwrap_or_default(),
+                parsed.content,
+            )
+        } else {
+            concept_frontmatter(&concept)
+        };
+        let changed = edit(&mut meta)?;
+        if changed.is_empty() {
+            return Ok(serde_json::json!({
+                "concept_id": concept_id,
+                "path": source.map(|path| path.to_string_lossy().into_owned()),
+                "changed": Json::Array(Vec::new()),
+            }));
+        }
+        let path = if let Some(path) = source {
+            path
+        } else if let Some(root) = self.settings.bundle_root.as_ref() {
+            let mut relative = concept_id.to_string();
+            if let Some(rest) = relative.strip_prefix('@') {
+                relative = rest
+                    .split_once('/')
+                    .map(|(_, rest)| rest)
+                    .unwrap_or(rest)
+                    .to_string();
+            }
+            if self.settings.identity == "frontmatter" {
+                meta.insert("id".into(), Json::String(relative.clone()));
+            }
+            Path::new(root).join(format!("{relative}.md"))
+        } else {
+            return Err(OkfError::new(
+                "MISSING_PARAM",
+                "materialize needs a bundle root: this router is file-free (bundle_root=None)",
+            )
+            .op(op)
+            .field("materialize", Json::Bool(true))
+            .remedy("open the router with bundle_root, or omit materialize"));
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| {
+                OkfError::new(
+                    "IO_ERROR",
+                    format!("cannot create {}: {err}", parent.display()),
+                )
+            })?;
+        }
+        let yaml = crate::export::dump_yaml_sorted(&Json::Object(meta.clone()), 0);
+        let text = format!("---\n{yaml}---\n\n{body}\n");
+        crate::export::fs_write(&path, &text)?;
+        let mut import_params = Map::new();
+        import_params.insert(
+            "file_path".into(),
+            Json::String(path.to_string_lossy().into_owned()),
+        );
+        let imported = self.import_file(&import_params)?;
+        let imported_id = imported
+            .get("concept_id")
+            .and_then(Json::as_str)
+            .unwrap_or_default();
+        if imported_id != concept_id {
+            return Err(OkfError::new(
+                "BAD_VALUE",
+                format!(
+                    "{op}: the file {} now imports as '{imported_id}', not '{concept_id}' (its id moved?)",
+                    path.display()
+                ),
+            )
+            .op(op)
+            .field("concept_id", Json::String(concept_id.into()))
+            .field("imported", Json::String(imported_id.into())));
+        }
+        Ok(serde_json::json!({
+            "concept_id": imported_id,
+            "path": path.to_string_lossy().into_owned(),
+            "changed": changed,
+        }))
+    }
+
+    fn update(&self, params: &Map<String, Json>) -> Result<Json> {
+        let concept_id = str_param(params, "concept_id")?.to_string();
+        let result = self.write_and_import("update", &concept_id, |meta| {
+            if params.contains_key("tags")
+                && (params.contains_key("add_tags") || params.contains_key("remove_tags"))
+            {
+                return Err(bad_value2(
+                    "update",
+                    "pass tags or add_tags/remove_tags, not both",
+                    vec![("concept_id", Json::String(concept_id.clone()))],
+                ));
+            }
+            let mut changed = Vec::new();
+            for key in ["title", "description", "type"] {
+                if let Some(value) = params.get(key) {
+                    if !value.is_null() && meta.get(key) != Some(value) {
+                        meta.insert(key.to_string(), value.clone());
+                        changed.push(key.to_string());
+                    }
+                }
+            }
+            let current = crate::model::normalize_tags(meta.get("tags").unwrap_or(&Json::Null));
+            let mut new_tags = if let Some(tags) = params.get("tags") {
+                crate::model::normalize_tags(tags)
+            } else {
+                current.clone()
+            };
+            for tag in params
+                .get("add_tags")
+                .map(crate::model::normalize_tags)
+                .unwrap_or_default()
+            {
+                if !new_tags.contains(&tag) {
+                    new_tags.push(tag);
+                }
+            }
+            let drop: BTreeSet<String> = params
+                .get("remove_tags")
+                .map(|value| crate::model::normalize_tags(value).into_iter().collect())
+                .unwrap_or_default();
+            new_tags.retain(|tag| !drop.contains(tag));
+            if new_tags != current {
+                meta.insert(
+                    "tags".into(),
+                    Json::Array(new_tags.into_iter().map(Json::String).collect()),
+                );
+                changed.push("tags".into());
+            }
+            if let Some(extra) = params.get("extra").and_then(Json::as_object) {
+                let mut reserved: Vec<String> = extra
+                    .keys()
+                    .filter(|key| WRITE_RESERVED.contains(&key.as_str()))
+                    .cloned()
+                    .collect();
+                if !reserved.is_empty() {
+                    reserved.sort();
+                    return Err(bad_value2(
+                        "update",
+                        format!("extra may not set {}", reserved.join(", ")),
+                        vec![(
+                            "reserved",
+                            Json::Array(reserved.into_iter().map(Json::String).collect()),
+                        )],
+                    )
+                    .remedy("use title/description/type/tags/relations"));
+                }
+                for (key, value) in extra {
+                    if value.is_null() {
+                        if meta.remove(key).is_some() {
+                            changed.push(key.clone());
+                        }
+                    } else if meta.get(key) != Some(value) {
+                        meta.insert(key.clone(), value.clone());
+                        changed.push(key.clone());
+                    }
+                }
+            }
+            if let Some(relations) = params.get("relations") {
+                let problems = relation_problems(relations);
+                if !problems.is_empty() {
+                    return Err(bad_value2(
+                        "update",
+                        problems.join("; "),
+                        vec![(
+                            "relations",
+                            Json::Array(problems.into_iter().map(Json::String).collect()),
+                        )],
+                    ));
+                }
+                if meta.get("relations") != Some(relations) {
+                    if relations.as_object().is_some_and(|map| !map.is_empty()) {
+                        meta.insert("relations".into(), relations.clone());
+                    } else {
+                        meta.remove("relations");
+                    }
+                    changed.push("relations".into());
+                }
+            }
+            Ok(changed)
+        })?;
+        Ok(result)
+    }
+
+    fn supersede(&self, params: &Map<String, Json>) -> Result<Json> {
+        let old_id = str_param(params, "old_id")?.to_string();
+        let new_id = str_param(params, "new_id")?.to_string();
+        if old_id == new_id {
+            return Err(bad_value2(
+                "supersede",
+                "a concept cannot supersede itself",
+                vec![("old", Json::String(old_id))],
+            ));
+        }
+        for id in [&old_id, &new_id] {
+            if self.store.get_by_id(id)?.is_none() {
+                return Err(unknown_write_concept("supersede", id));
+            }
+        }
+        let old = old_id.clone();
+        let new_result = self.write_and_import("supersede", &new_id, |meta| {
+            let mut relations = meta
+                .get("relations")
+                .and_then(Json::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let mut current = match relations.get("supersedes") {
+                Some(Json::String(text)) => vec![text.clone()],
+                Some(Json::Array(items)) => items
+                    .iter()
+                    .filter_map(Json::as_str)
+                    .map(str::to_string)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if current.contains(&old) {
+                return Ok(Vec::new());
+            }
+            current.push(old.clone());
+            relations.insert(
+                "supersedes".into(),
+                Json::Array(current.into_iter().map(Json::String).collect()),
+            );
+            meta.insert("relations".into(), Json::Object(relations));
+            Ok(vec!["relations".into()])
+        })?;
+        let new = new_id.clone();
+        let old_result = self.write_and_import("supersede", &old_id, |meta| {
+            let mut changed = Vec::new();
+            let mut tags = crate::model::normalize_tags(meta.get("tags").unwrap_or(&Json::Null));
+            if !tags.iter().any(|tag| tag == "superseded") {
+                tags.push("superseded".into());
+                meta.insert(
+                    "tags".into(),
+                    Json::Array(tags.into_iter().map(Json::String).collect()),
+                );
+                changed.push("tags".into());
+            }
+            if meta.get("superseded_by") != Some(&Json::String(new.clone())) {
+                meta.insert("superseded_by".into(), Json::String(new.clone()));
+                changed.push("superseded_by".into());
+            }
+            Ok(changed)
+        })?;
+        Ok(serde_json::json!({
+            "old": old_id,
+            "new": new_id,
+            "old_path": old_result.get("path").cloned().unwrap_or(Json::Null),
+            "new_path": new_result.get("path").cloned().unwrap_or(Json::Null),
+        }))
+    }
+
     fn reindex(&self, params: &Map<String, Json>) -> Result<Json> {
         let if_dirty = opt_bool(params, "if_dirty")?.unwrap_or(false);
         let write_epoch = self.store.meta_int("write_epoch")?.unwrap_or(0);
@@ -488,6 +757,8 @@ impl Router {
             "purge_deleted" => self.purge_deleted(params),
             "reindex" => self.reindex(params),
             "reembed" => self.reembed(params),
+            "update" => self.update(params),
+            "supersede" => self.supersede(params),
             "diff" => self.diff(params),
             "lint" => self.lint(params),
             "pin_info" => self.pin_info(),
@@ -2755,6 +3026,13 @@ fn passed(params: &Map<String, Json>, name: &str) -> bool {
     params.get(name).is_some_and(|value| *value != default)
 }
 
+fn unknown_write_concept(op: &str, id: &str) -> OkfError {
+    OkfError::new("UNKNOWN_CONCEPT", format!("concept '{id}' does not exist"))
+        .op(op)
+        .field("concept_id", Json::String(id.into()))
+        .remedy("search first to find IDs")
+}
+
 fn unknown_concept(op: &str, field: &str, id: &str) -> OkfError {
     OkfError::new("UNKNOWN_CONCEPT", format!("{field} '{id}' does not exist"))
         .op(op)
@@ -2788,6 +3066,102 @@ fn opt_str(params: &Map<String, Json>, name: &str) -> Result<Option<String>> {
             format!("{name} must be a string, got {other}"),
         )),
     }
+}
+
+const WRITE_RESERVED: &[&str] = &[
+    "id",
+    "type",
+    "title",
+    "description",
+    "tags",
+    "timestamp",
+    "body",
+    "embedding",
+    "uid",
+    "source_path",
+    "relations",
+    "resource",
+];
+
+fn concept_frontmatter(concept: &Json) -> (Map<String, Json>, String) {
+    let mut meta = Map::new();
+    if let Some(object) = concept.as_object() {
+        for (key, value) in object {
+            if key == "body"
+                || key == "id"
+                || key == "source_path"
+                || crate::model::GRAPH_TIMES.contains(&key.as_str())
+            {
+                continue;
+            }
+            if key == "uid" {
+                meta.insert("id".into(), value.clone());
+            } else {
+                meta.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    let body = concept
+        .get("body")
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .to_string();
+    (meta, body)
+}
+
+fn relation_problems(value: &Json) -> Vec<String> {
+    let Some(object) = value.as_object() else {
+        return vec![format!(
+            "relations must be a mapping of kind -> targets, got {}",
+            if value.is_null() {
+                "NoneType"
+            } else {
+                "object"
+            }
+        )];
+    };
+    let mut problems = Vec::new();
+    for (kind, targets) in object {
+        let bytes = kind.as_bytes();
+        let valid = !kind.is_empty()
+            && kind.len() <= 64
+            && bytes[0].is_ascii_lowercase()
+            && bytes[1..]
+                .iter()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-_".contains(b));
+        if kind == "mention" || !valid {
+            problems.push(format!(
+                "relation kind {} is not allowed",
+                py_repr(&Json::String(kind.clone()))
+            ));
+            continue;
+        }
+        let items: Vec<&Json> = match targets {
+            Json::Array(values) => values.iter().collect(),
+            other => vec![other],
+        };
+        for target in items {
+            if target.is_null() {
+                continue;
+            }
+            let Some(text) = target.as_str() else {
+                problems.push(format!(
+                    "relation {}: target {} is not a string",
+                    kind,
+                    py_repr(target)
+                ));
+                continue;
+            };
+            if text.trim().is_empty() {
+                problems.push(format!(
+                    "relation {}: target {} is not a string",
+                    kind,
+                    py_repr(target)
+                ));
+            }
+        }
+    }
+    problems
 }
 
 fn settings_batch_size(settings: &Settings) -> i64 {

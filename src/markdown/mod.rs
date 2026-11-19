@@ -176,6 +176,10 @@ pub struct Frontmatter {
 
 /// Parse `---` delimited frontmatter. Closing delimiter may be `---` or `...`.
 pub fn parse_frontmatter(text: &str) -> Frontmatter {
+    // Python reads bundle files with universal-newline translation, so a
+    // CRLF file written by `Path.write_text` on Windows is parsed as LF.
+    let normalized = text.replace("\r\n", "\n");
+    let text = normalized.as_str();
     let mut lines = text.split_inclusive('\n');
     let Some(first) = lines.next() else {
         return Frontmatter {
@@ -257,10 +261,19 @@ fn parse_block(lines: &[&str], index: usize, indent: usize) -> (Json, usize) {
         let raw_value = raw_value.trim();
         i += 1;
         let value = if raw_value.is_empty() {
-            if i < lines.len() && lines[i].len() - lines[i].trim_start().len() > indent {
-                let (nested, next) = parse_block(lines, i, indent + 2);
-                i = next;
-                nested
+            if i < lines.len() {
+                let child_indent = lines[i].len() - lines[i].trim_start().len();
+                if lines[i].trim_start().starts_with('-') && child_indent >= indent {
+                    let (nested, next) = parse_block(lines, i, child_indent);
+                    i = next;
+                    nested
+                } else if child_indent > indent {
+                    let (nested, next) = parse_block(lines, i, indent + 2);
+                    i = next;
+                    nested
+                } else {
+                    Json::Null
+                }
             } else {
                 Json::Null
             }

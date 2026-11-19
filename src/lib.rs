@@ -18,6 +18,7 @@ pub fn schema_version() -> u16 {
     SCHEMA_VERSION
 }
 
+pub mod embed;
 pub mod error;
 pub mod markdown;
 pub mod model;
@@ -30,8 +31,6 @@ pub mod util;
 
 #[cfg(feature = "cli")]
 pub mod cli;
-#[cfg(feature = "embed")]
-pub mod embed;
 #[cfg(any(feature = "embed", feature = "pdf"))]
 pub mod ingest;
 #[cfg(feature = "server")]

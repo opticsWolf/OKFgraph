@@ -1,9 +1,10 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** M1 read-only slice in progress — Windows spikes green, `pycompat`
-green, 52-setting table/errors/models/store/ops/CLI/PyO3 facade landed;
-14-op Python↔Rust read parity is green. Linux/macOS spikes and write/ingest
-stages remain.  
+**Status:** M2 in progress — Windows spikes green, `pycompat` green,
+52-setting table/errors/models/store/ops/CLI/PyO3 facade landed; 14-op read
+parity is green. Real EmbeddingGemma 2 ONNX inference runs on CUDA and
+13-op search/embed/read/traverse parity is green (0 differences). Linux/macOS
+spikes and write/ingest stages remain.  
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -723,6 +724,28 @@ Python shim returns the same `ConceptModel` shape. No **content** writes yet;
 - Ops: `search`, `embed`, `read` (all includes), `traverse` (all modes).
 - Tests: Python-vs-Rust vector parity (text and image), chunk/offset parity,
   search result parity on the corpus and a legacy DB, model-free PPR, pin refusals.
+
+**M2 progress:** the real `embed` module opens `google/embeddinggemma-2`
+through `embroider 0.15.1` at the graph's stored dimension (512) with GPU
+ONNX Runtime (`ORT_DYLIB_PATH` from
+`D:\User\Documents\Python\OKFgraph\.venv\Lib\site-packages\onnxruntime\capi\onnxruntime.dll`,
+cuDNN/cuBLAS sibling dirs on `PATH`). On Windows x64 the Rust query vector
+matched the Python oracle exactly (max abs diff 0.0, cosine 1.0), `used_cuda`
+was true, and precision was `fp16`. `parity/tools/make_search_oracle.py`
+creates a real GPU-embedded v10 fixture from the minimal corpus (no synthetic
+vectors). `search` now runs Ladybug vector/FTS index queries with RRF(k=60),
+concept/chunk filters, hub blend, lexical-seed PPR, chunk collapse, and
+recency blending; `embed` and all read include modes are wired through the
+GPU embedder. `parity/scenarios/search.json` compares 13 ops — including
+three search queries, hub/PPR, chunks, `include_chunks`, embed, chunks/document/
+context reads, traverse, and lanes — with **0 differences**. GPU setup uses
+the existing ORT build in `D:\User\Documents\Python\OKFgraph\.venv`; no
+model or runtime download was performed. A vendored `esaxx-rs` patch flips
+`static_crt(false)` because tokenizers' default `esaxx_fast` C++ helper uses
+the static MSVC CRT and cannot link with Ladybug's MD prebuilt archive.
+Remaining M2 gaps: PyYAML 1.1 frontmatter resolution, mordant chunking parity
+beyond the oracle-generated fixture, full filter matrix, cross-encoder rerank,
+vision/image search, and budgeted `max_tokens` reads.
 
 **Gate:** identical search result IDs/order/scores on the parity corpus
 (floats within 1e-6); vector cosine ≥ 0.99999 for text and ≥ 0.999 for images;

@@ -3,6 +3,12 @@ members = ["bindings/python", "addons/pdf"]
 default-members = ["."]
 resolver = "2"
 
+# tokenizers enables esaxx-rs/cpp by default; its upstream build.rs forces
+# the static MSVC CRT, which cannot link with Ladybug's MD prebuilt archive.
+# This vendored copy only flips static_crt(false).
+[patch.crates-io]
+esaxx-rs = { path = "vendor/esaxx-rs" }
+
 [package]
 name = "okfgraph"
 version = "0.16.0-alpha.1"
@@ -71,6 +77,10 @@ path = "src/bin/parity-run.rs"
 [[example]]
 name = "rmcp_spike"
 required-features = ["mcp"]
+
+[[example]]
+name = "embed_spike"
+required-features = ["embed"]
 
 [lints.cargo]
 # Dependencies are feature-gated scaffolding in M0; they will be used by M1-M4.

@@ -10,7 +10,7 @@ use crate::error::{OkfError, Result};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-use time::{Date, Month, PrimitiveDateTime, Time};
+use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 
 pub const GRAPH_TIMES: &[&str] = &["created_at", "updated_at", "effective_at", "content_sig"];
 
@@ -121,6 +121,48 @@ impl PyDateTime {
     pub fn as_naive(&self) -> PrimitiveDateTime {
         self.0
     }
+}
+
+/// Current naive UTC timestamp in Python's `str(datetime)` spelling.
+pub fn utc_now_string() -> String {
+    let now = OffsetDateTime::now_utc();
+    let date = now.date();
+    let time = now.time();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        date.year(),
+        date.month() as u8,
+        date.day(),
+        time.hour(),
+        time.minute(),
+        time.second()
+    )
+}
+
+/// `0.5 ** (age_days / half_life)`. Missing timestamps decay to zero.
+pub fn recency_decay(effective: Option<&str>, now: &str, half_life_days: f64) -> f64 {
+    let Some(effective) = effective else {
+        return 0.0;
+    };
+    let Ok(then) = PyDateTime::parse(effective) else {
+        return 0.0;
+    };
+    let Ok(now) = PyDateTime::parse(now) else {
+        return 0.0;
+    };
+    let seconds = then
+        .as_naive()
+        .assume_utc()
+        .unix_timestamp()
+        .abs_diff(now.as_naive().assume_utc().unix_timestamp()) as f64;
+    // The oracle clamps future dates to now; abs_diff loses the sign, so use
+    // the original ordering to decide whether age is zero.
+    let age_days = if then.as_naive() > now.as_naive() {
+        0.0
+    } else {
+        seconds / 86_400.0
+    };
+    0.5_f64.powf(age_days / half_life_days)
 }
 
 fn bad_ts(text: &str) -> OkfError {

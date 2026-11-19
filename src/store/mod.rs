@@ -9,6 +9,7 @@ use crate::model::python_datetime_str;
 use crate::settings::Settings;
 use lbug::{Connection, Database, LogicalType, SystemConfig, Value};
 use serde_json::{Map, Value as Json};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: u16 = crate::SCHEMA_VERSION;
@@ -30,6 +31,9 @@ pub const NODE_TABLES: &[&str] = &[
 ];
 
 pub const REL_TABLES: &[&str] = &["CONTAINS", "LINKS_TO", "INCLUDES_ASSET", "PART_OF"];
+
+/// Concept ids and directed LINKS_TO edges for ranking algorithms.
+pub type LinkGraph = (Vec<String>, Vec<(String, String)>);
 
 /// A read/write handle to a Ladybug v10 graph.
 #[derive(Debug, Clone)]
@@ -97,6 +101,239 @@ impl Store {
         let db = Database::new(&self.path, config).map_err(map_lbug)?;
         let conn = Connection::new(&db).map_err(map_lbug)?;
         f(&conn)
+    }
+
+    /// Connections used by search must load the index extensions first.
+    fn with_search_conn<T>(
+        &self,
+        f: impl for<'a> FnOnce(&Connection<'a>) -> Result<T>,
+    ) -> Result<T> {
+        let config = SystemConfig::default().read_only(true);
+        let db = Database::new(&self.path, config).map_err(map_search_lbug)?;
+        let conn = Connection::new(&db).map_err(map_search_lbug)?;
+        for extension in ["vector", "fts"] {
+            conn.query(&format!("LOAD {extension}"))
+                .map_err(map_search_lbug)?;
+        }
+        f(&conn)
+    }
+
+    /// Vector index hits as `(id, 1 - distance)`, one row per node.
+    pub fn vector_hits(
+        &self,
+        table: &str,
+        index: &str,
+        vector: &[f32],
+        k: i64,
+        efs: Option<i64>,
+    ) -> Result<Vec<(String, f64)>> {
+        let values = Value::List(
+            LogicalType::Float,
+            vector.iter().copied().map(Value::Float).collect(),
+        );
+        let sql = if efs.is_some() {
+            format!(
+                "CALL QUERY_VECTOR_INDEX('{table}', '{index}', $vec, $k, efs := $efs) \
+                 RETURN node, distance"
+            )
+        } else {
+            format!(
+                "CALL QUERY_VECTOR_INDEX('{table}', '{index}', $vec, $k) \
+                 RETURN node, distance"
+            )
+        };
+        self.with_search_conn(|conn| {
+            let mut stmt = conn.prepare(&sql).map_err(map_search_lbug)?;
+            let mut params: Vec<(&str, Value)> = vec![("vec", values), ("k", Value::Int64(k))];
+            if let Some(efs) = efs {
+                params.push(("efs", Value::Int64(efs)));
+            }
+            let result = conn.execute(&mut stmt, params).map_err(map_search_lbug)?;
+            let columns = result.get_column_names();
+            let mut hits = Vec::new();
+            for row in result {
+                let mut node_json = None;
+                let mut distance = 0.0;
+                for (name, value) in columns.iter().zip(row) {
+                    match name.as_str() {
+                        "node" => node_json = Some(value_to_json(value)),
+                        "distance" => distance = json_f64(&value_to_json(value)).unwrap_or(0.0),
+                        _ => {}
+                    }
+                }
+                if let Some(id) = node_json
+                    .as_ref()
+                    .and_then(|n| n.get("id"))
+                    .and_then(Json::as_str)
+                {
+                    hits.push((id.to_string(), 1.0 - distance));
+                }
+            }
+            Ok(hits)
+        })
+    }
+
+    /// FTS index hits as `(id, score)`, bounded with `top := k`.
+    pub fn fts_hits(
+        &self,
+        table: &str,
+        index: &str,
+        query: &str,
+        k: i64,
+    ) -> Result<Vec<(String, f64)>> {
+        let sql = format!(
+            "CALL QUERY_FTS_INDEX('{table}', '{index}', $query, top := $k) \
+             RETURN node, score"
+        );
+        self.with_search_conn(|conn| {
+            let mut stmt = conn.prepare(&sql).map_err(map_search_lbug)?;
+            let result = conn
+                .execute(
+                    &mut stmt,
+                    vec![
+                        ("query", Value::String(query.into())),
+                        ("k", Value::Int64(k)),
+                    ],
+                )
+                .map_err(map_search_lbug)?;
+            let columns = result.get_column_names();
+            let mut hits = Vec::new();
+            for row in result {
+                let mut node_json = None;
+                let mut score = 0.0;
+                for (name, value) in columns.iter().zip(row) {
+                    match name.as_str() {
+                        "node" => node_json = Some(value_to_json(value)),
+                        "score" => score = json_f64(&value_to_json(value)).unwrap_or(0.0),
+                        _ => {}
+                    }
+                }
+                if let Some(id) = node_json
+                    .as_ref()
+                    .and_then(|n| n.get("id"))
+                    .and_then(Json::as_str)
+                {
+                    hits.push((id.to_string(), score));
+                }
+            }
+            Ok(hits)
+        })
+    }
+
+    /// Metadata for ranked concept ids, preserving no inherent order.
+    pub fn concepts_by_ids(&self, ids: &[String]) -> Result<Vec<Json>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = self.query(
+            "MATCH (c:Concept) \
+             WHERE c.id IN $ids \
+             RETURN c.id AS id, c.title AS title, c.type AS type, \
+                    c.description AS description, c.tags AS tags, c.extra AS extra, \
+                    c.effective_at AS effective_at, c.body AS body",
+            vec![(
+                "ids",
+                Value::List(
+                    LogicalType::String,
+                    ids.iter().cloned().map(Value::String).collect(),
+                ),
+            )],
+        )?;
+        Ok(rows.into_iter().map(Json::Object).collect())
+    }
+
+    /// Chunk rows for ranked chunk ids.
+    pub fn chunks_by_ids(&self, ids: &[String]) -> Result<Vec<Json>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = self.query(
+            "MATCH (k:Chunk) \
+             WHERE k.id IN $ids \
+             RETURN k.id AS id, k.parent_doc_id AS parent_doc_id, k.chunk_index AS chunk_index, \
+                    k.chunk_text AS chunk_text, k.block_type AS block_type, \
+                    k.start_offset AS start_offset, k.end_offset AS end_offset, \
+                    k.embedding AS embedding",
+            vec![(
+                "ids",
+                Value::List(
+                    LogicalType::String,
+                    ids.iter().cloned().map(Value::String).collect(),
+                ),
+            )],
+        )?;
+        Ok(rows.into_iter().map(Json::Object).collect())
+    }
+
+    /// Concept ids below `parent_id` up to `depth` CONTAINS hops.
+    pub fn descendant_concepts(&self, parent_id: &str, depth: i64) -> Result<Vec<String>> {
+        let depth = depth.clamp(1, 3);
+        let sql = format!(
+            "MATCH (:Directory {{id: $id}})-[:CONTAINS*1..{depth}]->(c:Concept) \
+             RETURN DISTINCT c.id AS id"
+        );
+        Ok(self
+            .query(&sql, vec![("id", Value::String(parent_id.into()))])?
+            .into_iter()
+            .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+            .collect())
+    }
+
+    /// `near_id` plus every concept within `hops` LINKS_TO edges.
+    pub fn near_ids(&self, near_id: &str, hops: i64) -> Result<Vec<String>> {
+        let hops = hops.clamp(1, 3);
+        let sql = format!(
+            "MATCH (s:Concept {{id: $id}})-[:LINKS_TO*1..{hops}]-(c:Concept) \
+             RETURN DISTINCT c.id AS id"
+        );
+        let mut ids: BTreeSet<String> = BTreeSet::new();
+        ids.insert(near_id.to_string());
+        for row in self.query(&sql, vec![("id", Value::String(near_id.into()))])? {
+            if let Some(id) = row.get("id").and_then(Json::as_str) {
+                ids.insert(id.to_string());
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
+
+    /// Every concept id plus incoming link counts for hub/PPR ranking.
+    pub fn link_graph(&self, link_kinds: Option<&[String]>) -> Result<LinkGraph> {
+        let nodes = self
+            .query("MATCH (c:Concept) RETURN c.id AS id", vec![])?
+            .into_iter()
+            .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+            .collect();
+        let (sql, params) = if let Some(kinds) = link_kinds {
+            (
+                "MATCH (a:Concept)-[r:LINKS_TO]->(b:Concept) \
+                 WHERE r.kind IN $kinds RETURN a.id AS src, b.id AS dst"
+                    .to_string(),
+                vec![(
+                    "kinds",
+                    Value::List(
+                        LogicalType::String,
+                        kinds.iter().cloned().map(Value::String).collect(),
+                    ),
+                )],
+            )
+        } else {
+            (
+                "MATCH (a:Concept)-[:LINKS_TO]->(b:Concept) \
+                 RETURN a.id AS src, b.id AS dst"
+                    .to_string(),
+                vec![],
+            )
+        };
+        let edges = self
+            .query(&sql, params)?
+            .into_iter()
+            .filter_map(|row| {
+                let src = row.get("src")?.as_str()?;
+                let dst = row.get("dst")?.as_str()?;
+                Some((src.to_string(), dst.to_string()))
+            })
+            .collect();
+        Ok((nodes, edges))
     }
 
     fn create_schema(&self, embedding_dim: i64, _warnings: &mut Vec<String>) -> Result<()> {
@@ -258,6 +495,14 @@ impl Store {
                         chunk.insert(key, value);
                     }
                 }
+                chunk.entry("rrf_score").or_insert(Json::Null);
+                chunk.entry("hub_score").or_insert(Json::Null);
+                chunk.entry("final_score").or_insert(Json::Null);
+                chunk.entry("parent_title").or_insert(Json::Null);
+                chunk.entry("parent_type").or_insert(Json::Null);
+                chunk
+                    .entry("parent_tags")
+                    .or_insert_with(|| Json::Array(Vec::new()));
                 Json::Object(chunk)
             })
             .collect())
@@ -323,6 +568,55 @@ impl Store {
             out.push(Json::Object(entry));
         }
         Ok(out)
+    }
+
+    /// Ancestry and sibling summary used by `read(include='context')`.
+    pub fn context(&self, concept_id: &str, cap: i64) -> Result<(Vec<Json>, Vec<Json>)> {
+        let ancestry = self.query(
+            "MATCH (d:Directory)-[:CONTAINS*1..5]->(c:Concept {id: $cid}) \
+             RETURN d.id AS id LIMIT 1",
+            vec![("cid", Value::String(concept_id.into()))],
+        )?;
+        let parents = self.query(
+            "MATCH (d:Directory)-[:CONTAINS]->(c:Concept {id: $cid}) \
+             RETURN d.id AS parent_id",
+            vec![("cid", Value::String(concept_id.into()))],
+        )?;
+        let (sql, params) = if let Some(parent) = parents
+            .first()
+            .and_then(|row| row.get("parent_id"))
+            .and_then(Json::as_str)
+        {
+            (
+                "MATCH (d:Directory {id: $pid})-[:CONTAINS]->(s:Concept) \
+                 WHERE s.id <> $cid RETURN s.id AS id, s.title AS title, s.type AS type \
+                 LIMIT $cap"
+                    .to_string(),
+                vec![
+                    ("pid", Value::String(parent.to_string())),
+                    ("cid", Value::String(concept_id.into())),
+                    ("cap", Value::Int64(cap)),
+                ],
+            )
+        } else {
+            (
+                "MATCH (c:Concept) \
+                 WHERE c.id <> $cid \
+                   AND NOT EXISTS { MATCH (:Directory)-[:CONTAINS]->(c) } \
+                 RETURN c.id AS id, c.title AS title, c.type AS type LIMIT $cap"
+                    .to_string(),
+                vec![
+                    ("cid", Value::String(concept_id.into())),
+                    ("cap", Value::Int64(cap)),
+                ],
+            )
+        };
+        let siblings = self
+            .query(&sql, params)?
+            .into_iter()
+            .map(Json::Object)
+            .collect();
+        Ok((ancestry.into_iter().map(Json::Object).collect(), siblings))
     }
 
     pub fn list_images(&self, concept_id: &str) -> Result<Vec<Json>> {
@@ -597,6 +891,21 @@ fn map_lbug(err: lbug::Error) -> OkfError {
     OkfError::internal(err.to_string(), "lbug::Error")
 }
 
+fn map_search_lbug(err: lbug::Error) -> OkfError {
+    OkfError::new(
+        "SEARCH_UNAVAILABLE",
+        format!("vector/fts index query failed: {err}"),
+    )
+    .remedy("reopen the router so the vector/fts extensions load")
+}
+
+fn json_f64(value: &Json) -> Option<f64> {
+    match value {
+        Json::Number(n) => n.as_f64(),
+        _ => None,
+    }
+}
+
 /// Convert an `lbug::Value` to JSON using Python-facing spellings.
 pub fn value_to_json(value: Value) -> Json {
     match value {
@@ -625,7 +934,7 @@ pub fn value_to_json(value: Value) -> Json {
         | Value::TimestampMs(dt)
         | Value::TimestampSec(dt) => {
             let utc = dt.to_offset(time::UtcOffset::UTC);
-            let iso = format!(
+            let mut iso = format!(
                 "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
                 utc.year(),
                 utc.month() as u8,
@@ -634,6 +943,10 @@ pub fn value_to_json(value: Value) -> Json {
                 utc.minute(),
                 utc.second()
             );
+            let micros = utc.nanosecond() / 1000;
+            if micros != 0 {
+                iso.push_str(&format!(".{micros:06}"));
+            }
             Json::String(python_datetime_str(&iso))
         }
         Value::Interval(d) => Json::String(d.to_string()),

@@ -1,1 +1,315 @@
-//! Embedder trait, embroider engine, external lanes, pins, and counters.
+//! Embedder trait and the real embroider/ONNX text backend.
+//!
+//! The model is `google/embeddinggemma-2` by default (mean-pooled, Matryoshka
+//! truncated to the graph's stored `embedding_dim`). `device: "auto"` follows
+//! embroider's CUDA probe, and `ORT_DYLIB_PATH` selects the ONNX Runtime
+//! binary — set it to a GPU build with CUDA/cuDNN sibling DLLs on PATH for
+//! GPU embedding. No Python, no model downloads in normal parity runs (the
+//! pinned HF revisions are expected to be cached).
+
+use crate::error::{OkfError, Result};
+use crate::settings::Settings;
+#[cfg(feature = "embed")]
+use embroider::{diag, DeviceReq, JinaV5, Precision};
+use serde_json::{Map, Value as Json};
+use std::fmt;
+#[cfg(feature = "embed")]
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+/// The two task prompts used by the oracle. Gemma text uses mean pooling;
+/// the wrapper is intentionally stringly-typed to match the Python API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Task {
+    Query,
+    Document,
+}
+
+impl Task {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Query => "Query",
+            Self::Document => "Document",
+        }
+    }
+}
+
+/// Minimal embedding contract used by search and ingest.
+pub trait Embedder: Send + Sync + fmt::Debug {
+    fn encode(&self, text: &str, task: Task) -> Result<Vec<f32>>;
+    fn encode_many(&self, texts: &[String], task: Task) -> Result<Vec<Vec<f32>>>;
+    fn count_tokens(&self, text: &str) -> Result<usize>;
+    fn dim(&self) -> usize;
+    fn model_id(&self) -> &str;
+    fn used_cuda(&self) -> bool;
+    fn precision(&self) -> &'static str;
+    fn max_len(&self) -> usize;
+    fn space(&self) -> Option<String> {
+        None
+    }
+}
+
+/// Lazy, shared embedder pool. Opening ONNX is expensive, so `Router::open`
+/// never touches the model; the first search/embed call opens it once.
+#[derive(Clone, Default)]
+pub struct EmbedderPool {
+    inner: Arc<Mutex<Option<Arc<dyn Embedder>>>>,
+}
+
+impl fmt::Debug for EmbedderPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let loaded = self
+            .inner
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false);
+        f.debug_struct("EmbedderPool")
+            .field("loaded", &loaded)
+            .finish()
+    }
+}
+
+impl EmbedderPool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, settings: &Settings) -> Result<Arc<dyn Embedder>> {
+        if let Some(loaded) = self
+            .inner
+            .lock()
+            .map_err(|_| OkfError::internal("embedder lock poisoned", "mutex"))?
+            .as_ref()
+        {
+            return Ok(Arc::clone(loaded));
+        }
+        #[cfg(feature = "embed")]
+        {
+            let embedder: Arc<dyn Embedder> = Arc::new(NativeEmbedder::open(settings)?);
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| OkfError::internal("embedder lock poisoned", "mutex"))?;
+            Ok(Arc::clone(guard.get_or_insert(embedder)))
+        }
+        #[cfg(not(feature = "embed"))]
+        {
+            let _ = settings;
+            Err(OkfError::new(
+                "NO_ORT_RUNTIME",
+                "this build has no embedder; rebuild with --features embed",
+            ))
+        }
+    }
+
+    pub fn loaded(&self) -> Option<Arc<dyn Embedder>> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(Arc::clone))
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
+    }
+}
+
+/// The real native backend. One session per router process.
+#[cfg(feature = "embed")]
+pub struct NativeEmbedder {
+    engine: JinaV5,
+    dim: usize,
+    model_id: String,
+    used_cuda: bool,
+    precision: &'static str,
+    max_len: usize,
+    space: Option<String>,
+}
+
+#[cfg(feature = "embed")]
+impl fmt::Debug for NativeEmbedder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeEmbedder")
+            .field("dim", &self.dim)
+            .field("model_id", &self.model_id)
+            .field("used_cuda", &self.used_cuda)
+            .field("precision", &self.precision)
+            .field("space", &self.space)
+            .finish()
+    }
+}
+
+#[cfg(feature = "embed")]
+impl NativeEmbedder {
+    /// Configure ORT from the environment before its first initialization.
+    /// `ORT_DYLIB_PATH` names the GPU dylib; `OKFGRAPH_ORT_DLL_DIRS` supplies
+    /// additional `;`/`:`-separated directories for CUDA/cuDNN siblings.
+    pub fn configure_runtime() -> Result<Json> {
+        let dylib = std::env::var("ORT_DYLIB_PATH").ok();
+        let raw_dirs = std::env::var("OKFGRAPH_ORT_DLL_DIRS").unwrap_or_default();
+        let dirs: Vec<String> = raw_dirs
+            .split([';', ':'])
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect();
+        diag::configure_runtime(dylib.as_deref(), &dirs)
+            .map_err(|err| OkfError::internal(err.to_string(), "ort runtime"))
+    }
+
+    pub fn open(settings: &Settings) -> Result<Self> {
+        Self::configure_runtime()?;
+        let device = DeviceReq::parse(&settings.device)
+            .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
+        let precision = Precision::parse(&settings.precision)
+            .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
+        let cache_dir = settings.cache_dir.as_ref().map(PathBuf::from);
+        let max_length = usize::try_from(settings.max_length.unwrap_or(0))
+            .ok()
+            .filter(|n| *n > 0);
+        let engine = JinaV5::open(
+            &settings.model_id,
+            None,
+            cache_dir,
+            settings.embedding_dim as usize,
+            device,
+            max_length,
+            precision,
+            settings.cpu_arena,
+        )
+        .map_err(|err| OkfError::internal(err.to_string(), "embroider::JinaV5"))?;
+        let used_cuda = engine.used_cuda();
+        let precision = engine.precision().as_str();
+        let model_id = engine.model_id().to_string();
+        let dim = engine.dim();
+        let max_len = engine.max_len();
+        let space = {
+            let precision_enum = Precision::parse(precision).ok();
+            precision_enum
+                .and_then(|p| embroider::artifact_for(&model_id, p).revision)
+                .map(|revision| {
+                    format!(
+                        "embroider/{model_id}@{revision}:{precision}:{dim}:{max_len}:text_embed:v1"
+                    )
+                })
+        };
+        Ok(Self {
+            engine,
+            dim,
+            model_id,
+            used_cuda,
+            precision,
+            max_len,
+            space,
+        })
+    }
+
+    pub fn runtime_report() -> Result<Json> {
+        Self::configure_runtime()?;
+        Ok(diag::runtime_report())
+    }
+}
+
+#[cfg(feature = "embed")]
+impl Embedder for NativeEmbedder {
+    fn encode(&self, text: &str, task: Task) -> Result<Vec<f32>> {
+        self.engine
+            .encode_one(text, task.as_str())
+            .map_err(|err| OkfError::internal(err.to_string(), "embroider::encode"))
+    }
+
+    fn encode_many(&self, texts: &[String], task: Task) -> Result<Vec<Vec<f32>>> {
+        self.engine
+            .encode_many(texts, task.as_str())
+            .map_err(|err| OkfError::internal(err.to_string(), "embroider::encode_many"))
+    }
+
+    fn count_tokens(&self, text: &str) -> Result<usize> {
+        self.engine
+            .count_tokens(text)
+            .map_err(|err| OkfError::internal(err.to_string(), "embroider::count_tokens"))
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    fn used_cuda(&self) -> bool {
+        self.used_cuda
+    }
+
+    fn precision(&self) -> &'static str {
+        self.precision
+    }
+
+    fn max_len(&self) -> usize {
+        self.max_len
+    }
+
+    fn space(&self) -> Option<String> {
+        self.space.clone()
+    }
+}
+
+/// Validate the graph pins before an embedder is used against stored vectors.
+pub fn check_pins(settings: &Settings, pins: &Json) -> Result<()> {
+    let pinned_model = pins
+        .get("pinned")
+        .and_then(|p| p.get("model_id"))
+        .and_then(Json::as_str);
+    if let Some(model) = pinned_model {
+        if model != settings.model_id {
+            return Err(OkfError::new(
+                "MODEL_PIN_MISMATCH",
+                format!(
+                    "graph is pinned to model '{model}', configured '{}'",
+                    settings.model_id
+                ),
+            )
+            .field("pinned", Json::String(model.into()))
+            .field("configured", Json::String(settings.model_id.clone())));
+        }
+    }
+    let pinned_dim = pins
+        .get("pinned")
+        .and_then(|p| p.get("embedding_dim"))
+        .and_then(Json::as_i64);
+    if let Some(dim) = pinned_dim {
+        if dim != settings.embedding_dim
+            && !pins.get("empty").and_then(Json::as_bool).unwrap_or(false)
+        {
+            return Err(OkfError::new(
+                "DIM_MISMATCH",
+                format!(
+                    "graph stores {dim}-dim vectors, configured {}",
+                    settings.embedding_dim
+                ),
+            )
+            .field("pinned", Json::from(dim))
+            .field("configured", Json::from(settings.embedding_dim)));
+        }
+    }
+    Ok(())
+}
+
+/// JSON-safe model info for `okf model-info` and `lanes`.
+pub fn model_info(embedder: &dyn Embedder) -> Json {
+    let mut out = Map::new();
+    out.insert("model_id".into(), Json::String(embedder.model_id().into()));
+    out.insert("embedding_dim".into(), Json::from(embedder.dim() as i64));
+    out.insert(
+        "device".into(),
+        Json::String(if embedder.used_cuda() { "cuda" } else { "cpu" }.into()),
+    );
+    out.insert(
+        "precision".into(),
+        Json::String(embedder.precision().into()),
+    );
+    Json::Object(out)
+}

@@ -1,0 +1,19 @@
+{
+  "name": "detach-no-verify",
+  "settings": {
+    "db_path": "parity/out/detach-no-verify-@RUNNER@.db",
+    "bundle_root": "parity/corpus/detach-@RUNNER@",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {"import": {"corpus": "parity/corpus/detach-@RUNNER@"}},
+  "ops": [
+    {"op": "detach", "params": {"bundle_path": "parity/corpus/detach-@RUNNER@", "verify": false}},
+    {"op": "detach", "params": {"bundle_path": "parity/corpus/detach-@RUNNER@", "verify": false}}
+  ]
+}

@@ -83,6 +83,7 @@ pub const WRITE_OPS: &[&str] = &[
     "reembed",
     "update",
     "supersede",
+    "detach",
 ];
 
 pub fn is_op(name: &str) -> bool {
@@ -759,6 +760,7 @@ impl Router {
             "reembed" => self.reembed(params),
             "update" => self.update(params),
             "supersede" => self.supersede(params),
+            "detach" => crate::detach::detach(&self.store, &self.settings, params),
             "diff" => self.diff(params),
             "lint" => self.lint(params),
             "pin_info" => self.pin_info(),

@@ -853,8 +853,13 @@ newlines, imported through the single-file path, and preserve body text,
 chunks, embeddings, generations, and epochs. Validation and unknown-concept
 envelopes match the oracle.
 
-Remaining M3 gaps: PDF/Office/bib/thoughts converters, `produce`/`sync`/
-`detach`, and any remaining write ops.
+Stage B also implements `detach`: single-root fidelity verification
+(mismatched, untracked, source-only, and sourceless checks), `DETACH_REFUSED`
+for dirty trees, `--force`, `--no-verify`, `DETACHED` for already-detached
+graphs, mirror-baseline cleanup, and `SourceRoot`/`Meta` provenance rows.
+
+Remaining M3 gaps: PDF/Office/bib/thoughts converters, `produce`/`sync`, and
+any remaining write ops.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

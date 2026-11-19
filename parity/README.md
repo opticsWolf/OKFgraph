@@ -236,6 +236,11 @@ Additional Stage B scenarios:
 - `update-supersede.json` — file-backed `update`/`supersede` with separate
   `update-python`/`update-rust` corpus copies selected via `@RUNNER@`; ignore
   path-valued keys when comparing.
+- `detach.json`, `detach-no-verify.json`, `detach-refusal.json` — verified,
+  unverified, refused, and forced detach with runner-specific corpus copies;
+  ignore `bundle`, `path`, `detached_at`, `since`, `last_seen`, and `message`
+  when comparing volatile provenance. `compare_db.py` normalizes detach
+  provenance rows.
 
 `setup.import` may contain op params such as `mode`; the Rust runner forwards
 them to `import_bundle`, and the Python harness forwards them after removing

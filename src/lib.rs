@@ -18,6 +18,7 @@ pub fn schema_version() -> u16 {
     SCHEMA_VERSION
 }
 
+pub mod detach;
 pub mod diagnostics;
 pub mod embed;
 pub mod error;

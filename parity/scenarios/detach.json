@@ -1,0 +1,20 @@
+{
+  "name": "detach",
+  "settings": {
+    "db_path": "parity/out/detach-@RUNNER@.db",
+    "bundle_root": "parity/corpus/detach-@RUNNER@",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {"import": {"corpus": "parity/corpus/detach-@RUNNER@"}},
+  "ops": [
+    {"op": "detach", "params": {"bundle_path": "parity/corpus/detach-@RUNNER@"}},
+    {"op": "detach", "params": {"bundle_path": "parity/corpus/detach-@RUNNER@"}},
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}}
+  ]
+}

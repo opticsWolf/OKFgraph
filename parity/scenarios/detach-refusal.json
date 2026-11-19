@@ -1,0 +1,19 @@
+{
+  "name": "detach-refusal",
+  "settings": {
+    "db_path": "parity/out/detach-refusal-@RUNNER@.db",
+    "bundle_root": "parity/corpus/minimal",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {"import": {"corpus": "parity/corpus/minimal"}},
+  "ops": [
+    {"op": "detach", "params": {"bundle_path": "parity/corpus/links"}},
+    {"op": "detach", "params": {"bundle_path": "parity/corpus/links", "force": true}}
+  ]
+}

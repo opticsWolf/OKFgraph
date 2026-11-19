@@ -43,6 +43,11 @@ def load(path: Path) -> dict[str, list[Any]]:
                     row = row[key]
             if table == "BrokenLink" and isinstance(row, dict):
                 row = {k: v for k, v in row.items() if k != "timestamp"}
+            if table == "Meta" and isinstance(row, dict):
+                if row.get("key") == "detached_at":
+                    row = {**row, "value": 0}
+            if table == "SourceRoot" and isinstance(row, dict):
+                row = {k: v for k, v in row.items() if k not in {"path", "last_seen"}}
             if table == "DeletedConcept" and isinstance(row, dict):
                 row = {
                     k: v

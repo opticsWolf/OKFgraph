@@ -287,13 +287,13 @@ struct DirState {
     write_hash: Option<String>,
 }
 
-fn finish_indexes(store: &Store) -> Result<()> {
+pub(crate) fn finish_indexes(store: &Store) -> Result<()> {
     let epoch = store.meta_int("write_epoch")?.unwrap_or(0);
     store.create_search_indexes()?;
     store.set_meta_int("indexed_epoch", epoch)
 }
 
-fn commit_parsed(
+pub(crate) fn commit_parsed(
     store: &Store,
     settings: &Settings,
     engine: &dyn Embedder,

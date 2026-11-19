@@ -864,7 +864,13 @@ reserved log, producer cursors in `ProducerCursor`, and import of exactly
 the files written by the producer. Chunk embedding payloads now include
 heading context, matching Python for generated documentation bundles.
 
-Remaining M3 gaps: PDF/Office/bib/thoughts converters and `ingest` dispatch.
+Stage B also adds `ingest` dispatch with kind validation and the markdown
+and BibTeX converters. Markdown ingest uses the shared single-concept import
+pipeline; BibTeX ingest emits stable `refs/<key>` concepts with citation
+frontmatter. PDF conversion without the native add-on returns the documented
+`CONVERSION_FAILED` install hint.
+
+Remaining M3 gaps: thoughts converter and PDF/Office conversion wiring.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

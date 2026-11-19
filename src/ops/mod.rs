@@ -87,6 +87,7 @@ pub const WRITE_OPS: &[&str] = &[
     "detach",
     "produce",
     "sync",
+    "ingest",
 ];
 
 pub fn is_op(name: &str) -> bool {
@@ -902,6 +903,13 @@ impl Router {
             "lint" => self.lint(params),
             "produce" => self.produce(params),
             "sync" => self.sync(params),
+            "ingest" => crate::converters::ingest(
+                &self.store,
+                &self.settings,
+                &self.embedder,
+                &self.pools,
+                params,
+            ),
             "pin_info" => self.pin_info(),
             "lanes" => self.lanes(),
             "doctor" => self.doctor(),

@@ -1,0 +1,16 @@
+{
+  "name": "ingest-md",
+  "settings": {
+    "db_path": "parity/out/ingest-md-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {"import": {"corpus": "parity/corpus/empty"}},
+  "ops": [
+    {"op": "ingest", "params": {"kind": "md", "md_path": "parity/corpus/minimal/alpha.md"}},
+    {"op": "ingest", "params": {"kind": "md", "md_path": "parity/corpus/missing.md"}},
+    {"op": "ingest", "params": {"kind": "md", "md_path": "parity/corpus/minimal/alpha.md", "bib_path": "parity/fixtures/parity.bib"}}
+  ]
+}

@@ -244,6 +244,8 @@ Additional Stage B scenarios:
 - `produce.json` — SQLite producer, log deduplication, and unknown-producer
   errors; compare the produced trees byte-for-byte.
 - `sync.json` — incremental producer cursor and import of written files.
+- `ingest-md.json`, `ingest-bib.json` — `ingest` kind validation plus
+  markdown and BibTeX single-concept conversion.
 
 `setup.import` may contain op params such as `mode`; the Rust runner forwards
 them to `import_bundle`, and the Python harness forwards them after removing

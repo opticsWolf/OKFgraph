@@ -444,6 +444,7 @@ fn yaml_string(text: &str) -> String {
         || text.contains(" #")
         || text.contains('\n')
         || looks_like_timestamp(text)
+        || text.parse::<f64>().is_ok()
         || matches!(
             text,
             "null" | "true" | "false" | "yes" | "no" | "on" | "off" | "~"

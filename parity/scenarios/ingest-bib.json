@@ -1,0 +1,15 @@
+{
+  "name": "ingest-bib",
+  "settings": {
+    "db_path": "parity/out/ingest-bib-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {"import": {"corpus": "parity/corpus/empty"}},
+  "ops": [
+    {"op": "ingest", "params": {"kind": "bib", "bib_path": "parity/fixtures/parity.bib"}},
+    {"op": "get_by_id", "params": {"concept_id": "refs/alpha2020"}}
+  ]
+}

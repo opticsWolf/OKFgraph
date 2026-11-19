@@ -1,0 +1,21 @@
+{
+  "name": "reembed",
+  "settings": {
+    "db_path": "parity/out/reembed.db",
+    "bundle_root": "parity/corpus/minimal",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {"import": {"corpus": "parity/corpus/minimal"}},
+  "ops": [
+    {"op": "reembed", "params": {"dry_run": true}},
+    {"op": "reembed", "params": {}},
+    {"op": "reembed", "params": {"dry_run": true}},
+    {"op": "search", "params": {"query": "beta", "limit": 5}}
+  ]
+}

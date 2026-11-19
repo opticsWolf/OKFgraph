@@ -230,6 +230,9 @@ Additional Stage B scenarios:
 - `diff.json` — identical and different dir-vs-dir snapshots plus DB-vs-dir
   drift after import.
 - `lint.json` — clean bundles and the broken-link corpus's warnings/errors.
+- `reembed.json` — dry-run and full vector rebuild with post-reembed search;
+  ignore the volatile `seconds` field when comparing.
+- `reembed-refusal.json` — `IMAGE_PIN_MISMATCH` on a graph with image assets.
 
 `setup.import` may contain op params such as `mode`; the Rust runner forwards
 them to `import_bundle`, and the Python harness forwards them after removing
@@ -237,8 +240,8 @@ constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 (embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
 All Stage B scenarios report **0 differences** on ops output; import, links,
-delete, and image scenarios also match on semantic DB dumps, and export trees
-match byte-for-byte. Remaining M3 gaps: converters, `produce`, `sync`,
-`detach`, `reembed`, and the remaining write ops.
+delete, image, and reembed scenarios also match on semantic DB dumps, and
+export trees match byte-for-byte. Remaining M3 gaps: converters, `produce`,
+`sync`, `detach`, and the remaining write ops.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

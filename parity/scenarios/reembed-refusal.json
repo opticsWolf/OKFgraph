@@ -1,0 +1,13 @@
+{
+  "name": "reembed-refusal",
+  "settings": {
+    "db_path": "parity/fixtures/oracle-v10-images.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "ops": [
+    {"op": "reembed", "params": {"dry_run": true}}
+  ]
+}

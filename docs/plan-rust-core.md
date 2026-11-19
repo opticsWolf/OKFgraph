@@ -843,8 +843,12 @@ ids, dangling markdown/wiki/relation links, ambiguous-name candidates) and
 `diff` (snapshot dir-vs-dir and drift DB-vs-dir, with `DIFF_DIFFERENT` outcome
 reports). Python's empty error `fields` are serialized as `null`.
 
+Stage B also implements `reembed`: dry-run planning reports, full concept and
+chunk vector rebuilds under the active engine, vector-index recreation, pin
+rewrites, and the `IMAGE_PIN_MISMATCH` refusal for graphs with image assets.
+
 Remaining M3 gaps: PDF/Office/bib/thoughts converters, `produce`/`sync`/
-`detach`, `reembed`, and the remaining write ops.
+`detach`, and the remaining write ops.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

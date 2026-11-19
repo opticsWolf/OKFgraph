@@ -80,6 +80,7 @@ pub const WRITE_OPS: &[&str] = &[
     "recover_deleted",
     "purge_deleted",
     "reindex",
+    "reembed",
 ];
 
 pub fn is_op(name: &str) -> bool {
@@ -245,6 +246,108 @@ impl Router {
         Ok(report)
     }
 
+    fn reembed(&self, params: &Map<String, Json>) -> Result<Json> {
+        let dry_run = opt_bool(params, "dry_run")?.unwrap_or(false);
+        let engine = self.embedder.get(&self.settings)?;
+        let dim = engine.dim();
+        if dim as i64 != self.settings.embedding_dim {
+            return Err(OkfError::new(
+                "DIM_MISMATCH",
+                format!(
+                    "engine dim {dim} != graph column dim {}; 0.12.0 reembed keeps the column width — open a fresh graph for a different dim",
+                    self.settings.embedding_dim
+                ),
+            )
+            .op("reembed")
+            .field("engine_dim", Json::from(dim))
+            .field("graph_dim", Json::from(self.settings.embedding_dim))
+            .remedy(
+                "re-import into a new database with the new dim, or reopen with the pinned model",
+            ));
+        }
+        if self.store.count_image_assets()? > 0 {
+            return Err(OkfError::new(
+                "IMAGE_PIN_MISMATCH",
+                "graph carries ImageAsset rows; a text-model reembed would leave the omni space under the old weights",
+            )
+            .op("reembed")
+            .remedy("re-import into a fresh database instead"));
+        }
+        let concepts = self.store.reembed_texts("concept")?;
+        let chunks = self.store.reembed_texts("chunk")?;
+        let model_id = engine.model_id().to_string();
+        let precision = engine.precision().to_string();
+        let mut report = serde_json::json!({
+            "dry_run": dry_run,
+            "model_id": model_id,
+            "model_name": Json::Null,
+            "dimension": dim,
+            "concepts": concepts.len(),
+            "chunks": chunks.len(),
+        });
+        if dry_run {
+            return Ok(report);
+        }
+        let started = std::time::Instant::now();
+        self.store.drop_text_vector_indexes()?;
+        let batch_size = (settings_batch_size(&self.settings) as usize).max(1);
+        let mut rewritten = Map::new();
+        for (table, rows) in [
+            ("concept", concepts.as_slice()),
+            ("chunk", chunks.as_slice()),
+        ] {
+            let mut done = 0;
+            for part in rows.chunks(batch_size) {
+                let texts: Vec<String> = part.iter().map(|(_, text)| text.clone()).collect();
+                let vectors = engine.encode_many(&texts, Task::Document)?;
+                for ((id, _), vector) in part.iter().zip(vectors) {
+                    self.store.set_reembedded_vector(table, id, &vector)?;
+                }
+                done += part.len();
+            }
+            let label = if table == "concept" {
+                "concepts"
+            } else {
+                "chunks"
+            };
+            rewritten.insert(label.to_string(), Json::from(done));
+        }
+        self.store.create_search_indexes()?;
+        self.store.set_meta_text("embedding_model", &model_id)?;
+        let code = match precision.as_str() {
+            "fp16" => 16,
+            "int8" => 8,
+            "fp32" => 32,
+            _ => 0,
+        };
+        if code > 0 {
+            self.store.set_meta_int("embedding_precision", code)?;
+        }
+        if let Some(space) = engine.space() {
+            self.store.set_meta_text("embedding_space", &space)?;
+        }
+        let write_epoch = self.store.meta_int("write_epoch")?.unwrap_or(0);
+        self.store.set_meta_int("indexed_epoch", write_epoch)?;
+        if let Some(object) = report.as_object_mut() {
+            object.insert("reembedded".into(), Json::Object(rewritten));
+            object.insert(
+                "seconds".into(),
+                Json::from((started.elapsed().as_secs_f64() * 100.0).round() / 100.0),
+            );
+            object.insert("precision".into(), Json::String(precision.clone()));
+            let mut pins = self.store.pin_info()?;
+            if let Some(configured) = pins.get_mut("configured").and_then(Json::as_object_mut) {
+                configured.insert("expected_precision".into(), Json::String(precision));
+                configured.insert(
+                    "space".into(),
+                    engine.space().map_or(Json::Null, Json::String),
+                );
+            }
+            object.insert("pins_after".into(), pins);
+        }
+        Ok(report)
+    }
+
     fn reindex(&self, params: &Map<String, Json>) -> Result<Json> {
         let if_dirty = opt_bool(params, "if_dirty")?.unwrap_or(false);
         let write_epoch = self.store.meta_int("write_epoch")?.unwrap_or(0);
@@ -384,6 +487,7 @@ impl Router {
             "recover_deleted" => self.recover_deleted(params),
             "purge_deleted" => self.purge_deleted(params),
             "reindex" => self.reindex(params),
+            "reembed" => self.reembed(params),
             "diff" => self.diff(params),
             "lint" => self.lint(params),
             "pin_info" => self.pin_info(),
@@ -2684,6 +2788,10 @@ fn opt_str(params: &Map<String, Json>, name: &str) -> Result<Option<String>> {
             format!("{name} must be a string, got {other}"),
         )),
     }
+}
+
+fn settings_batch_size(settings: &Settings) -> i64 {
+    settings.batch_size.max(1)
 }
 
 fn opt_bool(params: &Map<String, Json>, name: &str) -> Result<Option<bool>> {

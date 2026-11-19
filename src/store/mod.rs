@@ -815,6 +815,67 @@ impl Store {
         )
     }
 
+    pub fn count_image_assets(&self) -> Result<i64> {
+        Ok(self
+            .scalar("MATCH (i:ImageAsset) RETURN count(i) AS n", vec![])?
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0))
+    }
+
+    pub fn reembed_texts(&self, table: &str) -> Result<Vec<(String, String)>> {
+        let sql = if table == "concept" {
+            "MATCH (c:Concept) RETURN c.id AS id, c.title AS t,              c.description AS d, c.body AS b"
+        } else {
+            "MATCH (k:Chunk) RETURN k.id AS id, k.chunk_text AS t"
+        };
+        let rows = self.query(sql, vec![])?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let id = row.get("id")?.as_str()?.to_string();
+                let text = if table == "concept" {
+                    [
+                        row.get("t").and_then(Json::as_str).unwrap_or(""),
+                        row.get("d").and_then(Json::as_str).unwrap_or(""),
+                        row.get("b").and_then(Json::as_str).unwrap_or(""),
+                    ]
+                    .join(" ")
+                } else {
+                    row.get("t")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                };
+                (!text.trim().is_empty()).then_some((id, text))
+            })
+            .collect())
+    }
+
+    pub fn set_reembedded_vector(&self, table: &str, id: &str, vector: &[f32]) -> Result<()> {
+        let value = Value::List(
+            LogicalType::Float,
+            vector.iter().copied().map(Value::Float).collect(),
+        );
+        let sql = if table == "concept" {
+            "MATCH (c:Concept {id: $id}) SET c.embedding = $v"
+        } else {
+            "MATCH (k:Chunk {id: $id}) SET k.embedding = $v"
+        };
+        self.write(sql, vec![("id", Value::String(id.into())), ("v", value)])
+    }
+
+    pub fn drop_text_vector_indexes(&self) -> Result<()> {
+        self.with_write_conn(|conn| {
+            for sql in [
+                "CALL DROP_VECTOR_INDEX('Concept', 'concept_embedding')",
+                "CALL DROP_VECTOR_INDEX('Chunk', 'chunk_embedding')",
+            ] {
+                let _ = conn.query(sql);
+            }
+            Ok(())
+        })
+    }
+
     pub fn diagnostic_concepts(&self) -> Result<Vec<Map<String, Json>>> {
         self.query(
             "MATCH (c:Concept) RETURN c.id AS id, c.title AS title, \

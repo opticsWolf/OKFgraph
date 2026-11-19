@@ -153,10 +153,15 @@ impl OkfError {
 
     /// Machine-facing body for the `error` field of an envelope.
     pub fn envelope_body(&self) -> Value {
+        let fields = if self.fields.is_empty() {
+            Value::Null
+        } else {
+            serde_json::to_value(&self.fields).unwrap_or(Value::Null)
+        };
         serde_json::json!({
             "code": self.code,
             "message": self.message,
-            "fields": self.fields,
+            "fields": fields,
             "remedy": self.remedy,
         })
     }

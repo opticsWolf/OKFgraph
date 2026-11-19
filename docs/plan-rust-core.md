@@ -838,8 +838,13 @@ compatible YAML/text bytes on Windows, markdown image extraction with text and
 native vision routes (asset IDs, captions, content hashes, pins, indexes), and
 `reindex(if_dirty=...)` with forced index recovery.
 
-Remaining M3 gaps: PDF/Office/bib/thoughts converters, `diff`/`lint`/
-`produce`/`sync`/`detach`, `reembed`, and the remaining write ops.
+Stage B also implements router-free `lint` (frontmatter warnings, duplicate
+ids, dangling markdown/wiki/relation links, ambiguous-name candidates) and
+`diff` (snapshot dir-vs-dir and drift DB-vs-dir, with `DIFF_DIFFERENT` outcome
+reports). Python's empty error `fields` are serialized as `null`.
+
+Remaining M3 gaps: PDF/Office/bib/thoughts converters, `produce`/`sync`/
+`detach`, `reembed`, and the remaining write ops.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

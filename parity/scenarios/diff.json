@@ -1,0 +1,21 @@
+{
+  "name": "diff",
+  "settings": {
+    "db_path": "parity/out/diff.db",
+    "bundle_root": "parity/corpus/minimal",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {"import": {"corpus": "parity/corpus/minimal"}},
+  "ops": [
+    {"op": "diff", "params": {"old": "parity/corpus/minimal", "new": "parity/corpus/minimal"}},
+    {"op": "diff", "params": {"old": "parity/corpus/minimal", "new": "parity/corpus/links"}},
+    {"op": "diff", "params": {"old": "parity/corpus/links", "new": "parity/corpus/minimal"}},
+    {"op": "diff", "params": {}}
+  ]
+}

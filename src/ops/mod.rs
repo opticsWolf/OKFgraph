@@ -33,6 +33,7 @@ pub const OP_NAMES: &[&str] = &[
     "delete",
     "doctor",
     "diff",
+    "lint",
     "reindex",
     "reembed",
     "pin_info",
@@ -63,6 +64,8 @@ const READ_OPS: &[&str] = &[
     "get_image",
     "get_by_id",
     "list_directory",
+    "diff",
+    "lint",
 ];
 
 /// Stage B content-write ops implemented by the ingest pipeline.
@@ -208,6 +211,40 @@ impl Router {
         }))
     }
 
+    fn diff(&self, params: &Map<String, Json>) -> Result<Json> {
+        let old = opt_str(params, "old")?;
+        let new = opt_str(params, "new")?;
+        let report =
+            crate::diagnostics::diff(&self.store, &self.settings, old.as_deref(), new.as_deref())?;
+        if report.get("identical").and_then(Json::as_bool) == Some(false) {
+            return Err(OkfError::outcome(
+                "DIFF_DIFFERENT",
+                "structures differ (report in data)",
+                report,
+            )
+            .op("diff"));
+        }
+        Ok(report)
+    }
+
+    fn lint(&self, params: &Map<String, Json>) -> Result<Json> {
+        let dir = opt_str(params, "bundle_dir")?.unwrap_or_else(|| ".".into());
+        let report = crate::diagnostics::lint(&dir, &self.settings)?;
+        let count = report
+            .get("errors")
+            .and_then(Json::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        if count > 0 {
+            return Err(
+                OkfError::outcome("LINT_ERRORS", format!("{count} lint error(s)"), report)
+                    .op("lint")
+                    .field("errors", Json::from(count)),
+            );
+        }
+        Ok(report)
+    }
+
     fn reindex(&self, params: &Map<String, Json>) -> Result<Json> {
         let if_dirty = opt_bool(params, "if_dirty")?.unwrap_or(false);
         let write_epoch = self.store.meta_int("write_epoch")?.unwrap_or(0);
@@ -347,6 +384,8 @@ impl Router {
             "recover_deleted" => self.recover_deleted(params),
             "purge_deleted" => self.purge_deleted(params),
             "reindex" => self.reindex(params),
+            "diff" => self.diff(params),
+            "lint" => self.lint(params),
             "pin_info" => self.pin_info(),
             "lanes" => self.lanes(),
             "doctor" => self.doctor(),
@@ -2704,7 +2743,7 @@ mod tests {
 
     #[test]
     fn op_vocabulary() {
-        assert_eq!(OP_NAMES.len(), 30);
+        assert_eq!(OP_NAMES.len(), 31);
         assert!(is_op("get_by_id"));
         assert!(!is_op("init"));
     }

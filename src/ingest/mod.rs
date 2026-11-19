@@ -26,20 +26,20 @@ const STRUCTURAL_BLOCKS: &[&str] = &[
     "Diagram",
 ];
 
-#[derive(Debug)]
-struct Parsed {
-    id: String,
-    title: String,
-    concept_type: String,
-    description: Option<String>,
-    resource: Option<String>,
-    tags: Vec<String>,
-    timestamp: Option<PyDateTime>,
-    authored: BTreeMap<String, PyValue>,
-    body: String,
-    extra: BTreeMap<String, String>,
-    sig: String,
-    path: PathBuf,
+#[derive(Debug, Clone)]
+pub(crate) struct Parsed {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) concept_type: String,
+    pub(crate) description: Option<String>,
+    pub(crate) resource: Option<String>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) timestamp: Option<PyDateTime>,
+    pub(crate) authored: BTreeMap<String, PyValue>,
+    pub(crate) body: String,
+    pub(crate) extra: BTreeMap<String, String>,
+    pub(crate) sig: String,
+    pub(crate) path: PathBuf,
 }
 
 pub fn import_files(
@@ -395,7 +395,7 @@ fn canonicalish(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn walk_source_files(root: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn walk_source_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     walk_dir(root, root, &mut out)?;
     out.sort();
@@ -444,7 +444,7 @@ fn walk_dir(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn native_rel(path: &Path, root: &Path) -> String {
+pub(crate) fn native_rel(path: &Path, root: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
@@ -548,7 +548,7 @@ fn relative_id(path: &Path, root: Option<&Path>) -> String {
         .unwrap_or_default()
 }
 
-fn parse_file(path: &Path, settings: &Settings, root: Option<&Path>) -> Result<Parsed> {
+pub(crate) fn parse_file(path: &Path, settings: &Settings, root: Option<&Path>) -> Result<Parsed> {
     let text = fs::read_to_string(path)?;
     let front = parse_frontmatter(&text);
     let mut meta = front.metadata.as_object().cloned().unwrap_or_default();
@@ -929,18 +929,18 @@ fn create_links(store: &Store, parsed: &[Parsed]) -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct LinkRecord {
-    source: String,
-    target: Option<String>,
-    recorded: String,
-    kind: String,
-    reason: Option<String>,
-    candidates: Vec<String>,
-    raw: String,
+pub(crate) struct LinkRecord {
+    pub(crate) source: String,
+    pub(crate) target: Option<String>,
+    pub(crate) recorded: String,
+    pub(crate) kind: String,
+    pub(crate) reason: Option<String>,
+    pub(crate) candidates: Vec<String>,
+    pub(crate) raw: String,
 }
 
 #[derive(Default)]
-struct LinkIndex {
+pub(crate) struct LinkIndex {
     ids: BTreeSet<String>,
     uid: BTreeMap<String, String>,
     alias: BTreeMap<String, String>,
@@ -982,7 +982,39 @@ impl LinkIndex {
         }
     }
 
-    fn resolve_wiki(&self, reference: &str) -> (Option<String>, Option<String>, Vec<String>) {
+    pub(crate) fn from_parsed(items: &[Parsed]) -> Self {
+        let mut index = Self::default();
+        for item in items {
+            index.ids.insert(item.id.clone());
+            if let Some(uid) = item.extra.get("uid") {
+                Self::add("uid", uid, &item.id, &mut index);
+            }
+            for key in ["aliases", "alias"] {
+                let Some(value) = item.extra.get(key) else {
+                    continue;
+                };
+                let values = if value.trim_start().starts_with('[') {
+                    serde_json::from_str::<Vec<String>>(value)
+                        .unwrap_or_else(|_| vec![value.clone()])
+                } else {
+                    vec![value.clone()]
+                };
+                for alias in values {
+                    Self::add("alias", &alias, &item.id, &mut index);
+                }
+            }
+            Self::add("title", &item.title, &item.id, &mut index);
+            if let Some(stem) = item.id.rsplit('/').next() {
+                Self::add("stem", stem, &item.id, &mut index);
+            }
+        }
+        index
+    }
+
+    pub(crate) fn resolve_wiki(
+        &self,
+        reference: &str,
+    ) -> (Option<String>, Option<String>, Vec<String>) {
         let ref_text = reference.split('#').next().unwrap_or("").trim();
         if ref_text.is_empty() {
             return (None, Some("missing".into()), Vec::new());
@@ -1057,13 +1089,13 @@ fn load_link_index(store: &Store) -> Result<LinkIndex> {
     Ok(index)
 }
 
-fn resolve_concept_links(item: &Parsed, index: &LinkIndex) -> Vec<LinkRecord> {
+pub(crate) fn resolve_concept_links(item: &Parsed, index: &LinkIndex) -> Vec<LinkRecord> {
     let mut out = Vec::new();
     for raw in markdown_links(&item.body) {
         if is_external(&raw) {
             continue;
         }
-        let (target, recorded) = link_target(&raw, &item.id, index);
+        let (target, recorded) = link_target(&raw, &item.id, index, None);
         out.push(LinkRecord {
             source: item.id.clone(),
             target,
@@ -1116,7 +1148,7 @@ fn resolve_concept_links(item: &Parsed, index: &LinkIndex) -> Vec<LinkRecord> {
                             continue;
                         };
                         let (target_id, reason, candidates, recorded) =
-                            resolve_relation_target(raw, &item.id, index);
+                            resolve_relation_target(raw, &item.id, index, None);
                         out.push(LinkRecord {
                             source: item.id.clone(),
                             target: target_id,
@@ -1134,10 +1166,11 @@ fn resolve_concept_links(item: &Parsed, index: &LinkIndex) -> Vec<LinkRecord> {
     out
 }
 
-fn resolve_relation_target(
+pub(crate) fn resolve_relation_target(
     raw: &str,
     source: &str,
     index: &LinkIndex,
+    path_ids: Option<&BTreeMap<String, String>>,
 ) -> (Option<String>, Option<String>, Vec<String>, String) {
     let mut reference = raw.trim();
     if reference.starts_with("[[") && reference.ends_with("]]") {
@@ -1156,7 +1189,7 @@ fn resolve_relation_target(
         );
     }
     if is_source_path(reference) {
-        let (target, recorded) = link_target(reference, source, index);
+        let (target, recorded) = link_target(reference, source, index, path_ids);
         let reason = if target.is_some() {
             None
         } else {
@@ -1294,7 +1327,7 @@ fn repair_links(store: &Store) -> Result<()> {
             None
         };
         if target.is_none() && is_source_path(&raw) {
-            target = link_target(&raw, &source, &index).0;
+            target = link_target(&raw, &source, &index, None).0;
         }
         let (wiki_target, reason, candidates) = index.resolve_wiki(&target_text);
         if target.is_none() {
@@ -1329,7 +1362,7 @@ fn repair_links(store: &Store) -> Result<()> {
     Ok(())
 }
 
-fn markdown_links(body: &str) -> Vec<String> {
+pub(crate) fn markdown_links(body: &str) -> Vec<String> {
     let stripped = strip_code(body);
     let mut out = Vec::new();
     let mut rest = stripped.as_str();
@@ -1378,7 +1411,7 @@ fn is_source_path(raw: &str) -> bool {
     path.ends_with(".md") || path.ends_with(".markdown") || path.ends_with(".txt")
 }
 
-fn is_external(raw: &str) -> bool {
+pub(crate) fn is_external(raw: &str) -> bool {
     let head = raw.split('#').next().unwrap_or("").trim();
     let Some(colon) = head.find(':') else {
         return false;
@@ -1391,7 +1424,12 @@ fn is_external(raw: &str) -> bool {
             .unwrap_or(false)
 }
 
-fn link_target(raw: &str, source: &str, index: &LinkIndex) -> (Option<String>, String) {
+pub(crate) fn link_target(
+    raw: &str,
+    source: &str,
+    index: &LinkIndex,
+    path_ids: Option<&BTreeMap<String, String>>,
+) -> (Option<String>, String) {
     let path_part = raw.split(['#', '?']).next().unwrap_or("").trim();
     let joined = if let Some(rest) = path_part.strip_prefix('/') {
         rest.to_string()
@@ -1437,11 +1475,16 @@ fn link_target(raw: &str, source: &str, index: &LinkIndex) -> (Option<String>, S
         if index.ids.contains(reading) {
             return (Some(reading.to_string()), reading.to_string());
         }
+        if let Some(map) = path_ids {
+            if let Some(id) = map.get(reading) {
+                return (Some(id.clone()), id.clone());
+            }
+        }
     }
     (None, candidate)
 }
 
-fn wikilinks(body: &str) -> Vec<String> {
+pub(crate) fn wikilinks(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = body;
     while let Some(start) = rest.find("[[") {

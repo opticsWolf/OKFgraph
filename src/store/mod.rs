@@ -815,6 +815,31 @@ impl Store {
         )
     }
 
+    pub fn diagnostic_concepts(&self) -> Result<Vec<Map<String, Json>>> {
+        self.query(
+            "MATCH (c:Concept) RETURN c.id AS id, c.title AS title, \
+             c.type AS type, c.body AS body",
+            vec![],
+        )
+    }
+
+    pub fn diagnostic_edges(&self) -> Result<Vec<(String, String)>> {
+        let rows = self.query(
+            "MATCH (a:Concept)-[:LINKS_TO]->(b:Concept) \
+             RETURN a.id AS src, b.id AS dst",
+            vec![],
+        )?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                Some((
+                    row.get("src")?.as_str()?.to_string(),
+                    row.get("dst")?.as_str()?.to_string(),
+                ))
+            })
+            .collect())
+    }
+
     pub fn list_images(&self, concept_id: &str) -> Result<Vec<Json>> {
         let rows = self.query(
             "MATCH (c:Concept {id: $cid})-[:INCLUDES_ASSET]->(i:ImageAsset) \

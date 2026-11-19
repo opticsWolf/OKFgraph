@@ -1,0 +1,15 @@
+{
+  "name": "lint",
+  "settings": {
+    "db_path": "parity/fixtures/oracle-v10.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "ops": [
+    {"op": "lint", "params": {"bundle_dir": "parity/corpus/minimal"}},
+    {"op": "lint", "params": {"bundle_dir": "parity/corpus/links"}},
+    {"op": "lint", "params": {"bundle_dir": "parity/corpus/filters"}}
+  ]
+}

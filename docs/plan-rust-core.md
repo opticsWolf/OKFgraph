@@ -1,7 +1,7 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** M0 in progress — decisions locked, scaffold landed, Windows `lbug`
-cross-open spike green; Linux/macOS spikes and PyO3/rmcp spikes pending  
+**Status:** M0 in progress — decisions locked, scaffold landed, Windows `lbug`,
+PyO3 and rmcp spikes green, `pycompat` goldens green; Linux/macOS spikes pending  
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -993,6 +993,9 @@ the `cpu`/`gpu` ORT runtime, and a missing/incompatible plugin is
    (scenario format, comparison rules).
 7. Implement `pycompat` + fixtures first (JSON/extra/content_sig/YAML/time); this
    is the highest-leverage parity work and it unblocks every later phase.
+   **Done for JSON/extra/content_sig/time:** `src/pycompat.rs` passes 17
+   Python-generated golden cases from `parity/golden/pycompat.json`. PyYAML 1.1
+   scalar resolution remains for the `markdown` work.
 8. Record the go/no-go decision and update this plan with measured build times,
    wheel size, and any Ladybug deviations.
 

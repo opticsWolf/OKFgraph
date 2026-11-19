@@ -1,0 +1,173 @@
+{
+  "json_dumps": [
+    {
+      "name": "unicode",
+      "value": {
+        "k": "h\u00e9llo \u2603 \u2028 \u2029\t\n\"\\"
+      },
+      "sort_keys": false,
+      "expected": "{\"k\": \"h\\u00e9llo \\u2603 \\u2028 \\u2029\\t\\n\\\"\\\\\"}"
+    },
+    {
+      "name": "nested",
+      "value": {
+        "a": [
+          1,
+          2.0,
+          null,
+          true
+        ],
+        "b": {
+          "x": "y"
+        }
+      },
+      "sort_keys": false,
+      "expected": "{\"a\": [1, 2.0, null, true], \"b\": {\"x\": \"y\"}}"
+    },
+    {
+      "name": "sort_keys",
+      "value": {
+        "b": 1,
+        "a": 2,
+        "c": {
+          "z": 1,
+          "y": 2
+        }
+      },
+      "sort_keys": true,
+      "expected": "{\"a\": 2, \"b\": 1, \"c\": {\"y\": 2, \"z\": 1}}"
+    },
+    {
+      "name": "floats",
+      "value": [
+        0.0,
+        1.0,
+        -0.0,
+        1e-07,
+        1e+20,
+        1.2345678901234567
+      ],
+      "sort_keys": false,
+      "expected": "[0.0, 1.0, -0.0, 1e-07, 1e+20, 1.2345678901234567]"
+    },
+    {
+      "name": "default_str",
+      "value": {
+        "d": {
+          "__type__": "datetime",
+          "value": "2024-01-02T03:04:05"
+        },
+        "day": {
+          "__type__": "date",
+          "value": "2024-01-02"
+        }
+      },
+      "sort_keys": false,
+      "expected": "{\"d\": \"2024-01-02 03:04:05\", \"day\": \"2024-01-02\"}"
+    }
+  ],
+  "extra_value": [
+    {
+      "name": "string",
+      "value": "h\u00e9llo",
+      "expected": "h\u00e9llo"
+    },
+    {
+      "name": "date",
+      "value": {
+        "__type__": "date",
+        "value": "2024-01-02"
+      },
+      "expected": "2024-01-02"
+    },
+    {
+      "name": "datetime",
+      "value": {
+        "__type__": "datetime",
+        "value": "2024-01-02T03:04:05"
+      },
+      "expected": "2024-01-02T03:04:05"
+    },
+    {
+      "name": "int",
+      "value": 42,
+      "expected": "42"
+    },
+    {
+      "name": "bool",
+      "value": true,
+      "expected": "true"
+    },
+    {
+      "name": "none",
+      "value": null,
+      "expected": "null"
+    },
+    {
+      "name": "list",
+      "value": [
+        1,
+        "x",
+        {
+          "__type__": "datetime",
+          "value": "2024-01-02T03:04:05"
+        }
+      ],
+      "expected": "[1, \"x\", \"2024-01-02 03:04:05\"]"
+    },
+    {
+      "name": "dict",
+      "value": {
+        "b": 2,
+        "a": 1
+      },
+      "expected": "{\"b\": 2, \"a\": 1}"
+    },
+    {
+      "name": "float",
+      "value": 1e-07,
+      "expected": "1e-07"
+    }
+  ],
+  "content_sig": [
+    {
+      "name": "simple",
+      "data": {
+        "title": "Alpha",
+        "tags": [
+          "x",
+          "y"
+        ]
+      },
+      "body": "hello",
+      "expected": "2065126a605826450c5c2782b5327c7660a1ada14550331504f0d8ef36df582f"
+    },
+    {
+      "name": "datetime",
+      "data": {
+        "timestamp": {
+          "__type__": "datetime",
+          "value": "2024-01-02T03:04:05"
+        },
+        "extra": {
+          "k": "v"
+        }
+      },
+      "body": "h\u00e9llo\n\u2603",
+      "expected": "ee710a18d02065f23dfc26cf8fc30f65dcfa962e57d969aba790ad9000b21b4a"
+    },
+    {
+      "name": "empty_body",
+      "data": {
+        "id": "alpha"
+      },
+      "body": "",
+      "expected": "7a047708c68662861dbc45c0b884b7694c9e42ead4c00576152ebd8cb23f4e28"
+    }
+  ],
+  "datetime": {
+    "str": "2024-01-02 03:04:05",
+    "isoformat": "2024-01-02T03:04:05",
+    "date_str": "2024-01-02"
+  }
+}

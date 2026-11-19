@@ -164,6 +164,22 @@ impl Store {
         )
     }
 
+    pub fn drop_search_indexes(&self) -> Result<()> {
+        self.with_write_conn(|conn| {
+            for sql in [
+                "CALL DROP_VECTOR_INDEX('Concept', 'concept_embedding')",
+                "CALL DROP_FTS_INDEX('Concept', 'concept_fts')",
+                "CALL DROP_VECTOR_INDEX('ImageAsset', 'image_omni_idx')",
+                "CALL DROP_VECTOR_INDEX('Chunk', 'chunk_embedding')",
+                "CALL DROP_FTS_INDEX('Chunk', 'chunk_fts')",
+            ] {
+                // A missing index is benign: drop is the recovery path.
+                let _ = conn.query(sql);
+            }
+            Ok(())
+        })
+    }
+
     pub fn create_search_indexes(&self) -> Result<()> {
         self.with_write_conn(|conn| {
             for sql in [
@@ -729,6 +745,76 @@ impl Store {
         Ok((ancestry.into_iter().map(Json::Object).collect(), siblings))
     }
 
+    pub fn image_asset_fingerprint(&self, asset_id: &str) -> Result<Option<(String, bool)>> {
+        let rows = self.query(
+            "MATCH (i:ImageAsset {id: $iid}) \
+             RETURN i.content_hash AS hash, i.data AS data",
+            vec![("iid", Value::String(asset_id.into()))],
+        )?;
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let hash = row
+            .get("hash")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let has_data = match row.get("data") {
+            Some(Json::Null) | None => false,
+            Some(Json::String(text)) => text != "b''",
+            Some(Json::Array(items)) => !items.is_empty(),
+            Some(_) => true,
+        };
+        Ok(Some((hash, has_data)))
+    }
+
+    pub fn image_asset_fingerprints_for_concept(
+        &self,
+        concept_id: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let rows = self.query(
+            "MATCH (c:Concept {id: $cid})-[:INCLUDES_ASSET]->(i:ImageAsset) \
+             RETURN i.id AS id, i.content_hash AS hash",
+            vec![("cid", Value::String(concept_id.into()))],
+        )?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                Some((
+                    row.get("id")?.as_str()?.to_string(),
+                    row.get("hash")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                ))
+            })
+            .collect())
+    }
+
+    pub fn delete_image_asset(&self, concept_id: &str, asset_id: &str) -> Result<()> {
+        self.write(
+            "MATCH (c:Concept {id: $cid})-[r:INCLUDES_ASSET]->(i:ImageAsset {id: $iid}) \
+             DELETE r \
+             WITH i OPTIONAL MATCH (i)<-[:INCLUDES_ASSET]-(:Concept) \
+             WITH i, count(*) AS n WHERE n = 0 DELETE i",
+            vec![
+                ("cid", Value::String(concept_id.into())),
+                ("iid", Value::String(asset_id.into())),
+            ],
+        )
+    }
+
+    pub fn link_image_asset(&self, concept_id: &str, asset_id: &str) -> Result<()> {
+        self.write(
+            "MATCH (c:Concept {id: $cid}), (i:ImageAsset {id: $iid}) \
+             MERGE (c)-[:INCLUDES_ASSET]->(i)",
+            vec![
+                ("cid", Value::String(concept_id.into())),
+                ("iid", Value::String(asset_id.into())),
+            ],
+        )
+    }
+
     pub fn list_images(&self, concept_id: &str) -> Result<Vec<Json>> {
         let rows = self.query(
             "MATCH (c:Concept {id: $cid})-[:INCLUDES_ASSET]->(i:ImageAsset) \
@@ -1247,7 +1333,11 @@ impl Store {
                 "pinned_text_space": self.meta_text("embedding_image_text_space")?,
                 "backend": self.settings.image_backend,
                 "configured_model": configured_image_model,
-                "configured_precision": null,
+                "configured_precision": if self.settings.image_precision == "auto" {
+                    None
+                } else {
+                    Some(self.settings.image_precision.clone())
+                },
                 "configured_space": null,
                 "configured_text_space": null
             },

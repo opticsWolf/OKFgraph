@@ -2,7 +2,7 @@
 //! the differential corpus: frontmatter identity, synthesized titles/types,
 //! chunk rows, file hashes, directory hierarchy, and wikilink resolution.
 
-use crate::embed::{check_pins, Embedder, EmbedderPool, Task};
+use crate::embed::{check_pins, Embedder, EmbedderPool, Pools, Task};
 use crate::error::{OkfError, Result};
 use crate::markdown::{parse_frontmatter, split_into_chunks, Chunk as MdChunk};
 use crate::model::{extra_value, normalize_tags, utc_now_datetime, PyDateTime};
@@ -46,6 +46,7 @@ pub fn import_files(
     store: &Store,
     settings: &Settings,
     embedder: &EmbedderPool,
+    pools: &Pools,
     paths: &[String],
 ) -> Result<Json> {
     let mut missing = Vec::new();
@@ -72,8 +73,16 @@ pub fn import_files(
         .iter()
         .map(|path| parse_file(Path::new(path), settings, None))
         .collect::<Result<Vec<_>>>()?;
-    commit_parsed(store, settings, engine.as_ref(), &parsed, None, false)?;
-    Ok(import_report(&parsed, Json::Null))
+    commit_parsed(
+        store,
+        settings,
+        engine.as_ref(),
+        pools,
+        &parsed,
+        None,
+        false,
+    )?;
+    import_report(store, &parsed, Json::Null)
 }
 
 /// Import a whole bundle with Python's directory-delta detection. Unchanged
@@ -83,6 +92,7 @@ pub fn import_bundle(
     store: &Store,
     settings: &Settings,
     embedder: &EmbedderPool,
+    pools: &Pools,
     bundle_path: Option<&str>,
 ) -> Result<Json> {
     let configured = settings.bundle_root.as_deref().map(PathBuf::from);
@@ -217,7 +227,15 @@ pub fn import_bundle(
     }
 
     if !parsed.is_empty() {
-        commit_parsed(store, settings, engine.as_ref(), &parsed, Some(&root), true)?;
+        commit_parsed(
+            store,
+            settings,
+            engine.as_ref(),
+            pools,
+            &parsed,
+            Some(&root),
+            true,
+        )?;
         let mut file_hashes: BTreeMap<String, (String, String)> = BTreeMap::new();
         for item in &parsed {
             let rel = native_rel(&item.path, &root);
@@ -252,7 +270,10 @@ pub fn import_bundle(
         );
         let mut images = Map::new();
         for item in &parsed {
-            images.insert(item.id.clone(), Json::from(0));
+            images.insert(
+                item.id.clone(),
+                Json::from(store.list_images(&item.id)?.len() as i64),
+            );
         }
         object.insert("images".into(), Json::Object(images));
     }
@@ -276,6 +297,7 @@ fn commit_parsed(
     store: &Store,
     settings: &Settings,
     engine: &dyn Embedder,
+    pools: &Pools,
     parsed: &[Parsed],
     root: Option<&Path>,
     bulk: bool,
@@ -299,19 +321,29 @@ fn commit_parsed(
     }
     create_directories(store, parsed)?;
     repair_links(store)?;
+    for item in parsed {
+        let base_dir = item.path.parent();
+        crate::image_ingest::ingest_concept_images(
+            store, settings, engine, pools, &item.id, &item.body, base_dir, root,
+        )?;
+    }
     finish_indexes(store)
 }
 
-fn import_report(parsed: &[Parsed], detail: Json) -> Json {
+fn import_report(store: &Store, parsed: &[Parsed], detail: Json) -> Result<Json> {
+    let mut images = BTreeMap::new();
+    for item in parsed {
+        images.insert(
+            item.id.clone(),
+            Json::from(store.list_images(&item.id)?.len() as i64),
+        );
+    }
     let mut result = serde_json::json!({
         "concept_ids": parsed
             .iter()
             .map(|item| Json::String(item.id.clone()))
             .collect::<Vec<_>>(),
-        "images": parsed
-            .iter()
-            .map(|item| (item.id.clone(), Json::from(0)))
-            .collect::<BTreeMap<_, _>>(),
+        "images": images,
     });
     if !detail.is_null() {
         if let (Some(target), Some(extra)) = (result.as_object_mut(), detail.as_object()) {
@@ -320,7 +352,7 @@ fn import_report(parsed: &[Parsed], detail: Json) -> Json {
             }
         }
     }
-    result
+    Ok(result)
 }
 
 fn resolve_identity_conflicts(

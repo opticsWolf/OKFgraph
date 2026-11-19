@@ -223,10 +223,19 @@ Additional Stage B scenarios:
 - `export-minimal.json`, `export-filter.json`, `export-links.json` — export
   reports plus byte-for-byte `okf`/`obsidian` trees, nested indexes, and YAML
   frontmatter with `uid`, timestamps, and relations.
+- `images-import.json` — caption-route image assets, deterministic asset IDs,
+  content hashes, pins, and index state.
+- `images-import-vision.json` — Gemma vision-route assets with explicit
+  `image_precision=fp16`, plus `reindex(if_dirty=...)` and forced rebuild.
+
+`setup.import` may contain op params such as `mode`; the Rust runner forwards
+them to `import_bundle`, and the Python harness forwards them after removing
+constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
+(embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
 All Stage B scenarios report **0 differences** on ops output; import, links,
-and delete scenarios also match on semantic DB dumps, and export trees match
-byte-for-byte. Remaining M3 gaps: imported image assets, converters, `diff`,
-`lint`, `produce`, `sync`, `detach`, `reindex`, and `reembed`.
+delete, and image scenarios also match on semantic DB dumps, and export trees
+match byte-for-byte. Remaining M3 gaps: converters, `diff`, `lint`, `produce`,
+`sync`, `detach`, `reembed`, and the remaining write ops.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

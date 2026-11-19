@@ -1,0 +1,63 @@
+{
+  "name": "images-import-vision",
+  "settings": {
+    "db_path": "parity/out/images-import-vision.db",
+    "bundle_root": "parity/corpus/images",
+    "model_id": "google/embeddinggemma-2",
+    "embedding_dim": 512,
+    "device": "cuda",
+    "precision": "auto",
+    "image_precision": "fp16",
+    "enable_chunking": false
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/images",
+      "mode": "omni"
+    }
+  },
+  "ops": [
+    {
+      "op": "import_bundle",
+      "params": {
+        "bundle_path": "parity/corpus/images"
+      }
+    },
+    {
+      "op": "list_images",
+      "params": {
+        "concept_id": "red-fox"
+      }
+    },
+    {
+      "op": "get_image",
+      "params": {
+        "asset_id": "img_fb41f34d-7890-5a19-90aa-f3a50e79afa8"
+      }
+    },
+    {
+      "op": "search",
+      "params": {
+        "query": "red fox",
+        "target": "images",
+        "limit": 5
+      }
+    },
+    {
+      "op": "pin_info",
+      "params": {}
+    },
+    {
+      "op": "reindex",
+      "params": {
+        "if_dirty": true
+      }
+    },
+    {
+      "op": "reindex",
+      "params": {
+        "if_dirty": false
+      }
+    }
+  ]
+}

@@ -833,12 +833,13 @@ skip (unchanged re-imports enqueue zero files and do no embedding), frontmatter
 identity conflicts and move detection, wikilink/path/relation extraction with
 `BrokenLink` reasons, incoming-link preservation, repair, soft delete/recover/
 purge with mirror-hash cleanup, `export_bundle`/`export_concept` (`okf` and
-`obsidian` flavors, link enrichment, generated `index.md`), and the Python-
-compatible YAML/text bytes on Windows.
+`obsidian` flavors, link enrichment, generated `index.md`), the Python-
+compatible YAML/text bytes on Windows, markdown image extraction with text and
+native vision routes (asset IDs, captions, content hashes, pins, indexes), and
+`reindex(if_dirty=...)` with forced index recovery.
 
-Remaining M3 gaps: imported image assets, PDF/Office/bib/thoughts converters,
-`diff`/`lint`/`produce`/`sync`/`detach`, `reindex`/`reembed`, and the remaining
-write ops.
+Remaining M3 gaps: PDF/Office/bib/thoughts converters, `diff`/`lint`/
+`produce`/`sync`/`detach`, `reembed`, and the remaining write ops.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

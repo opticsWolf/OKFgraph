@@ -48,10 +48,16 @@ def main() -> int:
         builder = dict(settings)
         builder.pop("db_path", None)
         builder.pop("bundle_root", None)
+        builder.pop("mode", None)
         build_router = OKFRouter(
             db_path=str(db), bundle_root=str(corpus), **builder)
         try:
-            build_router.import_bundle()
+            import_params = {
+                key: value
+                for key, value in imported.items()
+                if key != "corpus"
+            }
+            build_router.import_bundle(**import_params)
         finally:
             build_router.close()
     router = OKFRouter(**settings)

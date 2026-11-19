@@ -73,7 +73,8 @@ fn main() -> ExitCode {
         builder.bundle_root = Some(corpus.to_string());
         match Router::open_writable(&builder) {
             Ok(writer) => {
-                let params = serde_json::json!({});
+                let params = imported.as_object().cloned().unwrap_or_default();
+                let params = serde_json::Value::Object(params);
                 if let Err(err) = writer.call("import_bundle", params.as_object().unwrap()) {
                     eprintln!("import failed: {}", err.titles());
                     return ExitCode::from(1);

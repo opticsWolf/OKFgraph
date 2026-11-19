@@ -520,6 +520,18 @@ impl VisionPool {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct Pools {
+    #[cfg(feature = "vision")]
+    pub vision: VisionPool,
+}
+
+impl Pools {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 pub fn check_pins(settings: &Settings, pins: &Json) -> Result<()> {
     let pinned_model = pins
         .get("pinned")

@@ -4,7 +4,7 @@
 
 #[cfg(feature = "embed")]
 use crate::embed::RerankerPool;
-use crate::embed::{check_pins, EmbedderPool, Task};
+use crate::embed::{check_pins, EmbedderPool, Pools, Task};
 use crate::error::{OkfError, Result};
 use crate::markdown;
 use crate::pycompat::from_json;
@@ -76,6 +76,7 @@ pub const WRITE_OPS: &[&str] = &[
     "delete",
     "recover_deleted",
     "purge_deleted",
+    "reindex",
 ];
 
 pub fn is_op(name: &str) -> bool {
@@ -87,6 +88,7 @@ pub struct Router {
     store: Store,
     settings: Settings,
     embedder: EmbedderPool,
+    pools: Pools,
     #[cfg(feature = "embed")]
     reranker: RerankerPool,
 }
@@ -97,6 +99,7 @@ impl Router {
             store: Store::open(settings)?,
             settings: settings.clone(),
             embedder: EmbedderPool::new(),
+            pools: Pools::new(),
             #[cfg(feature = "embed")]
             reranker: RerankerPool::new(),
         })
@@ -109,6 +112,7 @@ impl Router {
             store: Store::open_writable(settings)?,
             settings: settings.clone(),
             embedder: EmbedderPool::new(),
+            pools: Pools::new(),
             #[cfg(feature = "embed")]
             reranker: RerankerPool::new(),
         })
@@ -117,6 +121,20 @@ impl Router {
     /// Create a new v10 database.
     pub fn init(path: impl AsRef<Path>, embedding_dim: i64) -> Result<Vec<String>> {
         Store::init(path, embedding_dim)
+    }
+
+    fn import_settings(&self, params: &Map<String, Json>) -> Result<Settings> {
+        let mut settings = self.settings.clone();
+        if let Some(mode) = opt_str(params, "mode")? {
+            if !matches!(mode.as_str(), "text" | "optional" | "omni") {
+                return Err(OkfError::new(
+                    "BAD_VALUE",
+                    format!("mode must be text, optional, or omni, got '{mode}'"),
+                ));
+            }
+            settings.mode = mode;
+        }
+        Ok(settings)
     }
 
     fn import_files(&self, params: &Map<String, Json>) -> Result<Json> {
@@ -130,7 +148,8 @@ impl Router {
         if paths.is_empty() && params.contains_key("file_path") {
             return self.import_file(params);
         }
-        crate::ingest::import_files(&self.store, &self.settings, &self.embedder, &paths)
+        let settings = self.import_settings(params)?;
+        crate::ingest::import_files(&self.store, &settings, &self.embedder, &self.pools, &paths)
             .map_err(|err| err.op("import_files"))
     }
 
@@ -189,6 +208,21 @@ impl Router {
         }))
     }
 
+    fn reindex(&self, params: &Map<String, Json>) -> Result<Json> {
+        let if_dirty = opt_bool(params, "if_dirty")?.unwrap_or(false);
+        let write_epoch = self.store.meta_int("write_epoch")?.unwrap_or(0);
+        let indexed_epoch = self.store.meta_int("indexed_epoch")?.unwrap_or(0);
+        if if_dirty && write_epoch <= indexed_epoch {
+            return Ok(serde_json::json!({ "rebuilt": false }));
+        }
+        if !if_dirty {
+            self.store.drop_search_indexes()?;
+        }
+        self.store.create_search_indexes()?;
+        self.store.set_meta_int("indexed_epoch", write_epoch)?;
+        Ok(serde_json::json!({ "rebuilt": true }))
+    }
+
     fn export_bundle(&self, params: &Map<String, Json>) -> Result<Json> {
         let output_dir = str_param(params, "output_dir")?.to_string();
         let directory_id = opt_str(params, "directory_id")?;
@@ -241,16 +275,25 @@ impl Router {
                     .field("bundle_path", Json::String("expected a string".into())))
             }
         };
-        crate::ingest::import_bundle(&self.store, &self.settings, &self.embedder, bundle_path)
-            .map_err(|err| err.op("import_bundle"))
+        let settings = self.import_settings(params)?;
+        crate::ingest::import_bundle(
+            &self.store,
+            &settings,
+            &self.embedder,
+            &self.pools,
+            bundle_path,
+        )
+        .map_err(|err| err.op("import_bundle"))
     }
 
     fn import_file(&self, params: &Map<String, Json>) -> Result<Json> {
         let path = str_param(params, "file_path")?.to_string();
+        let settings = self.import_settings(params)?;
         let report = crate::ingest::import_files(
             &self.store,
-            &self.settings,
+            &settings,
             &self.embedder,
+            &self.pools,
             std::slice::from_ref(&path),
         )
         .map_err(|err| err.op("import_file"))?;
@@ -303,6 +346,7 @@ impl Router {
             "delete" => self.delete(params),
             "recover_deleted" => self.recover_deleted(params),
             "purge_deleted" => self.purge_deleted(params),
+            "reindex" => self.reindex(params),
             "pin_info" => self.pin_info(),
             "lanes" => self.lanes(),
             "doctor" => self.doctor(),
@@ -2599,6 +2643,17 @@ fn opt_str(params: &Map<String, Json>, name: &str) -> Result<Option<String>> {
         Some(other) => Err(OkfError::new(
             "BAD_VALUE",
             format!("{name} must be a string, got {other}"),
+        )),
+    }
+}
+
+fn opt_bool(params: &Map<String, Json>, name: &str) -> Result<Option<bool>> {
+    match params.get(name) {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::Bool(value)) => Ok(Some(*value)),
+        Some(other) => Err(OkfError::new(
+            "BAD_VALUE",
+            format!("{name} must be a boolean, got {other}"),
         )),
     }
 }

@@ -257,7 +257,9 @@ constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 
 All Stage B scenarios report **0 differences** on ops output; import, links,
 delete, image, reembed, and write-op scenarios also match on semantic DB
-dumps, and export trees match byte-for-byte. Remaining M3 gaps: converters,
-`produce`, `sync`, `detach`, and any remaining write ops.
+dumps, and export trees match byte-for-byte. Current M3 matrix: no remaining
+gaps on the Windows/CUDA oracle. Full PDF conversion parity is pending a real
+PDF/model fixture; the plugin ABI, loader, and missing-plugin envelope are
+covered.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

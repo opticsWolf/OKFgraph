@@ -864,13 +864,22 @@ reserved log, producer cursors in `ProducerCursor`, and import of exactly
 the files written by the producer. Chunk embedding payloads now include
 heading context, matching Python for generated documentation bundles.
 
-Stage B also adds `ingest` dispatch with kind validation and the markdown
-and BibTeX converters. Markdown ingest uses the shared single-concept import
-pipeline; BibTeX ingest emits stable `refs/<key>` concepts with citation
-frontmatter. PDF conversion without the native add-on returns the documented
+Stage B also adds `ingest` dispatch with kind validation and the markdown,
+BibTeX, and thoughts converters. Markdown ingest uses the shared
+single-concept import pipeline; BibTeX ingest emits stable `refs/<key>`
+concepts with citation frontmatter; thoughts ingest writes OKF-compliant
+frontmatter, preserves `created` via `extra`, and materializes the virtual
+`thoughts/<topic>/...` hierarchy.
+
+Stage B also wires PDF/Office conversion through the optional `okfgraph-pdf`
+C ABI plugin. `addons/pdf` wraps `bobine::HybridConverter`; the core loads the
+plugin lazily with `libloading`, checks ABI version 1, converts into a work
+directory, and auto-imports the produced bundle under the PDF namespace.
+The Python facade resolves `okfgraph_pdf.plugin_path()` into
+`OKFGRAPH_PDF_PLUGIN`. A missing or incompatible plugin returns the documented
 `CONVERSION_FAILED` install hint.
 
-Remaining M3 gaps: thoughts converter and PDF/Office conversion wiring.
+Remaining M3 gaps: none on the current Windows/CUDA oracle.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

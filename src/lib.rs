@@ -28,6 +28,7 @@ pub mod image_ingest;
 pub mod markdown;
 pub mod model;
 pub mod ops;
+pub mod pdf;
 pub mod producers;
 pub mod purge;
 pub mod pycompat;

@@ -3389,6 +3389,10 @@ dependencies = [
 [[package]]
 name = "okfgraph-pdf"
 version = "0.16.0-alpha.1"
+dependencies = [
+ "bobine",
+ "serde_json",
+]
 
 [[package]]
 name = "okfgraph-py"

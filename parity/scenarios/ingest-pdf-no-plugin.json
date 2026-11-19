@@ -1,0 +1,15 @@
+{
+  "name": "ingest-pdf-no-plugin",
+  "settings": {
+    "db_path": "parity/out/ingest-pdf-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {"import": {"corpus": "parity/corpus/empty"}},
+  "ops": [
+    {"op": "ingest", "params": {"kind": "pdf", "pdf_path": "parity/fixtures/tiny.pdf", "auto_import": false}},
+    {"op": "ingest", "params": {"kind": "pdf", "pdf_path": "parity/fixtures/missing.pdf"}}
+  ]
+}

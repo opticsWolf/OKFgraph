@@ -5,9 +5,11 @@ import sys
 from typing import Optional
 
 from . import _native
+from ._pdf import resolve_plugin
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    resolve_plugin()
     return int(_native.run_cli(list(sys.argv if argv is None else argv)))
 
 

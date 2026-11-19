@@ -5,9 +5,11 @@ use crate::error::{OkfError, Result};
 use crate::export::fs_write;
 use crate::ingest::{commit_parsed, finish_indexes, parse_file, Parsed};
 use crate::model::{normalize_tags, utc_now_datetime};
+use crate::pdf::{self, Plugin};
 use crate::pycompat::{content_sig, PyValue};
 use crate::settings::Settings;
 use crate::store::Store;
+use lbug::Value as LValue;
 use serde_json::{Map, Value as Json};
 use std::collections::BTreeMap;
 use std::fs;
@@ -73,7 +75,18 @@ fn validate(kind: &str, params: &Map<String, Json>) -> Result<()> {
     let mut ignored: Vec<String> = params
         .iter()
         .filter(|(key, value)| {
-            *key != "kind" && !value.is_null() && !allowed.contains(&key.as_str())
+            *key != "kind"
+                && !value.is_null()
+                && !allowed.contains(&key.as_str())
+                && !(kind == "pdf"
+                    && matches!(
+                        key.as_str(),
+                        "auto_import"
+                            | "routing_mode"
+                            | "extract_images"
+                            | "pdf_device"
+                            | "pdf_precision"
+                    ))
         })
         .map(|(key, _)| key.clone())
         .collect();
@@ -522,6 +535,351 @@ fn ingest_bib(
     }))
 }
 
+fn json_string(value: Option<&Json>) -> Option<String> {
+    value.and_then(Json::as_str).map(str::to_string)
+}
+
+fn thought_title(text: &str, topic: &str) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let sentence = flat
+        .split_once(['.', '!', '?'])
+        .map(|(head, _)| format!("{head}."))
+        .unwrap_or(flat);
+    let sentence = sentence.trim_end_matches(['.', '!', '?', ' ']);
+    if sentence.chars().filter(|ch| ch.is_alphanumeric()).count() < 3 {
+        let now = utc_now_datetime();
+        let iso = now.isoformat();
+        format!("{topic} — {}", iso[..16].replace('T', " "))
+    } else {
+        let mut out = String::new();
+        let mut last_space = 0usize;
+        for (idx, ch) in sentence.char_indices() {
+            if ch == ' ' && idx >= 60 {
+                break;
+            }
+            if ch == ' ' {
+                last_space = idx;
+            }
+            out.push(ch);
+        }
+        if out.chars().count() > 80 {
+            out.truncate(last_space);
+        }
+        out
+    }
+}
+
+fn ingest_thoughts(
+    store: &Store,
+    settings: &Settings,
+    embedder: &EmbedderPool,
+    pools: &Pools,
+    params: &Map<String, Json>,
+) -> Result<Json> {
+    let thoughts = params
+        .get("thoughts")
+        .and_then(Json::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            OkfError::new(
+                "MISSING_PARAM",
+                "kind='thoughts' requires thoughts and topic",
+            )
+            .field("thoughts", Json::Bool(false))
+            .field(
+                "topic",
+                Json::Bool(params.get("topic").and_then(Json::as_str).is_some()),
+            )
+        })?;
+    let topic = params
+        .get("topic")
+        .and_then(Json::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            OkfError::new(
+                "MISSING_PARAM",
+                "kind='thoughts' requires thoughts and topic",
+            )
+            .field("thoughts", Json::Bool(true))
+            .field("topic", Json::Bool(false))
+        })?;
+
+    let now = utc_now_datetime();
+    let created = now.isoformat();
+    let concept_id = json_string(params.get("concept_id"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            let slug: String = topic
+                .to_lowercase()
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-') {
+                        ch
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let slug = slug.trim_matches(['.', '_']);
+            let stamp = created[..19].replace(['-', ':', 'T'], "");
+            format!(
+                "thoughts/{slug}/{}_{}",
+                stamp,
+                &uuid::Uuid::new_v4().to_string()[..6]
+            )
+        });
+    let title = json_string(params.get("title"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| thought_title(thoughts, topic));
+    let description = json_string(params.get("description"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("Reasoning about {topic}"));
+    let concept_type = json_string(params.get("type"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "thought".into());
+    let mut tags = vec![
+        "thought".to_string(),
+        "reasoning".to_string(),
+        topic.to_string(),
+    ];
+    if let Some(value) = params.get("tags") {
+        tags.extend(normalize_tags(value));
+    }
+    let mut unique: Vec<String> = Vec::new();
+    for tag in tags.drain(..) {
+        if !unique.contains(&tag) {
+            unique.push(tag);
+        }
+    }
+    tags = unique;
+    if topic == "thought" && tags.len() == 2 {
+        tags = vec!["thought".into(), "reasoning".into()];
+    }
+
+    let mut extra = BTreeMap::new();
+    extra.insert("created".into(), created.clone());
+    if let Some(Json::Object(values)) = params.get("extra") {
+        for (key, value) in values {
+            if RESERVED_EXTRA.contains(&key.as_str()) {
+                return Err(OkfError::new(
+                    "BAD_VALUE",
+                    format!(
+                        "extra may not set {key} (use the dedicated parameters: concept_id, type, title, description, tags)"
+                    ),
+                )
+                .field("reserved", Json::Array(vec![Json::String(key.clone())])));
+            }
+            extra.insert(
+                key.clone(),
+                crate::pycompat::extra_value(&PyValue::from_golden(value)),
+            );
+        }
+    }
+    let related: Vec<String> = match params.get("related") {
+        Some(Json::Array(items)) => items
+            .iter()
+            .filter_map(Json::as_str)
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+    if !related.is_empty() {
+        extra.insert(
+            "relations".into(),
+            serde_json::json!({"related": related}).to_string(),
+        );
+    }
+
+    let mut meta: BTreeMap<String, Json> = BTreeMap::new();
+    meta.insert("created".into(), Json::String(created.clone()));
+    let meta_tags = vec![
+        "thought".to_string(),
+        "reasoning".to_string(),
+        topic.to_string(),
+    ];
+    meta.insert(
+        "tags".into(),
+        serde_json::to_value(meta_tags).unwrap_or_default(),
+    );
+    meta.insert("thought_type".into(), Json::String("reasoning".into()));
+    meta.insert("title".into(), Json::String(title.clone()));
+    meta.insert("topic".into(), Json::String(topic.into()));
+    meta.insert("type".into(), Json::String(concept_type.clone()));
+    for (key, value) in params
+        .get("extra")
+        .and_then(Json::as_object)
+        .into_iter()
+        .flatten()
+    {
+        meta.insert(key.clone(), value.clone());
+    }
+    let yaml = crate::export::dump_yaml(&Json::Object(meta.into_iter().collect()), 0);
+    let markdown = format!("---\n{yaml}---\n\n{thoughts}\n");
+
+    let mut parsed = parse_markdown(&markdown, &concept_id, settings)?;
+    parsed.body = markdown.clone();
+    parsed.title = title.clone();
+    parsed.concept_type = concept_type.clone();
+    parsed.description = Some(description.clone());
+    parsed.tags = tags.clone();
+    parsed.timestamp = Some(now);
+    parsed.extra = extra;
+    let mut authored: Vec<(String, PyValue)> = vec![
+        ("id".into(), PyValue::Str(concept_id.clone())),
+        ("type".into(), PyValue::Str(concept_type.clone())),
+        ("title".into(), PyValue::Str(title.clone())),
+        ("description".into(), PyValue::Str(description.clone())),
+        ("resource".into(), PyValue::Null),
+        (
+            "tags".into(),
+            PyValue::List(tags.iter().cloned().map(PyValue::Str).collect()),
+        ),
+        ("timestamp".into(), PyValue::DateTime(now.isoformat())),
+        ("thought_type".into(), PyValue::Str("reasoning".into())),
+        ("topic".into(), PyValue::Str(topic.into())),
+        ("created".into(), PyValue::Str(created)),
+    ];
+    for (key, value) in params
+        .get("extra")
+        .and_then(Json::as_object)
+        .into_iter()
+        .flatten()
+    {
+        authored.push((key.clone(), PyValue::from_golden(value)));
+    }
+    parsed.authored = BTreeMap::new();
+    parsed.sig = content_sig(&PyValue::Dict(authored), &markdown);
+
+    commit(store, settings, embedder, pools, parsed)?;
+    // The single-concept path does not run the bundle's directory-hierarchy
+    // pass; thoughts still get a virtual namespace, so materialize it here.
+    let parts: Vec<&str> = concept_id.split('/').collect();
+    for index in 1..parts.len() {
+        let parent = parts[..index].join("/");
+        let child = parts[..=index].join("/");
+        store.write(
+            "MERGE (:Directory {id: $id})",
+            vec![("id", LValue::String(parent.clone()))],
+        )?;
+        let (from_label, to_label, from, to) = if index + 1 == parts.len() {
+            ("Directory", "Concept", parent, child)
+        } else {
+            store.write(
+                "MERGE (:Directory {id: $id})",
+                vec![("id", LValue::String(child.clone()))],
+            )?;
+            ("Directory", "Directory", parent, child)
+        };
+        let _ = (from_label, to_label);
+        store.write(
+            &format!("MATCH (a:{from_label} {{id: $from}}), (b:{to_label} {{id: $to}}) MERGE (a)-[:CONTAINS]->(b)"),
+            vec![
+                ("from", LValue::String(from)),
+                ("to", LValue::String(to)),
+            ],
+        )?;
+    }
+    let chunk_count = store.get_chunks(&concept_id)?.len();
+    let mut out = serde_json::json!({
+        "concept_id": concept_id.clone(),
+        "title": title,
+        "topic": topic,
+        "tags": tags,
+        "chunk_count": chunk_count,
+        "markdown": markdown,
+        "lint_issues": {
+            "content": markdown,
+            "fixed": true,
+            "fixed_count": 1,
+            "unfixable": [],
+            "errors": [],
+        },
+    });
+    if !related.is_empty() {
+        let raw: Vec<String> = store
+            .list_broken_links()?
+            .into_iter()
+            .filter(|link| link.get("source").and_then(Json::as_str) == Some(concept_id.as_str()))
+            .filter_map(|link| link.get("raw").and_then(Json::as_str).map(str::to_string))
+            .collect();
+        out["unresolved_related"] = serde_json::to_value(raw).unwrap_or_default();
+    }
+    Ok(out)
+}
+
+fn ingest_pdf(
+    store: &Store,
+    settings: &Settings,
+    embedder: &EmbedderPool,
+    pools: &Pools,
+    params: &Map<String, Json>,
+) -> Result<Json> {
+    let pdf_path = json_string(params.get("pdf_path"))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            OkfError::new("MISSING_PARAM", "kind='pdf' requires pdf_path")
+                .field("pdf_path", Json::Null)
+        })?;
+    let source = PathBuf::from(&pdf_path);
+    if !source.is_file() {
+        return Err(
+            OkfError::new("FILE_NOT_FOUND", format!("PDF not found: {pdf_path}"))
+                .field("path", Json::String(pdf_path.clone())),
+        );
+    }
+    let auto_import = params
+        .get("auto_import")
+        .and_then(Json::as_bool)
+        .unwrap_or(true);
+    let output_dir = if auto_import {
+        std::env::temp_dir().join(format!("okf_ingest_{}", uuid::Uuid::new_v4()))
+    } else {
+        params
+            .get("output_dir")
+            .and_then(Json::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                source
+                    .parent()
+                    .map(Path::new)
+                    .unwrap_or(Path::new("."))
+                    .to_path_buf()
+            })
+    };
+    fs::create_dir_all(&output_dir)?;
+    let plugin = Plugin::load()?;
+    let converted = plugin.convert(&source, &output_dir, &pdf::config(settings))?;
+    if auto_import {
+        let mut import_settings = settings.clone();
+        import_settings.bundle_root = Some(output_dir.to_string_lossy().into_owned());
+        let report = crate::ingest::import_bundle(
+            store,
+            &import_settings,
+            embedder,
+            pools,
+            Some(&output_dir.to_string_lossy()),
+        )?;
+        let concept_ids = report
+            .get("concept_ids")
+            .cloned()
+            .unwrap_or_else(|| Json::Array(Vec::new()));
+        return Ok(serde_json::json!({
+            "md_path": converted.md_path.to_string_lossy(),
+            "concept_ids": concept_ids,
+            "image_dir": converted.image_dir.to_string_lossy(),
+            "page_count": converted.page_count,
+        }));
+    }
+    Ok(serde_json::json!({
+        "md_path": converted.md_path.to_string_lossy(),
+        "concept_ids": Json::Array(Vec::new()),
+        "image_dir": converted.image_dir.to_string_lossy(),
+        "page_count": converted.page_count,
+    }))
+}
+
 pub fn ingest(
     store: &Store,
     settings: &Settings,
@@ -536,16 +894,8 @@ pub fn ingest(
     match kind {
         "md" => ingest_md(store, settings, embedder, pools, params),
         "bib" => ingest_bib(store, settings, embedder, pools, params),
-        "pdf" => Err(OkfError::new(
-            "CONVERSION_FAILED",
-            "PDF conversion requires the native add-on: pip install \"okfgraph[cpu,pdf]\" or \"okfgraph[gpu,pdf]\"",
-        )
-        .op("ingest")),
-        "thoughts" => Err(OkfError::new(
-            "BAD_VALUE",
-            "kind='thoughts' is not implemented in this Stage B build",
-        )
-        .op("ingest")),
+        "pdf" => ingest_pdf(store, settings, embedder, pools, params),
+        "thoughts" => ingest_thoughts(store, settings, embedder, pools, params),
         _ => Err(OkfError::new("BAD_VALUE", format!("unknown ingest kind '{kind}'")).op("ingest")),
     }
 }

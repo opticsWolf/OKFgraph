@@ -5,6 +5,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from . import _native
+from ._pdf import resolve_plugin
 from .errors import OKFError
 from .models import ConceptModel
 
@@ -25,6 +26,7 @@ _READ_METHODS = {
 
 class OKFRouter:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        resolve_plugin()
         if args:
             raise OKFError("BAD_VALUE", "OKFRouter takes keyword settings only")
         params = {key: value for key, value in kwargs.items() if value is not None}

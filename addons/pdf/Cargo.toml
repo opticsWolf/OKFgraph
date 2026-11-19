@@ -11,4 +11,5 @@ name = "okfgraph_pdf"
 crate-type = ["cdylib"]
 
 [dependencies]
-# bobine is added when the C ABI is implemented in M3.
+bobine = "=0.9.1"
+serde_json = "1"

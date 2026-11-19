@@ -1,0 +1,36 @@
+{
+  "name": "ingest-thoughts",
+  "settings": {
+    "db_path": "parity/out/ingest-thoughts-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/empty"
+    }
+  },
+  "ops": [
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "thoughts",
+        "thoughts": "This is a stable thought.",
+        "topic": "thought",
+        "concept_id": "thoughts/parity/fixed-1",
+        "title": "Fixed Thought",
+        "extra": {
+          "created": "2026-01-01T00:00:00"
+        }
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "thoughts/parity/fixed-1"
+      }
+    }
+  ]
+}

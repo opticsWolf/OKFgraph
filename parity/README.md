@@ -244,8 +244,11 @@ Additional Stage B scenarios:
 - `produce.json` — SQLite producer, log deduplication, and unknown-producer
   errors; compare the produced trees byte-for-byte.
 - `sync.json` — incremental producer cursor and import of written files.
-- `ingest-md.json`, `ingest-bib.json` — `ingest` kind validation plus
-  markdown and BibTeX single-concept conversion.
+- `ingest-md.json`, `ingest-bib.json`, `ingest-thoughts.json` — `ingest` kind
+  validation plus markdown, BibTeX, and thoughts single-concept conversion.
+- `ingest-pdf-no-plugin.json` — Rust-only check that a missing plugin returns
+  `CONVERSION_FAILED` with the install hint while a missing file returns
+  `FILE_NOT_FOUND`.
 
 `setup.import` may contain op params such as `mode`; the Rust runner forwards
 them to `import_bundle`, and the Python harness forwards them after removing

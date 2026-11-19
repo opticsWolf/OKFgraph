@@ -65,10 +65,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--python", required=True)
     ap.add_argument("--rust", required=True)
+    ap.add_argument("--ignore-key", action="append", default=[])
     args = ap.parse_args()
 
     left = load(Path(args.python))
     right = load(Path(args.rust))
+    for key in args.ignore_key:
+        for tables in (left, right):
+            for rows in tables.values():
+                for row in rows:
+                    if isinstance(row, dict):
+                        row.pop(key, None)
     diffs: list[str] = []
     for table in sorted(set(left) | set(right)):
         a, b = left.get(table, []), right.get(table, [])

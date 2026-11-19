@@ -743,9 +743,11 @@ the existing ORT build in `D:\User\Documents\Python\OKFgraph\.venv`; no
 model or runtime download was performed. A vendored `esaxx-rs` patch flips
 `static_crt(false)` because tokenizers' default `esaxx_fast` C++ helper uses
 the static MSVC CRT and cannot link with Ladybug's MD prebuilt archive.
-Remaining M2 gaps: PyYAML 1.1 frontmatter resolution, mordant chunking parity
-beyond the oracle-generated fixture, full filter matrix, cross-encoder rerank,
-vision/image search, and budgeted `max_tokens` reads.
+The markdown layer now has Python goldens for mordant chunking (including
+`+` continuations and exact byte offsets), PyYAML 1.1 scalar resolution, and
+`python-frontmatter` parsing; all are green. `read(include='document')` now
+uses mordant delimiter reconstruction. Remaining M2 gaps: full filter matrix,
+cross-encoder rerank, vision/image search, and budgeted `max_tokens` reads.
 
 **Gate:** identical search result IDs/order/scores on the parity corpus
 (floats within 1e-6); vector cosine ≥ 0.99999 for text and ≥ 0.999 for images;

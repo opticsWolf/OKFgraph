@@ -4,6 +4,7 @@
 
 use crate::embed::{check_pins, EmbedderPool, Task};
 use crate::error::{OkfError, Result};
+use crate::markdown;
 use crate::pycompat::from_json;
 use crate::search::{self, DEDUPE_COSINE};
 use crate::settings::Settings;
@@ -244,11 +245,9 @@ impl Router {
                     .field("concept_id", Json::String(concept_id.into()))
                     .remedy("use include='body' for unchunked concepts"));
                 }
-                let markdown = chunks
-                    .iter()
-                    .filter_map(|c| c.get("chunk_text").and_then(Json::as_str))
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
+                let typed: Vec<markdown::Chunk> =
+                    serde_json::from_value(Json::Array(chunks.clone())).unwrap_or_default();
+                let markdown = markdown::reconstruct_document(&typed).unwrap_or_default();
                 Ok(serde_json::json!({"concept_id": concept_id, "markdown": markdown}))
             }
             "context" => {

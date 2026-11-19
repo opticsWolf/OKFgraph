@@ -1,0 +1,307 @@
+{
+  "chunks": {
+    "simple": {
+      "body": "# Title\n\nAlpha paragraph with [[beta]].\n\n- one\n- two\n\n> quoted\n",
+      "chunk_size": 5,
+      "chunks": [
+        {
+          "parent_doc_id": "simple",
+          "chunk_text": "# Title",
+          "block_type": "Heading",
+          "start_offset": 0,
+          "end_offset": 7,
+          "chunk_index": 0,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "simple",
+          "chunk_text": "Alpha paragraph with [[beta]].",
+          "block_type": "Paragraph",
+          "start_offset": 9,
+          "end_offset": 39,
+          "chunk_index": 1,
+          "heading_context": "# Title"
+        },
+        {
+          "parent_doc_id": "simple",
+          "chunk_text": "- one\n- two",
+          "block_type": "List",
+          "start_offset": 41,
+          "end_offset": 52,
+          "chunk_index": 2,
+          "heading_context": "# Title"
+        },
+        {
+          "parent_doc_id": "simple",
+          "chunk_text": "> quoted",
+          "block_type": "Blockquote",
+          "start_offset": 54,
+          "end_offset": 62,
+          "chunk_index": 3,
+          "heading_context": "# Title"
+        }
+      ]
+    },
+    "long": {
+      "body": "one two three four five six seven eight nine ten eleven twelve thirteen fourteen\n\nx x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x ",
+      "chunk_size": 5,
+      "chunks": [
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "one two three four five ",
+          "block_type": "Paragraph",
+          "start_offset": 0,
+          "end_offset": 24,
+          "chunk_index": 0,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "six seven eight nine ten ",
+          "block_type": "Paragraph+",
+          "start_offset": 24,
+          "end_offset": 49,
+          "chunk_index": 1,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "eleven twelve thirteen fourteen",
+          "block_type": "Paragraph+",
+          "start_offset": 49,
+          "end_offset": 80,
+          "chunk_index": 2,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "x x x x x ",
+          "block_type": "Paragraph",
+          "start_offset": 82,
+          "end_offset": 92,
+          "chunk_index": 3,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "x x x x x ",
+          "block_type": "Paragraph+",
+          "start_offset": 92,
+          "end_offset": 102,
+          "chunk_index": 4,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "x x x x x ",
+          "block_type": "Paragraph+",
+          "start_offset": 102,
+          "end_offset": 112,
+          "chunk_index": 5,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "x x x x x ",
+          "block_type": "Paragraph+",
+          "start_offset": 112,
+          "end_offset": 122,
+          "chunk_index": 6,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "x x x x x ",
+          "block_type": "Paragraph+",
+          "start_offset": 122,
+          "end_offset": 132,
+          "chunk_index": 7,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "x x x x x ",
+          "block_type": "Paragraph+",
+          "start_offset": 132,
+          "end_offset": 142,
+          "chunk_index": 8,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "x x x x x ",
+          "block_type": "Paragraph+",
+          "start_offset": 142,
+          "end_offset": 152,
+          "chunk_index": 9,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "long",
+          "chunk_text": "x x x x x",
+          "block_type": "Paragraph+",
+          "start_offset": 152,
+          "end_offset": 161,
+          "chunk_index": 10,
+          "heading_context": ""
+        }
+      ]
+    },
+    "code": {
+      "body": "Intro.\n\n```rust\nfn main() {}\n```\n\nEnd.\n",
+      "chunk_size": 5,
+      "chunks": [
+        {
+          "parent_doc_id": "code",
+          "chunk_text": "Intro.",
+          "block_type": "Paragraph",
+          "start_offset": 0,
+          "end_offset": 6,
+          "chunk_index": 0,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "code",
+          "chunk_text": "```rust\nfn main() {}\n```",
+          "block_type": "CodeBlock",
+          "start_offset": 8,
+          "end_offset": 32,
+          "chunk_index": 1,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "code",
+          "chunk_text": "End.",
+          "block_type": "Paragraph",
+          "start_offset": 34,
+          "end_offset": 38,
+          "chunk_index": 2,
+          "heading_context": ""
+        }
+      ]
+    },
+    "unicode": {
+      "body": "# \u00dcn\u00efc\u00f8d\u00e9\n\nEmoji \ud83e\uddea and Cyrillic \u041f\u0440\u0438\u0432\u0435\u0442.\n",
+      "chunk_size": 5,
+      "chunks": [
+        {
+          "parent_doc_id": "unicode",
+          "chunk_text": "# \u00dcn\u00efc\u00f8d\u00e9",
+          "block_type": "Heading",
+          "start_offset": 0,
+          "end_offset": 13,
+          "chunk_index": 0,
+          "heading_context": ""
+        },
+        {
+          "parent_doc_id": "unicode",
+          "chunk_text": "Emoji \ud83e\uddea and Cyrillic \u041f\u0440\u0438\u0432\u0435\u0442.",
+          "block_type": "Paragraph",
+          "start_offset": 15,
+          "end_offset": 52,
+          "chunk_index": 1,
+          "heading_context": "# \u00dcn\u00efc\u00f8d\u00e9"
+        }
+      ]
+    }
+  },
+  "yaml": {
+    "yes_no": {
+      "input": "a: yes\nb: no\nc: on\nd: off\n",
+      "value": {
+        "a": true,
+        "b": false,
+        "c": true,
+        "d": false
+      }
+    },
+    "nulls": {
+      "input": "a: null\nb: ~\nc:\n",
+      "value": {
+        "a": null,
+        "b": null,
+        "c": null
+      }
+    },
+    "numbers": {
+      "input": "a: 0x10\nb: 0o17\nc: 1_000\nd: 1e3\ne: .inf\n",
+      "value": {
+        "a": 16,
+        "b": "0o17",
+        "c": 1000,
+        "d": "1e3",
+        "e": {
+          "__type__": "float",
+          "value": "inf"
+        }
+      }
+    },
+    "dates": {
+      "input": "a: 2024-01-02\nb: 2024-01-02T03:04:05Z\n",
+      "value": {
+        "a": {
+          "__type__": "date",
+          "value": "2024-01-02"
+        },
+        "b": {
+          "__type__": "datetime",
+          "value": "2024-01-02T03:04:05+00:00"
+        }
+      }
+    },
+    "quoted": {
+      "input": "a: 'yes'\nb: \"no\"\nc: 'a: b'\n",
+      "value": {
+        "a": "yes",
+        "b": "no",
+        "c": "a: b"
+      }
+    },
+    "nested": {
+      "input": "a: [1, two, false]\nb: {x: 1, y: yes}\n",
+      "value": {
+        "a": [
+          1,
+          "two",
+          false
+        ],
+        "b": {
+          "x": 1,
+          "y": true
+        }
+      }
+    },
+    "duplicate": {
+      "input": "a: 1\na: 2\n",
+      "value": {
+        "a": 2
+      }
+    }
+  },
+  "frontmatter": {
+    "basic": {
+      "input": "---\nid: alpha\ntitle: Alpha\ntags: [parity, minimal]\n---\n\nBody.\n",
+      "metadata": {
+        "id": "alpha",
+        "title": "Alpha",
+        "tags": [
+          "parity",
+          "minimal"
+        ]
+      },
+      "content": "Body."
+    },
+    "typed": {
+      "input": "---\nenabled: yes\ncount: 0x10\nwhen: 2024-01-02\n---\n\nBody.\n",
+      "metadata": {
+        "enabled": true,
+        "count": 16,
+        "when": {
+          "__type__": "date",
+          "value": "2024-01-02"
+        }
+      },
+      "content": "Body."
+    }
+  }
+}

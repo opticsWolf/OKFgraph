@@ -140,6 +140,11 @@ impl Ord for PyValue {
     }
 }
 
+/// Free-function form of `PyValue::extra_value`.
+pub fn extra_value(value: &PyValue) -> String {
+    value.extra_value()
+}
+
 /// `str(datetime)`/`str(date)` from their ISO form.
 pub fn python_datetime_str(iso: &str) -> String {
     iso.replacen('T', " ", 1)

@@ -2,6 +2,10 @@
 //!
 //! The Python binding in `bindings/python` is a thin adapter over this crate.
 //! All graph, retrieval, ingest, and serialization logic belongs here.
+//!
+//! `OkfError` is a intentionally value-like public error (code/message/fields/
+//! remedy/data); boxing it would hurt every call site for a lint-only win.
+#![allow(clippy::result_large_err)]
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SCHEMA_VERSION: u16 = 10;

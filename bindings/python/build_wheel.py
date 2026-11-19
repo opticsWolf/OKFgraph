@@ -27,7 +27,7 @@ def main() -> int:
         for name in ("okfgraph", "okfgraph_pdf"):
             shutil.copytree(SOURCE / name, STAGE / name)
         WHEELS.mkdir(parents=True, exist_ok=True)
-        extra_args = sys.argv[1:] or ["--profile", "dev"]
+        extra_args = sys.argv[1:] or ["--auditwheel=repair", "--profile", "dev"]
         return subprocess.call(
             [
                 sys.executable,

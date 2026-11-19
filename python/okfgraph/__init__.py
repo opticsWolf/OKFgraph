@@ -7,6 +7,13 @@ from __future__ import annotations
 
 _EXPORTS = {
     "OKFRouter": ("okfgraph.router", "OKFRouter"),
+    "OKFError": ("okfgraph.errors", "OKFError"),
+    "UsageError": ("okfgraph.errors", "UsageError"),
+    "StateError": ("okfgraph.errors", "StateError"),
+    "OutcomeError": ("okfgraph.errors", "OutcomeError"),
+    "ConceptModel": ("okfgraph.models", "ConceptModel"),
+    "ChunkModel": ("okfgraph.models", "ChunkModel"),
+    "ImageAssetModel": ("okfgraph.models", "ImageAssetModel"),
     "cli_main": ("okfgraph.cli", "main"),
 }
 

@@ -1,4 +1,3 @@
 fn main() {
-    eprintln!("okf: not implemented yet (M4)");
-    std::process::exit(2);
+    std::process::exit(okfgraph::cli::run(std::env::args_os()));
 }

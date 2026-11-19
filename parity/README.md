@@ -16,6 +16,8 @@ the Python and Rust cores in one process.
 - `tools/check_rust_write.py` — verifies Python 0.15 reopens a Rust-written DB.
 - `tools/check_wheel.py` — wheel import + GIL-release smoke test.
 - `tools/check_mcp_spike.py` — Python MCP client for the Rust stdio spike.
+- `tools/check_facade.py` — public Python `OKFRouter` smoke test.
+- `tools/gen_settings.py` — regenerate the Rust and Python settings tables.
 
 ## Scenario format
 
@@ -61,6 +63,24 @@ python parity/tools/check_mcp_spike.py --exe \
   "$(pwd)/target/debug/examples/rmcp_spike.exe"
 ```
 
-M0 note: `parity-run` currently emits core metadata only. Op execution is
-implemented with the read ops in M1. Windows x64 M0 spikes are green; Linux
-x86_64 and macOS arm64 remain.
+## M1 read-only scenario
+
+```bash
+parity/.venv-oracle/Scripts/python.exe parity/tools/run_python.py \
+  --scenario parity/scenarios/read-only.json --out parity/out/read-only.python.json
+cargo run -p okfgraph --bin parity-run -- parity/scenarios/read-only.json \
+  > parity/out/read-only.rust.json
+python parity/tools/compare.py \
+  --python parity/out/read-only.python.json --rust parity/out/read-only.rust.json
+```
+
+`read-only.json` covers 14 ops (get/list/read/traverse/images/pins/lanes/doctor)
+against `fixtures/oracle-v10.db`. Pydantic models are normalized with
+`public_dict()` before comparison; the harness ignores the provenance-only
+`runner` key. Current result: **0 differences**.
+
+Build wheels with `python bindings/python/build_wheel.py --auditwheel=repair` so
+the vcpkg OpenSSL DLLs are bundled for Python 3.8+ `add_dll_directory` behavior.
+
+M1 note: write/ingest ops and full migration/DB-dump parity remain. Windows x64
+spikes are green; Linux x86_64 and macOS arm64 remain.

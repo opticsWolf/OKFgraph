@@ -74,6 +74,65 @@ def main() -> None:
     out.write_text("\n".join(lines), encoding="utf-8")
     print(f"wrote {out} ({len(module.SETTINGS)} settings)")
 
+    py = [
+        '"""Public settings constants and read-only table for the facade."""',
+        "from __future__ import annotations",
+        "",
+        "from dataclasses import dataclass",
+        "from typing import Any, Optional, Tuple",
+        "",
+        f"DEFAULT_MODEL_ID = {module.DEFAULT_MODEL_ID!r}",
+        f"DEFAULT_RERANK_MODEL_ID = {module.DEFAULT_RERANK_MODEL_ID!r}",
+        f"GRAPH_HOME = {module.GRAPH_HOME!r}",
+        f"DEFAULT_DB_PATH = {module.DEFAULT_DB_PATH!r}",
+        f"LEGACY_DB_PATH = {module.LEGACY_DB_PATH!r}",
+        f"DEVICES = {tuple(module.DEVICES)!r}",
+        f"PRECISIONS = {tuple(module.PRECISIONS)!r}",
+        "",
+        "",
+        "@dataclass(frozen=True)",
+        "class Setting:",
+        "    name: str",
+        "    kind: str",
+        "    default: Any",
+        "    section: str",
+        "    help: str",
+        "    choices: Tuple[str, ...] = ()",
+        "    cli: bool = True",
+        "    mcp: bool = True",
+        "    flag: Optional[str] = None",
+        "    dest: Optional[str] = None",
+        "    invert: bool = False",
+        "    required_mcp: bool = False",
+        "",
+        "",
+        "SETTINGS = (",
+    ]
+    for row in module.SETTINGS:
+        py.append(
+            f"    Setting({row.name!r}, {row.kind!r}, {row.default!r}, "
+            f"{row.section!r}, {row.help!r}, {tuple(row.choices)!r}, "
+            f"{row.cli!r}, {row.mcp!r}, {row.flag!r}, {row.dest!r}, "
+            f"{row.invert!r}, {row.required_mcp!r}),"
+        )
+    py.extend([
+        ")",
+        "",
+        "",
+        "def env_name(name: str) -> str:",
+        '    return f"OKFGRAPH_{name.upper()}"',
+        "",
+        "",
+        "def flag_name(name: str) -> str:",
+        '    return "--" + name.replace("_", "-")',
+        "",
+        "MCP_REQUIRED = tuple(row.name for row in SETTINGS if row.required_mcp)",
+        "",
+    ])
+    py_out = ROOT / "python" / "okfgraph" / "settings.py"
+    py_out.write_text("\n".join(py), encoding="utf-8")
+    print(f"wrote {py_out}")
+
 
 if __name__ == "__main__":
     main()

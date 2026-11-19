@@ -1,7 +1,9 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** M0 in progress — decisions locked, scaffold landed, Windows `lbug`,
-PyO3 and rmcp spikes green, `pycompat` goldens green; Linux/macOS spikes pending  
+**Status:** M1 read-only slice in progress — Windows spikes green, `pycompat`
+green, 52-setting table/errors/models/store/ops/CLI/PyO3 facade landed;
+14-op Python↔Rust read parity is green. Linux/macOS spikes and write/ingest
+stages remain.  
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -693,6 +695,16 @@ if extensions cannot load, stop and reassess before any port work.
   read ops.
 - Tests: open legacy fixture DB, row-by-row parity for every table, type
   round-trips (timestamps, maps, blobs), migration tests from v1/v5/v9 fixtures.
+
+**M1 progress:** `src/settings/table.rs` is generated from the oracle (52 rows);
+`src/store` opens the v10 fixture, dumps all tables, and implements
+`get_by_id`, `list_directory`, `read`, `traverse`, image/list ops, pins, lanes
+and a basic `doctor`. `parity/scenarios/read-only.json` runs 14 ops through
+both runtimes and compares with **0 differences**. The PyO3 `NativeRouter` and
+Python `OKFRouter`/`ConceptModel` facade pass `parity/tools/check_facade.py`;
+`okf read`/`init`/`doctor` work from a build with `--features cli,server,mcp`.
+Remaining M1 gaps: full migration fixtures (v1/v5/v9), byte-for-byte DB dump
+relationships, and `max_tokens`/`document`/`context` read parity.
 
 **Gate:** Rust reads a Python-created DB identically (JSON value parity) and the
 Python shim returns the same `ConceptModel` shape. No **content** writes yet;

@@ -27,6 +27,7 @@ lbug = "=0.22.1"
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] }
 sha2 = "0.10"
 uuid = { version = "1", features = ["v5"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 url = "2"
 libloading = "0.8"

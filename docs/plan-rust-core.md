@@ -858,8 +858,13 @@ Stage B also implements `detach`: single-root fidelity verification
 for dirty trees, `--force`, `--no-verify`, `DETACHED` for already-detached
 graphs, mirror-baseline cleanup, and `SourceRoot`/`Meta` provenance rows.
 
-Remaining M3 gaps: PDF/Office/bib/thoughts converters, `produce`/`sync`, and
-any remaining write ops.
+Stage B also implements the built-in SQLite producer, `produce`, and
+`sync`: deterministic table/overview bundles with observations and a
+reserved log, producer cursors in `ProducerCursor`, and import of exactly
+the files written by the producer. Chunk embedding payloads now include
+heading context, matching Python for generated documentation bundles.
+
+Remaining M3 gaps: PDF/Office/bib/thoughts converters and `ingest` dispatch.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

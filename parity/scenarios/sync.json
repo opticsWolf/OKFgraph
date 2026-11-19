@@ -1,0 +1,21 @@
+{
+  "name": "sync",
+  "settings": {
+    "db_path": "parity/out/sync-@RUNNER@.db",
+    "bundle_root": "parity/out/sync-bundle",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {"import": {"corpus": "parity/corpus/empty"}},
+  "ops": [
+    {"op": "sync", "params": {"producer": "sqlite", "source": "parity/fixtures/producers.sqlite", "output_dir": "parity/out/sync-bundle"}},
+    {"op": "sync", "params": {"producer": "sqlite", "source": "parity/fixtures/producers.sqlite", "output_dir": "parity/out/sync-bundle"}},
+    {"op": "get_by_id", "params": {"concept_id": "database/tables/authors"}},
+    {"op": "read", "params": {"concept_id": "database/tables/books", "include": "body"}}
+  ]
+}

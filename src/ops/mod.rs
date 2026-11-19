@@ -34,6 +34,7 @@ pub const OP_NAMES: &[&str] = &[
     "doctor",
     "diff",
     "lint",
+    "produce",
     "reindex",
     "reembed",
     "pin_info",
@@ -84,6 +85,8 @@ pub const WRITE_OPS: &[&str] = &[
     "update",
     "supersede",
     "detach",
+    "produce",
+    "sync",
 ];
 
 pub fn is_op(name: &str) -> bool {
@@ -618,6 +621,140 @@ impl Router {
         }))
     }
 
+    fn produce(&self, params: &Map<String, Json>) -> Result<Json> {
+        let source_type = str_param(params, "source_type")?.to_string();
+        let source = opt_str(params, "source_path")?;
+        let output_dir = opt_str(params, "output_dir")?.unwrap_or_else(|| ".".into());
+        let prefix = opt_str(params, "prefix")?;
+        let overwrite = params
+            .get("overwrite")
+            .and_then(Json::as_bool)
+            .unwrap_or(false);
+        let bundle = crate::producers::run(
+            &source_type,
+            source.as_deref(),
+            Path::new(&output_dir),
+            prefix.as_deref(),
+            overwrite,
+            None,
+            "produce",
+        )?;
+        let root = bundle.root.join(&bundle.prefix);
+        let lint = crate::diagnostics::lint(
+            &crate::producers::native(Path::new(&output_dir)),
+            &self.settings,
+        )?;
+        Ok(serde_json::json!({
+            "producer": bundle.producer,
+            "files": bundle.files,
+            "root": crate::producers::native(&root),
+            "prefix": bundle.prefix,
+            "lint": lint,
+        }))
+    }
+
+    fn sync(&self, params: &Map<String, Json>) -> Result<Json> {
+        let producer = str_param(params, "producer")?.to_string();
+        let source = opt_str(params, "source")?;
+        let output_dir = opt_str(params, "output_dir")?
+            .or_else(|| self.settings.bundle_root.clone())
+            .ok_or_else(|| {
+                OkfError::new(
+                    "MISSING_PARAM",
+                    "sync needs output_dir (or a router bundle_root)",
+                )
+                .op("sync")
+                .field("output_dir", Json::Null)
+            })?;
+        let prefix = opt_str(params, "prefix")?;
+        let key = format!(
+            "{}{}",
+            producer,
+            prefix
+                .as_ref()
+                .map_or(String::new(), |value| format!(":{value}"))
+        );
+        let cursor = self
+            .store
+            .query(
+                "MATCH (p:ProducerCursor {name: $name}) RETURN p.cursor AS c",
+                vec![("name", lbug::Value::String(key.clone()))],
+            )?
+            .first()
+            .and_then(|row| row.get("c"))
+            .and_then(Json::as_str)
+            .map(str::to_string);
+        let bundle = crate::producers::run(
+            &producer,
+            source.as_deref(),
+            Path::new(&output_dir),
+            prefix.as_deref(),
+            true,
+            cursor.as_deref(),
+            "sync",
+        )?;
+        let written: Vec<String> = bundle
+            .written
+            .iter()
+            .filter(|path| {
+                let name = path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                matches!(
+                    path.extension().and_then(|value| value.to_str()),
+                    Some("md" | "markdown" | "txt")
+                ) && name != "index.md"
+                    && name != "log.md"
+            })
+            .map(|path| crate::producers::native(path))
+            .collect();
+        let concept_ids = if written.is_empty() {
+            Vec::new()
+        } else {
+            let report = crate::ingest::import_files(
+                &self.store,
+                &self.settings,
+                &self.embedder,
+                &self.pools,
+                &written,
+            )
+            .map_err(|err| err.op("sync"))?;
+            report
+                .get("concept_ids")
+                .and_then(Json::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(Json::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        {
+            let new_cursor = &bundle.cursor;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| OkfError::internal(err.to_string(), "system time"))?
+                .as_secs() as i64;
+            self.store.write(
+                "MERGE (p:ProducerCursor {name: $name}) SET p.cursor = $cursor, p.updated_at = $updated",
+                vec![
+                    ("name", lbug::Value::String(key)),
+                    ("cursor", lbug::Value::String(new_cursor.clone())),
+                    ("updated", lbug::Value::Int64(now)),
+                ],
+            )?;
+        }
+        Ok(serde_json::json!({
+            "producer": producer,
+            "cursor": bundle.cursor,
+            "written": written,
+            "concept_ids": concept_ids,
+        }))
+    }
+
     fn reindex(&self, params: &Map<String, Json>) -> Result<Json> {
         let if_dirty = opt_bool(params, "if_dirty")?.unwrap_or(false);
         let write_epoch = self.store.meta_int("write_epoch")?.unwrap_or(0);
@@ -763,6 +900,8 @@ impl Router {
             "detach" => crate::detach::detach(&self.store, &self.settings, params),
             "diff" => self.diff(params),
             "lint" => self.lint(params),
+            "produce" => self.produce(params),
+            "sync" => self.sync(params),
             "pin_info" => self.pin_info(),
             "lanes" => self.lanes(),
             "doctor" => self.doctor(),
@@ -3227,7 +3366,7 @@ mod tests {
 
     #[test]
     fn op_vocabulary() {
-        assert_eq!(OP_NAMES.len(), 31);
+        assert_eq!(OP_NAMES.len(), 32);
         assert!(is_op("get_by_id"));
         assert!(!is_op("init"));
     }

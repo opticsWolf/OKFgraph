@@ -269,3 +269,6 @@ okfgraph.toml
 !parity/fixtures/oracle-v10-images.db
 !parity/fixtures/oracle-v10-vision-images.db
 !parity/fixtures/oracle-v10-gemma-vision-images.db
+
+# SQLite producer fixture
+!parity/fixtures/producers.sqlite

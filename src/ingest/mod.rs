@@ -1551,7 +1551,7 @@ fn overlap_payloads(chunks: &[MdChunk], overlap: usize) -> Vec<String> {
             prev_tail.clear();
         }
         let words: Vec<&str> = chunk.chunk_text.split_whitespace().collect();
-        let text = if prev_tail.is_empty() {
+        let mut text = if prev_tail.is_empty() {
             chunk.chunk_text.clone()
         } else {
             let keep = words.len().max(1);
@@ -1559,6 +1559,9 @@ fn overlap_payloads(chunks: &[MdChunk], overlap: usize) -> Vec<String> {
             let tail = prev_tail[start..].join("  ");
             format!("{tail}\n\n{}", chunk.chunk_text)
         };
+        if !chunk.heading_context.is_empty() {
+            text = format!("{}\n\n{text}", chunk.heading_context);
+        }
         payloads.push(text);
         if overlap > 0 && !STRUCTURAL_BLOCKS.contains(&base) {
             let start = words.len().saturating_sub(overlap);

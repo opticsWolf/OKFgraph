@@ -17,6 +17,8 @@ pub struct Chunk {
     pub start_offset: i64,
     pub end_offset: i64,
     pub chunk_index: i64,
+    #[serde(skip)]
+    pub heading_context: String,
 }
 
 pub fn base_block_type(block_type: &str) -> &str {
@@ -42,8 +44,13 @@ pub fn split_into_chunks(
 ) -> Vec<Chunk> {
     let mut chunker = MarkdownChunker::new(body.to_string());
     let mut chunks = Vec::new();
+    let mut current_heading = String::new();
     for mordant in chunker.get_all_chunks() {
         let block_type = mordant.block_type.as_str().to_string();
+        let is_heading = block_type == "Heading";
+        if is_heading {
+            current_heading = mordant.text.clone();
+        }
         let base = Chunk {
             parent_doc_id: document_id.to_string(),
             chunk_text: mordant.text,
@@ -51,6 +58,11 @@ pub fn split_into_chunks(
             start_offset: mordant.start_offset as i64,
             end_offset: mordant.end_offset as i64,
             chunk_index: -1,
+            heading_context: if is_heading {
+                String::new()
+            } else {
+                current_heading.clone()
+            },
         };
         chunks.extend(cap_chunk_budget(&base, chunk_size, &counter));
     }
@@ -124,6 +136,7 @@ fn cap_chunk_budget(
             start_offset: base_start + start_byte as i64,
             end_offset: base_start + end_byte as i64,
             chunk_index: -1,
+            heading_context: chunk.heading_context.clone(),
         });
     }
     pieces

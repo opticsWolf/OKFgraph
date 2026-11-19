@@ -241,6 +241,9 @@ Additional Stage B scenarios:
   ignore `bundle`, `path`, `detached_at`, `since`, `last_seen`, and `message`
   when comparing volatile provenance. `compare_db.py` normalizes detach
   provenance rows.
+- `produce.json` — SQLite producer, log deduplication, and unknown-producer
+  errors; compare the produced trees byte-for-byte.
+- `sync.json` — incremental producer cursor and import of written files.
 
 `setup.import` may contain op params such as `mode`; the Rust runner forwards
 them to `import_bundle`, and the Python harness forwards them after removing

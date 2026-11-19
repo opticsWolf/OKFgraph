@@ -1,0 +1,12 @@
+{
+  "name": "produce",
+  "settings": {
+    "db_path": "parity/fixtures/oracle-v10.db",
+    "bundle_root": "parity/corpus/empty"
+  },
+  "ops": [
+    {"op": "produce", "params": {"source_type": "sqlite", "source_path": "parity/fixtures/producers.sqlite", "output_dir": "parity/out/produce-@RUNNER@"}},
+    {"op": "produce", "params": {"source_type": "sqlite", "source_path": "parity/fixtures/producers.sqlite", "output_dir": "parity/out/produce-@RUNNER@", "overwrite": true}},
+    {"op": "produce", "params": {"source_type": "csv", "source_path": "parity/fixtures/producers.sqlite", "output_dir": "parity/out/produce-@RUNNER@"}}
+  ]
+}

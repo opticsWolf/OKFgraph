@@ -1,0 +1,23 @@
+{
+  "name": "links-repair",
+  "settings": {
+    "db_path": "parity/out/links-repair.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false
+  },
+  "setup": {"import": {"corpus": "parity/corpus/links-stage1"}},
+  "ops": [
+    {"op": "list_broken_links", "params": {}},
+    {"op": "import_file", "params": {"file_path": "parity/corpus/links/b.md"}},
+    {"op": "list_broken_links", "params": {}},
+    {"op": "repair_links", "params": {}},
+    {"op": "list_broken_links", "params": {}},
+    {"op": "traverse", "params": {"start_id": "a", "relationship": "LINKS_TO", "direction": "OUTGOING", "depth": 1}},
+    {"op": "import_bundle", "params": {"bundle_path": "parity/corpus/links"}},
+    {"op": "traverse", "params": {"start_id": "a", "relationship": "LINKS_TO", "direction": "OUTGOING", "depth": 1}},
+    {"op": "list_broken_links", "params": {}}
+  ]
+}

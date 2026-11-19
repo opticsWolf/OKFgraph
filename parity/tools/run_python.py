@@ -19,6 +19,16 @@ def load_error_payload(exc: BaseException, op: str) -> dict[str, Any]:
     return envelope(op, error=exc)
 
 
+def _expand_runner(value: Any, runner: str) -> Any:
+    if isinstance(value, str):
+        return value.replace("@RUNNER@", runner)
+    if isinstance(value, list):
+        return [_expand_runner(item, runner) for item in value]
+    if isinstance(value, dict):
+        return {key: _expand_runner(item, runner) for key, item in value.items()}
+    return value
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", required=True)
@@ -37,11 +47,11 @@ def main() -> int:
         db.unlink(missing_ok=True)
         builder = dict(settings)
         builder.pop("db_path", None)
+        builder.pop("bundle_root", None)
         build_router = OKFRouter(
             db_path=str(db), bundle_root=str(corpus), **builder)
         try:
-            files = sorted(corpus.rglob("*.md"))
-            build_router.import_files([str(p) for p in files], mode="text")
+            build_router.import_bundle()
         finally:
             build_router.close()
     router = OKFRouter(**settings)
@@ -50,6 +60,7 @@ def main() -> int:
         for call in scenario.get("ops") or []:
             op = call["op"]
             params = call.get("params") or {}
+            params = _expand_runner(params, "python")
             try:
                 data = getattr(router, op)(**params)
                 # Public Pydantic models are normalized so JSON comparison sees

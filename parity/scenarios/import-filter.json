@@ -13,6 +13,7 @@
   },
   "setup": {"import": {"corpus": "parity/corpus/filters"}},
   "ops": [
+    {"op": "import_bundle", "params": {"bundle_path": "parity/corpus/filters"}},
     {"op": "get_by_id", "params": {"concept_id": "area1/alpha"}},
     {"op": "read", "params": {"concept_id": "area2/delta", "include": "body"}},
     {"op": "list_directory", "params": {"directory_id": ""}},

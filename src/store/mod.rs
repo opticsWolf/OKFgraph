@@ -9,7 +9,7 @@ use crate::model::python_datetime_str;
 use crate::settings::Settings;
 use lbug::{Connection, Database, LogicalType, SystemConfig, Value};
 use serde_json::{Map, Value as Json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA_VERSION: u16 = crate::SCHEMA_VERSION;
@@ -529,6 +529,18 @@ impl Store {
         Ok(Some(public_concept(&flat)))
     }
 
+    pub fn concept_raw(&self, concept_id: &str) -> Result<Option<Map<String, Json>>> {
+        let rows = self.query(
+            "MATCH (c:Concept {id: $id}) RETURN c.*",
+            vec![("id", Value::String(concept_id.into()))],
+        )?;
+        Ok(rows.into_iter().next().map(|row| {
+            row.into_iter()
+                .map(|(key, value)| (key.strip_prefix("c.").unwrap_or(&key).to_string(), value))
+                .collect()
+        }))
+    }
+
     pub fn node_exists(&self, id: &str) -> Result<bool> {
         for label in ["Concept", "Directory"] {
             let sql = format!("MATCH (n:{label} {{id: $id}}) RETURN n.id AS id LIMIT 1");
@@ -759,20 +771,241 @@ impl Store {
 
     pub fn list_deleted(&self) -> Result<Vec<Json>> {
         let rows = self.query(
-            "MATCH (d:DeletedConcept) RETURN d.id AS id, d.original_id AS original_id, \
-             d.title AS title, d.deleted_at AS deleted_at, d.type AS type, d.tags AS tags",
+            "MATCH (d:DeletedConcept) \
+             RETURN d.original_id AS id, d.title AS title, d.deleted_at AS deleted_at, \
+                    d.type AS type ORDER BY d.deleted_at DESC",
             vec![],
         )?;
-        Ok(rows.into_iter().map(Json::Object).collect())
+        let now = crate::model::utc_now_datetime();
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let deleted_at = row
+                    .get("deleted_at")
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let parsed = crate::model::PyDateTime::parse(&deleted_at);
+                let age = parsed
+                    .map(|value| (now.as_naive() - value.as_naive()).as_seconds_f64())
+                    .unwrap_or(0.0);
+                serde_json::json!({
+                    "concept_id": row.get("id").cloned().unwrap_or(Json::Null),
+                    "title": row.get("title").cloned().unwrap_or(Json::Null),
+                    "type": row.get("type").cloned().unwrap_or(Json::Null),
+                    "deleted_at": deleted_at,
+                    "age_seconds": age,
+                    "recoverable": age <= 24.0 * 60.0 * 60.0,
+                })
+            })
+            .collect())
     }
 
     pub fn list_broken_links(&self) -> Result<Vec<Json>> {
         let rows = self.query(
             "MATCH (b:BrokenLink) RETURN b.source_id AS source, b.target_id AS target, \
-             b.kind AS kind, b.reason AS reason",
+             b.timestamp AS timestamp, b.kind AS kind, b.reason AS reason, \
+             b.candidates AS candidates, b.id AS id, b.raw AS raw \
+             ORDER BY b.timestamp, b.id",
             vec![],
         )?;
-        Ok(rows.into_iter().map(Json::Object).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let candidates = row
+                    .get("candidates")
+                    .and_then(Json::as_str)
+                    .and_then(|text| serde_json::from_str::<Vec<Json>>(text).ok())
+                    .unwrap_or_default();
+                let mut out = Map::new();
+                for (key, value) in row {
+                    if key != "candidates" {
+                        out.insert(key, value);
+                    }
+                }
+                out.insert("candidates".into(), Json::Array(candidates));
+                out.insert(
+                    "kind".into(),
+                    Json::String(
+                        out.get("kind")
+                            .and_then(Json::as_str)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("mention")
+                            .to_string(),
+                    ),
+                );
+                out.insert(
+                    "reason".into(),
+                    Json::String(
+                        out.get("reason")
+                            .and_then(Json::as_str)
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or("missing")
+                            .to_string(),
+                    ),
+                );
+                Json::Object(out)
+            })
+            .collect())
+    }
+
+    pub fn clear_broken_from(&self, source: &str) -> Result<()> {
+        self.write(
+            "MATCH (b:BrokenLink {source_id: $s}) DELETE b",
+            vec![("s", Value::String(source.into()))],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_broken_link(
+        &self,
+        source: &str,
+        recorded: &str,
+        kind: &str,
+        reason: &str,
+        candidates_json: &str,
+        raw: &str,
+        timestamp: Value,
+    ) -> Result<()> {
+        let mut id = format!("{source}\u{2192}{recorded}");
+        if kind != "mention" {
+            id.push_str(&format!("#{kind}"));
+        }
+        self.write(
+            "MERGE (b:BrokenLink {id: $id}) SET b.source_id = $s, b.target_id = $t, \
+             b.timestamp = $ts, b.kind = $k, b.reason = $r, b.candidates = $c, b.raw = $raw",
+            vec![
+                ("id", Value::String(id)),
+                ("s", Value::String(source.into())),
+                ("t", Value::String(recorded.into())),
+                ("ts", timestamp),
+                ("k", Value::String(kind.into())),
+                ("r", Value::String(reason.into())),
+                (
+                    "c",
+                    if candidates_json.is_empty() {
+                        Value::Null(LogicalType::String)
+                    } else {
+                        Value::String(candidates_json.into())
+                    },
+                ),
+                ("raw", Value::String(raw.into())),
+            ],
+        )
+    }
+
+    pub fn update_broken_reason(
+        &self,
+        id: &str,
+        reason: &str,
+        candidates_json: &str,
+    ) -> Result<()> {
+        self.write(
+            "MATCH (b:BrokenLink {id: $id}) SET b.reason = $r, b.candidates = $c",
+            vec![
+                ("id", Value::String(id.into())),
+                ("r", Value::String(reason.into())),
+                (
+                    "c",
+                    if candidates_json.is_empty() {
+                        Value::Null(LogicalType::String)
+                    } else {
+                        Value::String(candidates_json.into())
+                    },
+                ),
+            ],
+        )
+    }
+
+    pub fn delete_broken_link(&self, id: &str) -> Result<()> {
+        self.write(
+            "MATCH (b:BrokenLink {id: $id}) DELETE b",
+            vec![("id", Value::String(id.into()))],
+        )
+    }
+
+    pub fn link_concepts(&self, source: &str, target: &str, kind: &str) -> Result<()> {
+        self.write(
+            "MATCH (a:Concept {id: $s}), (b:Concept {id: $t}) \
+             MERGE (a)-[:LINKS_TO {kind: $k}]->(b)",
+            vec![
+                ("s", Value::String(source.into())),
+                ("t", Value::String(target.into())),
+                ("k", Value::String(kind.into())),
+            ],
+        )
+    }
+
+    pub fn incoming_links(&self, ids: &[&str]) -> Result<Vec<(String, String, String)>> {
+        let values = ids.iter().map(|id| Value::String((*id).into())).collect();
+        let rows = self.query(
+            "MATCH (s:Concept)-[r:LINKS_TO]->(c:Concept) \
+             WHERE c.id IN $ids AND NOT s.id IN $ids \
+             RETURN s.id AS source, c.id AS target, r.kind AS kind",
+            vec![("ids", Value::List(LogicalType::String, values))],
+        )?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                Some((
+                    row.get("source")?.as_str()?.to_string(),
+                    row.get("target")?.as_str()?.to_string(),
+                    row.get("kind")
+                        .and_then(Json::as_str)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("mention")
+                        .to_string(),
+                ))
+            })
+            .collect())
+    }
+
+    pub fn export_concepts(&self) -> Result<Vec<Json>> {
+        let rows = self.query("MATCH (c:Concept) RETURN c.*", vec![])?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let flat: Map<String, Json> = row
+                    .into_iter()
+                    .map(|(key, value)| (key.strip_prefix("c.").unwrap_or(&key).to_string(), value))
+                    .collect();
+                public_concept(&flat)
+            })
+            .collect())
+    }
+
+    pub fn link_titles(&self, concept_id: &str, outgoing: bool) -> Result<Vec<(String, String)>> {
+        let sql = if outgoing {
+            "MATCH (s:Concept {id: $id})-[:LINKS_TO]->(t:Concept) \
+             RETURN t.id AS id, t.title AS title ORDER BY t.title"
+        } else {
+            "MATCH (s:Concept)-[:LINKS_TO]->(t:Concept {id: $id}) \
+             RETURN s.id AS id, s.title AS title ORDER BY s.title"
+        };
+        Ok(self
+            .query(sql, vec![("id", Value::String(concept_id.into()))])?
+            .into_iter()
+            .filter_map(|row| {
+                Some((
+                    row.get("id")?.as_str()?.to_string(),
+                    row.get("title")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                ))
+            })
+            .collect())
+    }
+
+    pub fn link_index(&self) -> Result<Vec<Json>> {
+        Ok(self
+            .query(
+                "MATCH (c:Concept) RETURN c.id AS id, c.title AS title, c.extra AS extra",
+                vec![],
+            )?
+            .into_iter()
+            .map(Json::Object)
+            .collect())
     }
 
     pub fn counts(&self) -> Result<(i64, i64)> {
@@ -785,6 +1018,150 @@ impl Store {
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
         Ok((concepts, chunks))
+    }
+
+    /// Persisted directory hashes for delta detection.
+    pub fn dir_hashes(&self) -> Result<BTreeMap<String, (String, String)>> {
+        let rows = self.query(
+            "MATCH (d:DirHash) RETURN d.path AS path, d.hash AS hash, d.files AS files",
+            vec![],
+        )?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let path = row.get("path")?.as_str()?.to_string();
+                let hash = row
+                    .get("hash")
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let files = row
+                    .get("files")
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                Some((path, (hash, files)))
+            })
+            .collect())
+    }
+
+    pub fn set_dir_hash(&self, path: &str, hash: &str, files_json: &str) -> Result<()> {
+        self.write(
+            "MERGE (d:DirHash {path: $p}) SET d.hash = $h, d.files = $f",
+            vec![
+                ("p", Value::String(path.into())),
+                ("h", Value::String(hash.into())),
+                ("f", Value::String(files_json.into())),
+            ],
+        )
+    }
+
+    /// Persisted file hashes for delta detection: path -> (hash, concept id).
+    pub fn file_hashes(&self) -> Result<BTreeMap<String, (String, String)>> {
+        let rows = self.query(
+            "MATCH (f:FileHash) RETURN f.path AS path, f.hash AS hash, f.concept_id AS cid",
+            vec![],
+        )?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let path = row.get("path")?.as_str()?.to_string();
+                let hash = row
+                    .get("hash")
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let cid = row
+                    .get("cid")
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                Some((path, (hash, cid)))
+            })
+            .collect())
+    }
+
+    pub fn set_file_hash(&self, path: &str, hash: &str, concept_id: &str, dir: &str) -> Result<()> {
+        self.write(
+            "MERGE (f:FileHash {path: $p}) SET f.hash = $h, f.concept_id = $c, f.dir = $d",
+            vec![
+                ("p", Value::String(path.into())),
+                ("h", Value::String(hash.into())),
+                ("c", Value::String(concept_id.into())),
+                ("d", Value::String(dir.into())),
+            ],
+        )
+    }
+
+    pub fn dir_hash_files(&self, path: &str) -> Result<Option<String>> {
+        Ok(self
+            .scalar(
+                "MATCH (d:DirHash {path: $p}) RETURN d.files AS f",
+                vec![("p", Value::String(path.into()))],
+            )?
+            .and_then(|value| value.as_str().map(str::to_string)))
+    }
+
+    pub fn set_dir_hash_files(&self, path: &str, files_json: &str) -> Result<()> {
+        self.write(
+            "MATCH (d:DirHash {path: $p}) SET d.files = $f",
+            vec![
+                ("p", Value::String(path.into())),
+                ("f", Value::String(files_json.into())),
+            ],
+        )
+    }
+
+    pub fn delete_dir_hash(&self, path: &str) -> Result<()> {
+        self.write(
+            "MATCH (d:DirHash {path: $p}) DELETE d",
+            vec![("p", Value::String(path.into()))],
+        )
+    }
+
+    pub fn delete_deleted_path(&self, path: &str) -> Result<()> {
+        self.write(
+            "MATCH (d:DeletedPath {path: $p}) DELETE d",
+            vec![("p", Value::String(path.into()))],
+        )
+    }
+
+    pub fn live_dir_keys(&self) -> Result<BTreeSet<String>> {
+        let mut out = BTreeSet::new();
+        for sql in [
+            "MATCH (f:FileHash) RETURN f.dir AS dir",
+            "MATCH (d:DeletedPath) RETURN d.dir AS dir",
+        ] {
+            for row in self.query(sql, vec![])? {
+                if let Some(dir) = row.get("dir").and_then(Json::as_str) {
+                    out.insert(dir.to_string());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn forget_file_hash(&self, path: &str) -> Result<()> {
+        self.write(
+            "MATCH (f:FileHash {path: $p}) DELETE f",
+            vec![("p", Value::String(path.into()))],
+        )
+    }
+
+    pub fn record_deleted_path(&self, path: &str, detected_at: i64) -> Result<()> {
+        let dir = Path::new(path)
+            .parent()
+            .map(|value| value.to_string_lossy().into_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| ".".into());
+        self.write(
+            "MERGE (d:DeletedPath {path: $p}) SET d.detected_at = $t, d.dir = $d",
+            vec![
+                ("p", Value::String(path.into())),
+                ("t", Value::Int64(detected_at)),
+                ("d", Value::String(dir)),
+            ],
+        )
     }
 
     pub fn meta_text(&self, key: &str) -> Result<Option<String>> {

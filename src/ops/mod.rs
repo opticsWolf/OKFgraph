@@ -66,7 +66,17 @@ const READ_OPS: &[&str] = &[
 ];
 
 /// Stage B content-write ops implemented by the ingest pipeline.
-pub const WRITE_OPS: &[&str] = &["import_file", "import_files"];
+pub const WRITE_OPS: &[&str] = &[
+    "import_bundle",
+    "import_file",
+    "import_files",
+    "repair_links",
+    "export_bundle",
+    "export_concept",
+    "delete",
+    "recover_deleted",
+    "purge_deleted",
+];
 
 pub fn is_op(name: &str) -> bool {
     OP_NAMES.contains(&name)
@@ -124,6 +134,117 @@ impl Router {
             .map_err(|err| err.op("import_files"))
     }
 
+    fn delete(&self, params: &Map<String, Json>) -> Result<Json> {
+        let concept_id = str_param(params, "concept_id")?.to_string();
+        if self.store.get_by_id(&concept_id)?.is_none() {
+            return Err(unknown_concept("delete", "concept_id", &concept_id));
+        }
+        if !crate::purge::soft_delete(&self.store, &concept_id)? {
+            return Err(OkfError::new(
+                "NOT_RECOVERABLE",
+                format!("concept '{concept_id}' vanished mid-operation"),
+            )
+            .op("delete"));
+        }
+        let until = time::OffsetDateTime::now_utc() + time::Duration::seconds(86_400);
+        Ok(serde_json::json!({
+            "concept_id": concept_id,
+            "deleted": true,
+            "recoverable_until": crate::model::format_py_datetime(until),
+            "trashed_files": [],
+        }))
+    }
+
+    fn recover_deleted(&self, params: &Map<String, Json>) -> Result<Json> {
+        let concept_id = str_param(params, "concept_id")?.to_string();
+        if !crate::purge::recover(&self.store, &concept_id)? {
+            return Err(OkfError::new(
+                "NOT_RECOVERABLE",
+                format!("concept '{concept_id}' not found or past recovery window"),
+            )
+            .op("recover_deleted")
+            .field("concept_id", Json::String(concept_id)));
+        }
+        crate::ingest::extract_links_for_concept(&self.store, &concept_id)?;
+        crate::ingest::repair_links_public(&self.store)?;
+        Ok(serde_json::json!({
+            "concept_id": concept_id,
+            "recovered": true,
+            "restored_files": [],
+        }))
+    }
+
+    fn purge_deleted(&self, params: &Map<String, Json>) -> Result<Json> {
+        let older_than = match params.get("older_than") {
+            Some(Json::Number(number)) => number.as_i64(),
+            Some(Json::Null) | None => None,
+            Some(_) => {
+                return Err(
+                    OkfError::new("BAD_VALUE", "older_than must be an integer").op("purge_deleted")
+                )
+            }
+        };
+        Ok(serde_json::json!({
+            "purged": crate::purge::purge_deleted(&self.store, older_than)?,
+        }))
+    }
+
+    fn export_bundle(&self, params: &Map<String, Json>) -> Result<Json> {
+        let output_dir = str_param(params, "output_dir")?.to_string();
+        let directory_id = opt_str(params, "directory_id")?;
+        let concept_type = opt_str(params, "concept_type")?;
+        let tags = match params.get("tags") {
+            Some(Json::Array(items)) => Some(
+                items
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect::<Vec<_>>(),
+            ),
+            Some(Json::Null) | None => None,
+            Some(_) => {
+                return Err(OkfError::new("BAD_VALUE", "tags must be a list of strings")
+                    .op("export_bundle"))
+            }
+        };
+        let flavor = opt_str(params, "flavor")?.unwrap_or_else(|| "okf".into());
+        crate::export::export_bundle(
+            &self.store,
+            &output_dir,
+            directory_id.as_deref(),
+            concept_type.as_deref(),
+            tags.as_deref(),
+            &flavor,
+        )
+        .map_err(|err| err.op("export_bundle"))
+    }
+
+    fn export_concept(&self, params: &Map<String, Json>) -> Result<Json> {
+        let concept_id = str_param(params, "concept_id")?.to_string();
+        let output_dir = str_param(params, "output_dir")?.to_string();
+        let flavor = opt_str(params, "flavor")?.unwrap_or_else(|| "okf".into());
+        crate::export::export_concept(&self.store, &concept_id, &output_dir, &flavor)
+            .map_err(|err| err.op("export_concept"))
+    }
+
+    fn repair_links(&self) -> Result<Json> {
+        crate::ingest::repair_links_public(&self.store)
+            .map(|n| serde_json::json!({ "repaired": n }))
+    }
+
+    fn import_bundle(&self, params: &Map<String, Json>) -> Result<Json> {
+        let bundle_path = match params.get("bundle_path") {
+            Some(Json::String(value)) => Some(value.as_str()),
+            Some(Json::Null) | None => None,
+            Some(_) => {
+                return Err(OkfError::new("BAD_VALUE", "bundle_path must be a string")
+                    .op("import_bundle")
+                    .field("bundle_path", Json::String("expected a string".into())))
+            }
+        };
+        crate::ingest::import_bundle(&self.store, &self.settings, &self.embedder, bundle_path)
+            .map_err(|err| err.op("import_bundle"))
+    }
+
     fn import_file(&self, params: &Map<String, Json>) -> Result<Json> {
         let path = str_param(params, "file_path")?.to_string();
         let report = crate::ingest::import_files(
@@ -176,6 +297,12 @@ impl Router {
             "get_image" => self.get_image(str_param(params, "asset_id")?),
             "list_deleted" => self.list_deleted(),
             "list_broken_links" => self.list_broken_links(),
+            "repair_links" => self.repair_links(),
+            "export_bundle" => self.export_bundle(params),
+            "export_concept" => self.export_concept(params),
+            "delete" => self.delete(params),
+            "recover_deleted" => self.recover_deleted(params),
+            "purge_deleted" => self.purge_deleted(params),
             "pin_info" => self.pin_info(),
             "lanes" => self.lanes(),
             "doctor" => self.doctor(),
@@ -185,6 +312,7 @@ impl Router {
             "traverse" => self.traverse(params),
             "import_files" => self.import_files(params),
             "import_file" => self.import_file(params),
+            "import_bundle" => self.import_bundle(params),
             _ => unreachable!("read op without dispatch"),
         }
     }

@@ -12,6 +12,7 @@
   },
   "setup": {"import": {"corpus": "parity/corpus/minimal"}},
   "ops": [
+    {"op": "import_bundle", "params": {"bundle_path": "parity/corpus/minimal"}},
     {"op": "get_by_id", "params": {"concept_id": "alpha"}},
     {"op": "read", "params": {"concept_id": "alpha", "include": "body"}},
     {"op": "search", "params": {"query": "beta", "limit": 5}},

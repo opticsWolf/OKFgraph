@@ -41,6 +41,14 @@ def load(path: Path) -> dict[str, list[Any]]:
                 key = next(iter(row))
                 if key in ("n", "r") and isinstance(row[key], dict):
                     row = row[key]
+            if table == "BrokenLink" and isinstance(row, dict):
+                row = {k: v for k, v in row.items() if k != "timestamp"}
+            if table == "DeletedConcept" and isinstance(row, dict):
+                row = {
+                    k: v
+                    for k, v in row.items()
+                    if k not in {"id", "deleted_at", "snapshot"}
+                }
             cleaned.append(clean(row))
         out[table] = sorted(
             cleaned, key=lambda value: json.dumps(value, sort_keys=True, ensure_ascii=True)

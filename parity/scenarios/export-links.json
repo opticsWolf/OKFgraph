@@ -1,0 +1,15 @@
+{
+  "name": "export-links",
+  "settings": {
+    "db_path": "parity/out/export-links.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false
+  },
+  "setup": {"import": {"corpus": "parity/corpus/links-stage1"}},
+  "ops": [
+    {"op": "export_bundle", "params": {"output_dir": "parity/out/export-links-@RUNNER@"}}
+  ]
+}

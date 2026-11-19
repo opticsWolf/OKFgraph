@@ -3,20 +3,24 @@ use okfgraph::error::Envelope;
 use okfgraph::ops::Router;
 use okfgraph::settings::Settings;
 use serde_json::{Map, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::{env, fs, process::ExitCode};
 
-fn collect_markdown(dir: &std::path::Path, out: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_markdown(&path, out);
-        } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
-            out.push(path.to_string_lossy().into_owned());
-        }
+fn expand_runner(value: Value, runner: &str) -> Value {
+    match value {
+        Value::String(text) => Value::String(text.replace("@RUNNER@", runner)),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| expand_runner(item, runner))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, item)| (key, expand_runner(item, runner)))
+                .collect(),
+        ),
+        other => other,
     }
 }
 
@@ -67,18 +71,10 @@ fn main() -> ExitCode {
         }
         let mut builder = settings.clone();
         builder.bundle_root = Some(corpus.to_string());
-        let mut paths = Vec::new();
-        collect_markdown(Path::new(corpus), &mut paths);
-        paths.sort();
-        if paths.is_empty() {
-            eprintln!("no markdown files under {corpus}");
-            return ExitCode::from(1);
-        }
-        let files = paths;
         match Router::open_writable(&builder) {
             Ok(writer) => {
-                let params = serde_json::json!({"paths": files});
-                if let Err(err) = writer.call("import_files", params.as_object().unwrap()) {
+                let params = serde_json::json!({});
+                if let Err(err) = writer.call("import_bundle", params.as_object().unwrap()) {
                     eprintln!("import failed: {}", err.titles());
                     return ExitCode::from(1);
                 }
@@ -104,11 +100,8 @@ fn main() -> ExitCode {
         .unwrap_or(&Vec::new())
     {
         let op = call.get("op").and_then(Value::as_str).unwrap_or_default();
-        let params = call
-            .get("params")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
+        let params = expand_runner(call.get("params").cloned().unwrap_or(Value::Null), "rust");
+        let params = params.as_object().cloned().unwrap_or_default();
         match router.call(op, &params) {
             Ok(data) => results.push(Envelope::success(op, data)),
             Err(err) => results.push(Envelope::failure(op, &err)),

@@ -123,6 +123,25 @@ impl PyDateTime {
     }
 }
 
+pub fn format_py_datetime(value: OffsetDateTime) -> String {
+    let time = value.time();
+    let mut text = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        value.year(),
+        value.month() as u8,
+        value.day(),
+        time.hour(),
+        time.minute(),
+        time.second()
+    );
+    let micros = (time.nanosecond() / 1_000) * 1_000;
+    if micros != 0 {
+        text.push('.');
+        text.push_str(format!("{micros:09}").trim_end_matches('0'));
+    }
+    text
+}
+
 /// Current naive UTC time as a Python-compatible datetime.
 pub fn utc_now_datetime() -> PyDateTime {
     let now = OffsetDateTime::now_utc();

@@ -21,6 +21,7 @@ the Python and Rust cores in one process.
   imports and Python 0.15 reopen checks.
 - `tools/compare_db.py` — semantic DB-dump comparator (normalizes Ladybug IDs
   and wall-clock graph times).
+- `tools/compare_tree.py` — byte-for-byte export-directory comparator.
 - `examples/dump_db.rs` — Rust DB dump for the comparator.
 - `tools/gen_settings.py` — regenerate the Rust and Python settings tables.
 - `tools/make_search_oracle.py` — build a real GPU-embedded v10 fixture
@@ -204,7 +205,28 @@ python parity/tools/compare_db.py \
 
 `import-minimal.json` and `import-filter.json` both report **0 differences**
 on ops output and semantic DB dumps. `check_reopen_import.py` confirms Python
-0.15 can reopen both Rust-written databases with working search. Delta skip,
-BrokenLink repair, imported images, converters and export remain M3 gaps.
+0.15 can reopen both Rust-written databases with working search.
+
+Always set `PYTHONHASHSEED=0` for differential runs: Python's directory builder
+iterates a `set`, so root child order is otherwise process-dependent. Scenario
+string params may contain `@RUNNER@`; the harness expands it to `python` or
+`rust`, letting both sides write export trees to separate paths. Compare them
+with `tools/compare_tree.py`.
+
+Additional Stage B scenarios:
+
+- `links-repair.json` — wikilink/markdown/relation misses, `BrokenLink` rows,
+  repair on import, incoming-link preservation, and a no-op second bundle
+  import.
+- `delete-recover.json` — soft delete, tombstone listing, recovery with full
+  snapshot/embedding, incoming-link conversion to broken links, and purge.
+- `export-minimal.json`, `export-filter.json`, `export-links.json` — export
+  reports plus byte-for-byte `okf`/`obsidian` trees, nested indexes, and YAML
+  frontmatter with `uid`, timestamps, and relations.
+
+All Stage B scenarios report **0 differences** on ops output; import, links,
+and delete scenarios also match on semantic DB dumps, and export trees match
+byte-for-byte. Remaining M3 gaps: imported image assets, converters, `diff`,
+`lint`, `produce`, `sync`, `detach`, `reindex`, and `reembed`.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

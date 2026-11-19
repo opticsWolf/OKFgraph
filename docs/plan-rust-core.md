@@ -828,9 +828,17 @@ concept/chunk embeddings, exact `content_sig`, directory hierarchy, `PART_OF`,
 databases reopen in Python 0.15 with working search. `compare.py --ignore-key`
 and `compare_db.py` are the normalized comparators.
 
-Remaining M3 gaps: delta skip / re-import idempotence, BrokenLink repair and
-explicit relations, imported image assets, PDF/Office/bib/thoughts converters,
-export/purge/diff/producers, and the remaining write ops.
+Stage B now also implements directory/file hash delta detection with per-file
+skip (unchanged re-imports enqueue zero files and do no embedding), frontmatter
+identity conflicts and move detection, wikilink/path/relation extraction with
+`BrokenLink` reasons, incoming-link preservation, repair, soft delete/recover/
+purge with mirror-hash cleanup, `export_bundle`/`export_concept` (`okf` and
+`obsidian` flavors, link enrichment, generated `index.md`), and the Python-
+compatible YAML/text bytes on Windows.
+
+Remaining M3 gaps: imported image assets, PDF/Office/bib/thoughts converters,
+`diff`/`lint`/`produce`/`sync`/`detach`, `reindex`/`reembed`, and the remaining
+write ops.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

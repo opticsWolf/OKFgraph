@@ -1,0 +1,25 @@
+{
+  "name": "delete-recover",
+  "settings": {
+    "db_path": "parity/out/delete-recover.db",
+    "bundle_root": "parity/corpus/empty",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false
+  },
+  "setup": {"import": {"corpus": "parity/corpus/minimal"}},
+  "ops": [
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}},
+    {"op": "delete", "params": {"concept_id": "alpha"}},
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}},
+    {"op": "list_deleted", "params": {}},
+    {"op": "recover_deleted", "params": {"concept_id": "alpha"}},
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}},
+    {"op": "list_deleted", "params": {}},
+    {"op": "delete", "params": {"concept_id": "beta"}},
+    {"op": "purge_deleted", "params": {"older_than": 0}},
+    {"op": "list_deleted", "params": {}}
+  ]
+}

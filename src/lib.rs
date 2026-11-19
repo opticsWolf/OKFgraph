@@ -20,9 +20,11 @@ pub fn schema_version() -> u16 {
 
 pub mod embed;
 pub mod error;
+pub mod export;
 pub mod markdown;
 pub mod model;
 pub mod ops;
+pub mod purge;
 pub mod pycompat;
 pub mod search;
 pub mod settings;

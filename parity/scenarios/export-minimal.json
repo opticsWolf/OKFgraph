@@ -1,0 +1,17 @@
+{
+  "name": "export-minimal",
+  "settings": {
+    "db_path": "parity/out/export-minimal.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {"import": {"corpus": "parity/corpus/minimal"}},
+  "ops": [
+    {"op": "export_bundle", "params": {"output_dir": "parity/out/export-bundle-@RUNNER@"}},
+    {"op": "export_concept", "params": {"concept_id": "alpha", "output_dir": "parity/out/export-single-@RUNNER@"}},
+    {"op": "export_bundle", "params": {"output_dir": "parity/out/export-flavor-@RUNNER@", "flavor": "obsidian"}},
+    {"op": "export_bundle", "params": {"output_dir": "parity/out/export-filtered-@RUNNER@", "concept_type": "note", "tags": ["parity"]}}
+  ]
+}

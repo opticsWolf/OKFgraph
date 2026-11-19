@@ -1,0 +1,18 @@
+{
+  "name": "export-filter",
+  "settings": {
+    "db_path": "parity/out/export-filter.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "chunk_size": 32,
+    "chunk_overlap": 4
+  },
+  "setup": {"import": {"corpus": "parity/corpus/filters"}},
+  "ops": [
+    {"op": "export_bundle", "params": {"output_dir": "parity/out/export-tree-@RUNNER@"}},
+    {"op": "export_bundle", "params": {"output_dir": "parity/out/export-tree-obsidian-@RUNNER@", "flavor": "obsidian"}},
+    {"op": "export_concept", "params": {"concept_id": "area1/alpha", "output_dir": "parity/out/export-one-@RUNNER@"}}
+  ]
+}

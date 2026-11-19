@@ -1,6 +1,7 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** proposal, decisions locked, no implementation started  
+**Status:** M0 in progress — decisions locked, scaffold landed, Windows `lbug`
+cross-open spike green; Linux/macOS spikes and PyO3/rmcp spikes pending  
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -184,6 +185,14 @@ Constraints to design around:
   **do not install ShiningLight, Chocolatey, or any other system OpenSSL without
   explicit user confirmation**; use an existing install via `OPENSSL_DIR` or ask
   first.
+- **Windows setup used for the green spike (local):** clone vcpkg outside the
+  repo, run `bootstrap-vcpkg.bat -disableMetrics`, then
+  `vcpkg.exe install openssl:x64-windows --disable-metrics`. Because this is the
+  **dynamic** triplet, Cargo also needs `VCPKGRS_DYNAMIC=1`; set
+  `VCPKG_ROOT='C:\Users\Main\Documents\Rust\vcpkg'` (Windows-style path) and
+  prepend `...\installed\x64-windows\bin` to `PATH` for the runtime DLLs.
+  A build-script change to `VCPKG_ROOT` requires `cargo clean -p lbug` to force
+  OpenSSL re-discovery.
 - Extensions (`vector`, `fts`) are dynamically loaded `.lbug_extension` files.
   On non-Windows static builds the final binary needs `-rdynamic` (or equivalent)
   so the extension can resolve host symbols. Each binary and the cdylib must emit
@@ -230,11 +239,44 @@ not as a runtime dependency.
 
 ### 3.4 PyO3
 
-PyO3 0.30.1 + maturin 1.16 support `abi3-py312` wheels. The binding is a single
+PyO3 0.30.1 + maturin support `abi3-py312` wheels. The binding is a single
 `cdylib` (`okfgraph._native`) with PyO3 classes and functions; long calls release
-the GIL. Wheels target Python 3.12–3.14. Panics must be caught at the FFI
+the GIL. In PyO3 0.30 the `allow_threads` API is named `Python::detach`; use that
+at the FFI boundary. Wheels target Python 3.12–3.14. Panics must be caught at the FFI
 boundary (`catch_unwind` / PyO3's panic conversion); segfaults inside Ladybug/ORT
 are not recoverable and need the crash-report discipline retained by the shim.
+
+### 3.5 M0 spike results — Windows x64 **GO**
+
+Recorded on `x86_64-pc-windows-msvc` with `lbug = 0.22.1`, Python oracle 0.15.0,
+Python 3.13.14, Rust 1.100.0:
+
+- **OpenSSL/vcpkg:** `vcpkg install openssl:x64-windows` built `3.6.5#2` in
+  7.1 min. With `VCPKG_ROOT` (Windows-style path), `VCPKGRS_DYNAMIC=1`, and the
+  vcpkg `bin` directory on `PATH`, the final link succeeds. Initial clean
+  `cargo check -p lbug`: 54.61 s; warm clean `lbug` rebuild: ~21.7 s.
+- **lbug cross-open:** Python-created `parity/fixtures/oracle-v10.db` opens in
+  Rust; `CALL TABLE_INFO('Concept')` returns the expected 14 columns including
+  `FLOAT[3]` and `MAP(STRING, STRING)`. `INSTALL`/`LOAD vector` and `fts` succeed;
+  `QUERY_VECTOR_INDEX` and `QUERY_FTS_INDEX` both return the spike row. A Rust
+  `CREATE` succeeds, and `parity/tools/check_rust_write.py` confirms Python 0.15
+  reopens the copy and sees `['one', 'rust-write']`.
+- **Ladybug note:** a table with vector/FTS indexes needs `LOAD vector`/`LOAD fts`
+  **in every process that writes to it**; otherwise Ladybug reports “Trying to
+  insert into an index on table … but its extension is not loaded.” The Rust
+  spike now loads both before writes. No storage/ABI deviation was observed.
+- **PyO3/maturin:** `python bindings/python/build_wheel.py --release` produces
+  `okfgraph-0.16.0a1-cp312-abi3-win_amd64.whl` (164 KB compressed, well under the
+  60 MB budget). A clean venv imports the facade, reads `version()`,
+  `schema_version()`, and 30 op names, and two concurrent 150 ms native calls
+  finish in 0.151 s, proving GIL release. PyO3 0.30 names this API
+  `Python::detach`, not `allow_threads`. Release wheel build: 2 min 38 s warm.
+- **rmcp:** `examples/rmcp_spike.rs` serves an `echo` tool over stdio; the Python
+  `mcp` client lists it and receives `echo:ping`.
+
+**Gate status:** Windows x64 is **GO** for all three spikes. Linux x86_64 and
+macOS arm64 cross-open/spike runs are still required before Stage A ships. No
+`lbug-sys` fallback is needed on Windows.
 
 ---
 
@@ -619,7 +661,9 @@ buildable throughout for differential testing and cross-open.
   dev machines must first provision OpenSSL 3 (`vcpkg install
   openssl:x64-windows` or `OPENSSL_DIR`), as recorded in §3.1.
 - **PyO3 spike:** maturin wheel with `_native.version()` and a blocking call with
-  GIL release.
+  GIL release. Maturin only includes the facade when `python-source` resolves to
+  a readable local directory; use `bindings/python/build_wheel.py` to stage
+  `python/okfgraph` into `bindings/python/python/` before building.
 - **rmcp spike:** stdio server answering one tool; Python `mcp` client connects.
 - Build the parity harness skeleton:
   - corpus format (bundle + settings + op script);

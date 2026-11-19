@@ -9,7 +9,11 @@ __pycache__/
 # Rust
 /target/
 
+# Maturin staging
+/bindings/python/python/
+
 # Parity harness
+parity/.venv-wheel/
 parity/.venv-oracle/
 parity/out/
 parity/tmp/

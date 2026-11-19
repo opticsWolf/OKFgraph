@@ -38,6 +38,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
         }
         "write" => {
+            // Indexed tables require their extensions in every process that writes.
+            for ext in ["vector", "fts"] {
+                conn.query(&format!("LOAD {ext};"))?;
+            }
             conn.query("CREATE (:Spike {id: 'rust-write', text: 'written from Rust', embedding: [0.0, 1.0, 0.0]});")?;
             println!("wrote spike row");
         }

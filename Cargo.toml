@@ -33,7 +33,7 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 clap = { version = "4", optional = true, features = ["derive"] }
 axum = { version = "0.8", optional = true, default-features = false, features = ["json", "query", "tokio", "http1"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "net"] }
-rmcp = { version = "=3.11.0", optional = true, features = ["server", "transport-async-rw", "macros"] }
+rmcp = { version = "=3.11.0", optional = true, features = ["server", "transport-io", "transport-async-rw", "macros"] }
 
 [features]
 default = ["embed", "external", "vision"]
@@ -65,6 +65,10 @@ required-features = ["cli", "server", "mcp"]
 [[bin]]
 name = "parity-run"
 path = "src/bin/parity-run.rs"
+
+[[example]]
+name = "rmcp_spike"
+required-features = ["mcp"]
 
 [lints.cargo]
 # Dependencies are feature-gated scaffolding in M0; they will be used by M1-M4.

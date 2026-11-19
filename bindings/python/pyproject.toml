@@ -21,7 +21,7 @@ okf = "okfgraph._entry:okf"
 okf-mcp = "okfgraph.mcp_server:main"
 
 [tool.maturin]
-python-source = "../../python"
+python-source = "python"
 module-name = "okfgraph._native"
 
 [tool.uv]

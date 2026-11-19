@@ -19,7 +19,10 @@ def diff(a: Any, b: Any, path: str, tol: float, out: list[str]) -> None:
         out.append(f"{path}: type {type(a).__name__} != {type(b).__name__}")
         return
     if isinstance(a, dict):
-        for key in sorted(set(a) | set(b)):
+        keys = set(a) | set(b)
+        if path == "$":
+            keys.discard("runner")  # provenance only, not behavior
+        for key in sorted(keys):
             if key not in a or key not in b:
                 out.append(f"{path}.{key}: missing on one side")
             else:

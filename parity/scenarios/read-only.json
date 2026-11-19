@@ -1,0 +1,25 @@
+{
+  "name": "read-only",
+  "settings": {
+    "db_path": "parity/fixtures/oracle-v10.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2"
+  },
+  "setup": {"fixture": "parity/fixtures/oracle-v10.db"},
+  "ops": [
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}},
+    {"op": "get_by_id", "params": {"concept_id": "beta"}},
+    {"op": "get_by_id", "params": {"concept_id": "missing"}},
+    {"op": "list_directory", "params": {"directory_id": ""}},
+    {"op": "list_directory", "params": {"directory_id": "kb"}},
+    {"op": "read", "params": {"concept_id": "alpha", "include": "body"}},
+    {"op": "read", "params": {"concept_id": "alpha", "include": "chunks"}},
+    {"op": "traverse", "params": {"start_id": "alpha", "relationship": "LINKS_TO", "direction": "OUTGOING", "depth": 1}},
+    {"op": "list_images", "params": {"concept_id": "alpha"}},
+    {"op": "get_image", "params": {"asset_id": "img-1"}},
+    {"op": "list_deleted", "params": {}},
+    {"op": "list_broken_links", "params": {}},
+    {"op": "pin_info", "params": {}},
+    {"op": "lanes", "params": {}}
+  ]
+}

@@ -3319,6 +3319,7 @@ version = "0.16.0-alpha.1"
 dependencies = [
  "assert_cmd",
  "axum",
+ "base64 0.22.1",
  "bobine",
  "clap",
  "criterion",

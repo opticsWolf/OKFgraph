@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
 
 def load_error_payload(exc: BaseException) -> dict[str, Any]:
     envelope = getattr(exc, "envelope", None)
@@ -43,7 +46,19 @@ def main() -> int:
             params = call.get("params") or {}
             try:
                 data = getattr(router, op)(**params)
-                results.append({"ok": True, "op": op, "data": data})
+                # Public Pydantic models are normalized so JSON comparison sees
+                # their documented public shape, not repr(default=str).
+                if hasattr(data, "public_dict"):
+                    data = data.public_dict()
+                elif hasattr(data, "model_dump"):
+                    data = data.model_dump()
+                results.append({
+                    "ok": True,
+                    "op": op,
+                    "data": data,
+                    "warnings": [],
+                    "error": None,
+                })
             except Exception as exc:  # oracle errors are part of the golden output
                 payload = load_error_payload(exc)
                 payload.setdefault("op", op)

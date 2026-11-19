@@ -464,16 +464,29 @@ impl Router {
 
     /// Hybrid concept/chunk search. The real query vector comes from the GPU
     /// embedder unless a scenario supplies `query_vector` explicitly.
-    pub fn search(&self, params: &Map<String, Json>) -> Result<Json> {
-        let params = SearchParams::parse(params)?;
+    pub fn search(&self, raw: &Map<String, Json>) -> Result<Json> {
+        let mut params = SearchParams::parse(raw)?;
+        if params.hub_rerank {
+            // chunks:hub does not honour filters, including the configured
+            // default exclude_tags list.
+            params.exclude_tags.clear();
+        } else if !params.exclude_tags_set {
+            params.exclude_tags = self.settings.exclude_tags.clone();
+        }
+        if let Some(id) = &params.near_id {
+            if self.store.get_by_id(id)?.is_none() {
+                return Err(unknown_concept("search", "near_id", id));
+            }
+        }
         let query_vector = self.query_vector(&params.query, params.query_vector.clone())?;
         match params.target.as_str() {
             "concepts" => self.search_concepts(&params, &query_vector),
             "chunks" => {
-                let mut rows = self.search_chunks(&params, &query_vector, params.limit)?;
-                if params.rerank {
-                    self.cross_rerank(&mut rows, &params.query)?;
-                }
+                let rows = if params.hub_rerank {
+                    self.search_chunks_hub(&params, &query_vector, params.limit)?
+                } else {
+                    self.search_chunks(&params, &query_vector, params.limit)?
+                };
                 Ok(Json::Array(rows))
             }
             "images" => Err(OkfError::new(
@@ -789,20 +802,98 @@ impl Router {
         query_vector: &[f32],
         limit: usize,
     ) -> Result<Vec<Json>> {
-        let k = search::fetch_k(limit.max(search::PAGE_WINDOW), params.filtered());
-        let vec =
-            self.store
-                .vector_hits("Chunk", "chunk_embedding", query_vector, k, params.efs)?;
-        let fts = self
-            .store
-            .fts_hits("Chunk", "chunk_fts", &params.query, k)?;
-        let combined = search::rrf_fuse(&vec, &fts);
-        let rows = self.store.chunks_by_ids(
-            &combined
-                .iter()
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>(),
-        )?;
+        let offset = params.offset;
+        let want = [
+            limit + offset,
+            search::PAGE_WINDOW,
+            if params.rerank {
+                self.settings.rerank_top_n.max(0) as usize
+            } else {
+                0
+            },
+            if params.dedupe {
+                2 * (limit + offset)
+            } else {
+                0
+            },
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(search::PAGE_WINDOW);
+        let within = params
+            .near_id
+            .as_ref()
+            .map(|id| self.store.near_ids(id, params.hops))
+            .transpose()?;
+        let filtered = params.filtered();
+        let mut rows = if let Some(within) = within.as_deref() {
+            let combined =
+                self.rrf_within("Chunk", "chunk_fts", query_vector, &params.query, within)?;
+            self.chunk_rows(&combined, params, want)?
+        } else {
+            let k = search::fetch_k(want, filtered);
+            let vec =
+                self.store
+                    .vector_hits("Chunk", "chunk_embedding", query_vector, k, params.efs)?;
+            let fts = self
+                .store
+                .fts_hits("Chunk", "chunk_fts", &params.query, k)?;
+            let combined = search::rrf_fuse(&vec, &fts);
+            let mut rows = self.chunk_rows(&combined, params, want)?;
+            if filtered {
+                if let Some(deeper) = search::deeper_k(
+                    k,
+                    rows.len(),
+                    want,
+                    vec.len() as i64 >= k || fts.len() as i64 >= k,
+                ) {
+                    let vec = self.store.vector_hits(
+                        "Chunk",
+                        "chunk_embedding",
+                        query_vector,
+                        deeper,
+                        params.efs,
+                    )?;
+                    let fts = self
+                        .store
+                        .fts_hits("Chunk", "chunk_fts", &params.query, deeper)?;
+                    rows = self.chunk_rows(&search::rrf_fuse(&vec, &fts), params, want)?;
+                }
+            }
+            rows
+        };
+        if params.recency.is_some() {
+            self.recency_blend(&mut rows, params)?;
+        }
+        if params.rerank {
+            self.cross_rerank(&mut rows, &params.query)?;
+        }
+        if params.dedupe {
+            self.collapse_duplicates(&mut rows)?;
+        }
+        Ok(rows.into_iter().skip(offset).take(limit).collect())
+    }
+
+    fn search_chunks_hub(
+        &self,
+        params: &SearchParams,
+        query_vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<Json>> {
+        let pool = [
+            limit * 2,
+            self.settings.rerank_top_n.max(0) as usize,
+            if params.dedupe { limit * 4 } else { 0 },
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(limit * 2);
+        let mut child = params.clone();
+        child.offset = 0;
+        child.rerank = false;
+        child.dedupe = false;
+        child.hub_rerank = false;
+        let mut rows = self.search_chunks(&child, query_vector, pool)?;
         let parents: Vec<String> = rows
             .iter()
             .filter_map(|row| {
@@ -813,36 +904,95 @@ impl Router {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let parent_rows = self.store.concepts_by_ids(&parents)?;
-        let parent_by_id: BTreeMap<String, Json> = parent_rows
+        let (_, edges) = self.store.link_graph(None)?;
+        let hubs = search::hub_scores(&parents, &edges);
+        let max_hub = hubs.values().copied().max().unwrap_or(0).max(1) as f64;
+        for row in &mut rows {
+            let parent_id = row
+                .get("parent_doc_id")
+                .and_then(Json::as_str)
+                .unwrap_or("");
+            let hub = hubs.get(parent_id).copied().unwrap_or(0) as f64 / max_hub;
+            let base = row.get("rrf_score").and_then(Json::as_f64).unwrap_or(0.0);
+            let score = (1.0 - params.hub_weight) * base + params.hub_weight * hub;
+            let obj = row.as_object_mut().expect("row object");
+            obj.insert("hub_score".into(), json_number(hub));
+            obj.insert("final_score".into(), json_number(score));
+        }
+        rows.sort_by(|a, b| {
+            let sa = a.get("final_score").and_then(Json::as_f64).unwrap_or(0.0);
+            let sb = b.get("final_score").and_then(Json::as_f64).unwrap_or(0.0);
+            sb.total_cmp(&sa)
+        });
+        if params.rerank {
+            self.cross_rerank(&mut rows, &params.query)?;
+        }
+        if params.dedupe {
+            self.collapse_duplicates(&mut rows)?;
+        }
+        rows.truncate(limit);
+        Ok(rows)
+    }
+
+    fn chunk_rows(
+        &self,
+        combined: &[(String, f64)],
+        params: &SearchParams,
+        limit: usize,
+    ) -> Result<Vec<Json>> {
+        let ids: Vec<String> = combined.iter().map(|(id, _)| id.clone()).collect();
+        let rows = self.store.chunks_by_ids(&ids)?;
+        let by_id: BTreeMap<String, Json> = rows
             .into_iter()
             .filter_map(|row| {
                 let id = row.get("id")?.as_str()?.to_string();
                 Some((id, row))
             })
             .collect();
-        let score_by_id: BTreeMap<&str, f64> = combined
-            .iter()
-            .map(|(id, score)| (id.as_str(), *score))
+        let parents: Vec<String> = by_id
+            .values()
+            .filter_map(|row| {
+                row.get("parent_doc_id")
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
+        let parent_by_id: BTreeMap<String, Json> = self
+            .store
+            .concepts_by_ids(&parents)?
+            .into_iter()
+            .filter_map(|row| {
+                let id = row.get("id")?.as_str()?.to_string();
+                Some((id, row))
+            })
+            .collect();
+        let within = params
+            .near_id
+            .as_ref()
+            .map(|id| {
+                self.store
+                    .near_ids(id, params.hops)
+                    .map(|ids| ids.into_iter().collect::<BTreeSet<_>>())
+            })
+            .transpose()?;
         let mut out = Vec::new();
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        let mut kept: Vec<(Vec<f32>, Vec<String>)> = Vec::new();
-        for row in rows {
-            let Some(chunk_id) = row.get("id").and_then(Json::as_str).map(str::to_string) else {
+        for (chunk_id, score) in combined {
+            let Some(row) = by_id.get(chunk_id) else {
                 continue;
             };
             let parent_id = row
                 .get("parent_doc_id")
                 .and_then(Json::as_str)
-                .unwrap_or("")
-                .to_string();
+                .unwrap_or("");
+            let parent = parent_by_id.get(parent_id);
             if let Some(wanted) = &params.parent_id {
-                if parent_id != *wanted {
+                if parent_id != wanted {
                     continue;
                 }
             }
-            let parent = parent_by_id.get(&parent_id);
             if let Some(concept_type) = &params.concept_type {
                 if parent.and_then(|p| p.get("type").and_then(Json::as_str))
                     != Some(concept_type.as_str())
@@ -856,27 +1006,60 @@ impl Router {
             if !params.tags.is_empty() && !params.tags.iter().any(|tag| parent_tags.contains(tag)) {
                 continue;
             }
-            let count = counts.entry(parent_id.clone()).or_default();
+            if !params.exclude_tags.is_empty()
+                && params
+                    .exclude_tags
+                    .iter()
+                    .any(|tag| parent_tags.contains(tag))
+            {
+                continue;
+            }
+            if let Some(set) = &within {
+                if !set.contains(parent_id) {
+                    continue;
+                }
+            }
+            if let Some(parent) = parent {
+                let effective = parent
+                    .get("effective_at")
+                    .and_then(Json::as_str)
+                    .unwrap_or("");
+                if params
+                    .since
+                    .as_ref()
+                    .is_some_and(|since| effective < since.as_str())
+                    || params
+                        .until
+                        .as_ref()
+                        .is_some_and(|until| effective >= until.as_str())
+                {
+                    continue;
+                }
+                if !params.where_map.is_empty() {
+                    let extra = parent.get("extra").and_then(Json::as_object);
+                    if !params.where_map.iter().all(|(key, expected)| {
+                        extra
+                            .and_then(|map| map.get(key))
+                            .map(|value| match value {
+                                Json::String(s) => s.clone(),
+                                other => from_json(other).to_python_json(false),
+                            })
+                            .unwrap_or_default()
+                            == *expected
+                    }) {
+                        continue;
+                    }
+                }
+            } else if !params.where_map.is_empty()
+                || params.since.is_some()
+                || params.until.is_some()
+            {
+                continue;
+            }
+            let count = counts.entry(parent_id.to_string()).or_default();
             *count += 1;
             if *count > params.max_chunks_per_doc {
                 continue;
-            }
-            let Some(score) = score_by_id.get(chunk_id.as_str()) else {
-                continue;
-            };
-            let embedding = json_floats(row.get("embedding"));
-            if params.dedupe {
-                let mut duplicate = false;
-                for (kept_vec, _) in &kept {
-                    if search::cosine(&embedding, kept_vec) >= DEDUPE_COSINE {
-                        duplicate = true;
-                        break;
-                    }
-                }
-                if duplicate {
-                    continue;
-                }
-                kept.push((embedding, Vec::new()));
             }
             let text = row.get("chunk_text").and_then(Json::as_str).unwrap_or("");
             let text = if text.chars().count() > 500 {
@@ -884,7 +1067,7 @@ impl Router {
             } else {
                 text.to_string()
             };
-            let mut result = serde_json::json!({
+            out.push(serde_json::json!({
                 "id": parent_id,
                 "concept_id": parent_id,
                 "chunk_id": chunk_id,
@@ -896,27 +1079,86 @@ impl Router {
                 "parent_title": parent.and_then(|p| p.get("title")).cloned().unwrap_or(Json::Null),
                 "parent_type": parent.and_then(|p| p.get("type")).cloned().unwrap_or(Json::Null),
                 "parent_tags": Json::Array(parent_tags.into_iter().map(Json::String).collect()),
-            });
-            if params.hub_rerank {
-                let (_, edges) = self.store.link_graph(params.link_kinds.as_deref())?;
-                let hubs = search::hub_scores(std::slice::from_ref(&parent_id), &edges);
-                let hub = hubs.get(&parent_id).copied().unwrap_or(0) as f64;
-                let score = (1.0 - params.hub_weight) * score + params.hub_weight * hub;
-                result
-                    .as_object_mut()
-                    .expect("row object")
-                    .insert("rrf_score".into(), json_number(score));
-                result
-                    .as_object_mut()
-                    .expect("row object")
-                    .insert("hub_score".into(), json_number(hub));
-            }
-            out.push(result);
+            }));
             if out.len() >= limit {
                 break;
             }
         }
         Ok(out)
+    }
+
+    fn collapse_duplicates(&self, rows: &mut Vec<Json>) -> Result<()> {
+        let ids: Vec<String> = rows
+            .iter()
+            .filter_map(|row| {
+                row.get("chunk_id")
+                    .and_then(Json::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        if ids.len() < 2 {
+            return Ok(());
+        }
+        let sql =
+            "MATCH (n:`Chunk`) WHERE n.id IN $ids RETURN n.id AS id, n.embedding AS embedding";
+        let embeddings: BTreeMap<String, Vec<f32>> = self
+            .store
+            .query(
+                sql,
+                vec![(
+                    "ids",
+                    lbug::Value::List(
+                        lbug::LogicalType::String,
+                        ids.iter().cloned().map(lbug::Value::String).collect(),
+                    ),
+                )],
+            )?
+            .into_iter()
+            .filter_map(|row| {
+                let id = row.get("id")?.as_str()?.to_string();
+                Some((id, json_floats(row.get("embedding"))))
+            })
+            .collect();
+        let mut kept: Vec<(String, Vec<f32>)> = Vec::new();
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows.drain(..) {
+            let Some(chunk_id) = row
+                .get("chunk_id")
+                .and_then(Json::as_str)
+                .map(str::to_string)
+            else {
+                out.push(row);
+                continue;
+            };
+            let embedding = embeddings.get(&chunk_id).cloned().unwrap_or_default();
+            let twin = if embedding.is_empty() {
+                None
+            } else {
+                kept.iter()
+                    .find(|(_, other)| search::cosine(&embedding, other) >= DEDUPE_COSINE)
+                    .map(|(id, _)| id.clone())
+            };
+            if let Some(twin) = twin {
+                for kept_row in &mut out {
+                    if kept_row.get("chunk_id").and_then(Json::as_str) == Some(twin.as_str()) {
+                        let entry = kept_row
+                            .as_object_mut()
+                            .expect("row object")
+                            .entry("collapsed".to_string())
+                            .or_insert_with(|| Json::Array(Vec::new()));
+                        if let Some(items) = entry.as_array_mut() {
+                            items.push(Json::String(chunk_id));
+                        }
+                        break;
+                    }
+                }
+            } else {
+                kept.push((chunk_id, embedding));
+                out.push(row);
+            }
+        }
+        *rows = out;
+        Ok(())
     }
 
     fn rrf_within(
@@ -929,21 +1171,22 @@ impl Router {
     ) -> Result<Vec<(String, f64)>> {
         // Score the small neighbourhood exactly instead of post-filtering the
         // global index window.
-        let sql = format!(
-            "MATCH (n:`{table}`) WHERE n.id IN $ids RETURN n.id AS id, n.embedding AS embedding"
+        let ids_param = (
+            "ids",
+            lbug::Value::List(
+                lbug::LogicalType::String,
+                within.iter().cloned().map(lbug::Value::String).collect(),
+            ),
         );
-        let rows = self.store.query(
-            &sql,
-            vec![(
-                "ids",
-                lbug::Value::List(
-                    lbug::LogicalType::String,
-                    within.iter().cloned().map(lbug::Value::String).collect(),
-                ),
-            )],
-        )?;
+        let sql = if table == "Chunk" {
+            "MATCH (n:`Chunk`) WHERE n.parent_doc_id IN $ids AND n.embedding IS NOT NULL \
+             RETURN n.id AS id, n.embedding AS embedding"
+        } else {
+            "MATCH (n:`Concept`) WHERE n.id IN $ids AND n.embedding IS NOT NULL \
+             RETURN n.id AS id, n.embedding AS embedding"
+        };
         let mut vec_scores = Vec::new();
-        for row in rows {
+        for row in self.store.query(sql, vec![ids_param.clone()])? {
             let Some(id) = row.get("id").and_then(Json::as_str).map(str::to_string) else {
                 continue;
             };
@@ -951,12 +1194,23 @@ impl Router {
             let score = search::cosine(query_vector, &stored);
             vec_scores.push((id, score));
         }
+        let mut members: BTreeSet<String> = vec_scores.iter().map(|(id, _)| id.clone()).collect();
+        if table == "Chunk" {
+            let sql = "MATCH (n:`Chunk`) WHERE n.parent_doc_id IN $ids RETURN n.id AS id";
+            for row in self.store.query(sql, vec![ids_param])? {
+                if let Some(id) = row.get("id").and_then(Json::as_str) {
+                    members.insert(id.to_string());
+                }
+            }
+        } else {
+            members.extend(within.iter().cloned());
+        }
         let fts = self
             .store
             .fts_hits(table, fts_index, query, search::FETCH_CAP)?;
         let fts: Vec<(String, f64)> = fts
             .into_iter()
-            .filter(|(id, _)| within.contains(id))
+            .filter(|(id, _)| members.contains(id))
             .collect();
         Ok(search::rrf_fuse(&vec_scores, &fts))
     }
@@ -1143,6 +1397,10 @@ struct SearchParams {
     parent_id: Option<String>,
     include_chunks: bool,
     max_chunks_per_doc: usize,
+    #[allow(dead_code)]
+    expand: bool,
+    #[allow(dead_code)]
+    context_hops: i64,
     hub_rerank: bool,
     hub_weight: f64,
     rank: String,
@@ -1150,6 +1408,7 @@ struct SearchParams {
     since: Option<String>,
     until: Option<String>,
     exclude_tags: Vec<String>,
+    exclude_tags_set: bool,
     link_kinds: Option<Vec<String>>,
     near_id: Option<String>,
     hops: i64,
@@ -1167,45 +1426,218 @@ impl SearchParams {
         let query = str_param(params, "query")?.to_string();
         let target = opt_str(params, "target")?.unwrap_or_else(|| "concepts".into());
         if !["concepts", "chunks", "images"].contains(&target.as_str()) {
-            return Err(
-                OkfError::new("BAD_VALUE", format!("unknown search target: {target}")).op("search"),
-            );
-        }
-        let limit = opt_i64(params, "limit")?.unwrap_or(10);
-        if limit < 1 {
-            return Err(OkfError::new("BAD_VALUE", "limit must be >= 1").op("search"));
+            return Err(OkfError::new(
+                "BAD_VALUE",
+                format!("target must be one of 'concepts', 'chunks', 'images', got '{target}'"),
+            )
+            .op("search")
+            .field("target", Json::String(target)));
         }
         let rank = opt_str(params, "rank")?.unwrap_or_else(|| "none".into());
         if !["none", "hub", "ppr", "cross"].contains(&rank.as_str()) {
-            return Err(OkfError::new(
-                "BAD_VALUE",
-                format!("rank must be 'none', 'hub', 'ppr' or 'cross', got '{rank}'"),
-            )
-            .op("search"));
+            return Err(bad_value(
+                format!("rank must be one of 'none', 'hub', 'ppr', 'cross', got '{rank}'"),
+                vec![("rank", Json::String(rank))],
+            ));
         }
-        let hops = opt_i64(params, "hops")?.unwrap_or(2);
-        if !(1..=3).contains(&hops) {
-            return Err(OkfError::new("BAD_VALUE", "hops must be 1..3").op("search"));
+        let limit = required_int(params, "limit", 10, |v| v < 1, "limit must be >= 1, got")?;
+        let offset = required_int(params, "offset", 0, |v| v < 0, "offset must be >= 0, got")?;
+        let hops = required_int(
+            params,
+            "hops",
+            2,
+            |v| !(1..=3).contains(&v),
+            "hops must be 1..3, got",
+        )?;
+        let near_id = opt_str(params, "near_id")?;
+        if hops != 2 && near_id.is_none() {
+            return Err(bad_value(
+                "hops needs near_id",
+                vec![("hops", Json::from(hops))],
+            ));
         }
-        let offset = opt_i64(params, "offset")?.unwrap_or(0);
-        if offset < 0 {
-            return Err(OkfError::new("BAD_VALUE", "offset must be >= 0").op("search"));
-        }
-        let recency = opt_f64(params, "recency")?;
-        if recency.is_some_and(|value| value <= 0.0) {
-            return Err(OkfError::new("BAD_VALUE", "recency must be > 0").op("search"));
-        }
-        let recency_weight = opt_f64(params, "recency_weight")?.unwrap_or(0.3);
+        let recency_raw = params.get("recency").cloned().unwrap_or(Json::Null);
+        let recency = match &recency_raw {
+            Json::Null => None,
+            Json::Bool(_) | Json::String(_) | Json::Array(_) | Json::Object(_) => {
+                return Err(bad_value(
+                    format!(
+                        "recency must be a half-life in days > 0, got {}",
+                        py_repr(&recency_raw)
+                    ),
+                    vec![("recency", recency_raw.clone())],
+                ));
+            }
+            value => {
+                let number = value.as_f64().unwrap_or(0.0);
+                if number <= 0.0 {
+                    return Err(bad_value(
+                        format!(
+                            "recency must be a half-life in days > 0, got {}",
+                            py_repr(value)
+                        ),
+                        vec![("recency", value.clone())],
+                    ));
+                }
+                Some(number)
+            }
+        };
+        let recency_weight_raw = params
+            .get("recency_weight")
+            .cloned()
+            .unwrap_or_else(|| Json::from(0.3));
+        let recency_weight = recency_weight_raw.as_f64().unwrap_or(0.3);
         if !(0.0..=1.0).contains(&recency_weight) {
-            return Err(OkfError::new("BAD_VALUE", "recency_weight must be 0..1").op("search"));
+            return Err(bad_value(
+                format!(
+                    "recency_weight must be 0..1, got {}",
+                    py_repr(&recency_weight_raw)
+                ),
+                vec![("recency_weight", recency_weight_raw.clone())],
+            ));
         }
-        let hub_weight = opt_f64(params, "hub_weight")?.unwrap_or(0.3);
-        let efs = opt_i64(params, "efs")?;
-        if let Some(value) = efs {
-            if !(16..=1000).contains(&value) {
-                return Err(OkfError::new("BAD_VALUE", "efs must be 16..1000").op("search"));
+        if recency_weight != 0.3 && recency.is_none() {
+            return Err(bad_value(
+                "recency_weight needs recency",
+                vec![("recency_weight", recency_weight_raw.clone())],
+            ));
+        }
+        let efs_raw = params.get("efs").cloned().unwrap_or(Json::Null);
+        let efs = match &efs_raw {
+            Json::Null => None,
+            value => match value.as_i64() {
+                Some(number) if (16..=1000).contains(&number) => Some(number),
+                _ => {
+                    return Err(bad_value(
+                        format!("efs must be an integer 16..1000, got {}", py_repr(value)),
+                        vec![("efs", value.clone())],
+                    ));
+                }
+            },
+        };
+        if efs.is_some() && near_id.is_some() {
+            return Err(bad_value(
+                "efs has no effect with near_id: the neighbourhood is scored exactly, without the vector index",
+                vec![
+                    ("efs", efs_raw.clone()),
+                    ("near_id", Json::String(near_id.clone().unwrap_or_default())),
+                ],
+            ));
+        }
+        let dedupe = required_bool(params, "dedupe")?;
+        let rerank = required_bool(params, "rerank")?;
+        if rerank && target == "concepts" {
+            return Err(bad_value(
+                "rerank is for target='chunks'; concepts use rank='cross'",
+                vec![
+                    ("rerank", Json::Bool(true)),
+                    ("target", Json::String(target)),
+                ],
+            ));
+        }
+        if (rerank || rank == "cross") && recency.is_some() {
+            return Err(bad_value(
+                "recency does not combine with the cross-encoder rerank (rerank / rank='cross'); use one or the other",
+                vec![
+                    ("recency", recency_raw.clone()),
+                    ("rerank", Json::Bool(rerank)),
+                    ("rank", Json::String(rank)),
+                ],
+            ));
+        }
+        if let Some(value) = params.get("where") {
+            if !matches!(value, Json::Null | Json::Object(_)) {
+                return Err(bad_value(
+                    "where must be a mapping of extra key -> value",
+                    vec![("where", value.clone())],
+                ));
             }
         }
+        let hub_rerank = required_bool(params, "hub_rerank")?;
+        let expand = required_bool(params, "expand")?;
+        if target == "chunks" && rank != "none" {
+            return Err(bad_value(
+                "rank is concepts-only; target='chunks' uses hub_rerank/expand/rerank",
+                vec![
+                    ("rank", Json::String(rank)),
+                    ("target", Json::String(target)),
+                ],
+            ));
+        }
+        let path = if target == "chunks" {
+            if hub_rerank {
+                "chunks:hub".to_string()
+            } else if expand {
+                "chunks:expand".to_string()
+            } else {
+                "chunks:plain".to_string()
+            }
+        } else if target == "images" {
+            "images".to_string()
+        } else {
+            format!("concepts:{rank}")
+        };
+        let mut ignored = Vec::new();
+        for name in PASSED_ORDER {
+            if !passed(params, name) {
+                continue;
+            }
+            let honoured = match path.as_str() {
+                "chunks:hub" => HUB_PARAMS.contains(name),
+                "chunks:expand" => EXPAND_PARAMS.contains(name),
+                "chunks:plain" => {
+                    FILTER_PARAMS.contains(name)
+                        || PAGED_PARAMS.contains(name)
+                        || ["max_chunks_per_doc", "rerank", "efs", "dedupe"].contains(name)
+                }
+                "images" => false,
+                "concepts:ppr" => {
+                    FILTER_PARAMS.contains(name)
+                        || PAGED_PARAMS.contains(name)
+                        || ["rank", "link_kinds"].contains(name)
+                }
+                "concepts:hub" => {
+                    FILTER_PARAMS.contains(name)
+                        || PAGED_PARAMS.contains(name)
+                        || ["include_chunks", "rank", "hub_weight", "link_kinds", "efs"]
+                            .contains(name)
+                }
+                "concepts:cross" => {
+                    FILTER_PARAMS.contains(name)
+                        || PAGED_PARAMS.contains(name)
+                        || ["include_chunks", "rank", "efs"].contains(name)
+                }
+                _ => {
+                    FILTER_PARAMS.contains(name)
+                        || PAGED_PARAMS.contains(name)
+                        || ["include_chunks", "rank", "efs"].contains(name)
+                }
+            };
+            if !honoured {
+                ignored.push((*name).to_string());
+            }
+        }
+        if !ignored.is_empty() {
+            let suffix = path.split_once(':').map_or("default", |(_, rest)| rest);
+            let message = format!(
+                "target='{target}' ({suffix} path) ignores: {}",
+                ignored.join(", ")
+            );
+            let mut err = bad_value(
+                message,
+                vec![
+                    ("target", Json::String(target)),
+                    ("path", Json::String(path.clone())),
+                    (
+                        "ignored",
+                        Json::Array(ignored.into_iter().map(Json::String).collect()),
+                    ),
+                ],
+            );
+            err.remedy = Some("drop the ignored params or use a path that honours them".into());
+            return Err(err);
+        }
+        let hub_weight = opt_f64(params, "hub_weight")?.unwrap_or(0.3);
         let mut where_map = BTreeMap::new();
         if let Some(Json::Object(obj)) = params.get("where") {
             for (key, value) in obj {
@@ -1232,24 +1664,27 @@ impl SearchParams {
             concept_type: opt_str(params, "concept_type")?,
             tags: opt_strings(params, "tags")?,
             parent_id: opt_str(params, "parent_id")?,
-            include_chunks: opt_bool(params, "include_chunks")?.unwrap_or(false),
+            include_chunks: required_bool(params, "include_chunks")?,
             max_chunks_per_doc: opt_i64(params, "max_chunks_per_doc")?.unwrap_or(3).max(1) as usize,
-            hub_rerank: opt_bool(params, "hub_rerank")?.unwrap_or(false),
+            expand,
+            context_hops: opt_i64(params, "context_hops")?.unwrap_or(1),
+            hub_rerank,
             hub_weight,
             rank,
             where_map,
             since: opt_str(params, "since")?,
             until: opt_str(params, "until")?,
             exclude_tags: opt_strings(params, "exclude_tags")?,
+            exclude_tags_set: params.contains_key("exclude_tags"),
             link_kinds: opt_strings(params, "link_kinds")?.into_version(),
-            near_id: opt_str(params, "near_id")?,
+            near_id,
             hops,
             offset: offset as usize,
             recency,
             recency_weight,
             efs,
-            dedupe: opt_bool(params, "dedupe")?.unwrap_or(false),
-            rerank: opt_bool(params, "rerank")?.unwrap_or(false),
+            dedupe,
+            rerank,
             query_vector,
         })
     }
@@ -1312,6 +1747,116 @@ fn truncate(mut items: Vec<Json>, n: usize) -> Vec<Json> {
     items
 }
 
+const PASSED_ORDER: &[&str] = &[
+    "concept_type",
+    "tags",
+    "parent_id",
+    "include_chunks",
+    "max_chunks_per_doc",
+    "expand",
+    "context_hops",
+    "hub_rerank",
+    "hub_weight",
+    "rank",
+    "where",
+    "since",
+    "until",
+    "exclude_tags",
+    "link_kinds",
+    "near_id",
+    "hops",
+    "offset",
+    "recency",
+    "recency_weight",
+    "rerank",
+    "efs",
+    "dedupe",
+];
+const FILTER_PARAMS: &[&str] = &[
+    "concept_type",
+    "tags",
+    "parent_id",
+    "where",
+    "since",
+    "until",
+    "exclude_tags",
+    "near_id",
+];
+const PAGED_PARAMS: &[&str] = &["hops", "offset", "recency", "recency_weight"];
+const HUB_PARAMS: &[&str] = &[
+    "hub_rerank",
+    "hub_weight",
+    "expand",
+    "context_hops",
+    "rerank",
+    "efs",
+    "dedupe",
+];
+const EXPAND_PARAMS: &[&str] = &["expand", "context_hops"];
+
+fn bad_value(message: impl Into<String>, fields: Vec<(&str, Json)>) -> OkfError {
+    let mut err = OkfError::new("BAD_VALUE", message).op("search");
+    for (key, value) in fields {
+        err = err.field(key, value);
+    }
+    err
+}
+
+fn py_repr(value: &Json) -> String {
+    match value {
+        Json::String(s) => format!("'{s}'"),
+        Json::Bool(true) => "True".into(),
+        Json::Bool(false) => "False".into(),
+        Json::Null => "None".into(),
+        Json::Number(number) => number.to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn required_int(
+    params: &Map<String, Json>,
+    name: &str,
+    default: i64,
+    invalid: impl Fn(i64) -> bool,
+    message: &str,
+) -> Result<i64> {
+    match params.get(name) {
+        None | Some(Json::Null) => Ok(default),
+        Some(value) => match value.as_i64() {
+            Some(number) if !invalid(number) => Ok(number),
+            _ => Err(bad_value(
+                format!("{message} {}", py_repr(value)),
+                vec![(name, value.clone())],
+            )),
+        },
+    }
+}
+
+fn required_bool(params: &Map<String, Json>, name: &str) -> Result<bool> {
+    match params.get(name) {
+        None | Some(Json::Null) => Ok(false),
+        Some(Json::Bool(value)) => Ok(*value),
+        Some(value) => Err(bad_value(
+            format!("{name} must be true or false, got {}", py_repr(value)),
+            vec![(name, value.clone())],
+        )),
+    }
+}
+
+fn passed(params: &Map<String, Json>, name: &str) -> bool {
+    let default = match name {
+        "include_chunks" | "expand" | "hub_rerank" | "rerank" | "dedupe" => Json::Bool(false),
+        "max_chunks_per_doc" => Json::from(3),
+        "context_hops" => Json::from(1),
+        "hops" => Json::from(2),
+        "offset" => Json::from(0),
+        "hub_weight" | "recency_weight" => Json::from(0.3),
+        "rank" => Json::String("none".into()),
+        _ => Json::Null,
+    };
+    params.get(name).is_some_and(|value| *value != default)
+}
+
 fn unknown_concept(op: &str, field: &str, id: &str) -> OkfError {
     OkfError::new("UNKNOWN_CONCEPT", format!("{field} '{id}' does not exist"))
         .op(op)
@@ -1343,17 +1888,6 @@ fn opt_str(params: &Map<String, Json>, name: &str) -> Result<Option<String>> {
         Some(other) => Err(OkfError::new(
             "BAD_VALUE",
             format!("{name} must be a string, got {other}"),
-        )),
-    }
-}
-
-fn opt_bool(params: &Map<String, Json>, name: &str) -> Result<Option<bool>> {
-    match params.get(name) {
-        None | Some(Json::Null) => Ok(None),
-        Some(Json::Bool(b)) => Ok(Some(*b)),
-        Some(other) => Err(OkfError::new(
-            "BAD_VALUE",
-            format!("{name} must be a boolean, got {other}"),
         )),
     }
 }

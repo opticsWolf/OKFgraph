@@ -12,20 +12,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 
-def load_error_payload(exc: BaseException) -> dict[str, Any]:
-    envelope = getattr(exc, "envelope", None)
-    if callable(envelope):
-        try:
-            return envelope()
-        except Exception:
-            pass
-    return {
-        "ok": False,
-        "op": None,
-        "data": None,
-        "warnings": [],
-        "error": {"code": getattr(exc, "code", "INTERNAL"), "message": str(exc)},
-    }
+def load_error_payload(exc: BaseException, op: str) -> dict[str, Any]:
+    """Wrap an oracle exception in the same envelope the Rust runner emits."""
+    from okfgraph.errors import envelope
+
+    return envelope(op, error=exc)
 
 
 def main() -> int:
@@ -60,9 +51,7 @@ def main() -> int:
                     "error": None,
                 })
             except Exception as exc:  # oracle errors are part of the golden output
-                payload = load_error_payload(exc)
-                payload.setdefault("op", op)
-                results.append(payload)
+                results.append(load_error_payload(exc, op))
     finally:
         router.close()
 

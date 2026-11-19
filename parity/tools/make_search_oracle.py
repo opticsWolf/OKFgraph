@@ -23,12 +23,14 @@ def main() -> int:
     ap.add_argument("--db", required=True)
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--chunk-size", type=int, default=512)
+    ap.add_argument("--chunk-overlap", type=int, default=40)
     args = ap.parse_args()
 
     from okfgraph import OKFRouter
 
     corpus = Path(args.corpus)
-    files = sorted(corpus.glob("*.md"))
+    files = sorted(corpus.rglob("*.md"))
     if not files:
         raise SystemExit(f"no markdown files under {corpus}")
 
@@ -44,8 +46,8 @@ def main() -> int:
         device="cuda",
         precision="auto",
         enable_chunking=True,
-        chunk_size=512,
-        chunk_overlap=40,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
     )
     try:
         report = router.import_files([str(p) for p in files], mode="text")

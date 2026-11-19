@@ -749,8 +749,22 @@ the static MSVC CRT and cannot link with Ladybug's MD prebuilt archive.
 The markdown layer now has Python goldens for mordant chunking (including
 `+` continuations and exact byte offsets), PyYAML 1.1 scalar resolution, and
 `python-frontmatter` parsing; all are green. `read(include='document')` now
-uses mordant delimiter reconstruction. Remaining M2 gaps: full filter matrix,
-vision/image search, and budgeted `max_tokens` reads.
+uses mordant delimiter reconstruction. The filter matrix is now covered by a
+richer GPU-embedded fixture (`parity/fixtures/oracle-v10-filters.db`) with six
+concepts across two directories, timestamped frontmatter, tags, `extra` keys,
+typed `mention` links and duplicate chunk embeddings.
+`parity/scenarios/filter-matrix.json` compares 37 ops: concept/chunk
+`concept_type`, `tags`, `parent_id`, `where`, `since`, `until`, `exclude_tags`,
+`near_id` (1–2 hops), `offset`, `efs`, hub/PPR `link_kinds`, recency, plain and
+hub chunk paths, `max_chunks_per_doc`, `dedupe` with `collapsed`, chunk rerank,
+and configured-default vs explicit `exclude_tags`.
+`parity/scenarios/filter-validation.json` compares 20 BAD_VALUE/UNKNOWN_CONCEPT
+envelopes, including every ignored-parameter path and scalar type/range
+refusal. Both scenarios report **0 differences**. The Python harness now
+uses `okfgraph.errors.envelope()` for exceptions so error comparisons match
+the Rust `{ok, op, data, warnings, error}` transport. Remaining M2 gaps:
+vision/image search, budgeted `max_tokens` reads, and successful
+`chunks:expand` results.
 
 **Gate:** identical search result IDs/order/scores on the parity corpus
 (floats within 1e-6); vector cosine ≥ 0.99999 for text and ≥ 0.999 for images;

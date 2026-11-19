@@ -18,7 +18,8 @@ the Python and Rust cores in one process.
 - `tools/check_mcp_spike.py` — Python MCP client for the Rust stdio spike.
 - `tools/check_facade.py` — public Python `OKFRouter` smoke test.
 - `tools/gen_settings.py` — regenerate the Rust and Python settings tables.
-- `tools/make_search_oracle.py` — build a real GPU-embedded v10 fixture.
+- `tools/make_search_oracle.py` — build a real GPU-embedded v10 fixture
+  (also builds the richer filter-matrix fixture with `--chunk-size 32`).
 - `tools/gen_markdown.py` — regenerate chunking/YAML/frontmatter goldens.
 
 ## Scenario format
@@ -107,6 +108,21 @@ Ladybug.
 Python oracle and covers mordant chunk text/offsets, PyYAML 1.1 scalars, and
 `python-frontmatter` metadata/content. Rust tests compare against all cases.
 
-M2 note: full filter matrix, vision/image search, and budgeted
-reads remain. Windows x64 spikes are green; Linux x86_64 and macOS arm64
-remain.
+### Filter matrix
+
+```bash
+parity/.venv-oracle/Scripts/python.exe parity/tools/make_search_oracle.py \
+  --db parity/fixtures/oracle-v10-filters.db --corpus parity/corpus/filters \
+  --out parity/out/filter-oracle.json --chunk-size 32 --chunk-overlap 4
+```
+
+`filter-matrix.json` (37 ops) and `filter-validation.json` (20 error
+envelopes) run against that fixture and both report **0 differences**. The
+Python runner wraps oracle exceptions with `okfgraph.errors.envelope()` so
+error payloads are compared in the same shape as Rust's `Envelope::failure`.
+Recency is intentionally omitted from the differential scenario because its
+wall-clock score drifts between the two sequential runs; successful
+`chunks:expand` remains a separate gap.
+
+M2 note: vision/image search, budgeted reads, and successful `chunks:expand`
+remain. Windows x64 spikes are green; Linux x86_64 and macOS arm64 remain.

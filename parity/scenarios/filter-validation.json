@@ -1,0 +1,36 @@
+{
+  "name": "filter-validation",
+  "settings": {
+    "db_path": "parity/fixtures/oracle-v10-filters.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 32,
+    "chunk_overlap": 4
+  },
+  "setup": {"fixture": "parity/fixtures/oracle-v10-filters.db"},
+  "ops": [
+    {"op": "search", "params": {"query": "badger", "where": "team-a"}},
+    {"op": "search", "params": {"query": "badger", "hops": 3}},
+    {"op": "search", "params": {"query": "badger", "near_id": "area1/alpha", "efs": 16}},
+    {"op": "search", "params": {"query": "badger", "rerank": true}},
+    {"op": "search", "params": {"query": "badger", "rank": "cross", "recency": 30}},
+    {"op": "search", "params": {"query": "badger", "recency_weight": 0.5}},
+    {"op": "search", "params": {"query": "badger", "target": "chunks", "rank": "hub"}},
+    {"op": "search", "params": {"query": "badger", "target": "chunks", "include_chunks": true}},
+    {"op": "search", "params": {"query": "badger", "rank": "ppr", "include_chunks": true}},
+    {"op": "search", "params": {"query": "badger", "rank": "ppr", "efs": 64}},
+    {"op": "search", "params": {"query": "badger", "near_id": "missing"}},
+    {"op": "search", "params": {"query": "badger", "efs": 15}},
+    {"op": "search", "params": {"query": "badger", "dedupe": "yes"}},
+    {"op": "search", "params": {"query": "badger", "rerank": "yes", "target": "chunks"}},
+    {"op": "search", "params": {"query": "badger", "hops": 4}},
+    {"op": "search", "params": {"query": "badger", "offset": -1}},
+    {"op": "search", "params": {"query": "badger", "recency": 30, "recency_weight": 1.5}},
+    {"op": "search", "params": {"query": "badger", "target": "chunks", "hub_rerank": true, "tags": ["keep"]}},
+    {"op": "search", "params": {"query": "badger", "target": "chunks", "expand": true, "tags": ["keep"]}},
+    {"op": "search", "params": {"query": "badger", "target": "images", "tags": ["keep"]}}
+  ]
+}

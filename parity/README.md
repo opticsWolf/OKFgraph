@@ -144,21 +144,35 @@ parity/.venv-oracle/Scripts/python.exe parity/tools/make_image_oracle.py \
   --model-id jinaai/jina-embeddings-v5-text-nano-retrieval \
   --embedding-dim 768 --image-mode omni
 
-# native vision lane vs embroider/Pillow golden
+# Gemma vision-route fixture (artifacts already cached)
+parity/.venv-oracle/Scripts/python.exe parity/tools/make_image_oracle.py \
+  --db parity/fixtures/oracle-v10-gemma-vision-images.db \
+  --corpus parity/corpus/images --out parity/out/gemma-vision-image-oracle.json \
+  --model-id google/embeddinggemma-2 --embedding-dim 512 --image-mode omni
+
+# native vision lane vs embroider/Pillow golden (Jina shown; Gemma below)
 parity/.venv-oracle/Scripts/python.exe parity/tools/gen_vision.py \
   --images parity/corpus/images/*.png --out parity/out/vision-golden.json
 cargo run -q -p okfgraph --example vision_spike -- parity/corpus/images/*.png \
   > parity/out/vision-rust.json
 python parity/tools/compare_vision.py --golden parity/out/vision-golden.json \
   --rust parity/out/vision-rust.json
+
+OKFGRAPH_TEXT_MODEL=google/embeddinggemma-2 OKFGRAPH_EMBEDDING_DIM=512 \
+  cargo run -q -p okfgraph --example vision_spike -- parity/corpus/images/*.png \
+  > parity/out/gemma-vision-rust.json
+python parity/tools/compare_vision.py \
+  --golden parity/out/gemma-vision-golden.json \
+  --rust parity/out/gemma-vision-rust.json
 ```
 
-`expansion-and-budget.json` (10 ops), `images.json` (6 ops) and
-`vision-images.json` (6 ops) all report **0 differences**. The vision spike
-needs cuBLAS 12 alongside the GPU DLLs (`win-llama-cuda12-vendor-v2` in this
-environment); cu13 alone cannot load the vision matmul kernel.
-Prepared pixels match Pillow byte-for-byte and Jina vision vectors match the
-oracle exactly (cosine 1.0). Gemma vision vectors remain untested until that
-artifact is cached.
+`expansion-and-budget.json` (10 ops), `images.json` (6 ops),
+`vision-images.json` (6 ops) and `gemma-vision-images.json` (6 ops) all report
+**0 differences**. The vision spike needs cuBLAS 12 alongside the GPU DLLs
+(`win-llama-cuda12-vendor-v2` in this environment); cu13 alone cannot load the
+vision matmul kernel. Prepared pixels match Pillow byte-for-byte for both
+slots: Jina vectors match exactly (cosine 1.0), Gemma vectors differ by at
+most ~7.5e-9. No model download was needed — the Gemma vision tier was already
+cached under `onnx-community/embeddinggemma-2-ONNX`.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

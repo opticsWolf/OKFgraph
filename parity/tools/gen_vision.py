@@ -20,13 +20,21 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--images", nargs="+", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument(
+        "--model-id", default="jina-v5-omni-nano-retrieval-vision")
+    ap.add_argument("--dim", type=int, default=768)
     args = ap.parse_args()
 
     import embroider
 
-    model_id = "jina-v5-omni-nano-retrieval-vision"
-    vision = embroider.JinaV5Vision.open(
-        model_id, truncate_dim=768, device="cuda", precision="auto")
+    model_id = args.model_id
+    cls = (
+        embroider.GemmaVision
+        if model_id.startswith("google/")
+        else embroider.JinaV5Vision
+    )
+    vision = cls.open(
+        model_id, truncate_dim=args.dim, device="cuda", precision="auto")
     cases = {}
     for name in args.images:
         data = Path(name).read_bytes()

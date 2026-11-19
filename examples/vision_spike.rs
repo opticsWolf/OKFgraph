@@ -10,12 +10,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if paths.is_empty() {
         paths.push("parity/corpus/images/red-fox.png".to_string());
     }
+    let text_model = std::env::var("OKFGRAPH_TEXT_MODEL")
+        .unwrap_or_else(|_| "jinaai/jina-embeddings-v5-text-nano-retrieval".into());
+    let dim: i64 = std::env::var("OKFGRAPH_EMBEDDING_DIM")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(768);
     let settings = Settings::default()
-        .with(
-            "model_id",
-            Value::String("jinaai/jina-embeddings-v5-text-nano-retrieval".into()),
-        )?
-        .with("embedding_dim", Value::from(768))?
+        .with("model_id", Value::String(text_model))?
+        .with("embedding_dim", Value::from(dim))?
         .with("device", Value::String("auto".into()))?
         .with("image_precision", Value::String("auto".into()))?;
     let vision = NativeVision::open(&settings)?;

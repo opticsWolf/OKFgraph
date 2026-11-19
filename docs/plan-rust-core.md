@@ -778,17 +778,22 @@ sessions through `embroider`, and a lazy `VisionPool`. With the cached Jina
 text-nano + omni-nano vision slot, Rust-prepared pixels match
 `embroider.prepare_image` byte-for-byte (SHA-256) and image vectors match the
 Python oracle exactly (max abs diff 0.0, cosine 1.0) on three PNGs.
+The Gemma vision slot was already cached in
+`onnx-community/embeddinggemma-2-ONNX`: with
+`google/embeddinggemma-2` text at dim 512 and fp16 CUDA, Rust-prepared pixels
+also match Pillow byte-for-byte and vectors differ by at most ~7.5e-9.
 `search(target='images')` now queries `image_omni_idx`, maps assets to the
-smallest owning concept, and exposes `distance`/`relevance_score`; both the
-caption-route fixture (`images.json`, 6 ops) and the real vision-route fixture
-(`vision-images.json`, 6 ops) report **0 differences**. Image pin display now
-uses registry pairing and string precisions, matching Python `pin_info`.
-Remaining M2 gaps: none on the current parity matrix; Gemma vision vectors
-still await a cached `google/embeddinggemma-2-vision` artifact.
+smallest owning concept, and exposes `distance`/`relevance_score`; the
+caption-route fixture (`images.json`, 6 ops) and both real vision-route
+fixtures (`vision-images.json` 6 ops, `gemma-vision-images.json` 6 ops) report
+**0 differences**. Image pin display now uses registry pairing and string
+precisions, matching Python `pin_info`. Remaining M2 gaps: none on the current
+parity matrix.
 
 **Gate:** identical search result IDs/order/scores on the parity corpus
 (floats within 1e-6); vector cosine ≥ 0.99999 for text and ≥ 0.999 for images
-(Jina vision measured at 1.0); chunk text/offsets byte-identical.
+(Jina measured at 1.0, Gemma within 7.5e-9 abs); chunk text/offsets
+byte-identical.
 
 ### M3 — Ingest, import, export (4 weeks)
 

@@ -818,6 +818,20 @@ byte-identical.
   across re-import, moved/duplicate files, hidden dirs, reserved names, multi-root,
   tombstone/purge, PDF/Office/bib/thoughts, export round-trip.
 
+**M3 progress:** Stage B adds writable `Store::open_writable`, `Store::write`,
+meta/index helpers, and `ingest::import_files`. Fresh imports of the `minimal/`
+and `filters/` corpora now match Python exactly on ops output (with wall-clock
+graph times normalized) and on semantic DB dumps (internal Ladybug IDs and
+graph times normalized, floats rounded). The import writes v10 pins,
+concept/chunk embeddings, exact `content_sig`, directory hierarchy, `PART_OF`,
+`LINKS_TO`, file hashes, write/index epochs, and search indexes. Both fresh
+databases reopen in Python 0.15 with working search. `compare.py --ignore-key`
+and `compare_db.py` are the normalized comparators.
+
+Remaining M3 gaps: delta skip / re-import idempotence, BrokenLink repair and
+explicit relations, imported image assets, PDF/Office/bib/thoughts converters,
+export/purge/diff/producers, and the remaining write ops.
+
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no
 embedding; a Python 0.15 process can reopen the Rust-written DB.

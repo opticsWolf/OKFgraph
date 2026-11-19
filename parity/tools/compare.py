@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-def diff(a: Any, b: Any, path: str, tol: float, out: list[str]) -> None:
+def diff(a: Any, b: Any, path: str, tol: float, out: list[str], ignore: set[str]) -> None:
     if isinstance(a, float) and isinstance(b, float):
         if not (math.isclose(a, b, rel_tol=tol, abs_tol=tol) or (math.isnan(a) and math.isnan(b))):
             out.append(f"{path}: {a!r} != {b!r}")
@@ -23,16 +23,18 @@ def diff(a: Any, b: Any, path: str, tol: float, out: list[str]) -> None:
         if path == "$":
             keys.discard("runner")  # provenance only, not behavior
         for key in sorted(keys):
+            if key in ignore:
+                continue
             if key not in a or key not in b:
                 out.append(f"{path}.{key}: missing on one side")
             else:
-                diff(a[key], b[key], f"{path}.{key}", tol, out)
+                diff(a[key], b[key], f"{path}.{key}", tol, out, ignore)
         return
     if isinstance(a, list):
         if len(a) != len(b):
             out.append(f"{path}: length {len(a)} != {len(b)}")
         for i, (x, y) in enumerate(zip(a, b)):
-            diff(x, y, f"{path}[{i}]", tol, out)
+            diff(x, y, f"{path}[{i}]", tol, out, ignore)
         return
     if a != b:
         out.append(f"{path}: {a!r} != {b!r}")
@@ -43,12 +45,15 @@ def main() -> int:
     ap.add_argument("--python", required=True)
     ap.add_argument("--rust", required=True)
     ap.add_argument("--tolerance", type=float, default=1e-6)
+    ap.add_argument(
+        "--ignore-key", action="append", default=[],
+        help="skip this object key at any depth (repeatable)")
     args = ap.parse_args()
 
     a = json.loads(Path(args.python).read_text(encoding="utf-8"))
     b = json.loads(Path(args.rust).read_text(encoding="utf-8"))
     diffs: list[str] = []
-    diff(a, b, "$", args.tolerance, diffs)
+    diff(a, b, "$", args.tolerance, diffs, set(args.ignore_key))
     for line in diffs[:200]:
         print(line)
     print(f"comparison: {'FAIL' if diffs else 'OK'} ({len(diffs)} difference(s))")

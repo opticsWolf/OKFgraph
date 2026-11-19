@@ -1,0 +1,26 @@
+{
+  "name": "import-filter",
+  "settings": {
+    "db_path": "parity/out/import-filter.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 32,
+    "chunk_overlap": 4,
+    "exclude_tags": ["drop"]
+  },
+  "setup": {"import": {"corpus": "parity/corpus/filters"}},
+  "ops": [
+    {"op": "get_by_id", "params": {"concept_id": "area1/alpha"}},
+    {"op": "read", "params": {"concept_id": "area2/delta", "include": "body"}},
+    {"op": "list_directory", "params": {"directory_id": ""}},
+    {"op": "list_directory", "params": {"directory_id": "area1"}},
+    {"op": "search", "params": {"query": "badger", "limit": 10}},
+    {"op": "search", "params": {"query": "badger", "limit": 10, "tags": ["keep"]}},
+    {"op": "search", "params": {"query": "badger", "limit": 10, "target": "chunks"}},
+    {"op": "traverse", "params": {"start_id": "area1/alpha", "direction": "OUTGOING", "depth": 1}},
+    {"op": "pin_info", "params": {}}
+  ]
+}

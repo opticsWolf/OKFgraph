@@ -29,6 +29,21 @@ def main() -> int:
     from okfgraph import OKFRouter  # oracle import, on purpose
 
     settings = dict(scenario.get("settings") or {})
+    setup = scenario.get("setup") or {}
+    imported = setup.get("import")
+    if imported:
+        corpus = Path(imported["corpus"])
+        db = Path(settings["db_path"])
+        db.unlink(missing_ok=True)
+        builder = dict(settings)
+        builder.pop("db_path", None)
+        build_router = OKFRouter(
+            db_path=str(db), bundle_root=str(corpus), **builder)
+        try:
+            files = sorted(corpus.rglob("*.md"))
+            build_router.import_files([str(p) for p in files], mode="text")
+        finally:
+            build_router.close()
     router = OKFRouter(**settings)
     results: list[dict[str, Any]] = []
     try:

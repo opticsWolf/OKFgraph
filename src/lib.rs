@@ -31,7 +31,6 @@ pub mod util;
 
 #[cfg(feature = "cli")]
 pub mod cli;
-#[cfg(any(feature = "embed", feature = "pdf"))]
 pub mod ingest;
 #[cfg(feature = "server")]
 pub mod server;

@@ -1,0 +1,22 @@
+{
+  "name": "import-minimal",
+  "settings": {
+    "db_path": "parity/out/import-minimal.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {"import": {"corpus": "parity/corpus/minimal"}},
+  "ops": [
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}},
+    {"op": "read", "params": {"concept_id": "alpha", "include": "body"}},
+    {"op": "search", "params": {"query": "beta", "limit": 5}},
+    {"op": "search", "params": {"query": "alpha", "limit": 5, "target": "chunks"}},
+    {"op": "list_directory", "params": {"directory_id": ""}},
+    {"op": "pin_info", "params": {}}
+  ]
+}

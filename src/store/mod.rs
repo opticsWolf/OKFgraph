@@ -88,6 +88,14 @@ impl Store {
         Ok(warnings)
     }
 
+    /// Open the same database with write permission. Stage B imports use
+    /// this only in a process that owns the graph; never mix runtimes.
+    pub fn open_writable(settings: &Settings) -> Result<Self> {
+        let mut store = Self::open(settings)?;
+        store.read_only = false;
+        Ok(store)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -101,6 +109,75 @@ impl Store {
         let db = Database::new(&self.path, config).map_err(map_lbug)?;
         let conn = Connection::new(&db).map_err(map_lbug)?;
         f(&conn)
+    }
+
+    /// Writable connection with the index extensions loaded. Ladybug
+    /// maintains indexes in place but refuses unindexed writes when the
+    /// extension was not loaded in the writing process.
+    fn with_write_conn<T>(
+        &self,
+        f: impl for<'a> FnOnce(&Connection<'a>) -> Result<T>,
+    ) -> Result<T> {
+        let config = SystemConfig::default().read_only(false);
+        let db = Database::new(&self.path, config).map_err(map_lbug)?;
+        let conn = Connection::new(&db).map_err(map_lbug)?;
+        for extension in ["vector", "fts"] {
+            conn.query(&format!("LOAD {extension}")).map_err(map_lbug)?;
+        }
+        f(&conn)
+    }
+
+    pub fn write(&self, sql: &str, params: Vec<(&str, Value)>) -> Result<()> {
+        self.with_write_conn(|conn| {
+            if params.is_empty() {
+                conn.query(sql).map_err(map_lbug)?;
+            } else {
+                let mut stmt = conn.prepare(sql).map_err(map_lbug)?;
+                conn.execute(&mut stmt, params).map_err(map_lbug)?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn bump_write_epoch(&self) -> Result<()> {
+        self.write(
+            "MERGE (m:Meta {key: 'write_epoch'}) \
+             ON CREATE SET m.value = 1 ON MATCH SET m.value = m.value + 1",
+            vec![],
+        )
+    }
+
+    pub fn set_meta_int(&self, key: &str, value: i64) -> Result<()> {
+        self.write(
+            "MERGE (m:Meta {key: $k}) SET m.value = $v",
+            vec![("k", Value::String(key.into())), ("v", Value::Int64(value))],
+        )
+    }
+
+    pub fn set_meta_text(&self, key: &str, value: &str) -> Result<()> {
+        self.write(
+            "MERGE (m:MetaText {key: $k}) SET m.value = $v",
+            vec![
+                ("k", Value::String(key.into())),
+                ("v", Value::String(value.into())),
+            ],
+        )
+    }
+
+    pub fn create_search_indexes(&self) -> Result<()> {
+        self.with_write_conn(|conn| {
+            for sql in [
+                "CALL CREATE_VECTOR_INDEX('Concept', 'concept_embedding', 'embedding', mu := 30, ml := 60, metric := 'cosine', efc := 200)",
+                "CALL CREATE_FTS_INDEX('Concept', 'concept_fts', ['title', 'description', 'body'])",
+                "CALL CREATE_VECTOR_INDEX('ImageAsset', 'image_omni_idx', 'embedding', mu := 30, ml := 60, metric := 'cosine', efc := 200)",
+                "CALL CREATE_VECTOR_INDEX('Chunk', 'chunk_embedding', 'embedding', mu := 30, ml := 60, metric := 'cosine', efc := 200)",
+                "CALL CREATE_FTS_INDEX('Chunk', 'chunk_fts', ['chunk_text'])",
+            ] {
+                // Already-exists is benign: indexes are maintained in place.
+                let _ = conn.query(sql);
+            }
+            Ok(())
+        })
     }
 
     /// Connections used by search must load the index extensions first.
@@ -710,7 +787,7 @@ impl Store {
         Ok((concepts, chunks))
     }
 
-    fn meta_text(&self, key: &str) -> Result<Option<String>> {
+    pub fn meta_text(&self, key: &str) -> Result<Option<String>> {
         let value = self.scalar(
             "MATCH (m:MetaText {key: $key}) RETURN m.value AS v",
             vec![("key", Value::String(key.into()))],
@@ -718,7 +795,7 @@ impl Store {
         Ok(value.and_then(|v| v.as_str().map(str::to_string)))
     }
 
-    fn meta_int(&self, key: &str) -> Result<Option<i64>> {
+    pub fn meta_int(&self, key: &str) -> Result<Option<i64>> {
         let value = self.scalar(
             "MATCH (m:Meta {key: $key}) RETURN m.value AS v",
             vec![("key", Value::String(key.into()))],

@@ -123,6 +123,16 @@ impl PyDateTime {
     }
 }
 
+/// Current naive UTC time as a Python-compatible datetime.
+pub fn utc_now_datetime() -> PyDateTime {
+    let now = OffsetDateTime::now_utc();
+    let time = now.time();
+    let micros = (time.nanosecond() / 1_000) * 1_000;
+    let truncated =
+        Time::from_hms_nano(time.hour(), time.minute(), time.second(), micros).unwrap_or(time);
+    PyDateTime::new(PrimitiveDateTime::new(now.date(), truncated))
+}
+
 /// Current naive UTC timestamp in Python's `str(datetime)` spelling.
 pub fn utc_now_string() -> String {
     let now = OffsetDateTime::now_utc();

@@ -17,6 +17,11 @@ the Python and Rust cores in one process.
 - `tools/check_wheel.py` — wheel import + GIL-release smoke test.
 - `tools/check_mcp_spike.py` — Python MCP client for the Rust stdio spike.
 - `tools/check_facade.py` — public Python `OKFRouter` smoke test.
+- `tools/make_import_oracle.py` / `tools/check_reopen_import.py` — fresh oracle
+  imports and Python 0.15 reopen checks.
+- `tools/compare_db.py` — semantic DB-dump comparator (normalizes Ladybug IDs
+  and wall-clock graph times).
+- `examples/dump_db.rs` — Rust DB dump for the comparator.
 - `tools/gen_settings.py` — regenerate the Rust and Python settings tables.
 - `tools/make_search_oracle.py` — build a real GPU-embedded v10 fixture
   (also builds the richer filter-matrix fixture with `--chunk-size 32`).
@@ -174,5 +179,32 @@ vision matmul kernel. Prepared pixels match Pillow byte-for-byte for both
 slots: Jina vectors match exactly (cosine 1.0), Gemma vectors differ by at
 most ~7.5e-9. No model download was needed — the Gemma vision tier was already
 cached under `onnx-community/embeddinggemma-2-ONNX`.
+
+### Stage B import
+
+```bash
+# Python oracle builds the reference DB; the scenario runner then performs the
+# same fresh import in Rust and compares ops output with volatile times removed.
+parity/.venv-oracle/Scripts/python.exe parity/tools/run_python.py \
+  --scenario parity/scenarios/import-minimal.json \
+  --out parity/out/import-minimal.python.json
+parity/.venv-oracle/Scripts/python.exe parity/tools/dump_db.py \
+  --db parity/out/import-minimal.db --out parity/out/import-minimal.python-dump.json
+cargo run -q -p okfgraph --bin parity-run -- parity/scenarios/import-minimal.json \
+  > parity/out/import-minimal.rust.json
+cargo run -q -p okfgraph --example dump_db -- parity/out/import-minimal.db \
+  > parity/out/import-minimal.rust-dump.json
+python parity/tools/compare.py --python parity/out/import-minimal.python.json \
+  --rust parity/out/import-minimal.rust.json \
+  --ignore-key created_at --ignore-key updated_at --ignore-key effective_at
+python parity/tools/compare_db.py \
+  --python parity/out/import-minimal.python-dump.json \
+  --rust parity/out/import-minimal.rust-dump.json
+```
+
+`import-minimal.json` and `import-filter.json` both report **0 differences**
+on ops output and semantic DB dumps. `check_reopen_import.py` confirms Python
+0.15 can reopen both Rust-written databases with working search. Delta skip,
+BrokenLink repair, imported images, converters and export remain M3 gaps.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

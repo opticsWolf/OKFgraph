@@ -65,6 +65,9 @@ const READ_OPS: &[&str] = &[
     "list_directory",
 ];
 
+/// Stage B content-write ops implemented by the ingest pipeline.
+pub const WRITE_OPS: &[&str] = &["import_file", "import_files"];
+
 pub fn is_op(name: &str) -> bool {
     OP_NAMES.contains(&name)
 }
@@ -89,9 +92,58 @@ impl Router {
         })
     }
 
-    /// Create a new v10 database. This is the only schema write Stage A allows.
+    /// Open an existing v10 database with write permission. Stage B callers
+    /// must own the graph; never mix Python and Rust cores in one process.
+    pub fn open_writable(settings: &Settings) -> Result<Self> {
+        Ok(Self {
+            store: Store::open_writable(settings)?,
+            settings: settings.clone(),
+            embedder: EmbedderPool::new(),
+            #[cfg(feature = "embed")]
+            reranker: RerankerPool::new(),
+        })
+    }
+
+    /// Create a new v10 database.
     pub fn init(path: impl AsRef<Path>, embedding_dim: i64) -> Result<Vec<String>> {
         Store::init(path, embedding_dim)
+    }
+
+    fn import_files(&self, params: &Map<String, Json>) -> Result<Json> {
+        let paths = match params.get("paths") {
+            Some(Json::Array(items)) => items
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        if paths.is_empty() && params.contains_key("file_path") {
+            return self.import_file(params);
+        }
+        crate::ingest::import_files(&self.store, &self.settings, &self.embedder, &paths)
+            .map_err(|err| err.op("import_files"))
+    }
+
+    fn import_file(&self, params: &Map<String, Json>) -> Result<Json> {
+        let path = str_param(params, "file_path")?.to_string();
+        let report = crate::ingest::import_files(
+            &self.store,
+            &self.settings,
+            &self.embedder,
+            std::slice::from_ref(&path),
+        )
+        .map_err(|err| err.op("import_file"))?;
+        let id = report
+            .get("concept_ids")
+            .and_then(Json::as_array)
+            .and_then(|ids| ids.first())
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .to_string();
+        Ok(serde_json::json!({
+            "concept_id": id,
+            "images": 0,
+        }))
     }
 
     pub fn settings(&self) -> &Settings {
@@ -107,10 +159,10 @@ impl Router {
             return Err(OkfError::new("BAD_VALUE", format!("unknown op: {op}"))
                 .field("op", Json::String(op.into())));
         }
-        if !READ_OPS.contains(&op) {
+        if !READ_OPS.contains(&op) && !WRITE_OPS.contains(&op) {
             return Err(OkfError::new(
                 "BAD_VALUE",
-                format!("op '{op}' is not implemented in Stage A"),
+                format!("op '{op}' is not implemented in Stage B"),
             )
             .field("op", Json::String(op.into())));
         }
@@ -131,6 +183,8 @@ impl Router {
             "embed" => self.embed(params),
             "read" => self.read(params),
             "traverse" => self.traverse(params),
+            "import_files" => self.import_files(params),
+            "import_file" => self.import_file(params),
             _ => unreachable!("read op without dispatch"),
         }
     }

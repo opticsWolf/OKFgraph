@@ -175,7 +175,63 @@ impl Router {
     }
 
     pub fn pin_info(&self) -> Result<Json> {
-        self.store.pin_info()
+        let mut info = self.store.pin_info()?;
+        let empty = info.get("empty").and_then(Json::as_bool).unwrap_or(true);
+        if let Some(embedder) = self.embedder.loaded() {
+            if let Some(configured) = info.get_mut("configured").and_then(Json::as_object_mut) {
+                configured.insert(
+                    "expected_precision".into(),
+                    Json::String(embedder.precision().into()),
+                );
+                configured.insert(
+                    "space".into(),
+                    embedder.space().map(Json::String).unwrap_or(Json::Null),
+                );
+            }
+        }
+        let pinned = info.get("pinned").cloned().unwrap_or(Json::Null);
+        let configured = info.get("configured").cloned().unwrap_or(Json::Null);
+        let mut mismatch = Vec::new();
+        if !empty {
+            if let (Some(a), Some(b)) = (
+                pinned.get("model_id").and_then(Json::as_str),
+                configured.get("model_id").and_then(Json::as_str),
+            ) {
+                if a != b {
+                    mismatch.push("model_id".to_string());
+                }
+            }
+            if let (Some(a), Some(b)) = (
+                pinned.get("precision").and_then(Json::as_str),
+                configured.get("expected_precision").and_then(Json::as_str),
+            ) {
+                if a != b {
+                    mismatch.push("precision".to_string());
+                }
+            }
+            if let (Some(a), Some(b)) = (
+                pinned.get("space").and_then(Json::as_str),
+                configured.get("space").and_then(Json::as_str),
+            ) {
+                if a != b {
+                    mismatch.push("space".to_string());
+                }
+            }
+        }
+        if let Some(Json::Array(image)) = info.get("image_mismatch") {
+            for entry in image {
+                if let Some(name) = entry.as_str() {
+                    mismatch.push(format!("image_{name}"));
+                }
+            }
+        }
+        if let Some(obj) = info.as_object_mut() {
+            obj.insert(
+                "mismatch".into(),
+                Json::Array(mismatch.into_iter().map(Json::String).collect()),
+            );
+        }
+        Ok(info)
     }
 
     pub fn lanes(&self) -> Result<Json> {
@@ -240,9 +296,22 @@ impl Router {
             .op("read")
             .field("include", Json::String(include)));
         }
+        let max_tokens = opt_i64(params, "max_tokens")?;
+        if let Some(budget) = max_tokens {
+            if budget < 1 {
+                return Err(bad_value2(
+                    "read",
+                    format!("max_tokens must be >= 1, got {budget}"),
+                    vec![("max_tokens", Json::from(budget))],
+                ));
+            }
+        }
         let concept = self.store.get_by_id(concept_id)?;
         if concept.is_none() {
-            return Err(unknown_concept("read", "concept_id", concept_id));
+            return Err(unknown_concept("read", "concept", concept_id));
+        }
+        if let Some(budget) = max_tokens {
+            return self.read_with_budget(concept_id, &include, budget, &concept.expect("checked"));
         }
         match include.as_str() {
             "chunks" => Ok(Json::Array(self.store.get_chunks(concept_id)?)),
@@ -279,6 +348,222 @@ impl Router {
             }
             _ => Ok(concept.expect("checked")),
         }
+    }
+
+    /// Python `SearchEngine.read_with_budget`: ordered sections, exact
+    /// tokenizer counts, proportional character truncation on the boundary.
+    fn read_with_budget(
+        &self,
+        concept_id: &str,
+        include: &str,
+        max_tokens: i64,
+        concept: &Json,
+    ) -> Result<Json> {
+        let mut sections: Vec<Json> = Vec::new();
+        if include == "chunks" {
+            for chunk in self.store.get_chunks(concept_id)? {
+                let index = chunk.get("chunk_index").and_then(Json::as_i64).unwrap_or(0);
+                let block = chunk.get("block_type").and_then(Json::as_str).unwrap_or("");
+                sections.push(section(
+                    chunk.get("id").and_then(Json::as_str).unwrap_or(""),
+                    &format!("#{index} [{block}]"),
+                    "chunk",
+                    chunk.get("chunk_text").and_then(Json::as_str).unwrap_or(""),
+                ));
+            }
+        } else if include == "document" {
+            let chunks = self.store.get_chunks(concept_id)?;
+            let typed: Vec<markdown::Chunk> =
+                serde_json::from_value(Json::Array(chunks)).unwrap_or_default();
+            let text = markdown::reconstruct_document(&typed).unwrap_or_default();
+            sections.push(section(
+                concept_id,
+                concept.get("title").and_then(Json::as_str).unwrap_or(""),
+                "document",
+                &text,
+            ));
+        } else {
+            if include == "context" {
+                let mut index_rows = self.store.query(
+                    "MATCH (c:Concept) WHERE c.id ENDS WITH 'index' \
+                     RETURN c.id AS id, c.title AS title, c.body AS body",
+                    vec![],
+                )?;
+                index_rows.sort_by_key(|row| {
+                    let id = row.get("id").and_then(Json::as_str).unwrap_or("");
+                    (if id == "index" { 0 } else { 1 }, id.to_string())
+                });
+                if let Some(index) = index_rows.first() {
+                    let id = index.get("id").and_then(Json::as_str).unwrap_or("");
+                    if id != concept_id {
+                        sections.push(section_with_title(
+                            id,
+                            index.get("title").cloned().unwrap_or(Json::Null),
+                            "index",
+                            index.get("body").and_then(Json::as_str).unwrap_or(""),
+                        ));
+                    }
+                }
+            }
+            sections.push(section_with_title(
+                concept_id,
+                concept.get("title").cloned().unwrap_or(Json::Null),
+                "body",
+                concept.get("body").and_then(Json::as_str).unwrap_or(""),
+            ));
+            if include == "context" {
+                let (nodes, edges) = self.store.link_graph(None)?;
+                let ranked = search::ppr(
+                    &nodes,
+                    &edges,
+                    &[(concept_id.to_string(), 1.0)],
+                    0.85,
+                    1e-12,
+                    200,
+                    None,
+                );
+                let ids: Vec<String> = ranked
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .filter(|id| id != concept_id)
+                    .collect();
+                if !ids.is_empty() {
+                    let values = lbug::Value::List(
+                        lbug::LogicalType::String,
+                        ids.iter().cloned().map(lbug::Value::String).collect(),
+                    );
+                    let rows = self.store.query(
+                        "MATCH (c:Concept) WHERE c.id IN $ids \
+                         RETURN c.id AS id, c.title AS title, \
+                                c.description AS description, c.body AS body",
+                        vec![("ids", values)],
+                    )?;
+                    let meta: BTreeMap<String, Json> = rows
+                        .into_iter()
+                        .filter_map(|row| {
+                            let id = row.get("id")?.as_str()?.to_string();
+                            Some((id, Json::Object(row)))
+                        })
+                        .collect();
+                    for id in ids {
+                        let Some(row) = meta.get(&id) else { continue };
+                        let title = row.get("title").and_then(Json::as_str).unwrap_or(&id);
+                        let text = format!(
+                            "{}\n{}\n{}",
+                            title,
+                            row.get("description").and_then(Json::as_str).unwrap_or(""),
+                            row.get("body").and_then(Json::as_str).unwrap_or(""),
+                        );
+                        sections.push(section_with_title(
+                            &id,
+                            row.get("title").cloned().unwrap_or(Json::Null),
+                            "neighbour",
+                            &text,
+                        ));
+                    }
+                }
+            }
+        }
+
+        let tokenizer = self.embedder.get(&self.settings).ok();
+        let count = |text: &str| -> usize {
+            let fallback = || (text.chars().count() / 4).max(1);
+            tokenizer
+                .as_ref()
+                .and_then(|embedder| embedder.count_tokens(text).ok())
+                .unwrap_or_else(fallback)
+        };
+        let mut kept = Vec::new();
+        let mut used = 0i64;
+        let mut truncated = false;
+        for mut sec in sections {
+            let text = sec
+                .get("text")
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .to_string();
+            let cost = count(&text) as i64;
+            if used + cost <= max_tokens {
+                used += cost;
+                kept.push(sec);
+                continue;
+            }
+            let budget = (max_tokens - used).max(0) as usize;
+            sec.as_object_mut().expect("section object").insert(
+                "text".to_string(),
+                Json::String(truncate_to_tokens(&text, budget, &count)),
+            );
+            kept.push(sec);
+            used = max_tokens;
+            truncated = true;
+            break;
+        }
+        Ok(serde_json::json!({
+            "concept_id": concept_id,
+            "include": include,
+            "budget": max_tokens,
+            "used": used,
+            "truncated": truncated,
+            "sections": kept,
+        }))
+    }
+
+    /// Pydantic `str(ConceptModel)` used by the oracle harness via
+    /// `json.dumps(..., default=str)`. Field order follows the Python model
+    /// declaration, then graph times, then `extra` keys.
+    fn concept_model_str(&self, id: &str) -> Result<String> {
+        let rows = self.store.query(
+            "MATCH (c:Concept {id: $id}) RETURN c.*",
+            vec![("id", lbug::Value::String(id.to_string()))],
+        )?;
+        let Some(row) = rows.first() else {
+            return Ok(String::new());
+        };
+        const BASE: &[(&str, Json)] = &[
+            ("id", Json::String(String::new())),
+            ("type", Json::String(String::new())),
+            ("title", Json::Null),
+            ("description", Json::Null),
+            ("resource", Json::Null),
+            ("tags", Json::Array(Vec::new())),
+            ("timestamp", Json::Null),
+            ("body", Json::String(String::new())),
+            ("embedding", Json::Null),
+        ];
+        let mut fields: Vec<(String, Json)> = Vec::new();
+        for (name, default) in BASE {
+            fields.push((
+                (*name).to_string(),
+                row.get(&format!("c.{name}"))
+                    .cloned()
+                    .unwrap_or_else(|| default.clone()),
+            ));
+        }
+        for name in ["created_at", "updated_at", "effective_at"] {
+            if let Some(value) = row.get(&format!("c.{name}")) {
+                fields.push((name.to_string(), value.clone()));
+            }
+        }
+        if let Some(Json::Object(extra)) = row.get("c.extra") {
+            for (key, value) in extra {
+                let decoded = match value {
+                    Json::String(text) if text.starts_with('{') || text.starts_with('[') => {
+                        serde_json::from_str(text).unwrap_or_else(|_| value.clone())
+                    }
+                    other => other.clone(),
+                };
+                fields.push((key.clone(), decoded));
+            }
+        }
+        Ok(fields
+            .iter()
+            .map(|(name, value)| {
+                let datetime = ["timestamp", "created_at", "updated_at", "effective_at"]
+                    .contains(&name.as_str());
+                format!("{name}={}", model_value_repr(value, datetime))
+            })
+            .collect::<Vec<_>>()
+            .join(" "))
     }
 
     pub fn traverse(&self, params: &Map<String, Json>) -> Result<Json> {
@@ -466,9 +751,9 @@ impl Router {
     /// embedder unless a scenario supplies `query_vector` explicitly.
     pub fn search(&self, raw: &Map<String, Json>) -> Result<Json> {
         let mut params = SearchParams::parse(raw)?;
-        if params.hub_rerank {
-            // chunks:hub does not honour filters, including the configured
-            // default exclude_tags list.
+        if params.hub_rerank || params.expand {
+            // chunks:hub and chunks:expand do not honour filters, including
+            // the configured default exclude_tags list.
             params.exclude_tags.clear();
         } else if !params.exclude_tags_set {
             params.exclude_tags = self.settings.exclude_tags.clone();
@@ -484,18 +769,75 @@ impl Router {
             "chunks" => {
                 let rows = if params.hub_rerank {
                     self.search_chunks_hub(&params, &query_vector, params.limit)?
+                } else if params.expand {
+                    self.search_with_context(&params, &query_vector, params.limit.min(20))?
                 } else {
                     self.search_chunks(&params, &query_vector, params.limit)?
                 };
                 Ok(Json::Array(rows))
             }
-            "images" => Err(OkfError::new(
-                "BAD_VALUE",
-                "image search needs the vision lane; Stage C exposes it",
-            )
-            .op("search")),
+            "images" => self.search_images(&params, &query_vector),
             _ => unreachable!("validated target"),
         }
+    }
+
+    /// Text-query search over the image-vector index. The oracle encodes the
+    /// query with the paired text model; stored rows may be caption or vision
+    /// route vectors, both in the same space.
+    fn search_images(&self, params: &SearchParams, query_vector: &[f32]) -> Result<Json> {
+        let hits = self.store.vector_hits_raw(
+            "ImageAsset",
+            "image_omni_idx",
+            query_vector,
+            params.limit as i64,
+            None,
+        )?;
+        let asset_ids: Vec<String> = hits
+            .iter()
+            .filter_map(|(node, _)| node.get("id").and_then(Json::as_str).map(str::to_string))
+            .collect();
+        let mut owners: BTreeMap<String, String> = BTreeMap::new();
+        if !asset_ids.is_empty() {
+            let values = lbug::Value::List(
+                lbug::LogicalType::String,
+                asset_ids.iter().cloned().map(lbug::Value::String).collect(),
+            );
+            for row in self.store.query(
+                "MATCH (c:Concept)-[:INCLUDES_ASSET]->(i:ImageAsset) \
+                 WHERE i.id IN $aids RETURN i.id AS aid, c.id AS cid",
+                vec![("aids", values)],
+            )? {
+                let (Some(aid), Some(cid)) = (
+                    row.get("aid").and_then(Json::as_str),
+                    row.get("cid").and_then(Json::as_str),
+                ) else {
+                    continue;
+                };
+                let current = owners.get(aid).map(String::as_str).unwrap_or("");
+                if current.is_empty() || cid < current {
+                    owners.insert(aid.to_string(), cid.to_string());
+                }
+            }
+        }
+        let mut rows = Vec::new();
+        for (node, distance) in hits {
+            let asset_id = node.get("id").and_then(Json::as_str).unwrap_or("");
+            let owner = owners
+                .get(asset_id)
+                .map(|id| Json::String(id.clone()))
+                .unwrap_or(Json::Null);
+            rows.push(serde_json::json!({
+                "id": owner,
+                "concept_id": owners.get(asset_id).map(|id| Json::String(id.clone())).unwrap_or(Json::Null),
+                "asset_id": asset_id,
+                "file_name": node.get("file_name").cloned().unwrap_or(Json::Null),
+                "alt_text": node.get("alt_text").cloned().unwrap_or(Json::Null),
+                "embed_route": node.get("embed_route").cloned().unwrap_or(Json::Null),
+                "distance": json_number(distance),
+                "relevance_score": json_number(1.0 - distance),
+            }));
+        }
+        Ok(Json::Array(rows))
     }
 
     fn query_vector(&self, query: &str, explicit: Option<Vec<f32>>) -> Result<Vec<f32>> {
@@ -932,6 +1274,54 @@ impl Router {
         }
         rows.truncate(limit);
         Ok(rows)
+    }
+
+    /// Python `search_with_context`: plain chunk search plus graph context
+    /// around each chunk's owning concept.
+    fn search_with_context(
+        &self,
+        params: &SearchParams,
+        query_vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<Json>> {
+        let chunks = self.search_chunks(params, query_vector, limit * 2)?;
+        let mut enriched = Vec::new();
+        for chunk in chunks.into_iter().take(limit) {
+            let parent_id = chunk
+                .get("parent_doc_id")
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .to_string();
+            let incoming = self.store.traverse(
+                &parent_id,
+                "LINKS_TO",
+                "INCOMING",
+                params.context_hops,
+                None,
+                None,
+            )?;
+            let outgoing = self.store.traverse(
+                &parent_id,
+                "LINKS_TO",
+                "OUTGOING",
+                params.context_hops,
+                None,
+                None,
+            )?;
+            let (ancestry, siblings) = self.store.context(&parent_id, 10)?;
+            let document = Json::String(self.concept_model_str(&parent_id)?);
+            enriched.push(serde_json::json!({
+                "id": parent_id,
+                "concept_id": parent_id,
+                "chunk": chunk,
+                "document": document,
+                "incoming_links": truncate(incoming, 5),
+                "outgoing_links": truncate(outgoing, 5),
+                "ancestry": ancestry,
+                "siblings": truncate(siblings, 5),
+            }));
+        }
+        Ok(enriched)
     }
 
     fn chunk_rows(
@@ -1795,11 +2185,150 @@ const HUB_PARAMS: &[&str] = &[
 const EXPAND_PARAMS: &[&str] = &["expand", "context_hops"];
 
 fn bad_value(message: impl Into<String>, fields: Vec<(&str, Json)>) -> OkfError {
-    let mut err = OkfError::new("BAD_VALUE", message).op("search");
+    bad_value2("search", message, fields)
+}
+
+fn bad_value2(op: &str, message: impl Into<String>, fields: Vec<(&str, Json)>) -> OkfError {
+    let mut err = OkfError::new("BAD_VALUE", message).op(op);
     for (key, value) in fields {
         err = err.field(key, value);
     }
     err
+}
+
+fn section(id: &str, title: &str, kind: &str, text: &str) -> Json {
+    section_with_title(id, Json::String(title.to_string()), kind, text)
+}
+
+fn section_with_title(id: &str, title: Json, kind: &str, text: &str) -> Json {
+    serde_json::json!({
+        "id": id,
+        "title": title,
+        "kind": kind,
+        "text": text,
+    })
+}
+
+fn model_value_repr(value: &Json, datetime: bool) -> String {
+    if datetime {
+        if let Some(text) = value.as_str() {
+            if let Some(repr) = py_datetime_repr(text) {
+                return repr;
+            }
+        }
+    }
+    match value {
+        Json::Null => "None".into(),
+        Json::Bool(true) => "True".into(),
+        Json::Bool(false) => "False".into(),
+        Json::String(text) => py_string_repr(text),
+        Json::Number(number) if number.is_f64() => {
+            crate::pycompat::python_float_repr(number.as_f64().unwrap_or(0.0))
+        }
+        Json::Number(number) => number.to_string(),
+        Json::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(|item| model_value_repr(item, false))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Json::Object(items) => format!(
+            "{{{}}}",
+            items
+                .iter()
+                .map(|(key, item)| {
+                    format!("{}: {}", py_string_repr(key), model_value_repr(item, false))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn py_string_repr(text: &str) -> String {
+    let quote = if text.contains('\'') && !text.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut out = String::new();
+    out.push(quote);
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
+}
+
+fn py_datetime_repr(text: &str) -> Option<String> {
+    if text.len() < 19 {
+        return None;
+    }
+    let number = |start: usize, end: usize| text.get(start..end)?.parse::<u32>().ok();
+    let year = number(0, 4)?;
+    let month = number(5, 7)?;
+    let day = number(8, 10)?;
+    let hour = number(11, 13)?;
+    let minute = number(14, 16)?;
+    let second = number(17, 19)?;
+    let mut args = vec![year, month, day, hour, minute];
+    let rest = &text[19..];
+    let micros = if let Some(fraction) = rest.strip_prefix('.') {
+        let digits: String = fraction
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .take(6)
+            .collect();
+        if digits.is_empty() {
+            0
+        } else {
+            format!("{digits:0<6}").parse::<u32>().ok()?
+        }
+    } else {
+        0
+    };
+    if second != 0 || micros != 0 {
+        args.push(second);
+    }
+    if micros != 0 {
+        args.push(micros);
+    }
+    Some(format!(
+        "datetime.datetime({})",
+        args.into_iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+fn truncate_to_tokens(text: &str, budget: usize, count: &impl Fn(&str) -> usize) -> String {
+    if budget == 0 {
+        return String::new();
+    }
+    let total = count(text);
+    if total <= budget {
+        return text.to_string();
+    }
+    let chars = text.chars().count();
+    let take = ((chars as f64 * budget as f64 / total as f64) as usize).max(1);
+    let head: String = text.chars().take(take).collect();
+    format!("{}\n[…truncated to budget]", head.trim_end())
 }
 
 fn py_repr(value: &Json) -> String {

@@ -1,0 +1,27 @@
+{
+  "name": "expansion-and-budget",
+  "settings": {
+    "db_path": "parity/fixtures/oracle-v10-filters.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 32,
+    "chunk_overlap": 4,
+    "exclude_tags": ["drop"]
+  },
+  "setup": {"fixture": "parity/fixtures/oracle-v10-filters.db"},
+  "ops": [
+    {"op": "search", "params": {"query": "badger", "limit": 3, "target": "chunks", "expand": true}},
+    {"op": "search", "params": {"query": "badger", "limit": 2, "target": "chunks", "expand": true, "context_hops": 2}},
+    {"op": "read", "params": {"concept_id": "area1/alpha", "include": "body", "max_tokens": 5}},
+    {"op": "read", "params": {"concept_id": "area1/alpha", "include": "chunks", "max_tokens": 12}},
+    {"op": "read", "params": {"concept_id": "area1/alpha", "include": "document", "max_tokens": 8}},
+    {"op": "read", "params": {"concept_id": "area1/alpha", "include": "context", "max_tokens": 24}},
+    {"op": "read", "params": {"concept_id": "area1/gamma", "include": "body", "max_tokens": 50}},
+    {"op": "read", "params": {"concept_id": "area1/alpha", "include": "context", "max_tokens": 200}},
+    {"op": "read", "params": {"concept_id": "area1/alpha", "include": "body", "max_tokens": 0}},
+    {"op": "read", "params": {"concept_id": "missing", "include": "body", "max_tokens": 10}}
+  ]
+}

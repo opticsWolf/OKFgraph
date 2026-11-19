@@ -3322,6 +3322,7 @@ dependencies = [
  "clap",
  "criterion",
  "embroider",
+ "image",
  "insta",
  "lbug",
  "libloading 0.8.9",

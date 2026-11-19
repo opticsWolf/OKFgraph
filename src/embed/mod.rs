@@ -11,6 +11,8 @@ use crate::error::{OkfError, Result};
 use crate::settings::Settings;
 #[cfg(feature = "embed")]
 use embroider::{diag, DeviceReq, JinaV5, Precision};
+#[cfg(feature = "vision")]
+use embroider::{GemmaVision, JinaV5Vision};
 use serde_json::{Map, Value as Json};
 use std::fmt;
 #[cfg(feature = "embed")]
@@ -337,6 +339,187 @@ impl RerankerPool {
 }
 
 /// Validate the graph pins before an embedder is used against stored vectors.
+/// Native counterpart of `embroider.prepare_image`: decode to RGB and
+/// bicubic-resize to the slot's contract grid. The Jina resize kernel is
+/// Catmull-Rom, which is Pillow's `BICUBIC` filter.
+#[cfg(feature = "vision")]
+pub fn prepare_image(data: &[u8], model_id: &str) -> Result<(Vec<u8>, usize, usize)> {
+    let decoded = image::load_from_memory(data)
+        .map_err(|err| OkfError::internal(err.to_string(), "image decode"))?;
+    let rgb = decoded.to_rgb8();
+    let (height, width) = (rgb.height(), rgb.width());
+    let (target_h, target_w) = if model_id.starts_with("google/") {
+        embroider::gemma_default_target_size(height, width)
+    } else {
+        embroider::vision_target_size(height, width)
+    }
+    .map_err(|err| OkfError::internal(err.to_string(), "vision_target_size"))?;
+    let prepared = if (target_h, target_w) == (height, width) {
+        rgb
+    } else {
+        image::imageops::resize(
+            &rgb,
+            target_w,
+            target_h,
+            image::imageops::FilterType::CatmullRom,
+        )
+    };
+    Ok((prepared.into_raw(), target_h as usize, target_w as usize))
+}
+
+#[cfg(feature = "embed")]
+pub fn default_image_model_id(text_model_id: &str) -> String {
+    embroider::builtin_models()
+        .iter()
+        .find(|spec| spec.text_partner == Some(text_model_id))
+        .map(|spec| spec.id.to_string())
+        .unwrap_or_else(|| embroider::VISION_NANO_MODEL.to_string())
+}
+
+#[cfg(not(feature = "embed"))]
+pub fn default_image_model_id(text_model_id: &str) -> String {
+    format!("{text_model_id}-vision")
+}
+
+#[cfg(feature = "vision")]
+enum VisionEngine {
+    Jina(Box<JinaV5Vision>),
+    Gemma(GemmaVision),
+}
+
+#[cfg(feature = "vision")]
+pub struct NativeVision {
+    engine: VisionEngine,
+    model_id: String,
+    dim: usize,
+    used_cuda: bool,
+    precision: &'static str,
+}
+
+#[cfg(feature = "vision")]
+impl fmt::Debug for NativeVision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeVision")
+            .field("model_id", &self.model_id)
+            .field("dim", &self.dim)
+            .field("used_cuda", &self.used_cuda)
+            .field("precision", &self.precision)
+            .finish()
+    }
+}
+
+#[cfg(feature = "vision")]
+impl NativeVision {
+    pub fn open(settings: &Settings) -> Result<Self> {
+        NativeEmbedder::configure_runtime()?;
+        let model_id = settings
+            .image_model_id
+            .clone()
+            .unwrap_or_else(|| default_image_model_id(&settings.model_id));
+        let device = DeviceReq::parse(&settings.device)
+            .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
+        let precision = Precision::parse(&settings.image_precision)
+            .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
+        let cache_dir = settings.cache_dir.as_ref().map(PathBuf::from);
+        let dim = settings.embedding_dim as usize;
+        let (engine, used_cuda, precision) = if model_id.starts_with("google/") {
+            let engine =
+                GemmaVision::open(&model_id, None, cache_dir, dim, device, precision, None)
+                    .map_err(|err| OkfError::internal(err.to_string(), "embroider::GemmaVision"))?;
+            let used_cuda = engine.used_cuda();
+            let precision = engine.precision().as_str();
+            (VisionEngine::Gemma(engine), used_cuda, precision)
+        } else {
+            let engine =
+                JinaV5Vision::open(&model_id, None, cache_dir, dim, device, precision, None)
+                    .map_err(|err| {
+                        OkfError::internal(err.to_string(), "embroider::JinaV5Vision")
+                    })?;
+            let used_cuda = engine.used_cuda();
+            let precision = engine.precision().as_str();
+            (VisionEngine::Jina(Box::new(engine)), used_cuda, precision)
+        };
+        Ok(Self {
+            engine,
+            model_id,
+            dim,
+            used_cuda,
+            precision,
+        })
+    }
+
+    pub fn encode_image(&self, data: &[u8]) -> Result<Vec<f32>> {
+        let (rgb, height, width) = prepare_image(data, &self.model_id)?;
+        let result = match &self.engine {
+            VisionEngine::Jina(engine) => engine.encode_image(&rgb, height, width),
+            VisionEngine::Gemma(engine) => engine.encode_image(&rgb, height, width),
+        };
+        result.map_err(|err| OkfError::internal(err.to_string(), "embroider::encode_image"))
+    }
+
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    pub fn used_cuda(&self) -> bool {
+        self.used_cuda
+    }
+
+    pub fn precision(&self) -> &'static str {
+        self.precision
+    }
+}
+
+#[cfg(feature = "vision")]
+#[derive(Clone, Default)]
+pub struct VisionPool {
+    inner: Arc<Mutex<Option<Arc<NativeVision>>>>,
+}
+
+#[cfg(feature = "vision")]
+impl fmt::Debug for VisionPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VisionPool")
+            .field("loaded", &self.is_loaded())
+            .finish()
+    }
+}
+
+#[cfg(feature = "vision")]
+impl VisionPool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, settings: &Settings) -> Result<Arc<NativeVision>> {
+        if let Some(loaded) = self
+            .inner
+            .lock()
+            .map_err(|_| OkfError::internal("vision lock poisoned", "mutex"))?
+            .as_ref()
+        {
+            return Ok(Arc::clone(loaded));
+        }
+        let vision = Arc::new(NativeVision::open(settings)?);
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| OkfError::internal("vision lock poisoned", "mutex"))?;
+        Ok(Arc::clone(guard.get_or_insert(vision)))
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
+    }
+}
+
 pub fn check_pins(settings: &Settings, pins: &Json) -> Result<()> {
     let pinned_model = pins
         .get("pinned")

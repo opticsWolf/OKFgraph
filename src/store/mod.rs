@@ -127,6 +127,31 @@ impl Store {
         k: i64,
         efs: Option<i64>,
     ) -> Result<Vec<(String, f64)>> {
+        Ok(self
+            .vector_hits_raw(table, index, vector, k, efs)?
+            .into_iter()
+            .map(|(node, distance)| {
+                (
+                    node.get("id")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    1.0 - distance,
+                )
+            })
+            .collect())
+    }
+
+    /// Index hits with the full node and raw cosine distance, used by image
+    /// search which exposes both ``distance`` and ``relevance_score``.
+    pub fn vector_hits_raw(
+        &self,
+        table: &str,
+        index: &str,
+        vector: &[f32],
+        k: i64,
+        efs: Option<i64>,
+    ) -> Result<Vec<(Json, f64)>> {
         let values = Value::List(
             LogicalType::Float,
             vector.iter().copied().map(Value::Float).collect(),
@@ -161,12 +186,8 @@ impl Store {
                         _ => {}
                     }
                 }
-                if let Some(id) = node_json
-                    .as_ref()
-                    .and_then(|n| n.get("id"))
-                    .and_then(Json::as_str)
-                {
-                    hits.push((id.to_string(), 1.0 - distance));
+                if let Some(node) = node_json {
+                    hits.push((node, distance));
                 }
             }
             Ok(hits)
@@ -727,8 +748,15 @@ impl Store {
             .settings
             .image_model_id
             .clone()
-            .unwrap_or_else(|| format!("{}-vision", self.settings.model_id));
+            .unwrap_or_else(|| crate::embed::default_image_model_id(&self.settings.model_id));
         let pinned_image_model = self.meta_text("embedding_image_model")?;
+        let pinned_image_precision = match self.meta_int("embedding_image_precision")? {
+            Some(8) => Some("int8".to_string()),
+            Some(16) => Some("fp16".to_string()),
+            Some(32) => Some("fp32".to_string()),
+            Some(other) => Some(other.to_string()),
+            None => None,
+        };
         let image_mismatch = if pinned_image_model.is_some()
             && pinned_image_model.as_deref() != Some(configured_image_model.as_str())
         {
@@ -760,7 +788,7 @@ impl Store {
             },
             "image": {
                 "pinned_model": pinned_image_model,
-                "pinned_precision": self.meta_int("embedding_image_precision")?,
+                "pinned_precision": pinned_image_precision,
                 "pinned_space": self.meta_text("embedding_image_space")?,
                 "pinned_text_space": self.meta_text("embedding_image_text_space")?,
                 "backend": self.settings.image_backend,

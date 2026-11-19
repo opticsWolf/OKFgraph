@@ -1,0 +1,22 @@
+{
+  "name": "vision-images",
+  "settings": {
+    "db_path": "parity/fixtures/oracle-v10-vision-images.db",
+    "embedding_dim": 768,
+    "model_id": "jinaai/jina-embeddings-v5-text-nano-retrieval",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 128,
+    "chunk_overlap": 8
+  },
+  "setup": {"fixture": "parity/fixtures/oracle-v10-vision-images.db"},
+  "ops": [
+    {"op": "search", "params": {"query": "red fox", "limit": 5, "target": "images"}},
+    {"op": "search", "params": {"query": "blue jay", "limit": 5, "target": "images"}},
+    {"op": "search", "params": {"query": "city lights", "limit": 5, "target": "images"}},
+    {"op": "search", "params": {"query": "animal", "limit": 3, "target": "images"}},
+    {"op": "list_images", "params": {"concept_id": "red-fox"}},
+    {"op": "pin_info", "params": {}}
+  ]
+}

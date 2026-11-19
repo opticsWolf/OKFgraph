@@ -21,6 +21,9 @@ the Python and Rust cores in one process.
 - `tools/make_search_oracle.py` — build a real GPU-embedded v10 fixture
   (also builds the richer filter-matrix fixture with `--chunk-size 32`).
 - `tools/gen_markdown.py` — regenerate chunking/YAML/frontmatter goldens.
+- `tools/make_image_oracle.py` — build caption- or vision-route image fixtures.
+- `tools/gen_vision.py` / `tools/compare_vision.py` — Pillow/embroider image
+  golden and native vision-lane comparison.
 
 ## Scenario format
 
@@ -121,8 +124,41 @@ envelopes) run against that fixture and both report **0 differences**. The
 Python runner wraps oracle exceptions with `okfgraph.errors.envelope()` so
 error payloads are compared in the same shape as Rust's `Envelope::failure`.
 Recency is intentionally omitted from the differential scenario because its
-wall-clock score drifts between the two sequential runs; successful
-`chunks:expand` remains a separate gap.
+wall-clock score drifts between the two sequential runs.
 
-M2 note: vision/image search, budgeted reads, and successful `chunks:expand`
-remain. Windows x64 spikes are green; Linux x86_64 and macOS arm64 remain.
+### Expansion, budgets, images, vision
+
+```bash
+# successful chunks:expand + max_tokens reads (uses the filter fixture above)
+parity/.venv-oracle/Scripts/python.exe parity/tools/run_python.py \
+  --scenario parity/scenarios/expansion-and-budget.json \
+  --out parity/out/expansion-and-budget.python.json
+
+# caption-route image fixture + real vision-route fixture
+parity/.venv-oracle/Scripts/python.exe parity/tools/make_image_oracle.py \
+  --db parity/fixtures/oracle-v10-images.db --corpus parity/corpus/images \
+  --out parity/out/image-oracle.json
+parity/.venv-oracle/Scripts/python.exe parity/tools/make_image_oracle.py \
+  --db parity/fixtures/oracle-v10-vision-images.db --corpus parity/corpus/images \
+  --out parity/out/vision-image-oracle.json \
+  --model-id jinaai/jina-embeddings-v5-text-nano-retrieval \
+  --embedding-dim 768 --image-mode omni
+
+# native vision lane vs embroider/Pillow golden
+parity/.venv-oracle/Scripts/python.exe parity/tools/gen_vision.py \
+  --images parity/corpus/images/*.png --out parity/out/vision-golden.json
+cargo run -q -p okfgraph --example vision_spike -- parity/corpus/images/*.png \
+  > parity/out/vision-rust.json
+python parity/tools/compare_vision.py --golden parity/out/vision-golden.json \
+  --rust parity/out/vision-rust.json
+```
+
+`expansion-and-budget.json` (10 ops), `images.json` (6 ops) and
+`vision-images.json` (6 ops) all report **0 differences**. The vision spike
+needs cuBLAS 12 alongside the GPU DLLs (`win-llama-cuda12-vendor-v2` in this
+environment); cu13 alone cannot load the vision matmul kernel.
+Prepared pixels match Pillow byte-for-byte and Jina vision vectors match the
+oracle exactly (cosine 1.0). Gemma vision vectors remain untested until that
+artifact is cached.
+
+M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

@@ -1,0 +1,22 @@
+{
+  "name": "images",
+  "settings": {
+    "db_path": "parity/fixtures/oracle-v10-images.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 128,
+    "chunk_overlap": 8
+  },
+  "setup": {"fixture": "parity/fixtures/oracle-v10-images.db"},
+  "ops": [
+    {"op": "search", "params": {"query": "red fox", "limit": 5, "target": "images"}},
+    {"op": "search", "params": {"query": "blue jay", "limit": 5, "target": "images"}},
+    {"op": "search", "params": {"query": "city lights", "limit": 5, "target": "images"}},
+    {"op": "search", "params": {"query": "animal", "limit": 3, "target": "images"}},
+    {"op": "list_images", "params": {"concept_id": "red-fox"}},
+    {"op": "get_by_id", "params": {"concept_id": "blue-jay"}}
+  ]
+}

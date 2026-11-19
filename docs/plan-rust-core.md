@@ -704,8 +704,9 @@ and a basic `doctor`. `parity/scenarios/read-only.json` runs 14 ops through
 both runtimes and compares with **0 differences**. The PyO3 `NativeRouter` and
 Python `OKFRouter`/`ConceptModel` facade pass `parity/tools/check_facade.py`;
 `okf read`/`init`/`doctor` work from a build with `--features cli,server,mcp`.
-Remaining M1 gaps: full migration fixtures (v1/v5/v9), byte-for-byte DB dump
-relationships, and `max_tokens`/`document`/`context` read parity.
+Remaining M1 gaps: full migration fixtures (v1/v5/v9) and byte-for-byte DB
+dump relationships. `max_tokens`/`document`/`context` read parity landed in
+M2.
 
 **Gate:** Rust reads a Python-created DB identically (JSON value parity) and the
 Python shim returns the same `ConceptModel` shape. No **content** writes yet;
@@ -762,13 +763,32 @@ and configured-default vs explicit `exclude_tags`.
 envelopes, including every ignored-parameter path and scalar type/range
 refusal. Both scenarios report **0 differences**. The Python harness now
 uses `okfgraph.errors.envelope()` for exceptions so error comparisons match
-the Rust `{ok, op, data, warnings, error}` transport. Remaining M2 gaps:
-vision/image search, budgeted `max_tokens` reads, and successful
-`chunks:expand` results.
+the Rust `{ok, op, data, warnings, error}` transport.
+
+`parity/scenarios/expansion-and-budget.json` (10 ops) covers successful
+`chunks:expand` results — plain chunk seeds enriched with LINKS_TO context,
+ancestry and siblings at 1–2 hops — and budgeted `read(max_tokens=…)` across
+body/chunks/document/context including Pydantic `str(ConceptModel)` sections,
+exact tokenizer counts, proportional boundary truncation, and refusals.
+It reports **0 differences**.
+
+The native vision lane is now implemented: Pillow-compatible RGB decoding
+and bicubic resize (`image` crate Catmull-Rom), paired Jina/Gemma vision
+sessions through `embroider`, and a lazy `VisionPool`. With the cached Jina
+text-nano + omni-nano vision slot, Rust-prepared pixels match
+`embroider.prepare_image` byte-for-byte (SHA-256) and image vectors match the
+Python oracle exactly (max abs diff 0.0, cosine 1.0) on three PNGs.
+`search(target='images')` now queries `image_omni_idx`, maps assets to the
+smallest owning concept, and exposes `distance`/`relevance_score`; both the
+caption-route fixture (`images.json`, 6 ops) and the real vision-route fixture
+(`vision-images.json`, 6 ops) report **0 differences**. Image pin display now
+uses registry pairing and string precisions, matching Python `pin_info`.
+Remaining M2 gaps: none on the current parity matrix; Gemma vision vectors
+still await a cached `google/embeddinggemma-2-vision` artifact.
 
 **Gate:** identical search result IDs/order/scores on the parity corpus
-(floats within 1e-6); vector cosine ≥ 0.99999 for text and ≥ 0.999 for images;
-chunk text/offsets byte-identical.
+(floats within 1e-6); vector cosine ≥ 0.99999 for text and ≥ 0.999 for images
+(Jina vision measured at 1.0); chunk text/offsets byte-identical.
 
 ### M3 — Ingest, import, export (4 weeks)
 

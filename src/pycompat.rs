@@ -182,6 +182,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 /// Python-style `repr(float)` for finite values.
+pub fn python_float_repr(value: f64) -> String {
+    python_float(value)
+}
+
 fn python_float(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_string();

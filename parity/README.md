@@ -255,10 +255,11 @@ them to `import_bundle`, and the Python harness forwards them after removing
 constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 (embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
-The post-review matrix covers 52 scenarios and reports **0 differences** on
-ops output after normalizing wall-clock graph times, internal Ladybug IDs,
-set-ordered tags, runner-specific paths, and the documented
-`CONVERSION_FAILED` PDF-missing-plugin divergence. Import, links, delete,
+The post-review matrix covers 52 scenarios: **51 report 0 differences** on ops
+output after normalizing wall-clock graph times, internal Ladybug IDs,
+set-ordered tags, and runner-specific paths. The 52nd,
+`ingest-pdf-no-plugin`, intentionally records the Python raw-`INTERNAL` vs Rust
+`CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op
 scenarios also match on semantic DB dumps; export trees match byte-for-byte.
 New coverage includes `import-identity-frontmatter`, `import-multi-root`,

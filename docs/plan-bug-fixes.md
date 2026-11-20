@@ -13,8 +13,10 @@ path safety, most Phase 3 semantic parity, multi-root/prune, ingest
 materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
 and the write lock are implemented. The broad differential matrix is green
-for 52 scenarios after normalizing wall-clock graph times/internal IDs and the
-documented intentional differences. Remaining items are listed under
+for 51 differential scenarios after normalizing wall-clock graph times/internal
+IDs and the documented intentional differences; the 52nd,
+`ingest-pdf-no-plugin`, records the intentional missing-plugin error
+divergence instead of a green comparison. Remaining items are listed under
 “Verification status” below rather than claimed complete.
 
 **Important:** the original review below describes the pre-fix state. It is

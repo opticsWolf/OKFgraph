@@ -54,7 +54,8 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 - [ ] error code/message/fields/remedy/data; exit 2 usage, 1 state/outcome
 - [x] 11 MCP tool names, schemas, annotations and envelope content shape
       (`check_mcp.py`); `--connect` proxy (`check_mcp_connect.py`).
-- [ ] 29 CLI commands, flags, `--json`, exit codes; help prose may change
+- [x] 29 CLI verbs, generated global flags, `--json`, exit codes; help prose
+      may change (`check_cli.py`, `cli::tests::command_tree_has_all_29_verbs`).
 - [x] `okf serve` routes `/health`, `/ops`, `/ops/{op}`, `/jobs*`, discovery
       file, and in-memory jobs with submit/poll/list/cancel (`check_jobs.py`).
       The HTTP `/mcp` mount and UDS transport remain open.

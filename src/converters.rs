@@ -1036,7 +1036,7 @@ fn json_string(value: Option<&Json>) -> Option<String> {
     value.and_then(Json::as_str).map(str::to_string)
 }
 
-fn slugify_topic(topic: &str) -> String {
+pub(crate) fn slugify_topic(topic: &str) -> String {
     let lowered = topic.to_lowercase().replace(' ', "_");
     let mut out = String::new();
     let mut in_run = false;
@@ -1053,7 +1053,11 @@ fn slugify_topic(topic: &str) -> String {
     out.chars().take(30).collect()
 }
 
-fn auto_thought_title(text: &str, topic: &str, now: &crate::model::PyDateTime) -> String {
+pub(crate) fn auto_thought_title(
+    text: &str,
+    topic: &str,
+    now: &crate::model::PyDateTime,
+) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut sentence = flat.as_str();
     for (index, ch) in flat.char_indices() {

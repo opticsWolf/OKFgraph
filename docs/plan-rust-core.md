@@ -3,13 +3,13 @@
 **Status:** M3 Stage B bug-fix pass plus the M4 serve/MCP/client slice —
 Windows spikes, `pycompat`, M1, M2, the Stage B write/ingest/export/delete/
 reembed/PDF slices, the `okf serve` HTTP op plane, the public `OKFClient`, and
-the 11-tool rmcp server (stdio + `--connect`) and the HTTP job lane are
-implemented.
+the 11-tool rmcp server (stdio + `--connect`), the HTTP job lane, and the
+full 29-command CLI are implemented.
 Real EmbeddingGemma 2 ONNX inference runs on CUDA; text/rerank/vision and
 write parity scenarios are green on the covered fixtures. The review findings
 in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
 fail-closed/deferred items. Linux/macOS spikes and the remaining Stage C
-surfaces (HTTP `/mcp` mount, full 29-command CLI, UDS) remain.
+surfaces (HTTP `/mcp` mount and UDS transport) remain.
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -944,9 +944,9 @@ The job lane stores in-memory `{status, progress, result, error}` records;
 `reembed` submits through `mode="job"`, and `POST /jobs/<op>` /
 `POST /jobs {op, params}` submit any public op. `parity/tools/check_jobs.py`
 verifies submit → poll → result, `GET /jobs`, cancel, and unknown-job errors;
-`OKFGRAPH_JOB_TEST_DELAY_MS` is a smoke-only delay hook. Remaining M4 work:
-the `/mcp` mount, TCP/UDS parity, and the rest of the 29 CLI commands (10 are
-wired today).
+`OKFGRAPH_JOB_TEST_DELAY_MS` is a smoke-only delay hook. The CLI now registers all 29 oracle verbs with generated global settings
+flags; `parity/tools/check_cli.py` compares command registration and 13
+`--json` cases. Remaining M4 work: the HTTP `/mcp` mount and UDS transport.
 
 **Gate:** CLI/MCP/serve contract suite green; Python `OKFRouter` and `OKFClient`
 perform every op with parity; no Python transport/runtime dependency.

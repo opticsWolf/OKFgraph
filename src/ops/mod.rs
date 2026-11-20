@@ -1243,6 +1243,144 @@ impl Router {
         Ok(self.store.get_by_id(concept_id)?.unwrap_or(Json::Null))
     }
 
+    /// CLI-only `retitle-thoughts`: plan or apply first-sentence titles for
+    /// legacy `Thought: <topic>` concepts. Materialized (file-backed) ideas
+    /// are reported under `skipped` because their bundle file owns the title.
+    pub fn retitle_thoughts(&self, topic: Option<&str>, apply: bool) -> Result<Json> {
+        let rows = self.store.query(
+            "MATCH (c:Concept) WHERE c.title STARTS WITH 'Thought: '              RETURN c.id AS id, c.title AS title, c.type AS type,              c.description AS description, c.tags AS tags, c.body AS body              ORDER BY c.id",
+            vec![],
+        )?;
+        let ids: Vec<String> = rows
+            .iter()
+            .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+            .collect();
+        let file_backed: BTreeSet<String> = if ids.is_empty() {
+            BTreeSet::new()
+        } else {
+            let values = lbug::Value::List(
+                lbug::LogicalType::String,
+                ids.iter().cloned().map(lbug::Value::String).collect(),
+            );
+            self.store
+                .query(
+                    "MATCH (f:FileHash) WHERE f.concept_id IN $ids                      RETURN f.concept_id AS c",
+                    vec![("ids", values)],
+                )?
+                .into_iter()
+                .filter_map(|row| {
+                    row.get("c")
+                        .and_then(Json::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        };
+
+        let mut plan = Vec::new();
+        let mut work = Vec::new();
+        let mut skipped = Vec::new();
+        let mut planned: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let now = crate::model::local_now_datetime();
+        for row in &rows {
+            let Some(id) = row.get("id").and_then(Json::as_str) else {
+                continue;
+            };
+            let title = row.get("title").and_then(Json::as_str).unwrap_or_default();
+            let kind = row.get("type").and_then(Json::as_str).unwrap_or_default();
+            let body = row.get("body").and_then(Json::as_str).unwrap_or_default();
+            let front = crate::markdown::parse_frontmatter(body);
+            let thought = kind == "thought"
+                || front.metadata.get("thought_type").and_then(Json::as_str) == Some("reasoning");
+            if !thought {
+                continue;
+            }
+            let t = front
+                .metadata
+                .get("topic")
+                .and_then(Json::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| title.trim_start_matches("Thought: ").to_string());
+            if title != format!("Thought: {t}") {
+                continue;
+            }
+            if topic.is_some_and(|wanted| wanted != t) {
+                continue;
+            }
+            if file_backed.contains(id) {
+                skipped.push(id.to_string());
+                continue;
+            }
+            let slug = {
+                let value = crate::converters::slugify_topic(&t);
+                if value.is_empty() {
+                    "untitled".to_string()
+                } else {
+                    value
+                }
+            };
+            let base = crate::converters::auto_thought_title(&front.content, &t, &now);
+            let taken = planned.entry(slug.clone()).or_default();
+            let mut new_title = base.clone();
+            let mut suffix = 2;
+            while taken.contains(&new_title) || self.thought_title_exists(&slug, &new_title, id)? {
+                new_title = format!("{base} ({suffix})");
+                suffix += 1;
+            }
+            taken.insert(new_title.clone());
+            plan.push(serde_json::json!({
+                "concept_id": id,
+                "topic": t,
+                "old_title": title,
+                "new_title": new_title,
+            }));
+            let tags = crate::model::normalize_tags(row.get("tags").unwrap_or(&Json::Null));
+            work.push((
+                id.to_string(),
+                t,
+                front.content,
+                new_title,
+                tags,
+                kind.to_string(),
+            ));
+        }
+        if apply {
+            for (id, t, text, new_title, tags, kind) in &work {
+                let mut params = Map::new();
+                params.insert("kind".into(), Json::String("thoughts".into()));
+                params.insert("thoughts".into(), Json::String(text.clone()));
+                params.insert("topic".into(), Json::String(t.clone()));
+                params.insert("concept_id".into(), Json::String(id.clone()));
+                params.insert("title".into(), Json::String(new_title.clone()));
+                params.insert(
+                    "tags".into(),
+                    Json::Array(tags.iter().cloned().map(Json::String).collect()),
+                );
+                params.insert("type".into(), Json::String(kind.clone()));
+                self.call("ingest", &params)?;
+            }
+        }
+        Ok(serde_json::json!({
+            "applied": apply,
+            "count": plan.len(),
+            "plan": plan,
+            "skipped": skipped,
+        }))
+    }
+
+    fn thought_title_exists(&self, slug: &str, title: &str, exclude_id: &str) -> Result<bool> {
+        let prefix = format!("thoughts/{slug}/");
+        Ok(self
+            .store
+            .query(
+                "MATCH (c:Concept) WHERE c.title = $title RETURN c.id AS id",
+                vec![("title", lbug::Value::String(title.into()))],
+            )?
+            .into_iter()
+            .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+            .any(|id| id != exclude_id && id.starts_with(&prefix)))
+    }
+
     pub fn list_directory(&self, directory_id: &str) -> Result<Json> {
         Ok(Json::Array(self.store.list_directory(directory_id)?))
     }

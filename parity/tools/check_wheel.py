@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from importlib.metadata import metadata
@@ -55,7 +56,7 @@ def main() -> int:
         raise SystemExit("FAIL: native call did not release the GIL")
     info = metadata("okfgraph")
     assert info["Requires-Python"] == ">=3.12, <3.15", info["Requires-Python"]
-    scripts = Path(sys.executable).parent
+    scripts = Path(sysconfig.get_path("scripts"))
     okf = scripts / ("okf.exe" if os.name == "nt" else "okf")
     okf_mcp = scripts / ("okf-mcp.exe" if os.name == "nt" else "okf-mcp")
     assert okf.is_file() and okf_mcp.is_file(), (okf, okf_mcp)

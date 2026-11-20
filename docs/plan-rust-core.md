@@ -930,9 +930,9 @@ embedding; a Python 0.15 process can reopen the Rust-written DB.
   lifecycle, concurrent clients, stale discovery, job cancel, UDS, Python client.
 
 **M4 progress (serve + MCP slice):** `src/server/mod.rs` runs an axum owner
-for one database with `GET /health`, `GET /ops`, `POST /ops/<op>`, placeholder
-`/jobs*` endpoints, and the `<db>.serve.json` discovery file removed on
-graceful shutdown. `okf serve --listen host:port` starts it;
+for one database with `GET /health`, `GET /ops`, `POST /ops/<op>`, real
+`/jobs*` submit/poll/list/cancel endpoints, and the `<db>.serve.json`
+discovery file removed on graceful shutdown. `okf serve --listen host:port` starts it;
 `parity/tools/check_client.py` verifies the public `OKFClient`, `discover()`,
 `health()`, op calls, and typed errors. `src/mcp/mod.rs` exposes all 11 oracle
 tools with rmcp annotations and canonical envelope strings; the stdio binary

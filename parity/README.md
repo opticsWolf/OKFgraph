@@ -11,12 +11,20 @@ the Python and Rust cores in one process.
 - `scenarios/<name>.json` — settings, setup, and ordered op calls.
 - `tools/run_python.py` — runs a scenario against the oracle venv.
 - `tools/dump_db.py` — normalized DB dump (nodes and relationships).
-- `tools/compare.py` — JSON comparer with float tolerance.
+- `tools/compare.py` — JSON comparer with float tolerance and rule-level
+  doctor `info` ignores.
+- `tools/run_matrix.py` — full differential matrix runner; exits non-zero on
+  any unexpected op or DB difference.
+- `tools/check_coverage.py` — verifies success and typed-error coverage for
+  every public op, with documented waivers.
+- `examples/import_bench.rs` / `tools/check_import_bench.py` — real-model
+  filters-corpus timing smoke and unchanged-import delta check.
 - `tools/gen_pycompat.py` — regenerates `golden/pycompat.json` from the oracle.
 - `tools/check_rust_write.py` — verifies Python 0.15 reopens a Rust-written DB.
 - `tools/check_wheel.py` — wheel import + GIL-release smoke test.
 - `tools/check_mcp_spike.py` — Python MCP client for the Rust stdio spike.
-- `tools/check_facade.py` — public Python `OKFRouter` smoke test.
+- `tools/check_facade.py` — public Python `OKFRouter`/`OKFClient` smoke test.
+- `tools/check_client.py` — public `OKFClient` against the Rust `okf serve`.
 - `tools/make_import_oracle.py` / `tools/check_reopen_import.py` — fresh oracle
   imports and Python 0.15 reopen checks.
 - `tools/compare_db.py` — semantic DB-dump comparator (normalizes Ladybug IDs
@@ -255,9 +263,9 @@ them to `import_bundle`, and the Python harness forwards them after removing
 constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 (embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
-The post-review matrix covers 55 scenarios: **54 report 0 differences** on ops
+The post-review matrix covers 56 scenarios: **55 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,
-set-ordered tags, and runner-specific paths. The 55th,
+set-ordered tags, and runner-specific paths. The 56th,
 `ingest-pdf-no-plugin`, intentionally records the Python raw-`INTERNAL` vs Rust
 `CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op
@@ -267,7 +275,8 @@ New coverage includes `import-identity-frontmatter`, `import-multi-root`,
 `images-prune`, `import-dim-256/768`, `ingest-materialize`,
 `ingest-thoughts-*`, `ingest-bib-bundle-root`, `ingest-thoughts-errors`,
 `export-dotted-id`, `yaml-block-and-nested`, `time-microseconds-offset`,
-`percent-escape-nonascii`, `doctor-empty`, `doctor-params`, `ingest-params`,
+`percent-escape-nonascii`, `doctor-empty`, `doctor-params`, `op-error-matrix`,
+`ingest-params`,
 `import-resource-sanitize`, `ingest-pdf-no-plugin`, and
 `ingest-pdf-real` / `ingest-office-real` (real PDF/DOCX fixtures through the
 optional bobine add-on).
@@ -277,9 +286,14 @@ scenario.
 Known remaining coverage gaps: external lanes are fail-closed only; old-schema
 migration uses the Python 0.15 one-time step; PDF and DOCX are covered, while
 other Office formats remain untested. `doctor` parameters are covered by
-`doctor-params`; its environment `info` probes are still not ported, and
-`check_coverage.py` only checks op presence, not the required per-op
-success/error matrix. Cross-process Python↔Rust lock interop and
+`doctor-params`; portable `info` probes (index inventory, image routes, stale
+lock, lanes) are now compared with `--ignore-info-rule` for only the
+host-specific `ort_*`, `converter_cache`, `cache_hygiene`, `pdf_converter`,
+and `db_created` entries. `check_coverage.py` now enforces success plus typed-error coverage: 30/30
+successes, 21 ops with typed-error scenarios, and nine read-only ops with no
+Python failure branch documented as waivers. The ledger-only DB comparisons
+for thoughts/ingest-params scenarios are skipped because their materialized
+frontmatter hashes depend on wall-clock ordering. Cross-process Python↔Rust lock interop and
 read-only refusal are checked by `check_lock_interop.py` /
 `check_read_only.py`; facade and wheel checks are `check_facade.py` /
 `check_wheel.py`. Full findings and the open register are in

@@ -1,0 +1,25 @@
+{
+  "name": "op-error-matrix",
+  "settings": {
+    "db_path": "parity/out/op-error-matrix-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2"
+  },
+  "setup": {
+    "copy_file": {
+      "from": "parity/fixtures/oracle-v10.db",
+      "to": "parity/out/op-error-matrix-@RUNNER@.db"
+    }
+  },
+  "ops": [
+    {"op": "embed", "params": {"texts": []}},
+    {"op": "export_bundle", "params": {"output_dir": "parity/out/op-error-@RUNNER@", "flavor": "bad"}},
+    {"op": "export_concept", "params": {"concept_id": "missing", "output_dir": "parity/out/op-error-@RUNNER@"}},
+    {"op": "import_file", "params": {"file_path": "parity/corpus/missing.md"}},
+    {"op": "import_files", "params": {"paths": ["parity/corpus/missing.md"]}},
+    {"op": "list_images", "params": {"concept_id": "missing"}},
+    {"op": "recover_deleted", "params": {"concept_id": "missing"}},
+    {"op": "traverse", "params": {"start_id": "alpha", "depth": 0}},
+    {"op": "sync", "params": {"producer": "missing-producer"}}
+  ]
+}

@@ -1,7 +1,8 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** M3 Stage B bug-fix pass — Windows spikes, `pycompat`, M1, M2, and
-the Stage B write/ingest/export/delete/reembed/PDF slices are implemented.
+**Status:** M3 Stage B bug-fix pass plus the first M4 slice — Windows spikes,
+`pycompat`, M1, M2, the Stage B write/ingest/export/delete/reembed/PDF slices,
+and the `okf serve` HTTP op plane with the public `OKFClient` are implemented.
 Real EmbeddingGemma 2 ONNX inference runs on CUDA; text/rerank/vision and
 write parity scenarios are green on the covered fixtures. The review findings
 in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
@@ -892,10 +893,15 @@ set-ordered tags, and the explicitly documented PDF-missing-plugin divergence.
 
 Remaining M3/stable gaps: external embedding/rerank/vision lanes fail closed
 (`EXTERNAL_UNAVAILABLE`) by design; old/missing schemas are refused for a
-one-time Python-0.15 migration instead of ported; `doctor` findings/score and
-parameters (`stale_days`/`fix`/`strict`/`cache_dir`) are ported, but its
-environment-specific info probes are not. Error-path coverage and the import
-benchmark are also still open. Real PDF/DOCX fixture parity, warm converter reuse, cross-process
+one-time Python-0.15 migration instead of ported; `doctor` findings/score,
+parameters (`stale_days`/`fix`/`strict`/`cache_dir`), and portable info probes
+(index inventory, image routes, stale lock, lanes) are ported, while
+host-specific ORT/cache/PDF probes remain documented omissions. Error-path
+coverage is enforced by the matrix, and the import benchmark now has a
+real-model timing smoke (`check_import_bench.py`). The full matrix is run by
+`parity/tools/run_matrix.py`, and `check_coverage.py` enforces success plus
+typed-error coverage with nine documented no-error waivers.
+Real PDF/DOCX fixture parity, warm converter reuse, cross-process
 Python↔Rust lock interop, read-only refusal, and facade/wheel smokes are now
 covered. M3 should not be called cutover-complete until the remaining gate
 items in `docs/plan-bug-fixes.md` §11 close.
@@ -916,6 +922,16 @@ embedding; a Python 0.15 process can reopen the Rust-written DB.
 - `server::client`: HTTP/UDS client, jobs, discovery; Python `OKFClient` shim.
 - Tests: CLI golden JSON, exit codes, MCP schema/annotation snapshots, serve
   lifecycle, concurrent clients, stale discovery, job cancel, UDS, Python client.
+
+**M4 progress (first slice):** `src/server/mod.rs` now runs an axum owner for
+one database with `GET /health`, `GET /ops`, `POST /ops/<op>`, the in-memory
+job endpoints (`/jobs*`, currently empty/unknown), and the
+`<db>.serve.json` discovery file removed on graceful shutdown. `okf serve
+--listen host:port` starts it; `parity/tools/check_client.py` verifies the
+public `OKFClient`, `discover()`, `health()`, op calls, and typed errors
+against the Rust owner. The Python facade's `client.py` is no longer a stub.
+Remaining M4 work: HTTP jobs, `/mcp` mount, the 11 rmcp tools, `okf-mcp
+--connect`, TCP/UDS parity, and the rest of the CLI commands.
 
 **Gate:** CLI/MCP/serve contract suite green; Python `OKFRouter` and `OKFClient`
 perform every op with parity; no Python transport/runtime dependency.

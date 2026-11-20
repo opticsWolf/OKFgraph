@@ -648,6 +648,27 @@ impl Store {
         })
     }
 
+    /// Index inventory for `doctor`. Unlike `query`, this uses a connection
+    /// with vector/FTS extensions loaded, so Ladybug reports the real index
+    /// definition (the Python oracle does the same via its schema manager).
+    pub fn index_inventory(&self) -> Result<Vec<Map<String, Json>>> {
+        self.with_search_conn(|conn| {
+            let mut result = conn
+                .query("CALL SHOW_INDEXES() RETURN *")
+                .map_err(map_search_lbug)?;
+            let columns = result.get_column_names();
+            let mut rows = Vec::new();
+            for values in result.by_ref() {
+                let mut row = Map::new();
+                for (name, value) in columns.iter().zip(values) {
+                    row.insert(name.clone(), value_to_json(value));
+                }
+                rows.push(row);
+            }
+            Ok(rows)
+        })
+    }
+
     fn scalar(&self, sql: &str, params: Vec<(&str, Value)>) -> Result<Option<Json>> {
         Ok(self
             .query(sql, params)?

@@ -13,6 +13,10 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 - [ ] same single-writer discipline; `DB_LOCKED`/`WRITE_LOCK_TIMEOUT`
 - [ ] Python 0.15 reopens Rust-written DBs
 - [ ] schema migration is allowed in Stage A; content writes are not
+- [x] `wal_mode` is accepted for 0.15 compatibility but is a documented no-op:
+      `lbug 0.22.1` always journals through its WAL and exposes no separate
+      journal mode to switch. The setting's help text remains unchanged so the
+      generated settings table matches the oracle.
 
 ## B. Values and hashing (Stage A)
 

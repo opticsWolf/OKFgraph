@@ -106,6 +106,16 @@ pub fn command() -> Command {
             .about("List directory children")
             .arg(Arg::new("directory_id").required(false)),
     )
+    .subcommand(
+        Command::new("serve")
+            .about("Own the database and serve the HTTP op plane")
+            .arg(
+                Arg::new("listen")
+                    .long("listen")
+                    .default_value("127.0.0.1:0")
+                    .help("TCP address to bind (host:port; port 0 allocates a free port)"),
+            ),
+    )
 }
 
 pub fn run<I, T>(args: I) -> i32
@@ -159,6 +169,20 @@ fn execute(matches: &ArgMatches) -> Result<(&'static str, Value)> {
         return Ok((
             "init",
             serde_json::json!({"db_path": settings.db_path, "warnings": warnings}),
+        ));
+    }
+    if name == "serve" {
+        let listen = sub
+            .get_one::<String>("listen")
+            .map(String::as_str)
+            .unwrap_or("127.0.0.1:0");
+        let discovery = crate::server::serve(&settings, listen)?;
+        return Ok((
+            "serve",
+            serde_json::json!({
+                "discovery": discovery.to_string_lossy(),
+                "db_path": settings.db_path,
+            }),
         ));
     }
     let router = Router::open(&settings)?;

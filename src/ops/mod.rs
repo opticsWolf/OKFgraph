@@ -822,6 +822,22 @@ impl Router {
 
     fn sync(&self, params: &Map<String, Json>) -> Result<Json> {
         let producer = str_param(params, "producer")?.to_string();
+        if !crate::producers::PRODUCERS.contains(&producer.as_str()) {
+            return Err(
+                OkfError::new("BAD_VALUE", format!("unknown producer '{producer}'"))
+                    .op("sync")
+                    .field("producer", Json::String(producer.clone()))
+                    .field(
+                        "available",
+                        Json::Array(
+                            crate::producers::PRODUCERS
+                                .iter()
+                                .map(|name| Json::String((*name).into()))
+                                .collect(),
+                        ),
+                    ),
+            );
+        }
         let source = opt_str(params, "source")?;
         let output_dir = opt_str(params, "output_dir")?
             .or_else(|| self.settings.bundle_root.clone())
@@ -1014,6 +1030,14 @@ impl Router {
 
     fn import_file(&self, params: &Map<String, Json>) -> Result<Json> {
         let path = str_param(params, "file_path")?.to_string();
+        if !Path::new(&path).is_file() {
+            let shown = crate::util::python_path_str(&path);
+            return Err(
+                OkfError::new("FILE_NOT_FOUND", format!("file not found: {shown}"))
+                    .op("import_file")
+                    .field("file_path", Json::String(shown)),
+            );
+        }
         let settings = self.import_settings(params)?;
         let report = crate::ingest::import_files(
             &self.store,
@@ -1062,57 +1086,83 @@ impl Router {
         &self.store
     }
 
-    pub fn call(&self, op: &str, params: &Map<String, Json>) -> Result<Json> {
-        let _write_guard = if WRITE_OPS.contains(&op) {
-            Some(
-                self.write_lock
-                    .lock()
-                    .map_err(|_| OkfError::internal("write lock poisoned", "mutex"))?,
-            )
-        } else {
-            None
-        };
-        if WRITE_OPS.contains(&op) {
-            let lock_path = std::path::absolute(format!("{}.lock", self.settings.db_path))
-                .unwrap_or_else(|_| PathBuf::from(format!("{}.lock", self.settings.db_path)));
-            let lock_text = lock_path.to_string_lossy().into_owned();
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(&lock_path)
-                .map_err(|err| {
-                    OkfError::internal(
-                        format!("cannot open write lock {lock_text}: {err}"),
-                        "std::io::Error",
-                    )
-                })?;
-            let mut lock = fd_lock::RwLock::new(file);
-            let deadline = std::time::Instant::now() + Self::write_lock_timeout();
-            let _guard = loop {
-                match lock.try_write() {
-                    Ok(guard) => break guard,
-                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                        if std::time::Instant::now() >= deadline {
-                            return Err(OkfError::new(
-                                "WRITE_LOCK_TIMEOUT",
-                                "write lock acquisition timed out (another process is writing)",
-                            )
-                            .op(op)
-                            .remedy("close concurrent writers or raise the lock timeout"));
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+    fn lock_path(&self) -> PathBuf {
+        std::path::absolute(format!("{}.lock", self.settings.db_path))
+            .unwrap_or_else(|_| PathBuf::from(format!("{}.lock", self.settings.db_path)))
+    }
+
+    /// Run a mutating operation under both lock layers. Python holds the same
+    /// `<db>.lock` with `fasteners`; the timeout and file name are contractual.
+    fn with_write_lock<T>(&self, op: &str, run: impl FnOnce() -> Result<T>) -> Result<T> {
+        let _write_guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| OkfError::internal("write lock poisoned", "mutex"))?;
+        let lock_path = self.lock_path();
+        let lock_text = lock_path.to_string_lossy().into_owned();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|err| {
+                OkfError::internal(
+                    format!("cannot open write lock {lock_text}: {err}"),
+                    "std::io::Error",
+                )
+            })?;
+        let mut lock = fd_lock::RwLock::new(file);
+        let deadline = std::time::Instant::now() + Self::write_lock_timeout();
+        let _guard = loop {
+            match lock.try_write() {
+                Ok(guard) => break guard,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(OkfError::new(
+                            "WRITE_LOCK_TIMEOUT",
+                            "write lock acquisition timed out (another process is writing)",
+                        )
+                        .op(op)
+                        .remedy("close concurrent writers or raise the lock timeout"));
                     }
-                    Err(err) => {
-                        return Err(OkfError::internal(
-                            format!("cannot acquire write lock {lock_text}: {err}"),
-                            "std::io::Error",
-                        ))
-                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-            };
-            return self.call_inner(op, params);
+                Err(err) => {
+                    return Err(OkfError::internal(
+                        format!("cannot acquire write lock {lock_text}: {err}"),
+                        "std::io::Error",
+                    ))
+                }
+            }
+        };
+        run()
+    }
+
+    /// Unlink an idle `<db>.lock` when no other process holds it, matching
+    /// Python's `OKFRouter._remove_idle_lock_file`. Best effort: a failed
+    /// probe or unlink leaves the sidecar in place (the `doctor` stale-lock
+    /// probe will then report it as informational).
+    pub fn cleanup_write_lock_file(&self) {
+        let path = self.lock_path();
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+        else {
+            return;
+        };
+        let mut lock = fd_lock::RwLock::new(file);
+        let Ok(guard) = lock.try_write() else {
+            return;
+        };
+        drop(guard);
+        let _ = std::fs::remove_file(path);
+    }
+
+    pub fn call(&self, op: &str, params: &Map<String, Json>) -> Result<Json> {
+        if WRITE_OPS.contains(&op) {
+            return self.with_write_lock(op, || self.call_inner(op, params));
         }
         self.call_inner(op, params)
     }
@@ -1318,7 +1368,16 @@ impl Router {
         let stale_days = opt_i64(params, "stale_days")?.unwrap_or(365);
         let strict = opt_bool(params, "strict")?.unwrap_or(false);
         let fix = opt_bool(params, "fix")?.unwrap_or(false);
-        let fixed = if fix { Some(self.doctor_fix()?) } else { None };
+        let fixed = if fix {
+            let result = self.with_write_lock("doctor", || self.doctor_fix())?;
+            // Python's doctor fix does not take the router write lock; to
+            // preserve its informational stale-lock output while still being
+            // safe, release the sidecar immediately after the repair.
+            self.cleanup_write_lock_file();
+            Some(result)
+        } else {
+            None
+        };
 
         let concepts = self.store.query(
             "MATCH (c:Concept) RETURN c.id AS id, c.title AS title, \
@@ -1349,6 +1408,93 @@ impl Router {
             row.insert("message".into(), Json::String(message));
             findings.push(row);
         };
+
+        // Search-index inventory and missing-index findings. The query uses a
+        // connection with vector/FTS loaded, like the Python schema manager.
+        let mut index_info: Vec<Json> = Vec::new();
+        match self.store.index_inventory() {
+            Ok(rows) => {
+                let dim = self
+                    .store
+                    .schema_embedding_dim()?
+                    .unwrap_or(self.store.settings().embedding_dim);
+                let mut present: BTreeMap<(String, String), Map<String, Json>> = BTreeMap::new();
+                for row in rows {
+                    let table = row
+                        .get("table_name")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let name = row
+                        .get("index_name")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    if name != "_PK" && !table.is_empty() && !name.is_empty() {
+                        present.insert((table, name), row);
+                    }
+                }
+                for ((table, name), row) in &present {
+                    let kind = row.get("index_type").and_then(Json::as_str).unwrap_or("?");
+                    let properties = row
+                        .get("property_names")
+                        .and_then(Json::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Json::as_str)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    let mut detail = properties;
+                    if kind == "HNSW" {
+                        let definition = row
+                            .get("index_definition")
+                            .and_then(Json::as_str)
+                            .unwrap_or_default();
+                        detail.push_str(&format!("; {}, dim {}", hnsw_metric(definition), dim));
+                    }
+                    index_info.push(serde_json::json!({
+                        "rule": "search_index",
+                        "message": format!("index {table}.{name}: {kind} ({detail})"),
+                    }));
+                }
+                for (table, name) in INDEX_SPECS {
+                    if !present.contains_key(&(table.to_string(), name.to_string())) {
+                        add(
+                            "<database>",
+                            "warning",
+                            "missing_index",
+                            format!(
+                                "search index {table}.{name} is missing — \
+                                search on that table falls back to one source; \
+                                run 'okf reindex'"
+                            ),
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                let source = self
+                    .settings
+                    .extension_dir
+                    .as_deref()
+                    .map(|dir| format!("extension_dir {dir}"))
+                    .unwrap_or_else(|| "the Ladybug extension repository".into());
+                let detail = format!("vector: {}", err.message);
+                add(
+                    "<database>",
+                    "error",
+                    "search_unavailable",
+                    format!(
+                        "vector/fts extensions not loaded from {source} — hybrid \
+                        search is unavailable, only rank='ppr' works ({detail}). \
+                        Run 'okf setup extensions' and set [database] extension_dir."
+                    ),
+                );
+            }
+        }
 
         for link in self.store.list_broken_links()? {
             let source = link.get("source").and_then(Json::as_str).unwrap_or("");
@@ -1574,6 +1720,113 @@ impl Router {
                 "message": format!("'{id}' has {count} incoming link(s)")
             }));
         }
+        info.extend(index_info);
+
+        // Pre-0.7 image rows still on the removed `omni` route.
+        let stale_omni = self
+            .store
+            .query(
+                "MATCH (i:ImageAsset) WHERE i.embed_route = 'omni' \
+                 RETURN i.id AS iid",
+                vec![],
+            )?
+            .len();
+        if stale_omni > 0 {
+            info.push(serde_json::json!({
+                "rule": "stale_omni_images",
+                "message": format!(
+                    "{stale_omni} image asset(s) use the removed omni route — \
+                    re-import to re-embed by caption"
+                ),
+            }));
+        }
+
+        // Image route counts plus the pinned image model/precision.
+        let routes = self.store.query(
+            "MATCH (i:ImageAsset) RETURN i.embed_route AS route, count(*) AS n",
+            vec![],
+        )?;
+        if !routes.is_empty() {
+            let mut counts: Vec<(String, i64)> = routes
+                .into_iter()
+                .map(|row| {
+                    let route = row
+                        .get("route")
+                        .map(|value| match value {
+                            Json::String(text) => text.clone(),
+                            Json::Null => "None".into(),
+                            other => other.to_string(),
+                        })
+                        .unwrap_or_else(|| "None".into());
+                    let n = row.get("n").and_then(Json::as_i64).unwrap_or(0);
+                    (route, n)
+                })
+                .collect();
+            counts.sort_by(|left, right| left.0.cmp(&right.0));
+            let summary = counts
+                .into_iter()
+                .map(|(route, n)| format!("{route}={n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let pins = self.store.pin_info()?;
+            let image = pins.get("image");
+            let model = image
+                .and_then(|obj| obj.get("pinned_model"))
+                .and_then(Json::as_str)
+                .unwrap_or("(unpinned)");
+            let precision = image
+                .and_then(|obj| obj.get("pinned_precision"))
+                .and_then(Json::as_str)
+                .unwrap_or("(unpinned)");
+            info.push(serde_json::json!({
+                "rule": "image_routes",
+                "message": format!(
+                    "image assets: {summary}; image model={model} precision={precision}"
+                ),
+            }));
+        }
+
+        // A leftover `<db>.lock` file is only informational: probe it without
+        // blocking, exactly like the Python `fasteners` check.
+        let lock_path = self.lock_path();
+        if lock_path.is_file() {
+            if let Ok(file) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+            {
+                let mut probe = fd_lock::RwLock::new(file);
+                let name = lock_path
+                    .file_name()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match probe.try_write() {
+                    Ok(guard) => {
+                        drop(guard);
+                        info.push(serde_json::json!({
+                            "rule": "stale_lock",
+                            "message": format!(
+                                "lock file '{name}' exists but no live holder \
+                                (leftover from a crash/kill?) — harmless, but safe to \
+                                remove after checking no okf/mcp process is running"
+                            ),
+                        }))
+                    }
+                    Err(_) => info.push(serde_json::json!({
+                        "rule": "db_lock_held",
+                        "message": format!(
+                            "lock file '{name}' is held by a live process \
+                            (another okf/mcp writer?) — run one writer per database"
+                        ),
+                    })),
+                };
+            }
+        }
+
+        // The Python admin layer appends one line per configured lane after
+        // the schema/env probes. Report the same lane identity without opening
+        // any engine.
+        info.extend(doctor_lane_info(&self.lanes()?));
 
         let detached = if self.store.meta_int("detached")?.unwrap_or(0) == 1 {
             let roots = self
@@ -2064,7 +2317,8 @@ impl Router {
         if depth < 1 {
             return Err(
                 OkfError::new("BAD_VALUE", format!("depth must be >= 1, got {depth}"))
-                    .op("traverse"),
+                    .op("traverse")
+                    .field("depth", Json::from(depth)),
             );
         }
         if link_kinds.is_some() && relationship != "LINKS_TO" {
@@ -2151,7 +2405,8 @@ impl Router {
             _ => {
                 return Err(
                     OkfError::new("BAD_VALUE", "texts must be a non-empty list of strings")
-                        .op("embed"),
+                        .op("embed")
+                        .field("n", Json::from(0)),
                 )
             }
         };
@@ -4039,6 +4294,66 @@ fn opt_i64(params: &Map<String, Json>, name: &str) -> Result<Option<i64>> {
     }
 }
 
+const INDEX_SPECS: &[(&str, &str)] = &[
+    ("Concept", "concept_embedding"),
+    ("Concept", "concept_fts"),
+    ("ImageAsset", "image_omni_idx"),
+    ("Chunk", "chunk_embedding"),
+    ("Chunk", "chunk_fts"),
+];
+
+fn hnsw_metric(definition: &str) -> &str {
+    let marker = "metric := '";
+    definition
+        .find(marker)
+        .and_then(|start| {
+            let rest = &definition[start + marker.len()..];
+            rest.find('\'').map(|end| &rest[..end])
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or("?")
+}
+
+fn json_text(value: Option<&Json>) -> Option<String> {
+    match value {
+        Some(Json::String(text)) if !text.is_empty() => Some(text.clone()),
+        Some(Json::Bool(true)) => Some("true".into()),
+        Some(Json::Number(number)) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn doctor_lane_info(lanes: &Json) -> Vec<Json> {
+    let mut out = Vec::new();
+    for name in ["embed", "rerank", "image"] {
+        let Some(lane) = lanes.get(name) else {
+            continue;
+        };
+        let endpoint = json_text(lane.get("endpoint"));
+        let source = endpoint.clone().unwrap_or_else(|| "in-process".into());
+        let who = json_text(lane.get("model_id")).unwrap_or_else(|| {
+            if endpoint.is_some() {
+                "the host's model".into()
+            } else {
+                "unopened".into()
+            }
+        });
+        let identity = json_text(lane.get("identity")).unwrap_or_default();
+        let mut message = format!("{who} via {source} (identity={identity}");
+        for field in ["family", "precision", "space"] {
+            if let Some(value) = json_text(lane.get(field)) {
+                message.push_str(&format!(", {field}={value}"));
+            }
+        }
+        message.push(')');
+        out.push(serde_json::json!({
+            "rule": format!("{name}_lane"),
+            "message": message,
+        }));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4048,6 +4363,35 @@ mod tests {
         assert_eq!(OP_NAMES.len(), 30);
         assert!(is_op("get_by_id"));
         assert!(!is_op("init"));
+    }
+
+    #[test]
+    fn hnsw_metric_reads_index_definition() {
+        assert_eq!(
+            hnsw_metric("CALL CREATE_VECTOR_INDEX(... metric := 'cosine', efc := 200)"),
+            "cosine"
+        );
+        assert_eq!(hnsw_metric(""), "?");
+    }
+
+    #[test]
+    fn doctor_lane_info_matches_admin_shape() {
+        let lanes = serde_json::json!({
+            "embed": {"model_id": "text", "identity": "in-process"},
+            "rerank": {"endpoint": "http://host", "identity": "declared"},
+            "image": {"model_id": "vision", "identity": "in-process"},
+        });
+        let info = doctor_lane_info(&lanes);
+        assert_eq!(info.len(), 3);
+        assert_eq!(
+            info[0]["message"],
+            "text via in-process (identity=in-process)"
+        );
+        assert_eq!(
+            info[1]["message"],
+            "the host's model via http://host (identity=declared)"
+        );
+        assert_eq!(info[2]["rule"], "image_lane");
     }
 
     #[test]

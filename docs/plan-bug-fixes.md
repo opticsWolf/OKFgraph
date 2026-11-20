@@ -14,8 +14,8 @@ path safety, most Phase 3 semantic parity, multi-root/prune, ingest
 materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
 and the write lock are implemented. The broad differential matrix is green
-for 54 differential scenarios after normalizing wall-clock graph times/internal
-IDs and the documented intentional differences; the 55th,
+for 55 scenarios after normalizing wall-clock graph times/internal
+IDs and the documented intentional differences; the 56th,
 `ingest-pdf-no-plugin`, records the intentional missing-plugin error
 divergence instead of a green comparison. Remaining items are listed under
 “Verification status” below and the authoritative register in section 11.
@@ -57,8 +57,10 @@ Closed with code + tests/scenarios (details in the individual findings):
 - BUG-016 missing-param/`rebuild` ingest envelopes (`ingest-params`);
   BUG-007 resource sanitization (`import-resource-sanitize`); BUG-014
   model/dim/precision/space pin unit tests plus empty-graph re-pin.
-- BUG-040 is **partial**: whole-concept transactions/atomicity landed; the
-  required import benchmark and timing smoke test are open.
+- BUG-040 is closed: whole-concept transactions/atomicity plus
+  `examples/import_bench.rs` and `parity/tools/check_import_bench.py`. On the
+  Windows x64/CUDA dev box the filters corpus imports 8 concepts in ~10.3 s;
+  an unchanged re-import takes ~1.1 s and queues zero files.
 - BUG-043 documentation alignment; BUG-044 is **partial**:
   `parity/tools/check_coverage.py` proves every public op appears in a
   scenario, but the required per-op success/error matrix is open.
@@ -69,19 +71,22 @@ Deliberately partial / remaining before stable:
 
 - BUG-030: `extension_dir` and the warm PDF converter/idle close are used.
   `wal_mode` is accepted but lbug always journals through its WAL (upstream
-  has no separate mode), so the setting is documented as compatibility-only.
+  has no separate mode); the compatibility-only behavior is now explicitly
+  documented in `docs/rust-compat.md` §A.
 - BUG-034 is covered end-to-end for PDF and DOCX through the same bobine
   converter path; broader Office formats remain untested but share it.
 - BUG-045 is closed: `doctor` now accepts `stale_days`/`fix`/`strict`/
   `cache_dir`, returns `DOCTOR_FINDINGS`, and the safe fix repairs links and
   orphan delta rows; `doctor-params` covers it.
-- BUG-046 is open: most of `doctor`’s environment `info` probes are not
-  ported.
+- BUG-046 is closed: portable `doctor` info probes (index inventory,
+  missing-index findings, stale/omni image routes, stale write lock, lane
+  identity) are ported and compared with only host-specific rules ignored.
 - `doctor` now ports the scored findings (broken/ambiguous links, orphan
   hashes, duplicate titles, orphan/missing-description/stale concepts),
-  `summary`/`score`, `detached`, and per-root status; its environment-specific
-  `info` sections (index inventory, ORT/cache/PDF/lane probes) are not ported
-  and remain ignored in the differential check.
+  `summary`/`score`, `detached`, per-root status, and the portable `info`
+  probes (index inventory, image routes, stale lock, lane identity). Only
+  host-specific `ort_*`, `converter_cache`, `cache_hygiene`, `pdf_converter`,
+  and `db_created` entries are ignored by `compare.py --ignore-info-rule`.
 - Known intentional parity divergence: Python 0.15 returns a raw `INTERNAL`
   “bobine required” error when the PDF add-on is absent; Rust returns
   `CONVERSION_FAILED` with the documented install hint.
@@ -187,7 +192,7 @@ then API/storage hardening.
 | 3 | Core semantic parity | BUG-014, BUG-015, BUG-016, BUG-017, BUG-018, BUG-019, BUG-022, BUG-023, BUG-024, BUG-025 | XL | Phase 1–2 |
 | 4 | Missing documented features | BUG-013, BUG-020, BUG-021, BUG-033, BUG-034, BUG-035, BUG-036, BUG-037 | XL | Phase 3 |
 | 5 | API, storage, packaging | BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-032, BUG-038, BUG-039, BUG-040, BUG-042, BUG-043, BUG-045 | L | Phases 1–4 |
-| 6 | Verification and release gates | BUG-044, BUG-046, BUG-047 | M | All |
+| 6 | Verification and release gates | BUG-044, BUG-046, BUG-047, BUG-048, BUG-049 | M | All |
 
 “Size” is S (< half day), M (1–3 days), L (3–5 days), XL (1–2 weeks) for one
 experienced Rust developer; split each work package into reviewable commits.
@@ -1091,6 +1096,12 @@ a write op; lock timeout.
 
 ### BUG-030 — `extension_dir`/`wal_mode`/`pdf_idle_seconds` are accepted but unused
 
+**Status:** closed by documented disposition (`cee784a`): `extension_dir` and
+`pdf_idle_seconds` are implemented; `wal_mode` remains a compatibility-only
+no-op and is now explicitly recorded in `docs/rust-compat.md` §A. The 0.15
+help text is preserved so the generated settings table still matches; no
+upstream-supported journal switch exists in `lbug 0.22.1`.
+
 **Severity:** P2, S
 
 **Where:** `src/settings/mod.rs:105-106`, `:139`; `src/store/mod.rs:117-128`.
@@ -1300,7 +1311,8 @@ tag) and serialize like Python; keep YAML parsing consistent.
 
 ### BUG-040 — Per-row write connections are slow and prevent batching
 
-**Severity:** P3, M (performance)
+**Severity:** P3, M (performance) — **Status: closed** (fix series after
+`cee784a`).
 
 **Where:** `src/store/mod.rs:117-137`, `src/ingest/mod.rs` (`import_one`,
 `write_chunk`), `src/image_ingest.rs`.
@@ -1316,7 +1328,13 @@ non-transactional.
 for a whole concept/batch; keep the fresh-connection fallback only for
 single-statement callers. Benchmark import on the filters corpus.
 
-**Tests:** import timing smoke test and a transaction rollback test.
+**Resolution:** `Store::with_write_tx` batches a whole concept replacement,
+and `examples/import_bench.rs` / `parity/tools/check_import_bench.py` provide
+the real-model timing smoke. Measured on the Windows x64/CUDA dev box: 8
+concepts imported in ~10.3 s; unchanged re-import ~1.1 s with zero queued
+files. Thresholds default to 60 s / 5 s and are overridable per machine.
+
+**Tests:** `check_import_bench.py` and the unit transaction/rollback tests.
 
 ---
 
@@ -1394,6 +1412,30 @@ appears in at least one success and one error scenario.
 
 ---
 
+### BUG-049 — Public error envelopes drifted for several ops
+
+**Severity:** P2, S — **Status: closed** (fix series after `cee784a`).
+
+**Where:** `src/ops/mod.rs` (`embed`, `traverse`, `import_file`, `sync`),
+`src/ingest/mod.rs` (`import_files`), `src/util/mod.rs` (`python_path_str`).
+
+**Evidence:** the new `op-error-matrix` scenario exposed five envelope diffs:
+missing `fields.n` on empty `embed`, missing `fields.depth` on invalid
+`traverse`, `import_file` emitting the batch `file(s) not found`/`files`
+shape instead of Python's `file not found`/`file_path`, unnormalized `/` in
+`import_files` error paths on Windows, and `sync` validating `output_dir`
+before the producer name (Python checks the producer first and includes
+`fields.available`).
+
+**Resolution:** each envelope now matches the oracle, including Windows path
+normalization via `python_path_str`. The scenario covers all five ops plus
+`export_bundle`, `export_concept`, `recover_deleted`, `list_images`, and
+`import_files`; `check_coverage.py` verifies the success/error matrix.
+
+**Tests:** `op-error-matrix` op/DB parity and full matrix.
+
+---
+
 ### BUG-045 — `doctor` parameters were ignored
 
 **Severity:** P2, M — **Status: closed** (fix series after `391b46a`).
@@ -1422,9 +1464,9 @@ all/no-default, clippy green.
 
 ---
 
-### BUG-046 — `doctor` environment/info probes are not ported
+### BUG-046 — `doctor` environment/info probes were not ported
 
-**Severity:** P3, M
+**Severity:** P3, M — **Status: closed** (fix series after `cee784a`).
 
 **Where:** `src/ops/mod.rs:1315-1518` (`doctor` report construction).
 
@@ -1439,15 +1481,45 @@ and the `db_created` state. The Rust implementation emits only
 Python release and can hide missing indexes, unavailable search, an
 unexpected ORT wheel, a stale lock, or a warm/released PDF converter.
 
-**Fix:** port the probes that are portable (index inventory, image routes,
-lane identity, stale lock, PDF state), and explicitly document any
-environment-specific probe that is intentionally omitted. Do not hide the
-whole array in the parity comparison once the portable subset lands; compare
-that subset and ignore only host-specific cache/ORT paths.
+**Resolution:** `Store::index_inventory()` queries `SHOW_INDEXES()` on a
+connection with vector/FTS loaded, producing the same `search_index` lines and
+`missing_index` findings as the oracle. `doctor` now emits `stale_omni_images`
+and `image_routes` (with pinned model/precision), probes `<db>.lock`
+non-blockingly (`stale_lock`/`db_lock_held`), and appends the same three
+`*_lane` lines as the Python admin layer. `compare.py --ignore-info-rule`
+hides only `ort_runtime`, `ort_gpu_unused`, `converter_cache`,
+`cache_hygiene`, `pdf_converter`, and `db_created`; the rest of `info` is
+compared exactly. PDF converter state needs a status ABI extension and
+ORT/cache/hygiene probes are host-specific, so they remain documented omissions.
 
-**Tests:** fake/real extension inventory; image-route counts; lane identity;
-lock probe; PDF released/warm state; a scenario that asserts the portable
-`info` entries rather than ignoring the array.
+**Tests:** `doctor-empty`, `doctor-params`, and `read-only` compare all
+portable `info` entries (0 differences); unit tests cover HNSW metric parsing
+and lane-message shape.
+
+---
+
+### BUG-048 — `doctor --fix` bypassed the write lock; lock sidecars leaked
+
+**Severity:** P2, S — **Status: closed** (fix series after `cee784a`).
+
+**Where:** `src/ops/mod.rs` (`Router::call`, `Router::doctor`, new
+`with_write_lock`/`cleanup_write_lock_file`), `bindings/python/src/lib.rs`
+(`NativeRouter.close`), `src/bin/parity-run.rs`.
+
+**Evidence:** `doctor` is a read op, so `call()` never took the inter-process
+write lock. With `fix=True` it nevertheless repaired links and deleted delta
+rows, violating the single-writer contract. Separately, Rust left `<db>.lock`
+on disk after release while Python 0.15 unlinks an idle lock file, which made
+the new `doctor` stale-lock probe report a phantom leftover in later ops of
+the same process.
+
+**Resolution:** the lock acquisition loop was extracted into
+`with_write_lock`, used by all write ops and by `doctor(fix=True)`. A best-effort
+`cleanup_write_lock_file()` mirrors Python's idle-lock unlink and is called
+after `doctor --fix`, by `NativeRouter.close`, and at parity-run shutdown.
+
+**Tests:** `doctor-params` op/DB parity (including stable stale-lock info),
+`check_lock_interop.py`, and `check_read_only.py`.
 
 ---
 
@@ -1501,8 +1573,10 @@ Add these before calling the beta usable:
 | `pins-mismatch` | BUG-014, BUG-015 |
 | `facade-api` | BUG-026, BUG-027 |
 | `lock-and-read-only` | BUG-029 |
-| `doctor-params` | BUG-045 |
+| `doctor-params` | BUG-045, BUG-046, BUG-048 |
+| `doctor-empty` | BUG-046 |
 | `op-names` | BUG-038 |
+| `op-error-matrix` | BUG-044 |
 
 For each scenario, include both success and typed-error envelopes, and compare
 the semantic DB dump plus the export tree where applicable.
@@ -1594,22 +1668,22 @@ gate is green.
 | --- | --- | --- | --- |
 | BUG-013 | Fail-closed (Gate-D alternative) | HTTP clients for external embed/rerank/vision are not implemented; `EXTERNAL_UNAVAILABLE` is deliberate. | Implement clients behind `external` with mock-server request/identity/auth/pin tests, or remove the settings from the documented stable surface. |
 | BUG-028 | Partial | Old schemas are refused safely; no v1→v10 migration registry or migration fixtures. | Port migrations (or formally narrow compatibility to v10), add old-schema fixtures and Python-reopen checks. |
-| BUG-030 | Partial | `extension_dir` and warm PDF idle reuse work; `wal_mode` is a compatibility no-op because lbug only journals through its WAL. | Reject/document `wal_mode` explicitly, or add an upstream-supported journal knob. |
-| BUG-040 | Partial | Whole-concept transaction/rollback landed; no import benchmark. | Add a filters-corpus timing smoke/benchmark and record the baseline/threshold. |
-| BUG-044 | Partial | Scenario coverage expanded to 54 files; `check_coverage.py` checks presence only, not success+error per op. | Extend the checker/scenario matrix so every public op has a success and an error case; make the broad loop fail on non-zero diffs. |
+| BUG-030 | Closed | `extension_dir` and warm PDF idle reuse work; `wal_mode` is a documented compatibility no-op (`docs/rust-compat.md` §A). | Revisit only if upstream adds a journal knob. |
+| BUG-040 | Closed | Real-model filters import benchmark and delta no-op smoke landed; baseline ~10.3 s / ~1.1 s on the CUDA dev box. | Re-run before release; update the recorded baseline if hardware changes. |
+| BUG-044 | Closed | `run_matrix.py` fails on diffs and `check_coverage.py` enforces success+typed-error coverage with nine documented no-error waivers. | Keep new ops covered and re-run the matrix before release. |
 | BUG-045 | Closed | Parameters, strict outcome, safe fix, facade kwargs, and `doctor-params` parity landed. | Keep covered by `doctor-params`; revisit only if further Python doctor semantics are ported. |
-| BUG-046 | Open | Most `doctor` `info` probes are absent and hidden by `--ignore-key info`. | Port portable probes and compare the portable subset. |
+| BUG-046 | Closed | Portable info probes are emitted and compared; only host-specific rules are ignored by name. | Extend only if a portable probe is still missing. |
 | BUG-047 | Closed | Unit tests copy the oracle fixture into a temp dir instead of sharing checkpoint state. | Keep the copy-fixture pattern for any new DB tests. |
+| BUG-048 | Closed | `doctor --fix` takes the same write lock as other writes; idle lock sidecars are unlinked like Python. | Keep lock interop/read-only checks in the release gate. |
+| BUG-049 | Closed | Typed-error envelopes for embed/traverse/import/sync match the oracle. | Keep `op-error-matrix` in the gate. |
 | BUG-034 | Covered for PDF/DOCX | Other Office formats are untested. | Add representative XLSX/PPTX fixtures through the same bobine path. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order
 
-1. BUG-046 (doctor usefulness).
-2. BUG-044 error matrix and BUG-040 benchmark (release evidence).
-3. BUG-028 migrations or an explicit v10-only compatibility statement.
-4. BUG-030 `wal_mode` disposition and broader Office fixtures.
-5. BUG-013 external clients only if the stable surface promises them.
+1. BUG-028 migrations or an explicit v10-only compatibility statement.
+2. Broader Office fixtures (XLSX/PPTX).
+3. BUG-013 external clients only if the stable surface promises them.
 
 Each close needs code + regression test + parity/scenario (or an explicit
 documented exclusion) + updated status in this file.

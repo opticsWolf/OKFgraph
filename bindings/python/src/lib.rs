@@ -89,7 +89,9 @@ impl NativeRouter {
     }
 
     fn close(&mut self) {
-        self.router = None;
+        if let Some(router) = self.router.take() {
+            router.cleanup_write_lock_file();
+        }
     }
 }
 

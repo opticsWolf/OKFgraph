@@ -8,7 +8,7 @@ from pathlib import Path
 
 import okfgraph
 from okfgraph import OKFError, OKFRouter, ConceptModel
-from okfgraph.client import OPS
+from okfgraph.client import OPS, OKFClient, discover, serve_file_for
 
 
 def main() -> int:
@@ -17,6 +17,8 @@ def main() -> int:
     args = ap.parse_args()
 
     assert okfgraph.version().startswith("0.16.")
+    assert len(OPS) == 30
+    assert callable(OKFClient) and callable(discover) and callable(serve_file_for)
     parameters = inspect.signature(OKFRouter.__init__).parameters
     assert "db_path" in parameters and "bundle_root" in parameters
     missing = [name for name in OPS if not hasattr(OKFRouter, name)]

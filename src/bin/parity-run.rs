@@ -148,8 +148,10 @@ fn main() -> ExitCode {
                 let params = serde_json::Value::Object(params);
                 if let Err(err) = writer.call("import_bundle", params.as_object().unwrap()) {
                     eprintln!("import failed: {}", err.titles());
+                    writer.cleanup_write_lock_file();
                     return ExitCode::from(1);
                 }
+                writer.cleanup_write_lock_file();
             }
             Err(err) => {
                 eprintln!("cannot open import db: {}", err.titles());
@@ -210,5 +212,6 @@ fn main() -> ExitCode {
         "ops": results
     });
     println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    router.cleanup_write_lock_file();
     ExitCode::SUCCESS
 }

@@ -61,7 +61,7 @@ pub fn import_files(
     let mut missing = Vec::new();
     for path in paths {
         if !Path::new(path).is_file() {
-            missing.push(path.clone());
+            missing.push(crate::util::python_path_str(path));
         }
     }
     if !missing.is_empty() {

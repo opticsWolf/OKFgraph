@@ -14,8 +14,8 @@ path safety, most Phase 3 semantic parity, multi-root/prune, ingest
 materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
 and the write lock are implemented. The M4 serve/MCP/client slice is also in:
-11 rmcp tools, `--connect`, the public `OKFClient`, and typed conversion-error
-envelopes. The broad differential matrix is green for **56 scenarios** after
+11 rmcp tools, `--connect`, the public `OKFClient`, the HTTP job lane, and
+typed conversion-error envelopes. The broad differential matrix is green for **56 scenarios** after
 normalizing wall-clock graph times/internal IDs and the documented intentional
 differences; the 57th, `ingest-pdf-no-plugin`, records the intentional
 missing-plugin error divergence instead of a green comparison. Remaining items are listed under
@@ -103,7 +103,7 @@ Deliberately partial / remaining before stable:
   Python 0.15's `fields`/`remedy` instead of the missing-add-on install hint;
   `ingest-office-formats` covers the XLSX success and PPTX refusal paths.
 - M4 surface checks outside the scenario counter: `check_client.py`,
-  `check_mcp.py`, `check_mcp_connect.py`, `check_lock_interop.py`,
+  `check_mcp.py`, `check_mcp_connect.py`, `check_jobs.py`, `check_lock_interop.py`,
   `check_read_only.py`, `check_facade.py`, and `check_wheel.py`.
 
 P0 and P1 items below are closed and covered by differential tests.
@@ -1442,6 +1442,20 @@ normalization via `python_path_str`. The scenario covers all five ops plus
 
 ---
 
+### BUG-051 — HTTP job endpoints were placeholders
+
+**Severity:** P2, S — **Status: closed** (M4 job lane).
+
+`okf serve` advertised `/jobs`, `/jobs/{id}`, and `/jobs/{id}/cancel`, but
+always returned `[]` or `unknown job`. `OKFClient.reembed_job()` sent
+`mode="job"` and got a synchronous reembed result instead of a job id. The
+owner now keeps in-memory job records, runs each op on the same
+`spawn_blocking` pool, and exposes submit/poll/list/cancel. A late cancel
+wins over an already-computed result; terminal jobs are not restarted.
+`src/server/mod.rs` unit tests cover completion and cancellation, and
+`parity/tools/check_jobs.py` checks the HTTP contract end-to-end. The
+`OKFGRAPH_JOB_TEST_DELAY_MS` hook is test-only.
+
 ### BUG-050 — Loaded-plugin conversion errors used the install hint
 
 **Severity:** P2, S — **Status: closed** (M4 serve/MCP slice).
@@ -1643,7 +1657,7 @@ the semantic DB dump plus the export tree where applicable.
 
 ## 9. Deferred / explicitly out of scope for this plan
 
-- `okf serve` HTTP routes, job lanes, and MCP tools (Stage C).
+- The HTTP `/mcp` mount and UDS transport (remaining Stage C surfaces).
 - Linux x86_64 and macOS arm64 spikes (no hosts in this environment).
 - Linux aarch64, macOS x86_64, Python 3.11.
 - Full model-download CI; tests should use cached artifacts or mocks.
@@ -1699,6 +1713,7 @@ gate is green.
 | BUG-049 | Closed | Typed-error envelopes for embed/traverse/import/sync match the oracle. | Keep `op-error-matrix` in the gate. |
 | BUG-034 | Covered for PDF/DOCX/XLSX/PPTX | XLSX converts in both runners; pinned bobine refuses PPTX in both with the same typed envelope (`ingest-office-formats`). | Re-test PPTX if bobine/office_oxide is upgraded. |
 | BUG-050 | Closed | Loaded-plugin conversion failures now carry `fields` (`path`, `converter`) and the converter remedy; missing-plugin failures keep the install hint. | Keep covered by `ingest-office-formats`. |
+| BUG-051 | Closed | HTTP jobs submit/poll/list/cancel with terminal-state protection; `reembed_job` returns a job id. | Keep covered by `check_jobs.py`; revisit when jobs become durable across restarts. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order

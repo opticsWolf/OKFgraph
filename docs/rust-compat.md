@@ -55,14 +55,18 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 - [x] 11 MCP tool names, schemas, annotations and envelope content shape
       (`check_mcp.py`); `--connect` proxy (`check_mcp_connect.py`).
 - [ ] 29 CLI commands, flags, `--json`, exit codes; help prose may change
-- [ ] `okf serve` routes, jobs, health, MCP mount, discovery file
+- [x] `okf serve` routes `/health`, `/ops`, `/ops/{op}`, `/jobs*`, discovery
+      file, and in-memory jobs with submit/poll/list/cancel (`check_jobs.py`).
+      The HTTP `/mcp` mount and UDS transport remain open.
 
 ## F. Public Python API (Stage C)
 
 - [ ] `from okfgraph import OKFRouter`
 - [ ] `okfgraph.errors`: classes, codes, `envelope()`
 - [ ] `okfgraph.models`: `ConceptModel`, `ChunkModel`, `ImageAssetModel`
-- [ ] `okfgraph.client`: `OKFClient`, `OPS`, `discover`, `serve_file_for`
+- [x] `okfgraph.client`: `OKFClient`, `OPS`, `discover`, `serve_file_for`,
+      including `reembed_job()` through the HTTP job lane (`check_client.py`,
+      `check_jobs.py`).
 - [ ] `okfgraph.settings` constants and table view
 - [x] `okf`, `okf-mcp`, `-m okfgraph.cli`, `-m okfgraph.mcp_server` (all
       delegate to the Rust binaries/functions).

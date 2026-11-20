@@ -42,6 +42,8 @@ def check_main(path: Path) -> None:
             assert any("libssl" in n for n in libraries), libraries
             assert any("libcrypto" in n for n in libraries), libraries
         assert any(n.endswith("entry_points.txt") for n in names), names
+        assert "Description-Content-Type: text/markdown" in meta, meta
+        assert "Project-URL: Homepage," in meta, meta
     print(f"OK: {path.name} is slim and abi3 (auditwheel repair enabled)")
 
 

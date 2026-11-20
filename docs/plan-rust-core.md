@@ -982,7 +982,8 @@ plugin, so `okfgraph[pdf]` resolves to an installable distribution.
 clean venv. `check_wheel.py` rejects removed-package imports and stale facade
 modules. The Windows x64 wheel pair passes locally; the cross-platform CI job
 builds both wheels on Linux/macOS/Windows and runs UDS unit tests on POSIX.
-Python 3.12/3.14 and Linux/macOS wheel runs remain pending host availability.
+Windows 3.12/3.13/3.14 wheel installs are green locally via
+`check_python_matrix.py`; Linux/macOS wheel runs remain pending host availability.
 
 **Gate:** `pip install` from a built wheel on a clean machine; every public Python
 API test passes; `pip show okfgraph` lists only `pydantic` (+ ORT extras); `okf`

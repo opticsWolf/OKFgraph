@@ -6,6 +6,7 @@ build-backend = "maturin"
 name = "okfgraph"
 dynamic = ["version"]
 description = "Rust-backed OKF knowledge graph with a thin Python facade"
+readme = "../../README.md"
 classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -17,6 +18,11 @@ classifiers = [
 requires-python = ">=3.12,<3.15"
 license = "Apache-2.0 OR MIT"
 dependencies = ["pydantic>=2.0"]
+
+[project.urls]
+Homepage = "https://opticswolf.github.io/OKFgraph/"
+Documentation = "https://github.com/opticsWolf/OKFgraph/blob/main/docs/rust-compat.md"
+Repository = "https://github.com/opticsWolf/OKFgraph"
 
 [project.optional-dependencies]
 cpu = ["onnxruntime==1.31.1"]

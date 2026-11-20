@@ -105,7 +105,7 @@ Deliberately partial / remaining before stable:
 - M4 surface checks outside the scenario counter: `check_client.py`,
   `check_mcp.py`, `check_mcp_connect.py`, `check_mcp_http.py`,
   `check_uds.py`, `check_jobs.py`, `check_cli.py`, `check_packaging.py`,
-  `check_pdf_wheel.py`,
+  `check_pdf_wheel.py`, `check_python_matrix.py`,
   `check_lock_interop.py`,
   `check_read_only.py`, `check_facade.py`, and `check_wheel.py`.
 
@@ -1445,6 +1445,16 @@ normalization via `python_path_str`. The scenario covers all five ops plus
 
 ---
 
+### BUG-058 — Python version matrix was unverified
+
+**Severity:** P2, S — **Status: closed** (M5 packaging slice).
+
+Only Python 3.13 had been exercised against the abi3 wheel. The build metadata
+claims 3.12–3.14, so `parity/tools/check_python_matrix.py` now creates a clean
+venv for each supported interpreter, installs both wheels, checks import
+surface/console scripts/facade, and optionally converts a real PDF. All three
+Windows versions pass locally; CI runs the same matrix on Linux and macOS.
+
 ### BUG-055 — no installable PDF add-on wheel
 
 **Severity:** P2, S — **Status: closed** (M5 packaging slice).
@@ -1792,6 +1802,7 @@ gate is green.
 | BUG-055 | Closed | `okfgraph-pdf` builds as a PEP 517 wheel with the native plugin; clean-venv auto-discovery converts a real PDF. | Keep both wheels in the packaging gate. |
 | BUG-056 | Closed | Wheel metadata pins 3.12–3.14, no bytecode in the wheel, public client/settings exports present. | Extend `check_packaging.py` with new metadata rules. |
 | BUG-057 | Closed | `build_wheel.py` always passes auditwheel repair, clears the maturin scratch dir, and the Windows wheel contains OpenSSL DLLs. | Keep static gate green. |
+| BUG-058 | Closed | Windows 3.12/3.13/3.14 clean-venv installs, facade, console scripts and PDF conversion are green. | Keep the matrix in CI for Linux/macOS. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order

@@ -2,9 +2,13 @@
 """Smoke-test the built wheel from a clean environment."""
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import threading
 import time
+from importlib.metadata import metadata
+from pathlib import Path
 
 import okfgraph
 from okfgraph import _native
@@ -48,7 +52,18 @@ def main() -> int:
     print(f"two native sleeps: {elapsed:.3f}s")
     if elapsed >= 0.27:
         raise SystemExit("FAIL: native call did not release the GIL")
-    print("OK: wheel imports and native calls release the GIL")
+    info = metadata("okfgraph")
+    assert info["Requires-Python"] == ">=3.12, <3.15", info["Requires-Python"]
+    scripts = Path(sys.executable).parent
+    okf = scripts / ("okf.exe" if os.name == "nt" else "okf")
+    okf_mcp = scripts / ("okf-mcp.exe" if os.name == "nt" else "okf-mcp")
+    assert okf.is_file() and okf_mcp.is_file(), (okf, okf_mcp)
+    version = subprocess.check_output([str(okf), "--version"], text=True)
+    assert "0.16.0" in version, version
+    help_text = subprocess.check_output([str(okf_mcp), "--help"], text=True)
+    assert "OKFgraph MCP server" in help_text, help_text
+
+    print("OK: wheel imports, console scripts and native calls release the GIL")
     return 0
 
 

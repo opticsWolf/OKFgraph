@@ -1,0 +1,29 @@
+{
+  "name": "import-resource-sanitize",
+  "settings": {
+    "db_path": "parity/out/import-resource-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/resource"
+    }
+  },
+  "ops": [
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "secret"
+      }
+    },
+    {
+      "op": "list_directory",
+      "params": {
+        "directory_id": ""
+      }
+    }
+  ]
+}

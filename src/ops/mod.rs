@@ -4,7 +4,7 @@
 
 #[cfg(feature = "embed")]
 use crate::embed::RerankerPool;
-use crate::embed::{check_pins, EmbedderPool, Pools, Task};
+use crate::embed::{check_engine_pins, EmbedderPool, Pools, Task};
 use crate::error::{OkfError, Result};
 use crate::markdown;
 use crate::pycompat::from_json;
@@ -2063,7 +2063,7 @@ impl Router {
             }
         };
         let embedder = self.embedder.get(&self.settings)?;
-        check_pins(&self.settings, &self.store.pin_info()?)?;
+        check_engine_pins(&self.settings, &self.store.pin_info()?, embedder.as_ref())?;
         let vectors = embedder.encode_many(&texts, task)?;
         let mut vectors: Vec<Vec<f32>> = vectors;
         let mut renormalised = false;
@@ -2202,8 +2202,8 @@ impl Router {
         }
         #[cfg(feature = "embed")]
         {
-            check_pins(&self.settings, &self.store.pin_info()?)?;
             let embedder = self.embedder.get(&self.settings)?;
+            check_engine_pins(&self.settings, &self.store.pin_info()?, embedder.as_ref())?;
             embedder.encode(query, Task::Query)
         }
         #[cfg(not(feature = "embed"))]

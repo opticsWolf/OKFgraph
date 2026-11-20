@@ -630,6 +630,99 @@ pub fn check_pins(settings: &Settings, pins: &Json) -> Result<()> {
     Ok(())
 }
 
+/// The fields of an embroider space string (Python `parse_space`).
+fn space_fields(space: &str) -> Option<[&str; 7]> {
+    let tail = space.strip_prefix("embroider/")?;
+    let (model, rest) = tail.rsplit_once('@')?;
+    let parts: Vec<&str> = rest.split(':').collect();
+    if model.is_empty() || parts.len() != 6 {
+        return None;
+    }
+    if parts[0].is_empty() || parts[0] == "?" {
+        return None;
+    }
+    Some([
+        model, parts[0], parts[1], parts[2], parts[3], parts[4], parts[5],
+    ])
+}
+
+/// Python `_space_differences`: `max_length` is explicitly not a vector-space
+/// difference (stored text was capped at ingest time).
+fn space_differences(pinned: &[&str; 7], landed: &[&str; 7]) -> Vec<&'static str> {
+    const NAMES: [&str; 7] = [
+        "model",
+        "revision",
+        "precision",
+        "dim",
+        "max_length",
+        "tuning",
+        "contract",
+    ];
+    NAMES
+        .iter()
+        .enumerate()
+        .filter(|(index, name)| **name != "max_length" && pinned[*index] != landed[*index])
+        .map(|(_, name)| *name)
+        .collect()
+}
+
+/// Check pins against the **loaded** engine as well as the settings. The
+/// settings-only [`check_pins`] cannot see an engine's landed precision or
+/// vector-space identity; every caller that has an engine should use this.
+pub fn check_engine_pins(settings: &Settings, pins: &Json, engine: &dyn Embedder) -> Result<()> {
+    check_pins(settings, pins)?;
+    let empty = pins.get("empty").and_then(Json::as_bool).unwrap_or(false);
+    if empty {
+        return Ok(());
+    }
+    let pinned_precision = pins
+        .get("pinned")
+        .and_then(|p| p.get("precision"))
+        .and_then(Json::as_str);
+    if let Some(pinned) = pinned_precision {
+        let landed = engine.precision();
+        if pinned != landed {
+            return Err(OkfError::new(
+                "PRECISION_PIN_MISMATCH",
+                format!("graph is pinned to precision '{pinned}', engine loaded '{landed}'"),
+            )
+            .field("pinned", Json::String(pinned.into()))
+            .field("configured", Json::String(landed.into())));
+        }
+    }
+    let pinned_space = pins
+        .get("pinned")
+        .and_then(|p| p.get("space"))
+        .and_then(Json::as_str);
+    if let (Some(pinned), Some(landed)) = (pinned_space, engine.space()) {
+        let pinned_fields = space_fields(pinned);
+        let landed_fields = space_fields(&landed);
+        let mismatch = match (pinned_fields, landed_fields) {
+            (Some(pinned_fields), Some(landed_fields)) => {
+                let differ = space_differences(&pinned_fields, &landed_fields);
+                if differ.is_empty() {
+                    None
+                } else {
+                    Some(differ.join(", "))
+                }
+            }
+            _ => Some("space".into()),
+        };
+        if let Some(detail) = mismatch {
+            return Err(OkfError::new(
+                "SPACE_PIN_MISMATCH",
+                format!(
+                    "graph vectors live in another space than this session's ({detail}). \
+                     Vectors from different spaces must never mix."
+                ),
+            )
+            .field("pinned", Json::String(pinned.into()))
+            .field("configured", Json::String(landed)));
+        }
+    }
+    Ok(())
+}
+
 /// JSON-safe model info for `okf model-info` and `lanes`.
 pub fn model_info(embedder: &dyn Embedder) -> Json {
     let mut out = Map::new();
@@ -644,4 +737,181 @@ pub fn model_info(embedder: &dyn Embedder) -> Json {
         Json::String(embedder.precision().into()),
     );
     Json::Object(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeEngine {
+        precision: &'static str,
+        space: Option<String>,
+    }
+
+    impl fmt::Debug for FakeEngine {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("FakeEngine").finish()
+        }
+    }
+
+    impl Embedder for FakeEngine {
+        fn encode(&self, _text: &str, _task: Task) -> Result<Vec<f32>> {
+            Ok(vec![0.0; 512])
+        }
+        fn encode_many(&self, texts: &[String], _task: Task) -> Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.0; 512]).collect())
+        }
+        fn count_tokens(&self, text: &str) -> Result<usize> {
+            Ok(text.split_whitespace().count())
+        }
+        fn dim(&self) -> usize {
+            512
+        }
+        fn model_id(&self) -> &str {
+            "google/embeddinggemma-2"
+        }
+        fn used_cuda(&self) -> bool {
+            false
+        }
+        fn precision(&self) -> &'static str {
+            self.precision
+        }
+        fn max_len(&self) -> usize {
+            2048
+        }
+        fn space(&self) -> Option<String> {
+            self.space.clone()
+        }
+    }
+
+    fn pins(precision: &str, space: Option<&str>) -> Json {
+        serde_json::json!({
+            "empty": false,
+            "pinned": {
+                "model_id": "google/embeddinggemma-2",
+                "precision": precision,
+                "embedding_dim": 512,
+                "space": space,
+            }
+        })
+    }
+
+    #[test]
+    fn external_embed_lane_fails_closed() {
+        let settings = Settings {
+            backend: "external".into(),
+            endpoint_url: "http://127.0.0.1:9".into(),
+            ..Default::default()
+        };
+        let err = EmbedderPool::new().get(&settings).expect_err("fail closed");
+        assert_eq!(err.code, "EXTERNAL_UNAVAILABLE");
+        assert_eq!(
+            err.fields.get("backend"),
+            Some(&Json::String("external".into()))
+        );
+    }
+
+    #[cfg(feature = "embed")]
+    #[test]
+    fn external_rerank_lane_fails_closed() {
+        let settings = Settings {
+            rerank_backend: "external".into(),
+            rerank_endpoint_url: "http://127.0.0.1:9".into(),
+            ..Default::default()
+        };
+        let err = RerankerPool::new()
+            .score(&settings, "query", &["doc".into()])
+            .expect_err("fail closed");
+        assert_eq!(err.code, "EXTERNAL_UNAVAILABLE");
+    }
+
+    #[cfg(feature = "vision")]
+    #[test]
+    fn external_vision_lane_fails_closed() {
+        let settings = Settings {
+            image_backend: "external".into(),
+            image_endpoint_url: "http://127.0.0.1:9".into(),
+            ..Default::default()
+        };
+        let err = VisionPool::new().get(&settings).expect_err("fail closed");
+        assert_eq!(err.code, "EXTERNAL_UNAVAILABLE");
+    }
+
+    #[test]
+    fn check_pins_rejects_each_settings_field() {
+        let settings = Settings::default();
+        let mut value = pins("fp16", None);
+        value["pinned"]["model_id"] = Json::String("other/model".into());
+        assert_eq!(
+            check_pins(&settings, &value).unwrap_err().code,
+            "MODEL_PIN_MISMATCH"
+        );
+        let mut value = pins("fp16", None);
+        value["pinned"]["embedding_dim"] = Json::from(256);
+        assert_eq!(
+            check_pins(&settings, &value).unwrap_err().code,
+            "DIM_MISMATCH"
+        );
+        let settings = Settings {
+            precision: "fp32".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            check_pins(&settings, &pins("fp16", None)).unwrap_err().code,
+            "PRECISION_PIN_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn empty_graph_ignores_pin_mismatches() {
+        let settings = Settings {
+            model_id: "other/model".into(),
+            embedding_dim: 256,
+            precision: "fp32".into(),
+            ..Default::default()
+        };
+        let mut value = pins("fp16", Some("embroider/old@rev:fp16:512:2048:mean:v1"));
+        value["empty"] = Json::Bool(true);
+        assert!(check_pins(&settings, &value).is_ok());
+    }
+
+    #[test]
+    fn engine_pins_check_landed_precision_and_space() {
+        let settings = Settings::default();
+        let space = "embroider/google/embeddinggemma-2@rev:fp16:512:2048:mean:v1";
+        let engine = FakeEngine {
+            precision: "fp16",
+            space: Some(space.into()),
+        };
+        assert!(check_engine_pins(&settings, &pins("fp16", Some(space)), &engine).is_ok());
+
+        let landed_other_length = "embroider/google/embeddinggemma-2@rev:fp16:512:4096:mean:v1";
+        let engine = FakeEngine {
+            precision: "fp16",
+            space: Some(landed_other_length.into()),
+        };
+        assert!(check_engine_pins(&settings, &pins("fp16", Some(space)), &engine).is_ok());
+
+        let engine = FakeEngine {
+            precision: "fp32",
+            space: Some(space.into()),
+        };
+        assert_eq!(
+            check_engine_pins(&settings, &pins("fp16", Some(space)), &engine)
+                .unwrap_err()
+                .code,
+            "PRECISION_PIN_MISMATCH"
+        );
+        let landed_fp32 = "embroider/google/embeddinggemma-2@rev:fp32:512:2048:mean:v1";
+        let engine = FakeEngine {
+            precision: "fp16",
+            space: Some(landed_fp32.into()),
+        };
+        assert_eq!(
+            check_engine_pins(&settings, &pins("fp16", Some(space)), &engine)
+                .unwrap_err()
+                .code,
+            "SPACE_PIN_MISMATCH"
+        );
+    }
 }

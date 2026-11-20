@@ -100,7 +100,7 @@ fn validate(kind: &str, params: &Map<String, Json>) -> Result<()> {
         if !matches!(rebuild, "auto" | "defer" | "force") {
             return Err(OkfError::new(
                 "BAD_VALUE",
-                format!("rebuild must be 'auto', 'defer' or 'force', got {rebuild:?}"),
+                format!("rebuild must be 'auto', 'defer' or 'force', got '{rebuild}'"),
             )
             .op("ingest")
             .field("rebuild", Json::String(rebuild.into())));
@@ -274,11 +274,13 @@ fn check_extra(value: Option<&Json>) -> Result<BTreeMap<String, Json>> {
     Ok(object.clone().into_iter().collect())
 }
 
-fn require_file(path: Option<&str>, label: &str, field: &str) -> Result<String> {
+fn require_file(path: Option<&str>, kind: &str, label: &str, field: &str) -> Result<String> {
     let Some(path) = path else {
-        return Err(OkfError::new("MISSING_PARAM", format!("requires {field}"))
-            .field("kind", Json::Null)
-            .field(field, Json::Null));
+        return Err(
+            OkfError::new("MISSING_PARAM", format!("kind='{kind}' requires {field}"))
+                .field("kind", Json::String(kind.into()))
+                .field(field, Json::Null),
+        );
     };
     if !Path::new(path).exists() {
         return Err(
@@ -776,6 +778,7 @@ fn ingest_md(
 ) -> Result<Json> {
     let path = require_file(
         params.get("md_path").and_then(Json::as_str),
+        "md",
         "markdown file",
         "md_path",
     )?;
@@ -869,6 +872,7 @@ fn ingest_bib(
 ) -> Result<Json> {
     let path = require_file(
         params.get("bib_path").and_then(Json::as_str),
+        "bib",
         "BibTeX file",
         "bib_path",
     )?;

@@ -1,0 +1,54 @@
+{
+  "name": "ingest-params",
+  "settings": {
+    "db_path": "parity/out/ingest-params-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/empty"
+    }
+  },
+  "ops": [
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "nope",
+        "thoughts": "x"
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "md"
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "md",
+        "md_path": "parity/corpus/missing.md"
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "md",
+        "md_path": "parity/corpus/minimal/alpha.md",
+        "pdf_path": "x"
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "thoughts",
+        "thoughts": "x",
+        "topic": "t",
+        "rebuild": "bogus"
+      }
+    }
+  ]
+}

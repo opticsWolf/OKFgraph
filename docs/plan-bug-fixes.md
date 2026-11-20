@@ -13,8 +13,8 @@ path safety, most Phase 3 semantic parity, multi-root/prune, ingest
 materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
 and the write lock are implemented. The broad differential matrix is green
-for 51 differential scenarios after normalizing wall-clock graph times/internal
-IDs and the documented intentional differences; the 52nd,
+for 53 differential scenarios after normalizing wall-clock graph times/internal
+IDs and the documented intentional differences; the 54th,
 `ingest-pdf-no-plugin`, records the intentional missing-plugin error
 divergence instead of a green comparison. Remaining items are listed under
 “Verification status” below rather than claimed complete.
@@ -33,7 +33,8 @@ Closed with code + tests/scenarios (details in the individual findings):
   identity/resource safety; BUG-008 dimension adoption; BUG-009 delete/trash/
   restore; BUG-010/011 image pruning/counts; BUG-012 path safety.
 - BUG-013 external lanes fail closed with `EXTERNAL_UNAVAILABLE` (the
-  Gate-D alternative to implementing the HTTP clients).
+  Gate-D alternative to implementing the HTTP clients); unit tests cover
+  embed, rerank, and vision lanes.
 - BUG-014/015 pins/lanes; BUG-016/017/018/019 ingest parameters/materialize/
   lint/thoughts; BUG-022/023/024/025 time, YAML, export paths.
 - BUG-020 multi-root; BUG-021 prune/tombstones/absent-root refusal; BUG-033
@@ -50,6 +51,9 @@ Closed with code + tests/scenarios (details in the individual findings):
 - BUG-034 real one-page PDF and DOCX conversion/import parity
   (`ingest-pdf-real`, `ingest-office-real`), warm converter reuse under
   `pdf_idle_seconds`, plugin config/lint/temp cleanup/discovery/cache.
+- BUG-016 missing-param/`rebuild` ingest envelopes (`ingest-params`);
+  BUG-007 resource sanitization (`import-resource-sanitize`); BUG-014
+  model/dim/precision/space pin unit tests plus empty-graph re-pin.
 - BUG-040 whole-concept transaction; BUG-043 documentation alignment; BUG-044
   coverage tooling (`parity/tools/check_coverage.py`).
 - Python facade/wheel smoke checks (`check_facade.py`, `check_wheel.py`) run

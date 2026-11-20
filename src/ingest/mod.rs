@@ -2,7 +2,7 @@
 //! the differential corpus: frontmatter identity, synthesized titles/types,
 //! chunk rows, file hashes, directory hierarchy, and wikilink resolution.
 
-use crate::embed::{check_pins, Embedder, EmbedderPool, Pools, Task};
+use crate::embed::{check_engine_pins, Embedder, EmbedderPool, Pools, Task};
 use crate::error::{OkfError, Result};
 use crate::markdown::{parse_frontmatter, split_into_chunks, Chunk as MdChunk};
 use crate::model::{extra_value, normalize_tags, utc_now_datetime, PyDateTime};
@@ -775,40 +775,7 @@ pub(crate) fn pin_graph(store: &Store, settings: &Settings, engine: &dyn Embedde
     }
     let pins = store_pin_json(store)?;
     let empty = pins.get("empty").and_then(Json::as_bool).unwrap_or(false);
-    check_pins(settings, &pins)?;
-    if !empty {
-        if let Some(pinned) = store.meta_int("embedding_precision")? {
-            let pinned = match pinned {
-                8 => "int8",
-                16 => "fp16",
-                32 => "fp32",
-                _ => "",
-            };
-            if !pinned.is_empty() && pinned != engine.precision() {
-                return Err(OkfError::new(
-                    "PRECISION_PIN_MISMATCH",
-                    format!(
-                        "graph is pinned to precision '{pinned}', engine loaded '{}'",
-                        engine.precision()
-                    ),
-                )
-                .field("pinned", Json::String(pinned.into()))
-                .field("configured", Json::String(engine.precision().into())));
-            }
-        }
-        if let (Some(pinned), Some(configured)) =
-            (store.meta_text("embedding_space")?, engine.space())
-        {
-            if pinned != configured {
-                return Err(OkfError::new(
-                    "SPACE_PIN_MISMATCH",
-                    "graph vector space does not match the loaded embedding space",
-                )
-                .field("pinned", Json::String(pinned))
-                .field("configured", Json::String(configured)));
-            }
-        }
-    }
+    check_engine_pins(settings, &pins, engine)?;
     let code = match engine.precision() {
         "fp16" => 16,
         "fp32" => 32,
@@ -2223,6 +2190,90 @@ mod tests {
         let parsed = parse_file(&path, &Settings::default(), Some(dir.path())).expect("parse");
         assert_eq!(parsed.resource.as_deref(), Some("postgres://***@host/db"));
         assert!(!parsed.extra.contains_key("resource"));
+    }
+
+    struct PinEngine {
+        model: &'static str,
+        precision: &'static str,
+        space: &'static str,
+    }
+
+    impl std::fmt::Debug for PinEngine {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("PinEngine").finish()
+        }
+    }
+
+    impl Embedder for PinEngine {
+        fn encode(&self, _text: &str, _task: Task) -> Result<Vec<f32>> {
+            Ok(vec![0.0; 512])
+        }
+        fn encode_many(&self, texts: &[String], _task: Task) -> Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![0.0; 512]).collect())
+        }
+        fn count_tokens(&self, text: &str) -> Result<usize> {
+            Ok(text.split_whitespace().count())
+        }
+        fn dim(&self) -> usize {
+            512
+        }
+        fn model_id(&self) -> &str {
+            self.model
+        }
+        fn used_cuda(&self) -> bool {
+            false
+        }
+        fn precision(&self) -> &'static str {
+            self.precision
+        }
+        fn max_len(&self) -> usize {
+            2048
+        }
+        fn space(&self) -> Option<String> {
+            Some(self.space.to_string())
+        }
+    }
+
+    #[test]
+    fn empty_graph_repins_model_precision_and_space() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("repin.db");
+        Store::init(&db, 512).expect("init");
+        let mut settings = Settings {
+            db_path: db.to_string_lossy().into_owned(),
+            embedding_dim: 512,
+            model_id: "model-a".into(),
+            ..Default::default()
+        };
+        let store = Store::open_writable(&settings).expect("open");
+        let first = PinEngine {
+            model: "model-a",
+            precision: "fp16",
+            space: "embroider/model-a@rev:fp16:512:2048:mean:v1",
+        };
+        pin_graph(&store, &settings, &first).expect("first pin");
+        assert_eq!(
+            store.meta_text("embedding_model").unwrap().as_deref(),
+            Some("model-a")
+        );
+        assert_eq!(store.meta_int("embedding_precision").unwrap(), Some(16));
+
+        settings.model_id = "model-b".into();
+        let second = PinEngine {
+            model: "model-b",
+            precision: "fp32",
+            space: "embroider/model-b@rev:fp32:512:2048:mean:v1",
+        };
+        pin_graph(&store, &settings, &second).expect("empty graph re-pin");
+        assert_eq!(
+            store.meta_text("embedding_model").unwrap().as_deref(),
+            Some("model-b")
+        );
+        assert_eq!(store.meta_int("embedding_precision").unwrap(), Some(32));
+        assert_eq!(
+            store.meta_text("embedding_space").unwrap().as_deref(),
+            Some("embroider/model-b@rev:fp32:512:2048:mean:v1")
+        );
     }
 
     #[test]

@@ -255,9 +255,9 @@ them to `import_bundle`, and the Python harness forwards them after removing
 constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 (embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
-The post-review matrix covers 52 scenarios: **51 report 0 differences** on ops
+The post-review matrix covers 54 scenarios: **53 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,
-set-ordered tags, and runner-specific paths. The 52nd,
+set-ordered tags, and runner-specific paths. The 54th,
 `ingest-pdf-no-plugin`, intentionally records the Python raw-`INTERNAL` vs Rust
 `CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op
@@ -267,8 +267,9 @@ New coverage includes `import-identity-frontmatter`, `import-multi-root`,
 `images-prune`, `import-dim-256/768`, `ingest-materialize`,
 `ingest-thoughts-*`, `ingest-bib-bundle-root`, `ingest-thoughts-errors`,
 `export-dotted-id`, `yaml-block-and-nested`, `time-microseconds-offset`,
-`percent-escape-nonascii`, `doctor-empty`, `ingest-pdf-no-plugin`, and
-`ingest-pdf-real` and `ingest-office-real` (real PDF/DOCX fixtures through the
+`percent-escape-nonascii`, `doctor-empty`, `ingest-params`,
+`import-resource-sanitize`, `ingest-pdf-no-plugin`, and
+`ingest-pdf-real` / `ingest-office-real` (real PDF/DOCX fixtures through the
 optional bobine add-on).
 `parity/tools/check_coverage.py` asserts every public op appears in a
 scenario.

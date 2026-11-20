@@ -1,6 +1,7 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** M3 Stage B bug-fix pass plus the M4 serve/MCP/client slice —
+**Status:** M3 Stage B bug-fix pass, M4 serve/MCP/client/CLI slice and the
+M5 packaging slice —
 Windows spikes, `pycompat`, M1, M2, the Stage B write/ingest/export/delete/
 reembed/PDF slices, the `okf serve` HTTP op plane, the public `OKFClient`, and
 the 11-tool rmcp server (stdio + `--connect`), the HTTP job lane, and the
@@ -970,6 +971,18 @@ perform every op with parity; no Python transport/runtime dependency.
   wheel smoke tests.
 - Public compatibility suite: the documented Python usage, import time, no
   imports of removed packages, console scripts.
+
+**M5 progress (packaging slice):** the slim abi3 wheel is built with auditwheel
+repair enabled by `bindings/python/build_wheel.py`, metadata pins Python
+3.12–3.14, and `__pycache__` is excluded from the stage. `addons/pdf` now has a
+PEP 517 backend that builds a real `okfgraph-pdf` wheel containing the native
+plugin, so `okfgraph[pdf]` resolves to an installable distribution.
+`parity/tools/check_packaging.py` checks wheel metadata/contents;
+`check_pdf_wheel.py` verifies auto-discovery and a real PDF conversion from a
+clean venv. `check_wheel.py` rejects removed-package imports and stale facade
+modules. The Windows x64 wheel pair passes locally; the cross-platform CI job
+builds both wheels on Linux/macOS/Windows and runs UDS unit tests on POSIX.
+Python 3.12/3.14 and Linux/macOS wheel runs remain pending host availability.
 
 **Gate:** `pip install` from a built wheel on a clean machine; every public Python
 API test passes; `pip show okfgraph` lists only `pydantic` (+ ORT extras); `okf`

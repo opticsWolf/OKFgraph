@@ -1,0 +1,14 @@
+[build-system]
+requires = []
+build-backend = "build_wheel"
+backend-path = ["."]
+
+[project]
+name = "okfgraph-pdf"
+version = "0.16.0a1"
+description = "Native PDF/Office converter plugin for okfgraph"
+requires-python = ">=3.12,<3.15"
+license = "Apache-2.0 OR MIT"
+
+[tool.okfgraph-pdf]
+module = "okfgraph_pdf"

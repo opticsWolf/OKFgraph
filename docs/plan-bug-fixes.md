@@ -104,7 +104,8 @@ Deliberately partial / remaining before stable:
   `ingest-office-formats` covers the XLSX success and PPTX refusal paths.
 - M4 surface checks outside the scenario counter: `check_client.py`,
   `check_mcp.py`, `check_mcp_connect.py`, `check_mcp_http.py`,
-  `check_uds.py`, `check_jobs.py`, `check_cli.py`,
+  `check_uds.py`, `check_jobs.py`, `check_cli.py`, `check_packaging.py`,
+  `check_pdf_wheel.py`,
   `check_lock_interop.py`,
   `check_read_only.py`, `check_facade.py`, and `check_wheel.py`.
 
@@ -1444,6 +1445,39 @@ normalization via `python_path_str`. The scenario covers all five ops plus
 
 ---
 
+### BUG-055 — no installable PDF add-on wheel
+
+**Severity:** P2, S — **Status: closed** (M5 packaging slice).
+
+`okfgraph[pdf]` declared a dependency on `okfgraph-pdf`, but no wheel existed:
+the native plugin was only available as a `target/debug` file through an env
+override. `addons/pdf` now ships a PEP 517 backend (`build_wheel.py`) that
+builds the cdylib and packages it with the `okfgraph_pdf` locator. A clean venv
+with both wheels discovers the plugin without `OKFGRAPH_PDF_PLUGIN` and
+converts `sample.pdf`. `check_packaging.py` and `check_pdf_wheel.py` pin this.
+
+### BUG-056 — packaging metadata and import surface drifted
+
+**Severity:** P2, S — **Status: closed** (M5 packaging slice).
+
+The wheel allowed Python 3.15+, shipped stale `__pycache__` files from the
+staging copy, and did not expose the public `OKFClient` / settings constants at
+the package root. Metadata now pins 3.12–3.14 with platform classifiers, the
+stage ignores bytecode, and the facade exports the documented client/settings
+names. `check_packaging.py` and `check_facade.py` cover the metadata and root
+imports; `check_wheel.py` rejects imports of removed packages.
+
+### BUG-057 — wheel script could silently skip repair
+
+**Severity:** P2, S — **Status: closed** (M5 packaging slice).
+
+Passing `--profile dev` to `bindings/python/build_wheel.py` replaced the default
+argument list and dropped `--auditwheel=repair`. The script now always passes
+repair unless the caller overrides it explicitly, clears maturin's scratch
+directory so a cached patched artifact cannot skip DLL staging, and the
+packaging check requires the Windows DLLs in `okfgraph.libs/`. A no-op repair is
+valid on platforms with no external shared-library dependencies.
+
 ### BUG-053 — HTTP `/mcp` mount was missing
 
 **Severity:** P2, S — **Status: closed** (M4 HTTP mount slice).
@@ -1755,6 +1789,9 @@ gate is green.
 | BUG-052 | Closed | All 29 CLI verbs, global flags, op mapping, and typed error ops are wired; `check_cli.py` is green. | Keep new verbs covered; revisit if the oracle CLI gains commands. |
 | BUG-053 | Closed | All 11 MCP tools are mounted at `okf serve /mcp` over Streamable HTTP; `check_mcp_http.py` is green. | Keep covered with stdio and `--connect` smokes. |
 | BUG-054 | Open | `--listen unix:///path` is implemented with stale-socket handling and a POSIX smoke script. | Run `check_uds.py` on Linux/macOS CI and close there. |
+| BUG-055 | Closed | `okfgraph-pdf` builds as a PEP 517 wheel with the native plugin; clean-venv auto-discovery converts a real PDF. | Keep both wheels in the packaging gate. |
+| BUG-056 | Closed | Wheel metadata pins 3.12–3.14, no bytecode in the wheel, public client/settings exports present. | Extend `check_packaging.py` with new metadata rules. |
+| BUG-057 | Closed | `build_wheel.py` always passes auditwheel repair, clears the maturin scratch dir, and the Windows wheel contains OpenSSL DLLs. | Keep static gate green. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order

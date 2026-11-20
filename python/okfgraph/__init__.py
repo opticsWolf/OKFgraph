@@ -14,6 +14,12 @@ _EXPORTS = {
     "ConceptModel": ("okfgraph.models", "ConceptModel"),
     "ChunkModel": ("okfgraph.models", "ChunkModel"),
     "ImageAssetModel": ("okfgraph.models", "ImageAssetModel"),
+    "OKFClient": ("okfgraph.client", "OKFClient"),
+    "discover": ("okfgraph.client", "discover"),
+    "serve_file_for": ("okfgraph.client", "serve_file_for"),
+    "SETTINGS": ("okfgraph.settings", "SETTINGS"),
+    "DEFAULT_MODEL_ID": ("okfgraph.settings", "DEFAULT_MODEL_ID"),
+    "DEFAULT_DB_PATH": ("okfgraph.settings", "DEFAULT_DB_PATH"),
     "cli_main": ("okfgraph.cli", "main"),
 }
 

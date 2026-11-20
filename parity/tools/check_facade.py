@@ -7,8 +7,11 @@ import inspect
 from pathlib import Path
 
 import okfgraph
-from okfgraph import OKFError, OKFRouter, ConceptModel
-from okfgraph.client import OPS, OKFClient, discover, serve_file_for
+from okfgraph import (
+    DEFAULT_MODEL_ID, SETTINGS, OKFClient, OKFError, OKFRouter, ConceptModel,
+    discover, serve_file_for,
+)
+from okfgraph.client import OPS
 
 
 def main() -> int:
@@ -18,6 +21,8 @@ def main() -> int:
 
     assert okfgraph.version().startswith("0.16.")
     assert len(OPS) == 30
+    assert len(SETTINGS) == 52
+    assert DEFAULT_MODEL_ID == "google/embeddinggemma-2"
     assert callable(OKFClient) and callable(discover) and callable(serve_file_for)
     parameters = inspect.signature(OKFRouter.__init__).parameters
     assert "db_path" in parameters and "bundle_root" in parameters

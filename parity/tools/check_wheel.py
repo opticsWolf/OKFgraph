@@ -2,6 +2,7 @@
 """Smoke-test the built wheel from a clean environment."""
 from __future__ import annotations
 
+import sys
 import threading
 import time
 
@@ -24,6 +25,12 @@ def main() -> int:
     )
     print("op_names:", len(names), names[:3])
     assert callable(_native.run_cli) and callable(_native.run_mcp)
+    forbidden = {"ladybug", "numpy", "mcp", "fasteners", "yaml", "PIL"}
+    assert not (forbidden & set(sys.modules)), forbidden & set(sys.modules)
+    from importlib.util import find_spec
+
+    assert find_spec("okfgraph.components") is None
+    assert find_spec("okfgraph.ops") is None
     from okfgraph import mcp_server
 
     assert callable(mcp_server.main)

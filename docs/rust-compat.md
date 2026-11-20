@@ -64,16 +64,17 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 
 ## F. Public Python API (Stage C)
 
-- [ ] `from okfgraph import OKFRouter`
-- [ ] `okfgraph.errors`: classes, codes, `envelope()`
-- [ ] `okfgraph.models`: `ConceptModel`, `ChunkModel`, `ImageAssetModel`
+- [x] `from okfgraph import OKFRouter` and `OKFClient` (`check_facade.py`)
+- [x] `okfgraph.errors`: classes, codes, `envelope()`
+- [x] `okfgraph.models`: `ConceptModel`, `ChunkModel`, `ImageAssetModel`
 - [x] `okfgraph.client`: `OKFClient`, `OPS`, `discover`, `serve_file_for`,
       including `reembed_job()` through the HTTP job lane (`check_client.py`,
       `check_jobs.py`).
-- [ ] `okfgraph.settings` constants and table view
+- [x] `okfgraph.settings` constants and 52-row table view (`check_facade.py`)
 - [x] `okf`, `okf-mcp`, `-m okfgraph.cli`, `-m okfgraph.mcp_server` (all
       delegate to the Rust binaries/functions).
-- [ ] extras-independent imports; no optional import in user code
+- [x] extras-independent imports; no optional import in user code
+      (`check_wheel.py`, `check_packaging.py`).
 
 ## G. Approved breakages / changes
 

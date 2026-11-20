@@ -6,7 +6,15 @@ build-backend = "maturin"
 name = "okfgraph"
 dynamic = ["version"]
 description = "Rust-backed OKF knowledge graph with a thin Python facade"
-requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+]
+requires-python = ">=3.12,<3.15"
 license = "Apache-2.0 OR MIT"
 dependencies = ["pydantic>=2.0"]
 

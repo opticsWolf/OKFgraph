@@ -8,6 +8,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -16,10 +17,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--python", default="parity/.venv-wheel/Scripts/python.exe")
-    ap.add_argument("--serve-exe", default="target/debug/okf.exe")
+    ap.add_argument("--python", default=sys.executable)
+    ap.add_argument(
+        "--serve-exe",
+        default="target/debug/okf.exe" if os.name == "nt" else "target/debug/okf",
+    )
     ap.add_argument("--fixture", default="parity/fixtures/oracle-v10.db")
     args = ap.parse_args()
+    if args.python and Path(args.python).resolve() != Path(sys.executable).resolve():
+        os.execv(args.python, [args.python, str(Path(__file__).resolve()), *sys.argv[1:]])
     if os.name != "posix" or not hasattr(socket, "AF_UNIX"):
         print("SKIP: UDS transport is POSIX-only")
         return 0

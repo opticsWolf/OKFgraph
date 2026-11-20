@@ -1,12 +1,12 @@
 # OKFgraph Rust Core — Bug Findings and Fix Plan
 
 **Status:** review plan from `6a71fec`, updated after the fix series through
-`ef22a05` and the M4 serve/MCP slice. The remaining open work is tracked in
+`8b1d54e` and the M4/M5 slices. The remaining open work is tracked in
 section 11; findings marked “partial” are not closed.
 
 **Scope:** the Rust core, the PyO3 binding, the Python facade, the optional
 PDF plugin, and the parity harness. Stage C surfaces (`okf serve`, MCP) are
-out of scope except where they are already referenced by a finding.
+in scope where a finding or gate references them.
 
 **Implementation status (rust-core branch, after the fix series):** the P0
 crash/data-loss paths, Phase 1 import integrity, Phase 2 identity/resource/
@@ -1421,6 +1421,44 @@ appears in at least one success and one error scenario.
 
 ---
 
+### BUG-061 — CLI opened a database already owned by `okf serve`
+
+**Severity:** P2, S — **Status: closed** (M4 owner-routing slice).
+
+Python's CLI asks `discover(db_path)` for a live owner and sends every op
+through `OKFClient`; the Rust CLI always called `Router::open`, so a second
+`okf` process next to a server failed with `DB_LOCKED`. `src/server/client.rs`
+now provides the Rust discovery/op client (HTTP and POSIX UDS), `okf` borrows
+a live owner unless `OKFGRAPH_NO_SERVER=1`, and `okf-mcp --connect` reuses the
+same transport. `parity/tools/check_client.py` runs a CLI op while the server
+owns the fixture and checks stale discovery rejection.
+
+### BUG-060 — HTTP job records did not match Python 0.15
+
+**Severity:** P2, S — **Status: closed** (M4 owner-routing slice).
+
+The Rust job lane used `job-N` ids, `succeeded`, `progress: f64` and
+`created_at`; Python 0.15 exposes 12-hex ids, `done`/`cancelled`/`failed`,
+`phase`/`done`/`total`, `kwargs`, `submitted`/`started`/`finished`/`elapsed`,
+retires terminal records after an hour, and refuses a second reembed with
+`REEMBED_IN_PROGRESS`. It also validates `mode` as `sync`/`job`, returns
+`{job,status,op}` from submit, and checks cancellation between reembed batches.
+All of these now match: `Router::reembed_with_control()` carries the
+cooperative hooks, `JobManager` emits the Python view, duplicate jobs are
+refused with 409, and unknown op/job use 404. `check_jobs.py` verifies mode
+validation, dedupe, the Python record shape, and terminal behavior.
+
+### BUG-059 — Concurrent HTTP calls contended for the Ladybug connection
+
+**Severity:** P1, S — **Status: closed** (M4 owner-routing slice).
+
+`okf serve` ran each blocking op on `spawn_blocking` but did not serialise
+them. Four parallel `OKFClient.get_by_id` calls produced
+`IO exception: Could not set lock on file ... (Error: 33)`. The owner now has
+one `op_lock` shared by normal ops and jobs, mirroring Python `LockedRouter`;
+cancel stays lock-free. `check_client.py` includes a four-client concurrency
+assertion.
+
 ### BUG-049 — Public error envelopes drifted for several ops
 
 **Severity:** P2, S — **Status: closed** (fix series after `cee784a`).
@@ -1739,8 +1777,8 @@ the semantic DB dump plus the export tree where applicable.
 
 ## 9. Deferred / explicitly out of scope for this plan
 
-- UDS verification on a POSIX host (BUG-054); `/mcp` is closed by BUG-053.
-- Linux x86_64 and macOS arm64 spikes (no hosts in this environment).
+- UDS client verification on a POSIX host (BUG-054); `/mcp` is closed by BUG-053.
+- Local Linux/macOS hosts (CI now builds and smokes both platforms).
 - Linux aarch64, macOS x86_64, Python 3.11.
 - Full model-download CI; tests should use cached artifacts or mocks.
 - A complete PyYAML 1.1 replacement beyond the documented frontmatter subset;
@@ -1798,11 +1836,14 @@ gate is green.
 | BUG-051 | Closed | HTTP jobs submit/poll/list/cancel with terminal-state protection; `reembed_job` returns a job id. | Keep covered by `check_jobs.py`; revisit when jobs become durable across restarts. |
 | BUG-052 | Closed | All 29 CLI verbs, global flags, op mapping, and typed error ops are wired; `check_cli.py` is green. | Keep new verbs covered; revisit if the oracle CLI gains commands. |
 | BUG-053 | Closed | All 11 MCP tools are mounted at `okf serve /mcp` over Streamable HTTP; `check_mcp_http.py` is green. | Keep covered with stdio and `--connect` smokes. |
-| BUG-054 | Open | `--listen unix:///path` is implemented with stale-socket handling and a POSIX smoke script. | Run `check_uds.py` on Linux/macOS CI and close there. |
+| BUG-054 | Open (gate added) | `--listen unix:///path` is implemented with stale-socket handling; CI now runs `check_uds.py` on Linux/macOS after building the CLI. | Confirm the POSIX CI job is green, then close. |
 | BUG-055 | Closed | `okfgraph-pdf` builds as a PEP 517 wheel with the native plugin; clean-venv auto-discovery converts a real PDF. | Keep both wheels in the packaging gate. |
 | BUG-056 | Closed | Wheel metadata pins 3.12–3.14, no bytecode in the wheel, public client/settings exports present. | Extend `check_packaging.py` with new metadata rules. |
 | BUG-057 | Closed | `build_wheel.py` always passes auditwheel repair, clears the maturin scratch dir, and the Windows wheel contains OpenSSL DLLs. | Keep static gate green. |
 | BUG-058 | Closed | Windows 3.12/3.13/3.14 clean-venv installs, facade, console scripts and PDF conversion are green. | Keep the matrix in CI for Linux/macOS. |
+| BUG-059 | Closed | One `op_lock` serialises HTTP ops and jobs; four concurrent clients pass `check_client.py`. | Keep the concurrency assertion in the client gate. |
+| BUG-060 | Closed | Job ids, statuses, record fields, mode validation, dedupe, 404s and cooperative reembed cancel match Python 0.15 (`check_jobs.py`). | Revisit when jobs become durable or the oracle changes its record shape. |
+| BUG-061 | Closed | Rust CLI and MCP proxy borrow a live `okf serve` owner through `server::client`, with `OKFGRAPH_NO_SERVER=1` opt-out. | Keep CLI-to-owner and stale-discovery checks in `check_client.py`. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order

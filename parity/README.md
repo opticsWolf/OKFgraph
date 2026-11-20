@@ -27,13 +27,15 @@ the Python and Rust cores in one process.
 - `tools/check_mcp_connect.py` — MCP stdio proxy through a running `okf serve`.
 - `tools/check_mcp_http.py` — MCP Streamable HTTP mount on `okf serve /mcp`.
 - `tools/check_uds.py` — `OKFClient` over a Unix socket (POSIX only; SKIPs on Windows).
-- `tools/check_jobs.py` — HTTP job submit/poll/list/cancel smoke (`okf serve`).
+- `tools/check_jobs.py` — Python-shaped job records, mode validation, dedupe,
+  submit/poll/list/cancel smoke (`okf serve`).
 - `tools/check_cli.py` — 29-verb registration and `--json` differential smoke.
 - `tools/check_packaging.py` — static wheel metadata/content gate.
 - `tools/check_pdf_wheel.py` — clean-venv PDF add-on auto-discovery/conversion.
 - `tools/check_python_matrix.py` — clean venvs for Python 3.12, 3.13 and 3.14.
 - `tools/check_facade.py` — public Python `OKFRouter`/`OKFClient` smoke test.
-- `tools/check_client.py` — public `OKFClient` against the Rust `okf serve`.
+- `tools/check_client.py` — public `OKFClient` against the Rust `okf serve`,
+  plus concurrent clients, CLI-to-owner routing and stale discovery.
 - `tools/make_import_oracle.py` / `tools/check_reopen_import.py` — fresh oracle
   imports and Python 0.15 reopen checks.
 - `tools/compare_db.py` — semantic DB-dump comparator (normalizes Ladybug IDs

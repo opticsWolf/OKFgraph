@@ -7,11 +7,13 @@
 mod local;
 
 use crate::error::{Envelope, OkfError, Result};
-use crate::ops::Router;
+use crate::ops::{OpClient, Router};
+use crate::server::client::OpHttpClient;
 use crate::settings::{row, SettingKind, Settings, SETTINGS};
 use clap::{Arg, ArgAction, ArgMatches, Command, Id};
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
+use std::time::Duration;
 
 /// All 29 public CLI verbs (the oracle's `_COMMANDS` keys).
 pub const COMMANDS: &[&str] = &[
@@ -498,6 +500,30 @@ where
     }
 }
 
+/// The CLI either owns the router or borrows a live `okf serve` owner.
+enum CliOpClient {
+    Local(Box<Router>),
+    Remote(OpHttpClient),
+}
+
+impl CliOpClient {
+    fn local(&self) -> Option<&Router> {
+        match self {
+            Self::Local(router) => Some(router.as_ref()),
+            Self::Remote(_) => None,
+        }
+    }
+}
+
+impl OpClient for CliOpClient {
+    fn call(&self, op: &str, params: &Map<String, Value>) -> Result<Value> {
+        match self {
+            Self::Local(router) => router.call(op, params),
+            Self::Remote(client) => client.call(op, params),
+        }
+    }
+}
+
 fn execute(matches: &ArgMatches, json: bool, argv: &[OsString]) -> Result<(&'static str, Value)> {
     let settings = settings_from(matches)?;
     let (name, sub) = matches
@@ -624,7 +650,19 @@ fn execute(matches: &ArgMatches, json: bool, argv: &[OsString]) -> Result<(&'sta
         return Ok(("shell", Value::Null));
     }
 
-    let router = Router::open(&settings)?;
+    // Python 0.15's CLI routes every op through a live `okf serve` owner so a
+    // second process never opens the same Ladybug file. `OKFGRAPH_NO_SERVER=1`
+    // opts out (useful for testing the direct path).
+    let discovered = if std::env::var("OKFGRAPH_NO_SERVER").as_deref() != Ok("1") {
+        crate::server::client::discover(&settings.db_path, Duration::from_secs(2))
+            .and_then(|url| OpHttpClient::with_timeout(&url, Duration::from_secs(600)).ok())
+    } else {
+        None
+    };
+    let router = match discovered {
+        Some(client) => CliOpClient::Remote(client),
+        None => CliOpClient::Local(Box::new(Router::open(&settings)?)),
+    };
     match name {
         "import" => import_cmd(&router, &settings, sub),
         "ingest" => ingest_cmd(&router, &settings, sub),
@@ -785,13 +823,22 @@ fn execute(matches: &ArgMatches, json: bool, argv: &[OsString]) -> Result<(&'sta
             router.call("list_broken_links", &Map::new())?,
         )),
         "repair-links" => Ok(("repair_links", router.call("repair_links", &Map::new())?)),
-        "retitle-thoughts" => Ok((
-            "retitle_thoughts",
-            router.retitle_thoughts(
-                sub.get_one::<String>("topic").map(String::as_str),
-                sub.get_flag("apply"),
-            )?,
-        )),
+        "retitle-thoughts" => {
+            let local = router.local().ok_or_else(|| {
+                OkfError::new(
+                    "CONFIG_INVALID",
+                    "retitle-thoughts needs the local graph; it is not a server op",
+                )
+                .op("retitle_thoughts")
+            })?;
+            Ok((
+                "retitle_thoughts",
+                local.retitle_thoughts(
+                    sub.get_one::<String>("topic").map(String::as_str),
+                    sub.get_flag("apply"),
+                )?,
+            ))
+        }
         "diff" => {
             let mut params = Map::new();
             put_str(&mut params, sub, "old");
@@ -937,7 +984,7 @@ fn diff_result(report: Value) -> Result<(&'static str, Value)> {
 }
 
 fn import_cmd(
-    router: &Router,
+    router: &dyn OpClient,
     settings: &Settings,
     sub: &ArgMatches,
 ) -> Result<(&'static str, Value)> {
@@ -1018,7 +1065,7 @@ fn import_cmd(
 }
 
 fn ingest_cmd(
-    router: &Router,
+    router: &dyn OpClient,
     settings: &Settings,
     sub: &ArgMatches,
 ) -> Result<(&'static str, Value)> {

@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -63,6 +64,18 @@ def main() -> int:
         else:
             raise SystemExit("unknown concept did not raise")
         assert len(OPS) == 30
+
+        # The Rust CLI must borrow the live owner instead of opening the DB.
+        cli = subprocess.run(
+            [str(exe), "--json", "--db-path", str(db), "read", "alpha"],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        assert cli.returncode == 0, cli.stderr
+        assert json.loads(cli.stdout)["data"]["id"] == "alpha", cli.stdout
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            rows = list(pool.map(lambda _: client.get_by_id("alpha"), range(4)))
+        assert [row["id"] for row in rows] == ["alpha"] * 4
         print("OK: OKFClient talks to the Rust serve owner")
     finally:
         proc.terminate()
@@ -70,6 +83,16 @@ def main() -> int:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+        # A crashed owner leaves a discovery file behind; discover() must
+        # reject it rather than handing clients a dead URL.
+        if url:
+            disc.write_text(json.dumps({
+                "url": url, "pid": 999999999, "db_path": str(db),
+            }), encoding="utf-8")
+            try:
+                assert discover(db) is None
+            finally:
+                disc.unlink(missing_ok=True)
     return 0
 
 

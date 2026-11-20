@@ -14,6 +14,8 @@ use crate::store::Store;
 use serde_json::{Map, Value as Json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// The canonical operation vocabulary (30 requests; `init` is local-only).
 pub const OP_NAMES: &[&str] = &[
@@ -115,6 +117,44 @@ pub struct Router {
     #[cfg(feature = "embed")]
     reranker: RerankerPool,
     write_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    db_created: bool,
+    reembed_active: Arc<AtomicBool>,
+}
+
+impl Router {
+    fn db_created_for(settings: &Settings) -> bool {
+        settings.db_path == ":memory:" || !Path::new(&settings.db_path).exists()
+    }
+}
+
+/// Cooperative hooks for a long-running op. The job lane passes these so a
+/// cancel can stop at a batch boundary instead of waiting for the whole op.
+type ProgressFn = Arc<dyn Fn(&str, usize, usize) + Send + Sync>;
+type CancelledFn = Arc<dyn Fn() -> bool + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub struct ReembedControl {
+    pub progress: Option<ProgressFn>,
+    pub cancelled: Option<CancelledFn>,
+}
+
+struct ReembedGuard(Arc<AtomicBool>);
+
+impl Drop for ReembedGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn mark_reembed_cancelled(report: &mut Json, concepts: usize, chunks: usize) {
+    if let Some(object) = report.as_object_mut() {
+        object.insert("cancelled".into(), Json::Bool(true));
+        object.insert("resumable".into(), Json::Bool(true));
+        object.insert(
+            "reembedded".into(),
+            serde_json::json!({"concepts": concepts, "chunks": chunks}),
+        );
+    }
 }
 
 impl Router {
@@ -130,6 +170,8 @@ impl Router {
             #[cfg(feature = "embed")]
             reranker: RerankerPool::new(),
             write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            db_created: Self::db_created_for(settings),
+            reembed_active: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -143,6 +185,8 @@ impl Router {
             #[cfg(feature = "embed")]
             reranker: RerankerPool::new(),
             write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            db_created: Self::db_created_for(settings),
+            reembed_active: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -157,7 +201,15 @@ impl Router {
             #[cfg(feature = "embed")]
             reranker: RerankerPool::new(),
             write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            db_created: Self::db_created_for(settings),
+            reembed_active: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Whether this handle created its database on this boot (Python's
+    /// `router.db_created`, surfaced by `GET /health.created`).
+    pub fn db_created(&self) -> bool {
+        self.db_created
     }
 
     /// Create a new v10 database.
@@ -422,6 +474,31 @@ impl Router {
     }
 
     fn reembed(&self, params: &Map<String, Json>) -> Result<Json> {
+        self.reembed_with_control(params, ReembedControl::default())
+    }
+
+    /// Reembed with the HTTP job lane's cooperative progress/cancel hooks.
+    /// The public op path uses `ReembedControl::default()`.
+    pub fn reembed_with_control(
+        &self,
+        params: &Map<String, Json>,
+        control: ReembedControl,
+    ) -> Result<Json> {
+        if self
+            .reembed_active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(OkfError::new(
+                "REEMBED_IN_PROGRESS",
+                "another reembed is already running on this graph",
+            )
+            .op("reembed")
+            .remedy(
+                "poll GET /jobs/<id> on the owner server, or cancel it with POST /jobs/<id>/cancel",
+            ));
+        }
+        let _guard = ReembedGuard(Arc::clone(&self.reembed_active));
         let dry_run = opt_bool(params, "dry_run")?.unwrap_or(false);
         let engine = self.embedder.get(&self.settings)?;
         let dim = engine.dim();
@@ -463,28 +540,60 @@ impl Router {
         if dry_run {
             return Ok(report);
         }
+        let is_cancelled = || control.cancelled.as_ref().is_some_and(|check| check());
+        if is_cancelled() {
+            mark_reembed_cancelled(&mut report, 0, 0);
+            return Ok(report);
+        }
         let started = std::time::Instant::now();
         self.store.drop_text_vector_indexes()?;
         let batch_size = (settings_batch_size(&self.settings) as usize).max(1);
         let mut rewritten = Map::new();
+        let mut concepts_done = 0usize;
+        let mut chunks_done = 0usize;
         for (table, rows) in [
             ("concept", concepts.as_slice()),
             ("chunk", chunks.as_slice()),
         ] {
             let mut done = 0;
+            let phase = if table == "concept" {
+                "concept"
+            } else {
+                "chunk"
+            };
             for part in rows.chunks(batch_size) {
+                if is_cancelled() {
+                    if let Some(progress) = &control.progress {
+                        progress(phase, done, rows.len());
+                    }
+                    if table == "concept" {
+                        concepts_done = done;
+                    } else {
+                        chunks_done = done;
+                    }
+                    mark_reembed_cancelled(&mut report, concepts_done, chunks_done);
+                    return Ok(report);
+                }
                 let texts: Vec<String> = part.iter().map(|(_, text)| text.clone()).collect();
                 let vectors = engine.encode_many(&texts, Task::Document)?;
                 for ((id, _), vector) in part.iter().zip(vectors) {
                     self.store.set_reembedded_vector(table, id, &vector)?;
                 }
                 done += part.len();
+                if let Some(progress) = &control.progress {
+                    progress(phase, done, rows.len());
+                }
             }
             let label = if table == "concept" {
                 "concepts"
             } else {
                 "chunks"
             };
+            if table == "concept" {
+                concepts_done = done;
+            } else {
+                chunks_done = done;
+            }
             rewritten.insert(label.to_string(), Json::from(done));
         }
         self.store.create_search_indexes()?;
@@ -4513,6 +4622,18 @@ mod tests {
         assert_eq!(OP_NAMES.len(), 30);
         assert!(is_op("get_by_id"));
         assert!(!is_op("init"));
+    }
+
+    #[test]
+    fn cancelled_reembed_report_carries_partial_counts() {
+        let mut report = serde_json::json!({"dry_run": false, "concepts": 3, "chunks": 4});
+        mark_reembed_cancelled(&mut report, 2, 0);
+        assert_eq!(report["cancelled"], Json::Bool(true));
+        assert_eq!(report["resumable"], Json::Bool(true));
+        assert_eq!(
+            report["reembedded"],
+            serde_json::json!({"concepts": 2, "chunks": 0})
+        );
     }
 
     #[test]

@@ -58,9 +58,14 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
       may change (`check_cli.py`, `cli::tests::command_tree_has_all_29_verbs`).
 - [x] `okf serve` routes `/health`, `/ops`, `/ops/{op}`, `/jobs*`, discovery
       file, and in-memory jobs with submit/poll/list/cancel (`check_jobs.py`),
-      plus the 11 MCP tools on `/mcp` (`check_mcp_http.py`).
-- [ ] UDS transport: implemented as `--listen unix:///path` with a POSIX-only
-      smoke (`check_uds.py`); pending a Linux/macOS verification run.
+      plus the 11 MCP tools on `/mcp` (`check_mcp_http.py`). Job records use
+      the Python field names/statuses and cooperative reembed cancellation.
+- [x] Concurrent callers are serialised by one per-owner `op_lock`
+      (`check_client.py`).
+- [x] CLI/mcp proxy borrow a live owner via `server::client` discovery;
+      `OKFGRAPH_NO_SERVER=1` opts out (`check_client.py`).
+- [ ] UDS client smoke: `check_uds.py` is now run by POSIX CI; close after a
+      green Linux/macOS job.
 
 ## F. Public Python API (Stage C)
 

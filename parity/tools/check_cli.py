@@ -107,6 +107,20 @@ def main() -> int:
     if actual != expected:
         raise SystemExit(f"CLI verb mismatch: missing {expected - actual}, extra {actual - expected}")
 
+    # Exit codes outside the JSON case matrix: argparse usage errors are 2,
+    # and a bare invocation prints help and exits 0 on both CLIs.
+    for label, extra, expected_code in [
+        ("usage: read without id", ["--json", "read"], 2),
+        ("no subcommand", [], 0),
+    ]:
+        py_rc = subprocess.run(python + extra, cwd=ROOT, capture_output=True).returncode
+        rs_rc = subprocess.run(rust + extra, cwd=ROOT, capture_output=True).returncode
+        if py_rc != expected_code or rs_rc != expected_code:
+            raise SystemExit(
+                f"{label}: exit python={py_rc} rust={rs_rc} expected={expected_code}"
+            )
+        print(f"[ OK ] {label}")
+
     failures = 0
     for argv, expected_code in CASES:
         py_rc, py_env = run_cli(python, py_db, argv)

@@ -5,8 +5,8 @@
 //! canonical `{ok, op, data, warnings, error}` envelope as pretty JSON, exactly
 //! like Python 0.15's `_tool_result`.
 
-use crate::error::{Envelope, OkfError, Result as OkfResult};
-use crate::ops::{OpClient, OP_NAMES};
+use crate::error::{Envelope, OkfError};
+use crate::ops::OpClient;
 use crate::settings::Settings;
 use axum::body::Body;
 use axum::extract::Request;
@@ -20,89 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
-pub use reqwest::blocking::Client as HttpClient;
-
-/// HTTP transport for `okf-mcp --connect URL`. The stdio process owns no DB.
-pub struct HttpOpClient {
-    base: String,
-    client: reqwest::blocking::Client,
-}
-
-impl HttpOpClient {
-    pub fn new(url: &str) -> OkfResult<Self> {
-        let base = url.trim_end_matches('/').to_string();
-        if !(base.starts_with("http://") || base.starts_with("https://")) {
-            return Err(OkfError::new(
-                "CONFIG_INVALID",
-                format!("--connect must be an http:// URL, got {url:?}"),
-            ));
-        }
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(600))
-            .build()
-            .map_err(|err| OkfError::internal(err.to_string(), "reqwest"))?;
-        Ok(Self { base, client })
-    }
-
-    pub fn health(&self) -> OkfResult<Value> {
-        self.request(reqwest::Method::GET, "/health", None, "health")
-    }
-
-    fn request(
-        &self,
-        method: reqwest::Method,
-        path: &str,
-        body: Option<Value>,
-        _op: &str,
-    ) -> OkfResult<Value> {
-        let mut req = self
-            .client
-            .request(method, format!("{}{}", self.base, path))
-            .header("Content-Type", "application/json");
-        if let Some(body) = body {
-            req = req.json(&body);
-        }
-        let response = req
-            .send()
-            .map_err(|err| OkfError::internal(err.to_string(), "reqwest"))?;
-        let status = response.status();
-        let envelope: Value = response
-            .json()
-            .map_err(|err| OkfError::internal(err.to_string(), "serde_json"))?;
-        if envelope.get("ok") == Some(&Value::Bool(true)) {
-            return Ok(envelope.get("data").cloned().unwrap_or(Value::Null));
-        }
-        if let Some(body) = envelope.get("error") {
-            let mut err = OkfError::from_error_value(body);
-            // Outcome errors carry their report in the envelope's data slot.
-            err.data = envelope.get("data").cloned();
-            err.op = envelope
-                .get("op")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            return Err(err);
-        }
-        Err(OkfError::internal(
-            format!("server answered {status} without an error envelope"),
-            "okf serve",
-        ))
-    }
-}
-
-impl OpClient for HttpOpClient {
-    fn call(&self, op: &str, params: &Map<String, Value>) -> OkfResult<Value> {
-        if !OP_NAMES.contains(&op) && op != "lint" && op != "produce" {
-            return Err(OkfError::new("BAD_VALUE", format!("unknown op {op:?}"))
-                .field("op", serde_json::Value::String(op.into())));
-        }
-        self.request(
-            reqwest::Method::POST,
-            &format!("/ops/{op}"),
-            Some(Value::Object(params.clone())),
-            op,
-        )
-    }
-}
+use crate::server::client::OpHttpClient as HttpOpClient;
 
 #[derive(Clone)]
 pub struct OkfMcp {
@@ -638,8 +556,9 @@ mod tests {
     }
 
     #[test]
-    fn connect_url_is_http_only() {
-        assert!(HttpOpClient::new("unix:///tmp/okf.sock").is_err());
+    fn connect_url_accepts_http_and_unix() {
+        assert!(HttpOpClient::new("unix:///tmp/okf.sock").is_ok() || cfg!(not(unix)));
         assert!(HttpOpClient::new("http://127.0.0.1:8765").is_ok());
+        assert!(HttpOpClient::new("nonsense").is_err());
     }
 }

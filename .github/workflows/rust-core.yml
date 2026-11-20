@@ -118,3 +118,9 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: cargo test -p okfgraph --no-default-features --features mcp --lib unix_listener
+      - name: UDS client smoke (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cargo build -p okfgraph --no-default-features --features cli,server,mcp --bin okf
+          python parity/tools/check_uds.py

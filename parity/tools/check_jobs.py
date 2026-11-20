@@ -18,7 +18,7 @@ def wait_terminal(client, job_id: str, timeout: float = 120.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         row = client.job(job_id)
-        if row["status"] in ("succeeded", "failed", "cancelled"):
+        if row["status"] in ("done", "failed", "cancelled"):
             return row
         time.sleep(0.1)
     raise SystemExit(f"job {job_id} did not finish: {row}")
@@ -62,34 +62,48 @@ def main() -> int:
         assert url, "serve did not write its discovery file"
         client = OKFClient(url)
 
+        bad_mode = client._request("POST", "/ops/reembed", {"mode": "bogus"})
+        assert bad_mode["ok"] is False, bad_mode
+        assert bad_mode["error"]["code"] == "BAD_VALUE", bad_mode
+
         job_id = client.reembed_job(dry_run=True)
-        assert job_id.startswith("job-"), job_id
-        assert any(row["id"] == job_id for row in client.jobs())
+        try:
+            client.reembed_job(dry_run=True)
+        except OKFError as err:
+            assert err.code == "REEMBED_IN_PROGRESS", err.code
+        else:
+            raise SystemExit("a second reembed job was accepted")
+
+        assert len(job_id) == 12 and all(c in "0123456789abcdef" for c in job_id), job_id
+        listed = [row for row in client.jobs() if row["id"] == job_id]
+        assert listed and listed[0]["kwargs"] == {"dry_run": True}, listed
         row = wait_terminal(client, job_id)
-        assert row["status"] == "succeeded", row
+        assert row["status"] == "done", row
         assert row["error"] is None, row
         assert row["result"]["dry_run"] is True, row
-        assert row["progress"] == 1.0, row
+        assert row["finished"] is not None and row["elapsed"] >= 0, row
 
         # A terminal job is not restarted by a late cancel.
-        assert client.cancel_job(job_id)["status"] == "succeeded"
+        assert client.cancel_job(job_id)["status"] == "done"
 
         second = client._request("POST", "/jobs/reembed", {"dry_run": True})
         second_id = second["data"]["job"]
         cancelling = client.cancel_job(second_id)
         assert cancelling["status"] == "cancelling", cancelling
-        cancelled = wait_terminal(client, second_id)
-        assert cancelled["status"] == "cancelled", cancelled
-        assert cancelled["result"] is None, cancelled
+        # A dry_run reembed has no batch boundary, so the op cannot observe
+        # the cancel; the terminal status follows its own report like Python.
+        finished = wait_terminal(client, second_id)
+        assert finished["status"] == "done", finished
+        assert finished["result"]["dry_run"] is True, finished
 
         try:
             client.job("does-not-exist")
         except OKFError as err:
             assert err.code == "BAD_VALUE", err.code
-            assert err.fields["job_id"] == "does-not-exist"
+            assert err.fields["job"] == "does-not-exist"
         else:
             raise SystemExit("unknown job did not raise")
-        print("OK: HTTP jobs submit, complete, list and cancel")
+        print("OK: HTTP jobs submit, validate mode, dedupe, complete and cancel")
     finally:
         proc.terminate()
         try:

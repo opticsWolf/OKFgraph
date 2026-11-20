@@ -4,7 +4,10 @@
 //! public `OKFClient` depends on. Long ops can be submitted with
 //! `mode="job"` (currently `reembed`) or `POST /jobs/{op}`; the owner keeps
 //! job state in memory and runs the blocking router op on the same
-//! `spawn_blocking` pool. The MCP mount and UDS transport remain M4 work.
+//! `spawn_blocking` pool, serialised by one owner lock. The MCP mount and
+//! TCP/UDS transports are live M4 surfaces.
+
+pub mod client;
 
 use crate::error::{Envelope, OkfError, Result};
 use crate::ops::{Router, OP_NAMES};
@@ -32,21 +35,33 @@ struct AppState {
     router: Arc<Router>,
     settings: Settings,
     jobs: JobManager,
+    /// One lock per owner: Ladybug connections are not concurrent. Python's
+    /// `LockedRouter` serialises every op; HTTP jobs take the same lock.
+    op_lock: Arc<Mutex<()>>,
     #[cfg(feature = "mcp")]
     mcp: crate::mcp::McpHttpService,
 }
 
 /// Public job view returned by `/jobs` and `/jobs/{id}`.
+///
+/// The field names and terminal statuses mirror Python 0.15's
+/// `JobRegistry.view()`: clients can poll `phase`/`done`/`total` and read a
+/// cancelled reembed's partial counts from `result`.
 #[derive(Clone, Serialize)]
 struct JobView {
     id: String,
     op: String,
-    status: &'static str,
-    progress: f64,
-    created_at: u64,
-    cancel_requested: bool,
+    status: String,
+    kwargs: Map<String, Value>,
+    phase: Option<String>,
+    done: usize,
+    total: usize,
+    submitted: u64,
+    started: Option<u64>,
+    finished: Option<u64>,
     result: Value,
     error: Option<Value>,
+    elapsed: f64,
 }
 
 struct Job {
@@ -60,22 +75,36 @@ struct JobManager {
     next: Arc<AtomicU64>,
 }
 
+const KEEP_TERMINAL: usize = 64;
+const RETIRE_AFTER_SECS: u64 = 3600;
+
 impl JobManager {
+    fn new_id(&self) -> String {
+        let n = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("{:08x}{:04x}", now_secs() as u32, n as u16)
+    }
+
+    #[cfg(test)]
     fn submit_with<F>(&self, op: &str, run: F) -> String
     where
         F: FnOnce() -> Result<Value> + Send + 'static,
     {
-        let id = format!("job-{}", self.next.fetch_add(1, Ordering::Relaxed) + 1);
+        let id = self.new_id();
         let cancel = Arc::new(AtomicBool::new(false));
         let view = JobView {
             id: id.clone(),
             op: op.to_string(),
-            status: "queued",
-            progress: 0.0,
-            created_at: now_millis(),
-            cancel_requested: false,
+            status: "queued".into(),
+            kwargs: Map::new(),
+            phase: None,
+            done: 0,
+            total: 0,
+            submitted: now_secs(),
+            started: None,
+            finished: None,
             result: Value::Null,
             error: None,
+            elapsed: 0.0,
         };
         self.jobs.lock().expect("job mutex").insert(
             id.clone(),
@@ -99,12 +128,19 @@ impl JobManager {
                 jobs.finish(&job_id, "cancelled", Value::Null, None);
                 return;
             }
+            // Only the op's cooperative result decides cancellation: a
+            // cancel that arrived after the op finished must not rewrite its
+            // successful result, exactly like Python's JobRegistry.
             jobs.set_running(&job_id);
             match run() {
-                Ok(_) if worker_cancel.load(Ordering::Acquire) => {
-                    jobs.finish(&job_id, "cancelled", Value::Null, None);
+                Ok(value) => {
+                    let status = if value.get("cancelled") == Some(&Value::Bool(true)) {
+                        "cancelled"
+                    } else {
+                        "done"
+                    };
+                    jobs.finish(&job_id, status, value, None);
                 }
-                Ok(value) => jobs.finish(&job_id, "succeeded", value, None),
                 Err(err) => jobs.finish(
                     &job_id,
                     "failed",
@@ -116,18 +152,151 @@ impl JobManager {
         id
     }
 
-    fn submit(&self, op: &str, params: Map<String, Value>, router: Arc<Router>) -> String {
-        let op_name = op.to_string();
-        self.submit_with(op, move || router.call(&op_name, &params))
+    fn submit(
+        &self,
+        op: &str,
+        params: Map<String, Value>,
+        router: Arc<Router>,
+        op_lock: Arc<Mutex<()>>,
+    ) -> Result<String> {
+        if op == "reembed" && self.has_running("reembed") {
+            return Err(OkfError::new(
+                "REEMBED_IN_PROGRESS",
+                "another reembed is already running (or queued) on this graph",
+            )
+            .op("reembed")
+            .remedy("watch GET /jobs/<id>, or cancel it with POST /jobs/<id>/cancel"));
+        }
+        let id = self.new_id();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let view = JobView {
+            id: id.clone(),
+            op: op.to_string(),
+            status: "queued".into(),
+            kwargs: params.clone(),
+            phase: None,
+            done: 0,
+            total: 0,
+            submitted: now_secs(),
+            started: None,
+            finished: None,
+            result: Value::Null,
+            error: None,
+            elapsed: 0.0,
+        };
+        self.jobs.lock().expect("job mutex").insert(
+            id.clone(),
+            Job {
+                view,
+                cancel: cancel.clone(),
+            },
+        );
+        let jobs = self.clone();
+        let job_id = id.clone();
+        let run: Box<dyn FnOnce() -> Result<Value> + Send> = if op == "reembed" {
+            let progress_jobs = jobs.clone();
+            let progress_id = job_id.clone();
+            let progress = move |phase: &str, done: usize, total: usize| {
+                progress_jobs.set_progress(&progress_id, phase, done, total);
+            };
+            let cancelled = {
+                let flag = cancel.clone();
+                move || flag.load(Ordering::Acquire)
+            };
+            let params = params.clone();
+            let router = Arc::clone(&router);
+            let reembed_lock = Arc::clone(&op_lock);
+            Box::new(move || {
+                let _guard = reembed_lock.lock().expect("op lock");
+                router.reembed_with_control(
+                    &params,
+                    crate::ops::ReembedControl {
+                        progress: Some(Arc::new(progress)),
+                        cancelled: Some(Arc::new(cancelled)),
+                    },
+                )
+            })
+        } else {
+            let op_name = op.to_string();
+            let call_lock = Arc::clone(&op_lock);
+            Box::new(move || {
+                let _guard = call_lock.lock().expect("op lock");
+                router.call(&op_name, &params)
+            })
+        };
+        tokio::task::spawn_blocking(move || {
+            if let Ok(delay) = std::env::var("OKFGRAPH_JOB_TEST_DELAY_MS") {
+                if let Ok(millis) = delay.parse::<u64>() {
+                    std::thread::sleep(std::time::Duration::from_millis(millis));
+                }
+            }
+            // Do not short-circuit here: a queued reembed must enter the op so
+            // its cooperative hook can return the same cancelled-with-counts
+            // report Python produces, even when the cancel arrived first.
+            // Only the op's own `cancelled` flag decides the terminal status;
+            // a cancel after completion must not rewrite a successful result.
+            jobs.set_running(&job_id);
+            match run() {
+                Ok(value) => {
+                    let status = if value.get("cancelled") == Some(&Value::Bool(true)) {
+                        "cancelled"
+                    } else {
+                        "done"
+                    };
+                    jobs.finish(&job_id, status, value, None);
+                }
+                Err(err) => jobs.finish(
+                    &job_id,
+                    "failed",
+                    Value::Null,
+                    Some(serde_json::to_value(err.envelope_body()).unwrap_or(Value::Null)),
+                ),
+            }
+        });
+        Ok(id)
+    }
+
+    fn has_running(&self, op: &str) -> bool {
+        self.jobs.lock().expect("job mutex").values().any(|job| {
+            job.view.op == op
+                && matches!(
+                    job.view.status.as_str(),
+                    "queued" | "running" | "cancelling"
+                )
+        })
+    }
+
+    fn retire_locked(jobs: &mut BTreeMap<String, Job>) {
+        let now = now_secs();
+        jobs.retain(|_, job| {
+            job.view
+                .finished
+                .is_none_or(|finished| now.saturating_sub(finished) <= RETIRE_AFTER_SECS)
+        });
+    }
+
+    fn view_with_elapsed(view: &JobView) -> JobView {
+        let mut view = view.clone();
+        let end = view.finished.unwrap_or_else(now_secs);
+        let start = view.started.unwrap_or(view.submitted);
+        view.elapsed = (end.saturating_sub(start) as f64 * 10.0).round() / 10.0;
+        view
     }
 
     fn list(&self) -> Vec<JobView> {
-        self.jobs
-            .lock()
-            .expect("job mutex")
+        let mut jobs = self.jobs.lock().expect("job mutex");
+        Self::retire_locked(&mut jobs);
+        let mut rows: Vec<JobView> = jobs
             .values()
-            .map(|job| job.view.clone())
-            .collect()
+            .map(|job| Self::view_with_elapsed(&job.view))
+            .collect();
+        rows.sort_by(|a, b| b.submitted.cmp(&a.submitted).then_with(|| b.id.cmp(&a.id)));
+        for row in &mut rows {
+            row.result = Value::Null;
+            row.error = None;
+        }
+        rows.truncate(KEEP_TERMINAL);
+        rows
     }
 
     fn get(&self, id: &str) -> Option<JobView> {
@@ -135,20 +304,20 @@ impl JobManager {
             .lock()
             .expect("job mutex")
             .get(id)
-            .map(|job| job.view.clone())
+            .map(|job| Self::view_with_elapsed(&job.view))
     }
 
     fn cancel(&self, id: &str) -> Option<JobView> {
         let mut jobs = self.jobs.lock().expect("job mutex");
         let job = jobs.get_mut(id)?;
         job.cancel.store(true, Ordering::Release);
-        job.view.cancel_requested = true;
-        if matches!(job.view.status, "queued" | "running") {
-            job.view.status = "cancelling";
+        if matches!(job.view.status.as_str(), "queued" | "running") {
+            job.view.status = "cancelling".into();
         }
-        Some(job.view.clone())
+        Some(Self::view_with_elapsed(&job.view))
     }
 
+    #[cfg(test)]
     fn is_cancelled(&self, id: &str) -> bool {
         self.jobs
             .lock()
@@ -161,34 +330,35 @@ impl JobManager {
     fn set_running(&self, id: &str) {
         if let Some(job) = self.jobs.lock().expect("job mutex").get_mut(id) {
             if job.view.status == "queued" {
-                job.view.status = "running";
-                job.view.progress = 0.1;
+                job.view.status = "running".into();
+                job.view.started = Some(now_secs());
             }
         }
     }
 
-    fn finish(&self, id: &str, status: &'static str, result: Value, error: Option<Value>) {
+    fn set_progress(&self, id: &str, phase: &str, done: usize, total: usize) {
         if let Some(job) = self.jobs.lock().expect("job mutex").get_mut(id) {
-            // A cancel that landed during the op wins: never resurrect a
-            // job the caller has already been told is cancelling.
-            let (status, result, error) =
-                if job.cancel.load(Ordering::Acquire) && status != "cancelled" {
-                    ("cancelled", Value::Null, None)
-                } else {
-                    (status, result, error)
-                };
-            job.view.status = status;
-            job.view.progress = 1.0;
+            job.view.phase = Some(phase.to_string());
+            job.view.done = done;
+            job.view.total = total;
+        }
+    }
+
+    fn finish(&self, id: &str, status: &str, result: Value, error: Option<Value>) {
+        if let Some(job) = self.jobs.lock().expect("job mutex").get_mut(id) {
+            job.view.status = status.to_string();
+            job.view.finished = Some(now_secs());
             job.view.result = result;
             job.view.error = error;
+            job.view.phase = None;
         }
     }
 }
 
-fn now_millis() -> u64 {
+fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_millis() as u64)
+        .map(|value| value.as_secs())
         .unwrap_or_default()
 }
 
@@ -196,23 +366,64 @@ fn envelope_json(
     op: &str,
     result: std::result::Result<Value, OkfError>,
 ) -> (StatusCode, Json<Value>) {
-    match result {
-        Ok(data) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(Envelope::success(op, data)).expect("envelope")),
+    let status = match &result {
+        Err(err) => match err.code.as_str() {
+            "DB_LOCKED" | "WRITE_LOCK_TIMEOUT" | "REEMBED_IN_PROGRESS" => StatusCode::CONFLICT,
+            "BAD_VALUE" | "MISSING_PARAM" | "FILE_NOT_FOUND" | "CONFIG_INVALID" => {
+                StatusCode::BAD_REQUEST
+            }
+            _ => StatusCode::OK,
+        },
+        Ok(_) => StatusCode::OK,
+    };
+    envelope_json_status(op, result, status)
+}
+
+fn envelope_json_status(
+    op: &str,
+    result: std::result::Result<Value, OkfError>,
+    status: StatusCode,
+) -> (StatusCode, Json<Value>) {
+    let body = match result {
+        Ok(data) => Envelope::success(op, data),
+        Err(err) => Envelope::failure(op, &err),
+    };
+    (status, Json(serde_json::to_value(body).expect("envelope")))
+}
+
+fn unknown_op(op: &str) -> (StatusCode, Json<Value>) {
+    let err = OkfError::new("BAD_VALUE", format!("unknown op '{op}'"))
+        .field("op", json!(op))
+        .field("ops", json!(OP_NAMES));
+    envelope_json_status(op, Err(err), StatusCode::NOT_FOUND)
+}
+
+fn submit_result(
+    state: &Arc<AppState>,
+    op: &str,
+    params: Map<String, Value>,
+) -> (StatusCode, Json<Value>) {
+    match state.jobs.submit(
+        op,
+        params,
+        Arc::clone(&state.router),
+        Arc::clone(&state.op_lock),
+    ) {
+        Ok(id) => envelope_json(
+            op,
+            Ok(json!({
+                "job": id,
+                "status": "queued",
+                "op": op,
+            })),
         ),
         Err(err) => {
-            let status = match err.code.as_str() {
-                "DB_LOCKED" | "WRITE_LOCK_TIMEOUT" | "REEMBED_IN_PROGRESS" => StatusCode::CONFLICT,
-                "BAD_VALUE" | "MISSING_PARAM" | "FILE_NOT_FOUND" | "CONFIG_INVALID" => {
-                    StatusCode::BAD_REQUEST
-                }
-                _ => StatusCode::OK,
+            let status = if err.code == "REEMBED_IN_PROGRESS" {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
             };
-            (
-                status,
-                Json(serde_json::to_value(Envelope::failure(op, &err)).expect("envelope")),
-            )
+            envelope_json_status(op, Err(err), status)
         }
     }
 }
@@ -222,7 +433,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
         .unwrap_or_else(|_| PathBuf::from(&state.settings.db_path));
     let data = json!({
         "db_path": db_path.to_string_lossy(),
-        "created": false,
+        "created": state.router.db_created(),
         "pid": std::process::id(),
         "ops": OP_NAMES,
         "lanes": state.router.lanes().unwrap_or(Value::Null),
@@ -259,7 +470,7 @@ async fn cancel_job(
     Path(id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
     match state.jobs.cancel(&id) {
-        Some(view) => envelope_json("job/cancel", Ok(serde_json::to_value(view).expect("job"))),
+        Some(view) => envelope_json("jobs.cancel", Ok(serde_json::to_value(view).expect("job"))),
         None => unknown_job(&id),
     }
 }
@@ -271,18 +482,14 @@ async fn submit_job_op(
 ) -> (StatusCode, Json<Value>) {
     let op = id;
     if !OP_NAMES.contains(&op.as_str()) {
-        let err = OkfError::new("BAD_VALUE", format!("unknown op '{op}'"))
-            .field("op", json!(op))
-            .field("ops", json!(OP_NAMES));
-        return envelope_json(&op, Err(err));
+        return unknown_op(&op);
     }
     let params = parse_params(&body, &op);
     let params = match params {
         Ok(params) => params,
         Err(status) => return status,
     };
-    let id = state.jobs.submit(&op, params, Arc::clone(&state.router));
-    envelope_json(&op, Ok(json!({ "job": id })))
+    submit_result(&state, &op, params)
 }
 
 async fn submit_job_body(
@@ -308,12 +515,10 @@ async fn submit_job_body(
     let op = match request.get("op").and_then(Value::as_str) {
         Some(op) if OP_NAMES.contains(&op) => op.to_string(),
         Some(op) => {
-            return envelope_json(
-                "job",
-                Err(OkfError::new("BAD_VALUE", format!("unknown op '{op}'"))
-                    .field("op", json!(op))
-                    .field("ops", json!(OP_NAMES))),
-            )
+            let err = OkfError::new("BAD_VALUE", format!("unknown op '{op}'"))
+                .field("op", json!(op))
+                .field("ops", json!(OP_NAMES));
+            return envelope_json_status("job", Err(err), StatusCode::NOT_FOUND);
         }
         None => {
             return envelope_json(
@@ -335,8 +540,7 @@ async fn submit_job_body(
             }
         }
     }
-    let id = state.jobs.submit(&op, params, Arc::clone(&state.router));
-    envelope_json(&op, Ok(json!({ "job": id })))
+    submit_result(&state, &op, params)
 }
 
 fn parse_params(
@@ -358,9 +562,9 @@ fn parse_params(
 }
 
 fn unknown_job(job_id: &str) -> (StatusCode, Json<Value>) {
-    let err = OkfError::new("BAD_VALUE", format!("unknown job '{job_id}'"))
-        .field("job_id", json!(job_id));
-    envelope_json("job", Err(err))
+    let err =
+        OkfError::new("BAD_VALUE", format!("unknown job {job_id:?}")).field("job", json!(job_id));
+    envelope_json_status("job", Err(err), StatusCode::NOT_FOUND)
 }
 
 async fn call_op(
@@ -369,27 +573,54 @@ async fn call_op(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     if !OP_NAMES.contains(&op.as_str()) {
-        let err = OkfError::new("BAD_VALUE", format!("unknown op '{op}'"))
-            .field("op", json!(op))
-            .field("ops", json!(OP_NAMES));
-        return envelope_json(&op, Err(err));
+        return unknown_op(&op);
     }
     let mut params = match parse_params(&body, &op) {
         Ok(params) => params,
         Err(response) => return response,
     };
-    // `OKFClient.reembed_job` uses this documented switch; only reembed is
-    // job-enabled so `mode` keeps its normal meaning for import/ingest.
-    if op == "reembed" && params.get("mode").and_then(Value::as_str) == Some("job") {
-        params.remove("mode");
-        let id = state.jobs.submit(&op, params, Arc::clone(&state.router));
-        return envelope_json(&op, Ok(json!({ "job": id })));
+    // `OKFClient.reembed_job` uses this documented switch. Python pops the
+    // mode before calling the op and refuses values other than `sync`/`job`.
+    if op == "reembed" {
+        if let Some(mode) = params.remove("mode") {
+            let mode = match mode.as_str() {
+                Some(value) => value,
+                None => {
+                    let shown = serde_json::to_string(&mode).unwrap_or_default();
+                    return envelope_json(
+                        &op,
+                        Err(OkfError::new(
+                            "BAD_VALUE",
+                            format!("mode must be 'sync' or 'job', got {shown}"),
+                        )
+                        .op(&op)),
+                    );
+                }
+            };
+            if !matches!(mode, "sync" | "job") {
+                return envelope_json(
+                    &op,
+                    Err(OkfError::new(
+                        "BAD_VALUE",
+                        format!("mode must be 'sync' or 'job', got '{mode}'"),
+                    )
+                    .op(&op)),
+                );
+            }
+            if mode == "job" {
+                return submit_result(&state, &op, params);
+            }
+        }
     }
     let router = Arc::clone(&state.router);
+    let op_lock = Arc::clone(&state.op_lock);
     let op_name = op.clone();
-    let result = tokio::task::spawn_blocking(move || router.call(&op_name, &params))
-        .await
-        .unwrap_or_else(|err| Err(OkfError::internal(err.to_string(), "join")));
+    let result = tokio::task::spawn_blocking(move || {
+        let _guard = op_lock.lock().expect("op lock");
+        router.call(&op_name, &params)
+    })
+    .await
+    .unwrap_or_else(|err| Err(OkfError::internal(err.to_string(), "join")));
     envelope_json(&op, result)
 }
 
@@ -403,6 +634,7 @@ pub fn http_router(router: Arc<Router>, settings: Settings) -> AxumRouter {
         router,
         settings,
         jobs: JobManager::default(),
+        op_lock: Arc::new(Mutex::new(())),
         #[cfg(feature = "mcp")]
         mcp,
     });
@@ -573,7 +805,7 @@ mod tests {
     async fn terminal(jobs: &JobManager, id: &str) -> JobView {
         for _ in 0..200 {
             if let Some(view) = jobs.get(id) {
-                if matches!(view.status, "succeeded" | "failed" | "cancelled") {
+                if matches!(view.status.as_str(), "done" | "failed" | "cancelled") {
                     return view;
                 }
             }
@@ -644,15 +876,16 @@ mod tests {
         let jobs = JobManager::default();
         let id = jobs.submit_with("reembed", || Ok(json!({"dry_run": true})));
         let view = terminal(&jobs, &id).await;
-        assert_eq!(view.status, "succeeded");
+        assert_eq!(view.status, "done");
         assert_eq!(view.result, json!({"dry_run": true}));
-        assert_eq!(view.progress, 1.0);
+        assert!(view.finished.is_some());
         assert_eq!(jobs.list().len(), 1);
+        assert_eq!(jobs.list()[0].result, Value::Null);
         assert!(jobs.cancel(&id).unwrap().error.is_none());
     }
 
     #[tokio::test]
-    async fn cancelling_a_running_job_wins_over_its_result() {
+    async fn late_cancel_does_not_rewrite_a_finished_result() {
         let jobs = JobManager::default();
         let ran = Arc::new(AtomicUsize::new(0));
         let worker = ran.clone();
@@ -661,20 +894,28 @@ mod tests {
             std::thread::sleep(Duration::from_millis(250));
             Ok(json!({"too": "late"}))
         });
+        for _ in 0..50 {
+            if jobs.get(&id).is_some_and(|view| view.status == "running") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let cancelling = jobs.cancel(&id).unwrap();
         assert_eq!(cancelling.status, "cancelling");
-        assert!(cancelling.cancel_requested);
+        assert!(cancelling.kwargs.is_empty());
         let view = terminal(&jobs, &id).await;
-        assert_eq!(view.status, "cancelled");
-        assert_eq!(view.result, Value::Null);
+        // Python's job registry lets the op decide: only a cooperative
+        // `cancelled: true` report becomes a cancelled job.
+        assert_eq!(view.status, "done");
+        assert_eq!(view.result, json!({"too": "late"}));
     }
 
     #[test]
     fn unknown_job_error_uses_the_typed_envelope() {
         let (status, body) = unknown_job("nope");
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(status, StatusCode::NOT_FOUND);
         let value = body.0;
         assert_eq!(value["error"]["code"], "BAD_VALUE");
-        assert_eq!(value["error"]["fields"]["job_id"], "nope");
+        assert_eq!(value["error"]["fields"]["job"], "nope");
     }
 }

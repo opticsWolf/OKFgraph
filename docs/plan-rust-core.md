@@ -9,8 +9,9 @@ full 29-command CLI are implemented.
 Real EmbeddingGemma 2 ONNX inference runs on CUDA; text/rerank/vision and
 write parity scenarios are green on the covered fixtures. The review findings
 in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
-fail-closed/deferred items. Linux/macOS spikes and the remaining Stage C
-surface: UDS transport verification on a POSIX host remains.
+fail-closed/deferred items. CI builds wheels and runs the Python 3.12–3.14
+matrix on Windows, Linux and macOS. The remaining Stage C surface is UDS
+client verification on POSIX (gate added) and M6 hardening.
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -941,16 +942,21 @@ can open a DB directly or proxy through `okf-mcp --connect URL` via a typed
 HTTP `OpClient`. `parity/tools/check_mcp.py` and `check_mcp_connect.py` connect
 with the Python MCP SDK. The Python `client.py` and `mcp_server.py` shims
 delegate to Rust; `bindings/python` exposes `run_cli`/`run_mcp`.
-The job lane stores in-memory `{status, progress, result, error}` records;
-`reembed` submits through `mode="job"`, and `POST /jobs/<op>` /
-`POST /jobs {op, params}` submit any public op. `parity/tools/check_jobs.py`
-verifies submit → poll → result, `GET /jobs`, cancel, and unknown-job errors;
-`OKFGRAPH_JOB_TEST_DELAY_MS` is a smoke-only delay hook. The CLI now registers all 29 oracle verbs with generated global settings
-flags; `parity/tools/check_cli.py` compares command registration and 13
-`--json` cases. The HTTP `/mcp` mount uses rmcp Streamable HTTP on the same
-axum owner and is verified by `parity/tools/check_mcp_http.py`. UDS is
-implemented behind `okf serve --listen unix:///path` with a POSIX-only
-smoke (`check_uds.py`), pending a Linux/macOS run.
+The job lane now emits Python 0.15's record shape (`kwargs`, `phase`,
+`done`/`total`, timestamps, `elapsed`, terminal statuses `done`/`cancelled`/
+`failed`), validates `mode` as `sync`/`job`, refuses a second reembed with
+`REEMBED_IN_PROGRESS`, and checks cancel between `Router::reembed_with_control`
+batches. `POST /jobs/<op>` / `POST /jobs {op, params}` submit public ops;
+`parity/tools/check_jobs.py` verifies submit → poll → result, `GET /jobs`,
+cancel, mode validation and dedupe. One `op_lock` serialises every op and job
+on the owning router, matching Python's `LockedRouter`; cancel stays lock-free.
+`src/server/client.rs` provides Rust discovery/op transport for the CLI and
+`okf-mcp --connect`, so a second process borrows a live owner instead of
+opening the DB. The CLI registers all 29 oracle verbs with generated global
+flags; `check_cli.py` compares registration, 13 `--json` cases and two exit
+code cases. `/mcp` uses rmcp Streamable HTTP on the same owner and is verified
+by `check_mcp_http.py`. UDS is implemented behind `--listen unix:///path`,
+with unit tests plus `check_uds.py`; CI runs the client smoke on POSIX.
 
 **Gate:** CLI/MCP/serve contract suite green; Python `OKFRouter` and `OKFClient`
 perform every op with parity; no Python transport/runtime dependency.

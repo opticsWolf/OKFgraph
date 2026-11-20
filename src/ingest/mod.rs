@@ -775,6 +775,20 @@ pub(crate) fn pin_graph(store: &Store, settings: &Settings, engine: &dyn Embedde
     }
     let pins = store_pin_json(store)?;
     let empty = pins.get("empty").and_then(Json::as_bool).unwrap_or(false);
+    if !empty {
+        if let Some(code) = store.meta_int("embedding_precision")? {
+            if !matches!(code, 8 | 16 | 32) {
+                return Err(OkfError::new(
+                    "PRECISION_PIN_MISMATCH",
+                    format!(
+                        "graph carries an unknown precision code {code}; this build cannot tell which space its vectors live in"
+                    ),
+                )
+                .field("pinned", Json::from(code))
+                .remedy("upgrade okfgraph, or reimport into a fresh database"));
+            }
+        }
+    }
     check_engine_pins(settings, &pins, engine)?;
     let code = match engine.precision() {
         "fp16" => 16,
@@ -2274,6 +2288,31 @@ mod tests {
             store.meta_text("embedding_space").unwrap().as_deref(),
             Some("embroider/model-b@rev:fp32:512:2048:mean:v1")
         );
+    }
+
+    #[test]
+    fn non_empty_graph_rejects_unknown_precision_code() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("unknown-precision.db");
+        Store::init(&db, 512).expect("init");
+        let settings = Settings {
+            db_path: db.to_string_lossy().into_owned(),
+            embedding_dim: 512,
+            model_id: "model-a".into(),
+            ..Default::default()
+        };
+        let store = Store::open_writable(&settings).expect("open");
+        store
+            .write("CREATE (:Concept {id: 'only'})", vec![])
+            .expect("concept");
+        store.set_meta_int("embedding_precision", 99).expect("meta");
+        let engine = PinEngine {
+            model: "model-a",
+            precision: "fp16",
+            space: "embroider/model-a@rev:fp16:512:2048:mean:v1",
+        };
+        let err = pin_graph(&store, &settings, &engine).expect_err("unknown code");
+        assert_eq!(err.code, "PRECISION_PIN_MISMATCH");
     }
 
     #[test]

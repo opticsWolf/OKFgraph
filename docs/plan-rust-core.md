@@ -879,7 +879,12 @@ The Python facade resolves `okfgraph_pdf.plugin_path()` into
 `OKFGRAPH_PDF_PLUGIN`. A missing or incompatible plugin returns the documented
 `CONVERSION_FAILED` install hint.
 
-Remaining M3 gaps: none on the current Windows/CUDA oracle.
+Remaining M3 gaps: the differential fixtures are green, but a follow-up
+review found untested P0/P1 paths (frontmatter identity, bundle-root ingest,
+file-backed delete, non-default dimensions, external lanes, YAML block
+scalars, multi-root, prune/force). Findings and the ordered fix plan live in
+`docs/plan-bug-fixes.md`; M3 should not be called complete until those items
+close.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

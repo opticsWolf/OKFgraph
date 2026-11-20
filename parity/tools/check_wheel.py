@@ -41,16 +41,17 @@ def main() -> int:
     if names != expected:
         raise SystemExit(f"FAIL: op_names drift: {names!r} != {expected!r}")
 
-    # Two 150 ms native sleeps should overlap if allow_threads releases the GIL.
+    # Two 250 ms native sleeps should overlap if allow_threads releases the GIL.
+    # The generous ceiling still fails the serialized ~500 ms case on slower CI.
     start = time.perf_counter()
-    threads = [threading.Thread(target=_native.sleep_ms, args=(150,)) for _ in range(2)]
+    threads = [threading.Thread(target=_native.sleep_ms, args=(250,)) for _ in range(2)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
     elapsed = time.perf_counter() - start
     print(f"two native sleeps: {elapsed:.3f}s")
-    if elapsed >= 0.27:
+    if elapsed >= 0.45:
         raise SystemExit("FAIL: native call did not release the GIL")
     info = metadata("okfgraph")
     assert info["Requires-Python"] == ">=3.12, <3.15", info["Requires-Python"]

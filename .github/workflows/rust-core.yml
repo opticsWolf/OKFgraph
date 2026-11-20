@@ -31,7 +31,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT}" >> "$GITHUB_ENV"
+          echo "VCPKG_ROOT=${RUNVCPKG_VCPKG_ROOT}" >> "$GITHUB_ENV"
           echo "VCPKGRS_DYNAMIC=1" >> "$GITHUB_ENV"
           echo "VCPKG_DEFAULT_TRIPLET=x64-windows" >> "$GITHUB_ENV"
           echo "${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/bin" >> "$GITHUB_PATH"
@@ -79,7 +79,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          echo "VCPKG_ROOT=${VCPKG_INSTALLATION_ROOT}" >> "$GITHUB_ENV"
+          echo "VCPKG_ROOT=${RUNVCPKG_VCPKG_ROOT}" >> "$GITHUB_ENV"
           echo "VCPKGRS_DYNAMIC=1" >> "$GITHUB_ENV"
           echo "VCPKG_DEFAULT_TRIPLET=x64-windows" >> "$GITHUB_ENV"
           echo "${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/bin" >> "$GITHUB_PATH"

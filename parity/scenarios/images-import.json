@@ -25,6 +25,12 @@
       }
     },
     {
+      "op": "import_file",
+      "params": {
+        "file_path": "parity/corpus/images/blue-jay.md"
+      }
+    },
+    {
       "op": "list_images",
       "params": {
         "concept_id": "red-fox"

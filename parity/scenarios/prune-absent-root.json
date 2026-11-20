@@ -1,0 +1,27 @@
+{
+  "name": "prune-absent-root",
+  "settings": {
+    "db_path": "parity/out/prune-absent-@RUNNER@.db",
+    "bundle_root": "parity/corpus/minimal",
+    "roots": {
+      "other": "parity/corpus/does-not-exist"
+    },
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/minimal"
+    }
+  },
+  "ops": [
+    {
+      "op": "import_bundle",
+      "params": {
+        "prune_missing": true
+      }
+    }
+  ]
+}

@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "vision")]
 const VISION_CONTRACT: &str = "smart32/min262144/max1310720/bicubic-rgb";
 const ASSET_STORE_DIRNAME: &str = "_assets";
 const NAMESPACE: &str = "6f6b6661-0000-0000-0000-6f6b66617373";
@@ -42,15 +43,25 @@ fn sha256_hex(parts: &[&[u8]]) -> String {
     format!("{:x}", hash.finalize())
 }
 
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn percent_decode(text: &str) -> String {
+    // Decode bytes, never `str` slices: a malformed escape can otherwise split
+    // a multi-byte UTF-8 character (for example `%€`).
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = &text[i + 1..i + 3];
-            if let Ok(value) = u8::from_str_radix(hex, 16) {
-                out.push(value);
+            if let (Some(high), Some(low)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
+                out.push((high << 4) | low);
                 i += 3;
                 continue;
             }
@@ -242,7 +253,77 @@ fn asset_store_bytes(asset_id: &str, search_dirs: &[PathBuf]) -> Option<Vec<u8>>
     None
 }
 
-fn load_bytes(src: &str, search_dirs: &[PathBuf], bundle_root: Option<&Path>) -> Option<Vec<u8>> {
+#[cfg(feature = "external")]
+fn domain_allowed(host: &str, patterns: &[String]) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty()
+        || host == "localhost"
+        || host == "0.0.0.0"
+        || host == "::1"
+        || host.starts_with("127.")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || host.starts_with("169.254.")
+        || host
+            .strip_prefix("172.")
+            .and_then(|rest| rest.split('.').next())
+            .and_then(|octet| octet.parse::<u8>().ok())
+            .is_some_and(|octet| (16..=31).contains(&octet))
+    {
+        return false;
+    }
+    if patterns.is_empty() {
+        return true;
+    }
+    patterns.iter().any(|pattern| {
+        let pattern = pattern.trim().to_ascii_lowercase();
+        if let Some(base) = pattern.strip_prefix("*.") {
+            host == base || host.ends_with(&format!(".{base}"))
+        } else {
+            host == pattern
+        }
+    })
+}
+
+#[cfg(feature = "external")]
+fn fetch_remote(url: &str, patterns: &[String]) -> Option<Vec<u8>> {
+    const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    if !domain_allowed(parsed.host_str()?, patterns) {
+        return None;
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+    let response = client.get(parsed).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_IMAGE_BYTES)
+    {
+        return None;
+    }
+    let bytes = response.bytes().ok()?;
+    (bytes.len() as u64 <= MAX_IMAGE_BYTES).then(|| bytes.to_vec())
+}
+
+#[cfg(not(feature = "external"))]
+fn fetch_remote(_url: &str, _patterns: &[String]) -> Option<Vec<u8>> {
+    None
+}
+
+fn load_bytes(
+    src: &str,
+    search_dirs: &[PathBuf],
+    bundle_root: Option<&Path>,
+    settings: &Settings,
+) -> Option<Vec<u8>> {
     if src.starts_with("data:") {
         return decode_data_uri(src);
     }
@@ -250,7 +331,10 @@ fn load_bytes(src: &str, search_dirs: &[PathBuf], bundle_root: Option<&Path>) ->
         return asset_store_bytes(id, search_dirs);
     }
     if remote_src(src) {
-        return None; // remote fetching stays opt-in and out of Stage B parity
+        if !settings.allow_remote_images {
+            return None;
+        }
+        return fetch_remote(src, &settings.allowed_image_domains);
     }
     let lower = src.to_ascii_lowercase();
     if lower.starts_with("file:") || (lower.contains(':') && !lower.starts_with('/')) {
@@ -299,6 +383,7 @@ fn extract_images(
     body: &str,
     base_dir: Option<&Path>,
     root: Option<&Path>,
+    settings: &Settings,
 ) -> Vec<Extracted> {
     let mut search_dirs: Vec<PathBuf> = Vec::new();
     for dir in [base_dir, root].into_iter().flatten() {
@@ -313,7 +398,7 @@ fn extract_images(
         .map(|(offset, (alt, src))| {
             let index = offset + 1;
             let filename = filename_from_src(&src);
-            let data = load_bytes(&src, &search_dirs, root);
+            let data = load_bytes(&src, &search_dirs, root, settings);
             Extracted {
                 asset_id: asset_id(concept_id, index, &src),
                 index,
@@ -339,6 +424,7 @@ fn text_hash(caption: &str) -> String {
     sha256_hex(&[b"text", b"|", caption.as_bytes()])
 }
 
+#[cfg(feature = "vision")]
 fn vision_hash(model_id: &str, precision: &str, data: &[u8]) -> String {
     sha256_hex(&[
         b"vision-onnx",
@@ -353,6 +439,7 @@ fn vision_hash(model_id: &str, precision: &str, data: &[u8]) -> String {
     ])
 }
 
+#[cfg(feature = "vision")]
 fn configured_image_model(settings: &Settings) -> String {
     settings
         .image_model_id
@@ -360,6 +447,7 @@ fn configured_image_model(settings: &Settings) -> String {
         .unwrap_or_else(|| crate::embed::default_image_model_id(&settings.model_id))
 }
 
+#[cfg(feature = "vision")]
 fn precision_code(precision: &str) -> i64 {
     match precision {
         "fp16" => 16,
@@ -424,6 +512,7 @@ fn vector_value(vector: &[f32]) -> Value {
 /// Ingest the images referenced by one concept. Returns the number of linked
 /// assets, matching Python's `stats["total"] - stats["skipped"]`.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(feature = "vision"), allow(unused_variables))]
 pub fn ingest_concept_images(
     store: &Store,
     settings: &Settings,
@@ -434,7 +523,7 @@ pub fn ingest_concept_images(
     base_dir: Option<&Path>,
     root: Option<&Path>,
 ) -> Result<i64> {
-    let images = extract_images(concept_id, body, base_dir, root);
+    let images = extract_images(concept_id, body, base_dir, root, settings);
     if images.is_empty() && store.list_images(concept_id)?.is_empty() {
         return Ok(0);
     }
@@ -456,6 +545,7 @@ pub fn ingest_concept_images(
             continue;
         }
         let (route, caption) = route_and_caption(&img, &settings.mode, concept_id);
+        #[cfg_attr(not(feature = "vision"), allow(unused_variables))]
         let data = img.data.clone().unwrap_or_default();
         let content_hash = match route {
             Route::Text => text_hash(&caption),
@@ -542,4 +632,36 @@ pub fn ingest_concept_images(
         store.bump_write_epoch()?;
     }
     Ok((total - skip) as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent_decode;
+
+    #[test]
+    fn percent_decode_is_byte_safe() {
+        assert_eq!(percent_decode("%20"), " ");
+        assert_eq!(percent_decode("%E2%82%AC"), "€");
+        assert_eq!(percent_decode("%€"), "%€");
+        assert_eq!(percent_decode("%é"), "%é");
+        assert_eq!(percent_decode("%4"), "%4");
+        assert_eq!(percent_decode("%GG"), "%GG");
+        assert_eq!(percent_decode("100%25"), "100%");
+    }
+
+    #[cfg(feature = "external")]
+    #[test]
+    fn remote_domains_are_allowlisted_and_ssrf_safe() {
+        let patterns = vec!["*.example.com".to_string(), "cdn.test".to_string()];
+        assert!(super::domain_allowed("img.example.com", &patterns));
+        assert!(super::domain_allowed("example.com", &patterns));
+        assert!(super::domain_allowed("cdn.test", &patterns));
+        assert!(!super::domain_allowed("localhost", &patterns));
+        assert!(!super::domain_allowed("127.0.0.1", &patterns));
+        assert!(!super::domain_allowed("192.168.1.2", &patterns));
+        assert!(!super::domain_allowed("172.20.1.2", &patterns));
+        assert!(!super::domain_allowed("10.0.0.1", &patterns));
+        assert!(!super::domain_allowed("evil.test", &patterns));
+        assert!(super::domain_allowed("anything.test", &[]));
+    }
 }

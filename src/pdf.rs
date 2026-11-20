@@ -7,9 +7,12 @@
 use crate::error::{OkfError, Result};
 use libloading::{Library, Symbol};
 use serde_json::{json, Value as Json};
+use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_uint};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Instant;
 
 const ABI_VERSION: u32 = 1;
 
@@ -44,7 +47,9 @@ fn candidate_paths() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(path) = std::env::var("OKFGRAPH_PDF_PLUGIN") {
         if !path.is_empty() {
-            out.push(PathBuf::from(path));
+            // An explicit override is authoritative: a wrong path is a clear
+            // load error, not a silent fallback to a stale dev build.
+            return vec![PathBuf::from(path)];
         }
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -55,15 +60,57 @@ fn candidate_paths() -> Vec<PathBuf> {
                 "libokfgraph_pdf.dylib",
             ] {
                 out.push(dir.join(name));
+                // Wheels put the add-on beside `okfgraph/`; native CLI use
+                // outside the Python facade finds it through these layouts.
+                out.push(dir.join("okfgraph_pdf").join(name));
+                out.push(dir.join("okfgraph.libs").join(name));
+                if let Some(parent) = dir.parent() {
+                    out.push(parent.join("lib").join(name));
+                    out.push(parent.join("okfgraph_pdf").join(name));
+                }
             }
         }
     }
     out
 }
 
+thread_local! {
+    /// Warm plugin handle for `pdf_idle_seconds`; the converter itself still
+    /// owns its one-shot ONNX sessions inside the add-on process.
+    static WARM: RefCell<Option<(Rc<Plugin>, Instant)>> = const { RefCell::new(None) };
+}
+
 impl Plugin {
-    /// Find and load the plugin. No plugin means a typed, actionable error.
-    pub fn load() -> Result<Self> {
+    /// Find and load the plugin, reusing the thread-local handle for
+    /// `settings.pdf_idle_seconds`. No plugin means a typed, actionable error.
+    pub fn load(settings: &crate::settings::Settings) -> Result<Rc<Self>> {
+        let idle = settings.pdf_idle_seconds.max(0) as u64;
+        let cached = WARM.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            match slot.as_ref() {
+                Some((plugin, used)) if used.elapsed().as_secs() <= idle => Some(Rc::clone(plugin)),
+                _ => {
+                    slot.take();
+                    None
+                }
+            }
+        });
+        if let Some(plugin) = cached {
+            WARM.with(|slot| {
+                if let Some((_, used)) = slot.borrow_mut().as_mut() {
+                    *used = Instant::now();
+                }
+            });
+            return Ok(plugin);
+        }
+        let plugin = Rc::new(Self::load_uncached()?);
+        WARM.with(|slot| {
+            *slot.borrow_mut() = Some((Rc::clone(&plugin), Instant::now()));
+        });
+        Ok(plugin)
+    }
+
+    fn load_uncached() -> Result<Self> {
         let candidates = candidate_paths();
         let selected = candidates
             .iter()
@@ -149,11 +196,45 @@ impl Plugin {
 
 /// Build the config JSON passed to the plugin.
 pub fn config(settings: &crate::settings::Settings) -> Json {
+    config_with(settings, "auto", true)
+}
+
+pub fn config_with(
+    settings: &crate::settings::Settings,
+    routing_mode: &str,
+    extract_images: bool,
+) -> Json {
     json!({
-        "routing_mode": "auto",
-        "extract_images": true,
+        "routing_mode": routing_mode,
+        "extract_images": extract_images,
         "device": settings.pdf_device,
         "precision": settings.pdf_precision,
         "cache_dir": settings.cache_dir,
+        // The add-on keeps its HybridConverter/ONNX sessions warm between
+        // calls; this is the same idle window used for the plugin handle.
+        "idle_seconds": settings.pdf_idle_seconds,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_forwards_ingest_knobs_and_idle_window() {
+        let settings = crate::settings::Settings {
+            pdf_device: "cpu".into(),
+            pdf_precision: "int8".into(),
+            pdf_idle_seconds: 42,
+            cache_dir: Some("cache".into()),
+            ..Default::default()
+        };
+        let config = config_with(&settings, "ocr", false);
+        assert_eq!(config["routing_mode"], "ocr");
+        assert_eq!(config["extract_images"], false);
+        assert_eq!(config["device"], "cpu");
+        assert_eq!(config["precision"], "int8");
+        assert_eq!(config["idle_seconds"], 42);
+        assert_eq!(config["cache_dir"], "cache");
+    }
 }

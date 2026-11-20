@@ -1,0 +1,25 @@
+{
+  "name": "import-prune-missing",
+  "settings": {
+    "db_path": "parity/out/import-prune-missing-@RUNNER@.db",
+    "bundle_root": "parity/out/prune-corpus-@RUNNER@",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "copy": {"from": "parity/corpus/prune-before", "to": "parity/out/prune-corpus-@RUNNER@"},
+    "import": {"corpus": "parity/out/prune-corpus-@RUNNER@"},
+    "remove": ["parity/out/prune-corpus-@RUNNER@/drop.md"]
+  },
+  "ops": [
+    {"op": "import_bundle", "params": {"prune_missing": true}},
+    {"op": "get_by_id", "params": {"concept_id": "keep"}},
+    {"op": "get_by_id", "params": {"concept_id": "drop"}},
+    {"op": "list_deleted", "params": {}}
+  ]
+}

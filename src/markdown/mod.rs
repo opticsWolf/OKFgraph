@@ -203,7 +203,10 @@ pub fn parse_frontmatter(text: &str) -> Frontmatter {
     if first.trim_end() != "---" {
         return Frontmatter {
             metadata: Json::Object(Map::new()),
-            content: text.to_string(),
+            // python-frontmatter strips surrounding newlines even when the
+            // document has no `---` block (PDF/converter output often ends
+            // with one).
+            content: text.trim_matches('\n').to_string(),
         };
     }
     let mut yaml = String::new();
@@ -231,71 +234,252 @@ pub fn parse_frontmatter(text: &str) -> Frontmatter {
 /// frontmatter uses. Quoted scalars stay strings; duplicate mapping keys keep
 /// the last value, like `yaml.safe_load`.
 pub fn parse_yaml(text: &str) -> Json {
-    let lines: Vec<&str> = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    let (value, _) = parse_block(&lines, 0, 0);
-    value
+    let lines: Vec<&str> = text.lines().collect();
+    let mut index = 0;
+    skip_ignorable(&lines, &mut index);
+    if index >= lines.len() {
+        return Json::Object(Map::new());
+    }
+    let indent = line_indent(lines[index]);
+    if is_sequence_line(lines[index]) {
+        parse_sequence(&lines, &mut index, indent)
+    } else {
+        parse_mapping(&lines, &mut index, indent)
+    }
 }
 
-fn parse_block(lines: &[&str], index: usize, indent: usize) -> (Json, usize) {
+fn line_indent(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+fn is_ignorable(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty() || trimmed.starts_with('#')
+}
+
+fn skip_ignorable(lines: &[&str], index: &mut usize) {
+    while *index < lines.len() && is_ignorable(lines[*index]) {
+        *index += 1;
+    }
+}
+
+fn is_sequence_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed == "-" || trimmed.starts_with("- ")
+}
+
+fn strip_inline_comment(text: &str) -> &str {
+    let mut quote = None;
+    let mut previous_whitespace = true;
+    for (index, ch) in text.char_indices() {
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            previous_whitespace = ch.is_whitespace();
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '#' if previous_whitespace => return text[..index].trim_end(),
+            _ => {}
+        }
+        previous_whitespace = ch.is_whitespace();
+    }
+    text.trim_end()
+}
+
+fn parse_mapping(lines: &[&str], index: &mut usize, indent: usize) -> Json {
     let mut map = Map::new();
-    let mut i = index;
-    while i < lines.len() {
-        let line = lines[i];
-        let leading = line.len() - line.trim_start().len();
-        if leading < indent {
+    loop {
+        skip_ignorable(lines, index);
+        if *index >= lines.len() {
+            break;
+        }
+        let line = lines[*index];
+        let leading = line_indent(line);
+        if leading < indent || (leading == indent && is_sequence_line(line)) {
             break;
         }
         if leading > indent {
-            i += 1;
+            // A malformed extra indent: skip rather than mis-nest.
+            *index += 1;
             continue;
         }
-        let trimmed = line.trim();
-        if trimmed.starts_with('-') {
-            let mut items = Vec::new();
-            while i < lines.len() {
-                let item = lines[i].trim();
-                if !item.starts_with('-') || lines[i].len() - lines[i].trim_start().len() != indent
-                {
-                    break;
-                }
-                items.push(resolve_scalar(item[1..].trim()));
-                i += 1;
-            }
-            return (Json::Array(items), i);
-        }
+        let trimmed = strip_inline_comment(line.trim());
         let Some((raw_key, raw_value)) = split_once_outside_quotes(trimmed, ':') else {
-            i += 1;
+            *index += 1;
             continue;
         };
         let key = unquote(raw_key.trim());
         let raw_value = raw_value.trim();
-        i += 1;
-        let value = if raw_value.is_empty() {
-            if i < lines.len() {
-                let child_indent = lines[i].len() - lines[i].trim_start().len();
-                if lines[i].trim_start().starts_with('-') && child_indent >= indent {
-                    let (nested, next) = parse_block(lines, i, child_indent);
-                    i = next;
-                    nested
-                } else if child_indent > indent {
-                    let (nested, next) = parse_block(lines, i, indent + 2);
-                    i = next;
-                    nested
-                } else {
-                    Json::Null
-                }
-            } else {
-                Json::Null
-            }
-        } else {
-            resolve_scalar(raw_value)
-        };
+        *index += 1;
+        let value = parse_value_after_key(lines, index, indent, raw_value);
         map.insert(key, value);
     }
-    (Json::Object(map), i)
+    Json::Object(map)
+}
+
+fn parse_value_after_key(
+    lines: &[&str],
+    index: &mut usize,
+    parent_indent: usize,
+    raw_value: &str,
+) -> Json {
+    if raw_value.starts_with('|') || raw_value.starts_with('>') {
+        return parse_block_scalar(lines, index, parent_indent, raw_value);
+    }
+    if !raw_value.is_empty() {
+        return resolve_scalar(raw_value);
+    }
+    let mut look = *index;
+    skip_ignorable(lines, &mut look);
+    if look >= lines.len() {
+        return Json::Null;
+    }
+    let child_indent = line_indent(lines[look]);
+    if child_indent == parent_indent && is_sequence_line(lines[look]) {
+        // PyYAML accepts an "indentless" sequence directly under its key.
+        return parse_sequence(lines, index, child_indent);
+    }
+    if child_indent <= parent_indent {
+        return Json::Null;
+    }
+    if is_sequence_line(lines[look]) {
+        parse_sequence(lines, index, child_indent)
+    } else {
+        parse_mapping(lines, index, child_indent)
+    }
+}
+
+fn parse_sequence(lines: &[&str], index: &mut usize, indent: usize) -> Json {
+    let mut items = Vec::new();
+    loop {
+        skip_ignorable(lines, index);
+        if *index >= lines.len() {
+            break;
+        }
+        let line = lines[*index];
+        if line_indent(line) != indent || !is_sequence_line(line) {
+            break;
+        }
+        let trimmed = strip_inline_comment(line.trim_start());
+        let content = trimmed[1..].trim_start();
+        *index += 1;
+        if content.is_empty() {
+            let mut look = *index;
+            skip_ignorable(lines, &mut look);
+            if look < lines.len() && line_indent(lines[look]) > indent {
+                let child_indent = line_indent(lines[look]);
+                let value = if is_sequence_line(lines[look]) {
+                    parse_sequence(lines, index, child_indent)
+                } else {
+                    parse_mapping(lines, index, child_indent)
+                };
+                items.push(value);
+            } else {
+                items.push(Json::Null);
+            }
+            continue;
+        }
+        if content.starts_with('|') || content.starts_with('>') {
+            items.push(parse_block_scalar(lines, index, indent, content));
+            continue;
+        }
+        if let Some((raw_key, raw_value)) = split_once_outside_quotes(content, ':') {
+            let mut map = Map::new();
+            let key = unquote(raw_key.trim());
+            let value = parse_value_after_key(lines, index, indent, raw_value.trim());
+            map.insert(key, value);
+            // Additional mapping keys belonging to this sequence item.
+            let mut look = *index;
+            skip_ignorable(lines, &mut look);
+            if look < lines.len() && line_indent(lines[look]) > indent {
+                let child_indent = line_indent(lines[look]);
+                if !is_sequence_line(lines[look]) {
+                    if let Json::Object(extra) = parse_mapping(lines, index, child_indent) {
+                        for (key, value) in extra {
+                            map.insert(key, value);
+                        }
+                    }
+                }
+            }
+            items.push(Json::Object(map));
+        } else {
+            items.push(resolve_scalar(content));
+        }
+    }
+    Json::Array(items)
+}
+
+fn parse_block_scalar(
+    lines: &[&str],
+    index: &mut usize,
+    parent_indent: usize,
+    indicator: &str,
+) -> Json {
+    let folded = indicator.starts_with('>');
+    let chomp = if indicator.contains('-') {
+        '-'
+    } else if indicator.contains('+') {
+        '+'
+    } else {
+        ' '
+    };
+    let mut look = *index;
+    skip_ignorable(lines, &mut look);
+    let content_indent = if look < lines.len() && line_indent(lines[look]) > parent_indent {
+        line_indent(lines[look])
+    } else {
+        parent_indent + 1
+    };
+    let mut content: Vec<String> = Vec::new();
+    while *index < lines.len() {
+        let line = lines[*index];
+        if line.trim().is_empty() {
+            content.push(String::new());
+            *index += 1;
+            continue;
+        }
+        let indent = line_indent(line);
+        if indent < content_indent {
+            break;
+        }
+        content.push(line[content_indent..].to_string());
+        *index += 1;
+    }
+    if chomp != '+' {
+        while content.last().is_some_and(|line| line.is_empty()) {
+            content.pop();
+        }
+    }
+    let body = if folded {
+        let mut out = String::new();
+        for (i, line) in content.iter().enumerate() {
+            if i > 0 {
+                if line.is_empty() || content[i - 1].is_empty() {
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                }
+            }
+            out.push_str(line);
+        }
+        out
+    } else {
+        content.join("\n")
+    };
+    let mut value = body;
+    match chomp {
+        '-' => {}
+        '+' => value.push('\n'),
+        _ => {
+            if !value.is_empty() {
+                value.push('\n');
+            }
+        }
+    }
+    Json::String(value)
 }
 
 fn split_once_outside_quotes(text: &str, delimiter: char) -> Option<(&str, &str)> {
@@ -439,10 +623,18 @@ fn parse_int(text: &str) -> Option<Json> {
     } else if let Some(binary) = body.strip_prefix("0b") {
         i64::from_str_radix(binary, 2).ok()?
     } else {
-        if !body.chars().all(|c| c.is_ascii_digit()) {
-            return None;
+        if body.len() > 1 && body.starts_with('0') && body.chars().all(|c| c.is_ascii_digit()) {
+            // PyYAML 1.1: a leading zero is octal; `09` is not a number.
+            if !body.chars().all(|c| ('0'..='7').contains(&c)) {
+                return None;
+            }
+            i64::from_str_radix(&body[1..], 8).ok()?
+        } else {
+            if !body.chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            body.parse::<i64>().ok()?
         }
-        body.parse::<i64>().ok()?
     };
     Some(Json::from(value.saturating_mul(sign)))
 }
@@ -481,6 +673,102 @@ mod tests {
             reconstruct_document(&chunks).as_deref(),
             Some(body.trim_end())
         );
+    }
+
+    #[test]
+    fn yaml_block_scalars_comments_and_nested_indent() {
+        assert_eq!(
+            parse_yaml(
+                "description: |
+  line one
+  line two
+"
+            ),
+            serde_json::json!({"description": "line one
+line two
+"})
+        );
+        assert_eq!(
+            parse_yaml(
+                "a:
+    b: 1
+"
+            ),
+            serde_json::json!({"a": {"b": 1}})
+        );
+        assert_eq!(
+            parse_yaml(
+                "title: Foo # comment
+"
+            ),
+            serde_json::json!({"title": "Foo"})
+        );
+        assert_eq!(
+            parse_yaml(
+                "a: 010
+"
+            ),
+            serde_json::json!({"a": 8})
+        );
+        assert_eq!(
+            parse_yaml(
+                "a:
+- x: 1
+  y: 2
+"
+            ),
+            serde_json::json!({"a": [{"x": 1, "y": 2}]})
+        );
+        assert_eq!(
+            parse_yaml(
+                "a: .inf
+b: -.inf
+c: .nan
+"
+            ),
+            serde_json::json!({
+                "a": {"__type__": "float", "value": "inf"},
+                "b": {"__type__": "float", "value": "-inf"},
+                "c": {"__type__": "float", "value": "nan"}
+            })
+        );
+        for (indicator, expected) in [
+            (
+                "|", "x
+",
+            ),
+            ("|-", "x"),
+            (
+                "|+", "x
+
+
+",
+            ),
+            (
+                ">", "x
+",
+            ),
+            (">-", "x"),
+            (
+                ">+", "x
+
+
+",
+            ),
+        ] {
+            assert_eq!(
+                parse_yaml(&format!(
+                    "a: {indicator}
+  x
+
+
+b: 1
+"
+                ))["a"],
+                expected,
+                "block scalar {indicator}"
+            );
+        }
     }
 
     #[test]
@@ -530,6 +818,18 @@ mod tests {
             let input = case["input"].as_str().expect("input");
             assert_eq!(parse_yaml(input), case["value"], "yaml case {name}");
         }
+    }
+
+    #[test]
+    fn frontmatter_without_delimiters_trims_surrounding_newlines() {
+        let parsed = parse_frontmatter(
+            "
+Alpha links to beta.
+
+",
+        );
+        assert!(parsed.metadata.as_object().unwrap().is_empty());
+        assert_eq!(parsed.content, "Alpha links to beta.");
     }
 
     #[test]

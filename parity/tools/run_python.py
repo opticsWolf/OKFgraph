@@ -16,6 +16,22 @@ def load_error_payload(exc: BaseException, op: str) -> dict[str, Any]:
     """Wrap an oracle exception in the same envelope the Rust runner emits."""
     from okfgraph.errors import envelope
 
+    if not hasattr(exc, "envelope"):
+        # Python 0.15 lets some raw RuntimeError/FileNotFoundError escape
+        # (e.g. a missing PDF converter); record it as INTERNAL instead of
+        # crashing the harness.
+        return {
+            "ok": False,
+            "op": op,
+            "data": None,
+            "warnings": [],
+            "error": {
+                "code": "INTERNAL",
+                "message": str(exc),
+                "fields": None,
+                "remedy": None,
+            },
+        }
     return envelope(op, error=exc)
 
 
@@ -40,6 +56,14 @@ def main() -> int:
 
     settings = _expand_runner(dict(scenario.get("settings") or {}), "python")
     setup = scenario.get("setup") or {}
+    copied = setup.get("copy")
+    if copied:
+        import shutil
+        source = Path(_expand_runner(copied["from"], "python"))
+        target = Path(_expand_runner(copied["to"], "python"))
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
     imported = setup.get("import")
     if imported:
         corpus = Path(_expand_runner(imported["corpus"], "python"))
@@ -60,6 +84,13 @@ def main() -> int:
             build_router.import_bundle(**import_params)
         finally:
             build_router.close()
+    for remove in setup.get("remove") or []:
+        target = Path(_expand_runner(remove, "python"))
+        if target.is_dir():
+            import shutil
+            shutil.rmtree(target, ignore_errors=True)
+        else:
+            target.unlink(missing_ok=True)
     router = OKFRouter(**settings)
     results: list[dict[str, Any]] = []
     try:

@@ -1,0 +1,40 @@
+{
+  "name": "import-identity-frontmatter",
+  "settings": {
+    "db_path": "parity/out/import-identity-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "identity": "frontmatter",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/identity"
+    }
+  },
+  "ops": [
+    {
+      "op": "import_bundle",
+      "params": {
+        "bundle_path": "parity/corpus/identity"
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "custom-alpha"
+      }
+    },
+    {
+      "op": "read",
+      "params": {
+        "concept_id": "custom-alpha",
+        "include": "body"
+      }
+    }
+  ]
+}

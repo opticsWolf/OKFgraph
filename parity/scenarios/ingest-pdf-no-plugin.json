@@ -7,9 +7,35 @@
     "device": "cuda",
     "precision": "auto"
   },
-  "setup": {"import": {"corpus": "parity/corpus/empty"}},
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/empty"
+    }
+  },
   "ops": [
-    {"op": "ingest", "params": {"kind": "pdf", "pdf_path": "parity/fixtures/tiny.pdf", "auto_import": false}},
-    {"op": "ingest", "params": {"kind": "pdf", "pdf_path": "parity/fixtures/missing.pdf"}}
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/fixtures/tiny.pdf",
+        "auto_import": false
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/fixtures/tiny.pdf",
+        "output_dir": "parity/out/pdf-output",
+        "auto_import": true
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/fixtures/missing.pdf"
+      }
+    }
   ]
 }

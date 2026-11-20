@@ -1,0 +1,31 @@
+{
+  "name": "percent-escape-nonascii",
+  "settings": {
+    "db_path": "parity/out/images-percent-@RUNNER@.db",
+    "bundle_root": "parity/corpus/images-percent",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/images-percent",
+      "mode": "text"
+    }
+  },
+  "ops": [
+    {
+      "op": "list_images",
+      "params": {
+        "concept_id": "alpha"
+      }
+    },
+    {
+      "op": "get_image",
+      "params": {
+        "asset_id": "img_00000000-0000-0000-0000-000000000000"
+      }
+    }
+  ]
+}

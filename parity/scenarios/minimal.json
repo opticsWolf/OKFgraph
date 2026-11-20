@@ -1,7 +1,6 @@
 {
   "name": "minimal",
-  "settings": {"embedding_dim": 3},
-  "setup": {"bundle": "parity/corpus/minimal"},
+  "settings": {"db_path": "parity/fixtures/oracle-v10.db"},
   "ops": [
     {"op": "get_by_id", "params": {"concept_id": "alpha"}}
   ]

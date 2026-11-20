@@ -1,10 +1,11 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** M2 in progress — Windows spikes green, `pycompat` green,
-52-setting table/errors/models/store/ops/CLI/PyO3 facade landed; 14-op read
-parity is green. Real EmbeddingGemma 2 ONNX inference runs on CUDA and
-15-op search/embed/read/traverse parity is green (0 differences). Linux/macOS
-spikes and write/ingest stages remain.  
+**Status:** M3 Stage B bug-fix pass — Windows spikes, `pycompat`, M1, M2, and
+the Stage B write/ingest/export/delete/reembed/PDF slices are implemented.
+Real EmbeddingGemma 2 ONNX inference runs on CUDA; text/rerank/vision and
+write parity scenarios are green on the covered fixtures. The review findings
+in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
+fail-closed/deferred items. Linux/macOS spikes and Stage C surfaces remain.
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -879,12 +880,23 @@ The Python facade resolves `okfgraph_pdf.plugin_path()` into
 `OKFGRAPH_PDF_PLUGIN`. A missing or incompatible plugin returns the documented
 `CONVERSION_FAILED` install hint.
 
-Remaining M3 gaps: the differential fixtures are green, but a follow-up
-review found untested P0/P1 paths (frontmatter identity, bundle-root ingest,
-file-backed delete, non-default dimensions, external lanes, YAML block
-scalars, multi-root, prune/force). Findings and the ordered fix plan live in
-`docs/plan-bug-fixes.md`; M3 should not be called complete until those items
-close.
+Bug-fix follow-up: the review findings in `docs/plan-bug-fixes.md` have been
+implemented through the P0/P1 slices. New differential coverage includes
+frontmatter identity/resource sanitization, bundle-root thoughts/BibTeX,
+materialize/folder, 256/768-dimension graphs, file-backed delete/trash, image
+pruning, filtered/dotted export, YAML block/nested scalars, offset/microsecond
+timestamps, non-ASCII percent escapes, multi-root, prune/pending tombstones,
+absent-root refusal, parameter matrices, and op-name/coverage checks. The
+broad matrix is green after normalizing wall-clock graph times, internal IDs,
+set-ordered tags, and the explicitly documented PDF-missing-plugin divergence.
+
+Remaining M3/stable gaps: external embedding/rerank/vision lanes fail closed
+(`EXTERNAL_UNAVAILABLE`) by design; old/missing schemas are refused for a
+one-time Python-0.15 migration instead of ported; `doctor` findings/score are
+ported but its environment-specific info probes are not. Real PDF/DOCX fixture parity, warm converter reuse, cross-process
+Python↔Rust lock interop, read-only refusal, and facade/wheel smokes are now
+covered. M3 should not be called cutover-complete until the remaining gate
+items close.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

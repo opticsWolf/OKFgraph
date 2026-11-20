@@ -3,7 +3,7 @@ use okfgraph::error::Envelope;
 use okfgraph::ops::Router;
 use okfgraph::settings::Settings;
 use serde_json::{Map, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{env, fs, process::ExitCode};
 
 fn expand_runner(value: Value, runner: &str) -> Value {
@@ -22,6 +22,21 @@ fn expand_runner(value: Value, runner: &str) -> Value {
         ),
         other => other,
     }
+}
+
+fn copy_tree(source: PathBuf, target: &PathBuf) -> std::io::Result<()> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let destination = target.join(entry.file_name());
+        if path.is_dir() {
+            copy_tree(path, &destination)?;
+        } else {
+            fs::copy(path, destination)?;
+        }
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -65,6 +80,28 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Some(copied) = scenario.get("setup").and_then(|value| value.get("copy")) {
+        let source = copied
+            .get("from")
+            .and_then(Value::as_str)
+            .map(|value| expand_runner(Value::String(value.to_string()), "rust"))
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let target = copied
+            .get("to")
+            .and_then(Value::as_str)
+            .map(|value| expand_runner(Value::String(value.to_string()), "rust"))
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let target_path = PathBuf::from(&target);
+        if target_path.exists() {
+            let _ = fs::remove_dir_all(&target_path);
+        }
+        if let Err(err) = copy_tree(PathBuf::from(&source), &target_path) {
+            eprintln!("cannot copy scenario corpus: {err}");
+            return ExitCode::from(1);
+        }
+    }
     if let Some(imported) = scenario.get("setup").and_then(|value| value.get("import")) {
         let corpus = imported
             .get("corpus")
@@ -95,7 +132,32 @@ fn main() -> ExitCode {
             }
         }
     }
-    let router = match Router::open(&settings) {
+    if let Some(remove) = scenario
+        .get("setup")
+        .and_then(|value| value.get("remove"))
+        .and_then(Value::as_array)
+    {
+        for path in remove {
+            let path = expand_runner(path.clone(), "rust");
+            if let Some(path) = path.as_str() {
+                let path = Path::new(path);
+                if path.is_dir() {
+                    let _ = fs::remove_dir_all(path);
+                } else {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+    }
+    // Stage-A/read-only regression harness: opening read-only is a public
+    // Router entry point, so let a test exercise write refusal through it.
+    let read_only = env::var("OKFGRAPH_PARITY_READ_ONLY").as_deref() == Ok("1");
+    let opened = if read_only {
+        Router::open_read_only(&settings)
+    } else {
+        Router::open(&settings)
+    };
+    let router = match opened {
         Ok(r) => r,
         Err(err) => {
             eprintln!("cannot open router: {}", err.titles());

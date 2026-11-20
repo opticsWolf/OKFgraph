@@ -13,7 +13,7 @@ use crate::settings::Settings;
 use crate::store::Store;
 use serde_json::{Map, Value as Json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The canonical operation vocabulary (30 requests; `init` is local-only).
 pub const OP_NAMES: &[&str] = &[
@@ -33,8 +33,6 @@ pub const OP_NAMES: &[&str] = &[
     "delete",
     "doctor",
     "diff",
-    "lint",
-    "produce",
     "reindex",
     "reembed",
     "pin_info",
@@ -91,7 +89,9 @@ pub const WRITE_OPS: &[&str] = &[
 ];
 
 pub fn is_op(name: &str) -> bool {
-    OP_NAMES.contains(&name)
+    // `lint` and `produce` are CLI/parity verbs implemented by this crate but
+    // not part of the public 0.15 `OPS` vocabulary (which has 30 entries).
+    OP_NAMES.contains(&name) || READ_OPS.contains(&name) || WRITE_OPS.contains(&name)
 }
 
 #[derive(Debug, Clone)]
@@ -102,10 +102,27 @@ pub struct Router {
     pools: Pools,
     #[cfg(feature = "embed")]
     reranker: RerankerPool,
+    write_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl Router {
+    /// Open a v10 database for the normal public surface, including writes.
+    /// Stage B callers must own the graph; never mix Python and Rust cores in
+    /// one process.
     pub fn open(settings: &Settings) -> Result<Self> {
+        Ok(Self {
+            store: Store::open_writable(settings)?,
+            settings: settings.clone(),
+            embedder: EmbedderPool::new(),
+            pools: Pools::new(),
+            #[cfg(feature = "embed")]
+            reranker: RerankerPool::new(),
+            write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+        })
+    }
+
+    /// Explicit read-only handle for tools that must never mutate the graph.
+    pub fn open_read_only(settings: &Settings) -> Result<Self> {
         Ok(Self {
             store: Store::open(settings)?,
             settings: settings.clone(),
@@ -113,6 +130,7 @@ impl Router {
             pools: Pools::new(),
             #[cfg(feature = "embed")]
             reranker: RerankerPool::new(),
+            write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
         })
     }
 
@@ -126,6 +144,7 @@ impl Router {
             pools: Pools::new(),
             #[cfg(feature = "embed")]
             reranker: RerankerPool::new(),
+            write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
         })
     }
 
@@ -166,9 +185,47 @@ impl Router {
 
     fn delete(&self, params: &Map<String, Json>) -> Result<Json> {
         let concept_id = str_param(params, "concept_id")?.to_string();
+        let remove_file = opt_bool(params, "remove_file")?.unwrap_or(false);
         if self.store.get_by_id(&concept_id)?.is_none() {
             return Err(unknown_concept("delete", "concept_id", &concept_id));
         }
+
+        let keys = self.store.file_hash_keys_for_concept(&concept_id)?;
+        let alive: Vec<PathBuf> = keys
+            .iter()
+            .flat_map(|key| self.store.resolve_file_paths(key))
+            .filter(|path| path.is_file())
+            .collect();
+        if !alive.is_empty() && !remove_file {
+            let sources: Vec<Json> = alive
+                .iter()
+                .map(|path| Json::String(path.to_string_lossy().into_owned()))
+                .collect();
+            return Err(OkfError::new(
+                "BAD_VALUE",
+                format!(
+                    "'{concept_id}' is backed by existing source file(s): {}",
+                    alive
+                        .iter()
+                        .map(|path| path.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+            .op("delete")
+            .field("concept_id", Json::String(concept_id.clone()))
+            .field("sources", Json::Array(sources))
+            .remedy(
+                "delete or move the file(s) from the bundle, then run \
+                 'okf import --all --prune-missing' to drop the concept",
+            ));
+        }
+
+        let trashed = if alive.is_empty() {
+            Vec::new()
+        } else {
+            self.trash_files(&keys)?
+        };
         if !crate::purge::soft_delete(&self.store, &concept_id)? {
             return Err(OkfError::new(
                 "NOT_RECOVERABLE",
@@ -176,17 +233,79 @@ impl Router {
             )
             .op("delete"));
         }
-        let until = time::OffsetDateTime::now_utc() + time::Duration::seconds(86_400);
+        crate::purge::remember_trashed(&self.store, &concept_id, &trashed)?;
+        let until = crate::model::local_now_datetime().as_naive().assume_utc()
+            + time::Duration::seconds(86_400);
         Ok(serde_json::json!({
             "concept_id": concept_id,
             "deleted": true,
             "recoverable_until": crate::model::format_py_datetime(until),
-            "trashed_files": [],
+            "trashed_files": trashed
+                .iter()
+                .map(|(trash, _)| Json::String(trash.clone()))
+                .collect::<Vec<_>>(),
         }))
+    }
+
+    /// Move backing files to `<root>/.okf-trash/<stamp>/...` and retire their
+    /// delta ledger entries. Returns `(trash, source)` pairs.
+    fn trash_files(&self, keys: &[String]) -> Result<Vec<(String, String)>> {
+        let Some(root) = self.settings.bundle_root.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let root = crate::store::absolute_path(Path::new(root));
+        let now = crate::model::local_now_datetime().as_naive().assume_utc();
+        let stamp = format!(
+            "{:04}{:02}{:02}T{:02}{:02}{:02}",
+            now.year(),
+            now.month() as u8,
+            now.day(),
+            now.hour(),
+            now.minute(),
+            now.second()
+        );
+        let mut moved: Vec<(String, String)> = Vec::new();
+        let mut seen = BTreeSet::new();
+        for key in keys {
+            for source in self.store.resolve_file_paths(key) {
+                if !source.is_file() || !seen.insert(source.clone()) {
+                    continue;
+                }
+                let Ok(relative) = source.strip_prefix(&root) else {
+                    continue;
+                };
+                let trash = root.join(".okf-trash").join(&stamp).join(relative);
+                if let Some(parent) = trash.parent() {
+                    std::fs::create_dir_all(parent).map_err(|err| {
+                        OkfError::internal(
+                            format!("cannot create {}: {err}", parent.display()),
+                            "std::io::Error",
+                        )
+                    })?;
+                }
+                std::fs::rename(&source, &trash).map_err(|err| {
+                    OkfError::internal(
+                        format!(
+                            "cannot move {} to {}: {err}",
+                            source.display(),
+                            trash.display()
+                        ),
+                        "std::io::Error",
+                    )
+                })?;
+                self.store.forget_file_hash(key)?;
+                moved.push((
+                    trash.to_string_lossy().into_owned(),
+                    source.to_string_lossy().into_owned(),
+                ));
+            }
+        }
+        Ok(moved)
     }
 
     fn recover_deleted(&self, params: &Map<String, Json>) -> Result<Json> {
         let concept_id = str_param(params, "concept_id")?.to_string();
+        let trashed = crate::purge::read_trashed(&self.store, &concept_id)?;
         if !crate::purge::recover(&self.store, &concept_id)? {
             return Err(OkfError::new(
                 "NOT_RECOVERABLE",
@@ -195,12 +314,49 @@ impl Router {
             .op("recover_deleted")
             .field("concept_id", Json::String(concept_id)));
         }
-        crate::ingest::extract_links_for_concept(&self.store, &concept_id)?;
-        crate::ingest::repair_links_public(&self.store)?;
+
+        let mut restored = Vec::new();
+        for (trash, source) in trashed {
+            let trash_path = PathBuf::from(&trash);
+            let source_path = PathBuf::from(&source);
+            if !trash_path.exists() || source_path.exists() {
+                continue;
+            }
+            if let Some(parent) = source_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|err| {
+                    OkfError::internal(
+                        format!("cannot create {}: {err}", parent.display()),
+                        "std::io::Error",
+                    )
+                })?;
+            }
+            std::fs::rename(&trash_path, &source_path).map_err(|err| {
+                OkfError::internal(
+                    format!(
+                        "cannot restore {} to {}: {err}",
+                        trash_path.display(),
+                        source_path.display()
+                    ),
+                    "std::io::Error",
+                )
+            })?;
+            restored.push(source);
+        }
+
+        if restored.is_empty() {
+            crate::ingest::extract_links_for_concept(&self.store, &concept_id)?;
+            crate::ingest::repair_links_public(&self.store)?;
+        } else {
+            for path in &restored {
+                let mut import_params = Map::new();
+                import_params.insert("file_path".into(), Json::String(path.clone()));
+                self.import_file(&import_params)?;
+            }
+        }
         Ok(serde_json::json!({
             "concept_id": concept_id,
             "recovered": true,
-            "restored_files": [],
+            "restored_files": restored,
         }))
     }
 
@@ -361,15 +517,17 @@ impl Router {
         concept_id: &str,
         edit: impl FnOnce(&mut Map<String, Json>) -> Result<Vec<String>>,
     ) -> Result<Json> {
-        let concept = self.store.get_by_id(concept_id)?;
-        if concept.is_none() {
-            return Err(unknown_write_concept(op, concept_id));
-        }
-        let concept = concept.expect("checked");
+        let concept = self
+            .store
+            .get_by_id(concept_id)?
+            .ok_or_else(|| unknown_write_concept(op, concept_id))?;
         let source = self.store.source_file_for_concept(concept_id)?;
         let (mut meta, body) = if let Some(path) = &source {
             let text = std::fs::read_to_string(path).map_err(|err| {
-                OkfError::new("IO_ERROR", format!("cannot read {}: {err}", path.display()))
+                OkfError::internal(
+                    format!("cannot read {}: {err}", path.display()),
+                    "std::io::Error",
+                )
             })?;
             let parsed = markdown::parse_frontmatter(&text);
             (
@@ -401,6 +559,14 @@ impl Router {
             if self.settings.identity == "frontmatter" {
                 meta.insert("id".into(), Json::String(relative.clone()));
             }
+            if !crate::util::safe_bundle_id(&relative) {
+                return Err(OkfError::new(
+                    "BAD_VALUE",
+                    format!("{op}: concept id {concept_id:?} is not safe to materialize"),
+                )
+                .op(op)
+                .field("concept_id", Json::String(concept_id.into())));
+            }
             Path::new(root).join(format!("{relative}.md"))
         } else {
             return Err(OkfError::new(
@@ -413,9 +579,9 @@ impl Router {
         };
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
-                OkfError::new(
-                    "IO_ERROR",
+                OkfError::internal(
                     format!("cannot create {}: {err}", parent.display()),
+                    "std::io::Error",
                 )
             })?;
         }
@@ -714,9 +880,13 @@ impl Router {
         let concept_ids = if written.is_empty() {
             Vec::new()
         } else {
+            // FileHash keys are relative to the tree that was scanned. `sync`
+            // may write into an output_dir that differs from bundle_root.
+            let mut sync_settings = self.settings.clone();
+            sync_settings.bundle_root = Some(output_dir.clone());
             let report = crate::ingest::import_files(
                 &self.store,
-                &self.settings,
+                &sync_settings,
                 &self.embedder,
                 &self.pools,
                 &written,
@@ -824,12 +994,20 @@ impl Router {
             }
         };
         let settings = self.import_settings(params)?;
+        let options = crate::ingest::ImportOptions {
+            prune_missing: params
+                .get("prune_missing")
+                .and_then(Json::as_bool)
+                .unwrap_or(false),
+            force: params.get("force").and_then(Json::as_bool).unwrap_or(false),
+        };
         crate::ingest::import_bundle(
             &self.store,
             &settings,
             &self.embedder,
             &self.pools,
             bundle_path,
+            options,
         )
         .map_err(|err| err.op("import_bundle"))
     }
@@ -852,9 +1030,15 @@ impl Router {
             .and_then(Json::as_str)
             .unwrap_or("")
             .to_string();
+        let images = report
+            .get("images")
+            .and_then(Json::as_object)
+            .and_then(|images| images.get(&id))
+            .and_then(Json::as_i64)
+            .unwrap_or(0);
         Ok(serde_json::json!({
             "concept_id": id,
-            "images": 0,
+            "images": images,
         }))
     }
 
@@ -862,11 +1046,78 @@ impl Router {
         &self.settings
     }
 
+    /// Inter-process lock wait. The public contract is Python's 300 s; the
+    /// environment override exists for lock-interoperability/regression tests.
+    /// Invalid values fall back to the contract rather than disabling locking.
+    fn write_lock_timeout() -> std::time::Duration {
+        let secs = std::env::var("OKFGRAPH_WRITE_LOCK_TIMEOUT")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .unwrap_or(300.0);
+        std::time::Duration::from_secs_f64(secs)
+    }
+
     pub fn store(&self) -> &Store {
         &self.store
     }
 
     pub fn call(&self, op: &str, params: &Map<String, Json>) -> Result<Json> {
+        let _write_guard = if WRITE_OPS.contains(&op) {
+            Some(
+                self.write_lock
+                    .lock()
+                    .map_err(|_| OkfError::internal("write lock poisoned", "mutex"))?,
+            )
+        } else {
+            None
+        };
+        if WRITE_OPS.contains(&op) {
+            let lock_path = std::path::absolute(format!("{}.lock", self.settings.db_path))
+                .unwrap_or_else(|_| PathBuf::from(format!("{}.lock", self.settings.db_path)));
+            let lock_text = lock_path.to_string_lossy().into_owned();
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .map_err(|err| {
+                    OkfError::internal(
+                        format!("cannot open write lock {lock_text}: {err}"),
+                        "std::io::Error",
+                    )
+                })?;
+            let mut lock = fd_lock::RwLock::new(file);
+            let deadline = std::time::Instant::now() + Self::write_lock_timeout();
+            let _guard = loop {
+                match lock.try_write() {
+                    Ok(guard) => break guard,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            return Err(OkfError::new(
+                                "WRITE_LOCK_TIMEOUT",
+                                "write lock acquisition timed out (another process is writing)",
+                            )
+                            .op(op)
+                            .remedy("close concurrent writers or raise the lock timeout"));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(err) => {
+                        return Err(OkfError::internal(
+                            format!("cannot acquire write lock {lock_text}: {err}"),
+                            "std::io::Error",
+                        ))
+                    }
+                }
+            };
+            return self.call_inner(op, params);
+        }
+        self.call_inner(op, params)
+    }
+
+    fn call_inner(&self, op: &str, params: &Map<String, Json>) -> Result<Json> {
         if !is_op(op) {
             return Err(OkfError::new("BAD_VALUE", format!("unknown op: {op}"))
                 .field("op", Json::String(op.into())));
@@ -1045,6 +1296,13 @@ impl Router {
                 embed.insert("pinned_space".into(), pinned_space);
             }
         }
+        #[cfg(feature = "vision")]
+        if let Some(vision) = self.pools.vision.loaded() {
+            if let Some(Json::Object(image)) = lanes.get_mut("image") {
+                image.insert("model_id".into(), Json::String(vision.model_id().into()));
+                image.insert("precision".into(), Json::String(vision.precision().into()));
+            }
+        }
         #[cfg(feature = "embed")]
         if let Some(precision) = self.reranker.precision() {
             if let Some(Json::Object(rerank)) = lanes.get_mut("rerank") {
@@ -1055,20 +1313,329 @@ impl Router {
     }
 
     pub fn doctor(&self) -> Result<Json> {
-        let (concepts, chunks) = self.store.counts()?;
-        let pins = self.store.pin_info()?;
-        let mut findings = Vec::new();
-        if concepts == 0 {
-            findings.push("graph has no concepts");
+        use crate::model::{utc_now_datetime, PyDateTime};
+
+        let concepts = self.store.query(
+            "MATCH (c:Concept) RETURN c.id AS id, c.title AS title, \
+             c.description AS description, c.timestamp AS timestamp",
+            vec![],
+        )?;
+        let live_ids: BTreeSet<String> = concepts
+            .iter()
+            .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+            .collect();
+        let tombstoned: BTreeSet<String> = self
+            .store
+            .query(
+                "MATCH (d:DeletedConcept) RETURN d.original_id AS id",
+                vec![],
+            )
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+            .collect();
+
+        let mut findings: Vec<Map<String, Json>> = Vec::new();
+        let mut add = |path: &str, severity: &str, rule: &str, message: String| {
+            let mut row = Map::new();
+            row.insert("path".into(), Json::String(path.into()));
+            row.insert("severity".into(), Json::String(severity.into()));
+            row.insert("rule".into(), Json::String(rule.into()));
+            row.insert("message".into(), Json::String(message));
+            findings.push(row);
+        };
+
+        for link in self.store.list_broken_links()? {
+            let source = link.get("source").and_then(Json::as_str).unwrap_or("");
+            let target = link.get("target").and_then(Json::as_str).unwrap_or("");
+            let kind = link
+                .get("kind")
+                .and_then(Json::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("mention");
+            let reason = link
+                .get("reason")
+                .and_then(Json::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("missing");
+            let via = if kind == "mention" {
+                String::new()
+            } else {
+                format!(" ({kind})")
+            };
+            if reason == "ambiguous" {
+                let mut candidates: Vec<String> = link
+                    .get("candidates")
+                    .and_then(Json::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Json::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                candidates.sort();
+                let matched = if candidates.is_empty() {
+                    "several concepts".to_string()
+                } else {
+                    candidates.join(", ")
+                };
+                add(
+                    source,
+                    "warning",
+                    "ambiguous_link",
+                    format!(
+                        "link '{target}'{via} is ambiguous: matches {matched} — use an id or a path link"
+                    ),
+                );
+            } else {
+                add(
+                    source,
+                    "error",
+                    "broken_link",
+                    format!("links to missing concept '{target}'{via}"),
+                );
+            }
         }
-        Ok(serde_json::json!({
-            "ok": findings.is_empty(),
-            "schema_version": self.store.schema_version()?,
-            "concepts": concepts,
-            "chunks": chunks,
-            "pins": pins,
-            "findings": findings
-        }))
+
+        for row in self.store.query(
+            "MATCH (f:FileHash) RETURN f.path AS path, f.concept_id AS cid",
+            vec![],
+        )? {
+            let path = row.get("path").and_then(Json::as_str).unwrap_or("");
+            let cid = row.get("cid").and_then(Json::as_str);
+            let known = cid.is_some_and(|id| live_ids.contains(id) || tombstoned.contains(id));
+            if !known {
+                let label = cid.unwrap_or("None");
+                add(
+                    path,
+                    "error",
+                    "orphan_hash",
+                    format!(
+                        "hash tracked for missing concept '{label}' (crashed import?) — cleared by --fix"
+                    ),
+                );
+            }
+        }
+
+        let mut titles: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for row in &concepts {
+            let title = row.get("title").and_then(Json::as_str).unwrap_or("");
+            let id = row.get("id").and_then(Json::as_str).unwrap_or("");
+            if !title.is_empty() {
+                titles
+                    .entry(title.to_string())
+                    .or_default()
+                    .push(id.to_string());
+            }
+        }
+        for (title, ids) in &titles {
+            if ids.len() > 1 {
+                let mut sorted = ids.clone();
+                sorted.sort();
+                for cid in &sorted {
+                    let others: Vec<&str> = sorted
+                        .iter()
+                        .filter(|other| *other != cid)
+                        .map(String::as_str)
+                        .collect();
+                    add(
+                        cid,
+                        "warn",
+                        "duplicate_title",
+                        format!(
+                            "title '{title}' also used by {} ([[{title}]] links resolve to neither)",
+                            others.join(", ")
+                        ),
+                    );
+                }
+            }
+        }
+
+        let mut degrees: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+        for row in self.store.query(
+            "MATCH (a:Concept)-[:LINKS_TO]->(b:Concept) \
+             RETURN a.id AS src, b.id AS dst",
+            vec![],
+        )? {
+            let src = row.get("src").and_then(Json::as_str).unwrap_or("");
+            let dst = row.get("dst").and_then(Json::as_str).unwrap_or("");
+            degrees.entry(src.to_string()).or_default().0 += 1;
+            degrees.entry(dst.to_string()).or_default().1 += 1;
+        }
+
+        let now = utc_now_datetime();
+        for row in &concepts {
+            let cid = row.get("id").and_then(Json::as_str).unwrap_or("");
+            if cid.ends_with("index") || cid.ends_with("log") {
+                continue;
+            }
+            let (out_d, in_d) = degrees.get(cid).copied().unwrap_or((0, 0));
+            if out_d == 0 && in_d == 0 {
+                add(
+                    cid,
+                    "warn",
+                    "orphan",
+                    "no incoming or outgoing links".into(),
+                );
+            }
+            if row
+                .get("description")
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            {
+                add(
+                    cid,
+                    "warn",
+                    "missing_description",
+                    "empty description".into(),
+                );
+            }
+            if let Some(timestamp) = row.get("timestamp").and_then(Json::as_str) {
+                if let Ok(parsed) = PyDateTime::parse(timestamp) {
+                    let age_days = (now.as_naive() - parsed.as_naive()).as_seconds_f64() / 86_400.0;
+                    if age_days > 365.0 {
+                        add(
+                            cid,
+                            "warn",
+                            "stale",
+                            format!("timestamp {timestamp} is {} days old", age_days as i64),
+                        );
+                    }
+                }
+            }
+        }
+
+        findings.sort_by(|left, right| {
+            let key = |row: &Map<String, Json>| {
+                (
+                    row.get("rule")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    row.get("path")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            };
+            key(left).cmp(&key(right))
+        });
+
+        let mut summary: BTreeMap<String, i64> = BTreeMap::new();
+        for finding in &findings {
+            let rule = finding
+                .get("rule")
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .to_string();
+            *summary.entry(rule).or_default() += 1;
+        }
+        let deductions: &[(&str, i64, i64)] = &[
+            ("search_unavailable", 20, 20),
+            ("broken_link", 5, 40),
+            ("ambiguous_link", 3, 15),
+            ("orphan_hash", 5, 30),
+            ("orphan", 2, 20),
+            ("duplicate_title", 3, 15),
+            ("stale", 1, 10),
+            ("missing_description", 1, 15),
+        ];
+        let mut score = 100i64;
+        for (rule, count) in &summary {
+            if let Some((points, cap)) = deductions
+                .iter()
+                .find(|(name, _, _)| name == rule)
+                .map(|(_, points, cap)| (*points, *cap))
+            {
+                score -= (points * count).min(cap);
+            }
+        }
+        score = score.max(0);
+
+        let mut info = Vec::new();
+        let mut incoming: Vec<(String, i64)> = degrees
+            .iter()
+            .filter(|(_, (_, ind))| *ind > 0)
+            .map(|(id, (_, ind))| (id.clone(), *ind))
+            .collect();
+        incoming.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+        for (id, count) in incoming.into_iter().take(3) {
+            info.push(serde_json::json!({
+                "rule": "hub_concentration",
+                "message": format!("'{id}' has {count} incoming link(s)")
+            }));
+        }
+
+        let detached = if self.store.meta_int("detached")?.unwrap_or(0) == 1 {
+            let roots = self
+                .store
+                .query(
+                    "MATCH (s:SourceRoot) RETURN s.alias AS alias, s.path AS path, \
+                     s.file_count AS file_count, s.last_seen AS last_seen",
+                    vec![],
+                )
+                .unwrap_or_default();
+            Some(serde_json::json!({
+                "detached_at": self.store.meta_int("detached_at")?.unwrap_or(0),
+                "roots": roots,
+            }))
+        } else {
+            None
+        };
+
+        let file_paths: Vec<String> = self.store.file_hashes()?.into_keys().collect();
+        let mut targets: Vec<(String, String)> = Vec::new();
+        if let Some(root) = self.settings.bundle_root.as_ref() {
+            targets.push((String::new(), root.clone()));
+        }
+        targets.extend(
+            self.settings
+                .roots
+                .iter()
+                .map(|(alias, path)| (alias.clone(), path.clone())),
+        );
+        let roots: Vec<Json> = targets
+            .into_iter()
+            .map(|(alias, path)| {
+                let prefix = if alias.is_empty() {
+                    String::new()
+                } else {
+                    format!("@{alias}/")
+                };
+                let tracked_files = if alias.is_empty() {
+                    file_paths.iter().filter(|p| !p.starts_with('@')).count()
+                } else {
+                    file_paths.iter().filter(|p| p.starts_with(&prefix)).count()
+                };
+                let concepts = if alias.is_empty() {
+                    live_ids.iter().filter(|id| !id.starts_with('@')).count()
+                } else {
+                    live_ids.iter().filter(|id| id.starts_with(&prefix)).count()
+                };
+                serde_json::json!({
+                    "alias": if alias.is_empty() { "<primary>" } else { &alias },
+                    "path": path,
+                    "present": Path::new(&path).is_dir(),
+                    "tracked_files": tracked_files,
+                    "concepts": concepts,
+                })
+            })
+            .collect();
+
+        let report = serde_json::json!({
+            "concepts": concepts.len(),
+            "detached": detached,
+            "findings": findings,
+            "info": info,
+            "roots": roots,
+            "score": score,
+            "summary": summary,
+        });
+        Ok(serde_json::json!({"report": report, "fixed": Json::Null}))
     }
 
     pub fn read(&self, params: &Map<String, Json>) -> Result<Json> {
@@ -1095,12 +1662,12 @@ impl Router {
                 ));
             }
         }
-        let concept = self.store.get_by_id(concept_id)?;
-        if concept.is_none() {
-            return Err(unknown_concept("read", "concept", concept_id));
-        }
+        let concept = self
+            .store
+            .get_by_id(concept_id)?
+            .ok_or_else(|| unknown_concept("read", "concept", concept_id))?;
         if let Some(budget) = max_tokens {
-            return self.read_with_budget(concept_id, &include, budget, &concept.expect("checked"));
+            return self.read_with_budget(concept_id, &include, budget, &concept);
         }
         match include.as_str() {
             "chunks" => Ok(Json::Array(self.store.get_chunks(concept_id)?)),
@@ -1135,7 +1702,7 @@ impl Router {
                     "siblings": siblings
                 }))
             }
-            _ => Ok(concept.expect("checked")),
+            _ => Ok(concept),
         }
     }
 
@@ -3374,7 +3941,7 @@ mod tests {
 
     #[test]
     fn op_vocabulary() {
-        assert_eq!(OP_NAMES.len(), 32);
+        assert_eq!(OP_NAMES.len(), 30);
         assert!(is_op("get_by_id"));
         assert!(!is_op("init"));
     }

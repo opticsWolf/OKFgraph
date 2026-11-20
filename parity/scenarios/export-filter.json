@@ -9,10 +9,42 @@
     "chunk_size": 32,
     "chunk_overlap": 4
   },
-  "setup": {"import": {"corpus": "parity/corpus/filters"}},
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/filters"
+    }
+  },
   "ops": [
-    {"op": "export_bundle", "params": {"output_dir": "parity/out/export-tree-@RUNNER@"}},
-    {"op": "export_bundle", "params": {"output_dir": "parity/out/export-tree-obsidian-@RUNNER@", "flavor": "obsidian"}},
-    {"op": "export_concept", "params": {"concept_id": "area1/alpha", "output_dir": "parity/out/export-one-@RUNNER@"}}
+    {
+      "op": "export_bundle",
+      "params": {
+        "output_dir": "parity/out/export-tree-@RUNNER@"
+      }
+    },
+    {
+      "op": "export_bundle",
+      "params": {
+        "output_dir": "parity/out/export-tree-obsidian-@RUNNER@",
+        "flavor": "obsidian"
+      }
+    },
+    {
+      "op": "export_concept",
+      "params": {
+        "concept_id": "area1/alpha",
+        "output_dir": "parity/out/export-one-@RUNNER@"
+      }
+    },
+    {
+      "op": "export_bundle",
+      "params": {
+        "output_dir": "parity/out/export-filtered-tree-@RUNNER@",
+        "directory_id": "area1",
+        "concept_type": "note",
+        "tags": [
+          "keep"
+        ]
+      }
+    }
   ]
 }

@@ -10,14 +10,64 @@
     "chunk_size": 512,
     "chunk_overlap": 40
   },
-  "setup": {"import": {"corpus": "parity/corpus/minimal"}},
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/minimal"
+    }
+  },
   "ops": [
-    {"op": "import_bundle", "params": {"bundle_path": "parity/corpus/minimal"}},
-    {"op": "get_by_id", "params": {"concept_id": "alpha"}},
-    {"op": "read", "params": {"concept_id": "alpha", "include": "body"}},
-    {"op": "search", "params": {"query": "beta", "limit": 5}},
-    {"op": "search", "params": {"query": "alpha", "limit": 5, "target": "chunks"}},
-    {"op": "list_directory", "params": {"directory_id": ""}},
-    {"op": "pin_info", "params": {}}
+    {
+      "op": "import_bundle",
+      "params": {
+        "bundle_path": "parity/corpus/minimal"
+      }
+    },
+    {
+      "op": "import_files",
+      "params": {
+        "paths": [
+          "parity/corpus/minimal/alpha.md",
+          "parity/corpus/minimal/beta.md"
+        ]
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "alpha"
+      }
+    },
+    {
+      "op": "read",
+      "params": {
+        "concept_id": "alpha",
+        "include": "body"
+      }
+    },
+    {
+      "op": "search",
+      "params": {
+        "query": "beta",
+        "limit": 5
+      }
+    },
+    {
+      "op": "search",
+      "params": {
+        "query": "alpha",
+        "limit": 5,
+        "target": "chunks"
+      }
+    },
+    {
+      "op": "list_directory",
+      "params": {
+        "directory_id": ""
+      }
+    },
+    {
+      "op": "pin_info",
+      "params": {}
+    }
   ]
 }

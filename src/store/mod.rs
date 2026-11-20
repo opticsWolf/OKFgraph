@@ -59,15 +59,37 @@ impl Store {
             read_only: true,
         };
         let mut settings = settings.clone();
-        if let Some(dim) = store.meta_int("embedding_dim")? {
+        // The on-disk column width is authoritative: a caller that opened the
+        // DB with the wrong --dim must still encode/search in the stored space.
+        if let Some(dim) = store.schema_embedding_dim()? {
+            settings.embedding_dim = dim;
+        } else if let Some(dim) = store.meta_int("embedding_dim")? {
             settings.embedding_dim = dim;
         }
         let version = store.schema_version()?;
         if version > SCHEMA_VERSION {
             return Err(OkfError::new(
-                "INTERNAL",
+                "CONFIG_INVALID",
                 format!("database schema v{version} is newer than this build (v{SCHEMA_VERSION})"),
-            ));
+            )
+            .field("schema_version", Json::from(version))
+            .remedy("upgrade the okfgraph build, or open the database with the newer release"));
+        }
+        if version == 0 {
+            return Err(OkfError::new(
+                "CONFIG_INVALID",
+                "database has no v10 schema; call okf init first",
+            )
+            .field("schema_version", Json::from(0))
+            .remedy("run okf init"));
+        }
+        if version < SCHEMA_VERSION {
+            return Err(OkfError::new(
+                "CONFIG_INVALID",
+                format!("database schema v{version} needs migration to v{SCHEMA_VERSION}"),
+            )
+            .field("schema_version", Json::from(version))
+            .remedy("open/migrate it once with the Python 0.15 release, then reopen with Rust"));
         }
         Ok(Self { settings, ..store })
     }
@@ -77,6 +99,18 @@ impl Store {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+        if path.exists()
+            && path
+                .metadata()
+                .map(|metadata| metadata.len() > 0)
+                .unwrap_or(false)
+        {
+            return Err(OkfError::new(
+                "BAD_VALUE",
+                format!("database already exists: {}", path.display()),
+            )
+            .remedy("open the existing database instead of initializing it"));
         }
         let store = Self {
             path,
@@ -108,6 +142,9 @@ impl Store {
         let config = SystemConfig::default().read_only(self.read_only);
         let db = Database::new(&self.path, config).map_err(map_lbug)?;
         let conn = Connection::new(&db).map_err(map_lbug)?;
+        // lbug always journals through its WAL. The 0.15 `wal_mode`
+        // setting is therefore accepted for interface compatibility but has
+        // no separate mode to switch on (the upstream PRAGMA is not Cypher).
         f(&conn)
     }
 
@@ -118,29 +155,76 @@ impl Store {
         &self,
         f: impl for<'a> FnOnce(&Connection<'a>) -> Result<T>,
     ) -> Result<T> {
+        if self.read_only {
+            return Err(OkfError::new(
+                "DB_LOCKED",
+                "this store was opened read-only; writing through it is refused",
+            )
+            .remedy("reopen the router with write access"));
+        }
         let config = SystemConfig::default().read_only(false);
         let db = Database::new(&self.path, config).map_err(map_lbug)?;
         let conn = Connection::new(&db).map_err(map_lbug)?;
-        for extension in ["vector", "fts"] {
-            conn.query(&format!("LOAD {extension}")).map_err(map_lbug)?;
-        }
+        // lbug's WAL is always enabled; see the note in `with_conn`.
+        self.load_extensions(&conn)?;
         f(&conn)
     }
 
     pub fn write(&self, sql: &str, params: Vec<(&str, Value)>) -> Result<()> {
+        self.with_write_conn(|conn| Self::write_on(conn, sql, params))
+    }
+
+    /// Execute one statement on an existing connection. Used by
+    /// [`Store::with_write_tx`] so a whole concept replacement commits or
+    /// rolls back together.
+    pub fn write_on(conn: &Connection<'_>, sql: &str, params: Vec<(&str, Value)>) -> Result<()> {
+        if params.is_empty() {
+            conn.query(sql).map_err(map_lbug)?;
+        } else {
+            let mut stmt = conn.prepare(sql).map_err(map_lbug)?;
+            conn.execute(&mut stmt, params).map_err(map_lbug)?;
+        }
+        Ok(())
+    }
+
+    /// Run `f` inside one explicit write transaction.
+    ///
+    /// Ladybug auto-commits each statement outside `BEGIN`/`COMMIT`, which is
+    /// why re-imports used to leave a half-written graph when an encode or a
+    /// later statement failed. The closure receives the same connection for
+    /// every statement and is rolled back on any error.
+    pub fn with_write_tx<T>(
+        &self,
+        f: impl for<'a> FnOnce(&Connection<'a>) -> Result<T>,
+    ) -> Result<T> {
         self.with_write_conn(|conn| {
-            if params.is_empty() {
-                conn.query(sql).map_err(map_lbug)?;
-            } else {
-                let mut stmt = conn.prepare(sql).map_err(map_lbug)?;
-                conn.execute(&mut stmt, params).map_err(map_lbug)?;
+            conn.query("BEGIN TRANSACTION").map_err(map_lbug)?;
+            match f(conn) {
+                Ok(value) => {
+                    conn.query("COMMIT").map_err(map_lbug)?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    // Best effort: preserve the original error if rollback also
+                    // fails, but never auto-commit a partially written graph.
+                    let _ = conn.query("ROLLBACK");
+                    Err(err)
+                }
             }
-            Ok(())
         })
     }
 
     pub fn bump_write_epoch(&self) -> Result<()> {
         self.write(
+            "MERGE (m:Meta {key: 'write_epoch'}) \
+             ON CREATE SET m.value = 1 ON MATCH SET m.value = m.value + 1",
+            vec![],
+        )
+    }
+
+    pub(crate) fn bump_write_epoch_on(conn: &Connection<'_>) -> Result<()> {
+        Self::write_on(
+            conn,
             "MERGE (m:Meta {key: 'write_epoch'}) \
              ON CREATE SET m.value = 1 ON MATCH SET m.value = m.value + 1",
             vec![],
@@ -173,8 +257,11 @@ impl Store {
                 "CALL DROP_VECTOR_INDEX('Chunk', 'chunk_embedding')",
                 "CALL DROP_FTS_INDEX('Chunk', 'chunk_fts')",
             ] {
-                // A missing index is benign: drop is the recovery path.
-                let _ = conn.query(sql);
+                match conn.query(sql) {
+                    Ok(_) => {}
+                    Err(err) if benign_index_error(&err) => {}
+                    Err(err) => return Err(map_lbug(err)),
+                }
             }
             Ok(())
         })
@@ -189,11 +276,41 @@ impl Store {
                 "CALL CREATE_VECTOR_INDEX('Chunk', 'chunk_embedding', 'embedding', mu := 30, ml := 60, metric := 'cosine', efc := 200)",
                 "CALL CREATE_FTS_INDEX('Chunk', 'chunk_fts', ['chunk_text'])",
             ] {
-                // Already-exists is benign: indexes are maintained in place.
-                let _ = conn.query(sql);
+                match conn.query(sql) {
+                    Ok(_) => {}
+                    Err(err) if benign_index_error(&err) => {}
+                    Err(err) => return Err(map_lbug(err)),
+                }
             }
             Ok(())
         })
+    }
+
+    fn load_extensions(&self, conn: &Connection<'_>) -> Result<()> {
+        for extension in ["vector", "fts"] {
+            if let Some(dir) = self.settings.extension_dir.as_ref() {
+                let dir = PathBuf::from(dir);
+                let name = format!("lib{extension}.lbug_extension");
+                let path = [dir.join(&name), dir.join(extension).join(&name)]
+                    .into_iter()
+                    .find(|candidate| candidate.is_file())
+                    .ok_or_else(|| {
+                        OkfError::new(
+                            "CONFIG_INVALID",
+                            format!(
+                                "lib{extension}.lbug_extension not found in extension_dir                                  {} (run 'okf setup extensions')",
+                                dir.display()
+                            ),
+                        )
+                    })?;
+                let escaped = path.to_string_lossy().replace('\'', "''");
+                conn.query(&format!("LOAD EXTENSION '{escaped}'"))
+                    .map_err(map_lbug)?;
+            } else {
+                conn.query(&format!("LOAD {extension}")).map_err(map_lbug)?;
+            }
+        }
+        Ok(())
     }
 
     /// Connections used by search must load the index extensions first.
@@ -204,10 +321,11 @@ impl Store {
         let config = SystemConfig::default().read_only(true);
         let db = Database::new(&self.path, config).map_err(map_search_lbug)?;
         let conn = Connection::new(&db).map_err(map_search_lbug)?;
-        for extension in ["vector", "fts"] {
-            conn.query(&format!("LOAD {extension}"))
-                .map_err(map_search_lbug)?;
-        }
+        self.load_extensions(&conn).map_err(|err| {
+            OkfError::new("SEARCH_UNAVAILABLE", err.message.clone())
+                .field("cause", Json::String(err.code))
+                .remedy("check extension_dir and reinstall the vector/fts extensions")
+        })?;
         f(&conn)
     }
 
@@ -462,6 +580,37 @@ impl Store {
             .map_err(map_lbug)?;
             Ok(())
         })
+    }
+
+    /// Width of the stored `Concept.embedding` column, if the table exists.
+    ///
+    /// `CALL TABLE_INFO` is the only reliable source: older DBs may have no
+    /// `Meta.embedding_dim` row, and `CREATE ... IF NOT EXISTS` does not
+    /// change an existing column.
+    pub fn schema_embedding_dim(&self) -> Result<Option<i64>> {
+        let Ok(rows) = self.query("CALL TABLE_INFO('Concept') RETURN *", vec![]) else {
+            return Ok(None);
+        };
+        for row in rows {
+            if row.get("name").and_then(Json::as_str) != Some("embedding") {
+                continue;
+            }
+            let Some(text) = row.get("type").and_then(Json::as_str) else {
+                continue;
+            };
+            let Some(start) = text.find('[') else {
+                continue;
+            };
+            let Some(end) = text[start + 1..].find(']') else {
+                continue;
+            };
+            if let Ok(dim) = text[start + 1..start + 1 + end].parse::<i64>() {
+                if dim > 0 {
+                    return Ok(Some(dim));
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub fn schema_version(&self) -> Result<u16> {
@@ -795,8 +944,8 @@ impl Store {
         self.write(
             "MATCH (c:Concept {id: $cid})-[r:INCLUDES_ASSET]->(i:ImageAsset {id: $iid}) \
              DELETE r \
-             WITH i OPTIONAL MATCH (i)<-[:INCLUDES_ASSET]-(:Concept) \
-             WITH i, count(*) AS n WHERE n = 0 DELETE i",
+             WITH i OPTIONAL MATCH (i)<-[:INCLUDES_ASSET]-(other:Concept) \
+             WITH i, count(other) AS n WHERE n = 0 DELETE i",
             vec![
                 ("cid", Value::String(concept_id.into())),
                 ("iid", Value::String(asset_id.into())),
@@ -822,28 +971,48 @@ impl Store {
             .unwrap_or(0))
     }
 
-    pub fn source_file_for_concept(&self, concept_id: &str) -> Result<Option<PathBuf>> {
+    pub fn file_hash_keys_for_concept(&self, concept_id: &str) -> Result<Vec<String>> {
         let rows = self.query(
             "MATCH (f:FileHash {concept_id: $cid}) RETURN f.path AS p",
             vec![("cid", Value::String(concept_id.into()))],
         )?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.get("p").and_then(Json::as_str).map(str::to_string))
+            .collect())
+    }
+
+    /// Absolute candidates for a FileHash key. The primary root owns bare
+    /// keys; an `@alias/...` key also gets a primary-root fallback, matching
+    /// Python's `_resolve_file_paths` until named roots are threaded through.
+    pub fn resolve_file_paths(&self, key: &str) -> Vec<PathBuf> {
         let Some(root) = self.settings.bundle_root.as_ref() else {
-            return Ok(None);
+            return Vec::new();
         };
-        let root = PathBuf::from(root);
-        for row in rows {
-            let Some(raw) = row.get("p").and_then(Json::as_str) else {
-                continue;
-            };
-            let native = raw.replace('\\', "/");
-            let relative = native
-                .strip_prefix('@')
-                .and_then(|rest| rest.split_once('/'))
-                .map(|(_, rest)| rest)
-                .unwrap_or(&native);
-            let candidate = root.join(relative);
-            if candidate.is_file() {
-                return Ok(Some(candidate));
+        let root = absolute_path(Path::new(root));
+        let native = key.replace('\\', "/");
+        let (alias, relative) = match native
+            .strip_prefix('@')
+            .and_then(|rest| rest.split_once('/'))
+        {
+            Some((alias, rest)) => (Some(alias), rest),
+            None => (None, native.as_str()),
+        };
+        let mut out = vec![root.join(relative)];
+        if alias.is_some() {
+            out.push(root.join(&native));
+        }
+        out
+    }
+
+    pub fn source_file_for_concept(&self, concept_id: &str) -> Result<Option<PathBuf>> {
+        for key in self.file_hash_keys_for_concept(concept_id)? {
+            if let Some(path) = self
+                .resolve_file_paths(&key)
+                .into_iter()
+                .find(|p| p.is_file())
+            {
+                return Ok(Some(path));
             }
         }
         Ok(None)
@@ -975,7 +1144,7 @@ impl Store {
                     d.type AS type ORDER BY d.deleted_at DESC",
             vec![],
         )?;
-        let now = crate::model::utc_now_datetime();
+        let now = crate::model::local_now_datetime();
         Ok(rows
             .into_iter()
             .map(|row| {
@@ -1292,6 +1461,25 @@ impl Store {
         )
     }
 
+    pub(crate) fn set_file_hash_on(
+        conn: &Connection<'_>,
+        path: &str,
+        hash: &str,
+        concept_id: &str,
+        dir: &str,
+    ) -> Result<()> {
+        Self::write_on(
+            conn,
+            "MERGE (f:FileHash {path: $p}) SET f.hash = $h, f.concept_id = $c, f.dir = $d",
+            vec![
+                ("p", Value::String(path.into())),
+                ("h", Value::String(hash.into())),
+                ("c", Value::String(concept_id.into())),
+                ("d", Value::String(dir.into())),
+            ],
+        )
+    }
+
     pub fn dir_hash_files(&self, path: &str) -> Result<Option<String>> {
         Ok(self
             .scalar(
@@ -1345,6 +1533,17 @@ impl Store {
             "MATCH (f:FileHash {path: $p}) DELETE f",
             vec![("p", Value::String(path.into()))],
         )
+    }
+
+    pub fn pending_deletions(&self) -> Result<Vec<String>> {
+        Ok(self
+            .query(
+                "MATCH (d:DeletedPath) RETURN d.path AS p ORDER BY d.path",
+                vec![],
+            )?
+            .into_iter()
+            .filter_map(|row| row.get("p").and_then(Json::as_str).map(str::to_string))
+            .collect())
     }
 
     pub fn record_deleted_path(&self, path: &str, detected_at: i64) -> Result<()> {
@@ -1428,7 +1627,7 @@ impl Store {
             "pinned": {
                 "model_id": model_id,
                 "precision": precision,
-                "embedding_dim": self.settings.embedding_dim,
+                "embedding_dim": self.schema_embedding_dim()?.unwrap_or(self.settings.embedding_dim),
                 "space": space
             },
             "configured": {
@@ -1476,9 +1675,22 @@ impl Store {
             },
             "image": {
                 "backend": self.settings.image_backend,
-                "endpoint": null,
-                "identity": "in-process",
-                "model_id": if self.settings.image_model_id.is_some() { self.settings.image_model_id.clone() } else { Some(format!("{}-vision", self.settings.model_id)) },
+                "endpoint": if self.settings.image_backend == "external" {
+                    Some(self.settings.image_endpoint_url.clone())
+                } else {
+                    None
+                },
+                "identity": if self.settings.image_backend == "external" {
+                    "unopened"
+                } else {
+                    "in-process"
+                },
+                "model_id": Some(
+                    self.settings
+                        .image_model_id
+                        .clone()
+                        .unwrap_or_else(|| crate::embed::default_image_model_id(&self.settings.model_id))
+                ),
                 "pinned_space": null,
                 "precision": null,
                 "space": null,
@@ -1570,6 +1782,31 @@ fn parse_python_bytes(text: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// Best-effort absolute path without requiring the leaf to exist.
+///
+/// `std::path::absolute` normalizes `.`/`..` but does not resolve symlinks,
+/// and on Windows it keeps the ordinary `D:\...` spelling instead of the
+/// `\?\D:\...` verbatim prefix returned by `canonicalize`.
+pub fn absolute_path(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        }
+    })
+}
+
+fn benign_index_error(err: &lbug::Error) -> bool {
+    let text = err.to_string().to_ascii_lowercase();
+    text.contains("already exists")
+        || text.contains("does not exist")
+        || text.contains("not found")
+        || text.contains("no such index")
 }
 
 fn map_lbug(err: lbug::Error) -> OkfError {
@@ -1780,6 +2017,127 @@ mod tests {
     fn schema_table_names() {
         assert_eq!(NODE_TABLES.len(), 13);
         assert_eq!(REL_TABLES.len(), 4);
+    }
+
+    #[test]
+    fn init_persists_dimension_and_open_adopts_schema() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("dim.db");
+        Store::init(&path, 256).expect("init");
+        let settings = Settings::default()
+            .with("db_path", Json::String(path.to_string_lossy().into_owned()))
+            .expect("settings");
+        let store = Store::open(&settings).expect("open");
+        assert_eq!(store.schema_embedding_dim().expect("schema dim"), Some(256));
+        assert_eq!(store.settings().embedding_dim, 256);
+    }
+
+    #[test]
+    fn write_transaction_rolls_back_on_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("tx.db");
+        Store::init(&path, 3).expect("init");
+        let settings = Settings::default()
+            .with("db_path", Json::String(path.to_string_lossy().into_owned()))
+            .expect("settings");
+        let store = Store::open_writable(&settings).expect("open");
+        let result: Result<()> = store.with_write_tx(|conn| {
+            Store::write_on(
+                conn,
+                "CREATE (:Meta {key: 'rollback_probe', value: 1})",
+                vec![],
+            )?;
+            Err(OkfError::new("INTERNAL", "injected failure"))
+        });
+        assert!(result.is_err());
+        assert_eq!(store.meta_int("rollback_probe").expect("probe"), None);
+    }
+
+    #[test]
+    fn init_refuses_an_existing_database() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("existing.db");
+        Store::init(&path, 3).expect("init");
+        let err = Store::init(&path, 3).expect_err("must not stamp an existing db");
+        assert_eq!(err.code, "BAD_VALUE");
+    }
+
+    #[test]
+    fn open_refuses_missing_or_old_schema_versions() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let missing = dir.path().join("missing-version.db");
+        Store::init(&missing, 3).expect("init");
+        let settings = Settings::default()
+            .with(
+                "db_path",
+                Json::String(missing.to_string_lossy().into_owned()),
+            )
+            .expect("settings");
+        {
+            let store = Store::open_writable(&settings).expect("open");
+            store
+                .write("MATCH (m:Meta {key: 'schema_version'}) DELETE m", vec![])
+                .expect("delete version");
+        }
+        let err = Store::open(&settings).expect_err("missing version");
+        assert_eq!(err.code, "CONFIG_INVALID");
+
+        let old = dir.path().join("old-version.db");
+        Store::init(&old, 3).expect("init");
+        let old_settings = Settings::default()
+            .with("db_path", Json::String(old.to_string_lossy().into_owned()))
+            .expect("settings");
+        {
+            let store = Store::open_writable(&old_settings).expect("open");
+            store
+                .write(
+                    "MERGE (m:Meta {key: 'schema_version'}) SET m.value = 9",
+                    vec![],
+                )
+                .expect("old version");
+        }
+        let err = Store::open(&old_settings).expect_err("old version");
+        assert_eq!(err.code, "CONFIG_INVALID");
+    }
+
+    #[test]
+    fn image_asset_is_deleted_only_when_unowned() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("images.db");
+        Store::init(&path, 3).expect("init");
+        let settings = Settings::default()
+            .with("db_path", Json::String(path.to_string_lossy().into_owned()))
+            .expect("settings");
+        let store = Store::open_writable(&settings).expect("open");
+        store
+            .write(
+                "CREATE (:Concept {id: 'a', type: 'note', title: 'A'})",
+                vec![],
+            )
+            .expect("concept");
+        store
+            .write(
+                "CREATE (:ImageAsset {id: 'img', content_hash: 'x'})",
+                vec![],
+            )
+            .expect("asset");
+        store.link_image_asset("a", "img").expect("link");
+        store.delete_image_asset("a", "img").expect("unlink");
+        assert_eq!(store.count_image_assets().expect("count"), 0);
+    }
+
+    #[test]
+    fn read_only_store_refuses_writes() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let settings = Settings::default()
+            .with("db_path", Json::String(path.to_string_lossy().into_owned()))
+            .expect("settings");
+        let store = Store::open(&settings).expect("open");
+        let err = store
+            .write("MERGE (:Meta {key: 'x'})", vec![])
+            .expect_err("read-only");
+        assert_eq!(err.code, "DB_LOCKED");
     }
 
     #[test]

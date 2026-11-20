@@ -1,0 +1,37 @@
+{
+  "name": "ingest-office-real",
+  "settings": {
+    "db_path": "parity/out/ingest-office-real-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/empty"
+    },
+    "remove": [
+      "parity/out/office-real-@RUNNER@"
+    ]
+  },
+  "ops": [
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/fixtures/sample.docx",
+        "output_dir": "parity/out/office-real-@RUNNER@",
+        "auto_import": false
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/fixtures/sample.docx",
+        "auto_import": true
+      }
+    }
+  ]
+}

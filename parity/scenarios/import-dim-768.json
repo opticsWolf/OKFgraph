@@ -1,0 +1,35 @@
+{
+  "name": "import-dim-768",
+  "settings": {
+    "db_path": "parity/out/import-dim-768-@RUNNER@.db",
+    "bundle_root": "parity/corpus/minimal",
+    "embedding_dim": 768,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/minimal"
+    }
+  },
+  "ops": [
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "alpha"
+      }
+    },
+    {
+      "op": "search",
+      "params": {
+        "query": "alpha",
+        "limit": 2
+      }
+    },
+    {
+      "op": "pin_info",
+      "params": {}
+    }
+  ]
+}

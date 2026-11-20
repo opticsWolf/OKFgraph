@@ -78,19 +78,30 @@ pub struct OkfError {
 }
 
 impl OkfError {
-    /// Build an error, refusing unknown codes (the Python set is closed).
-    #[track_caller]
+    /// Build an error.
+    ///
+    /// Codes are a closed set shared with Python. An unknown code is a bug in
+    /// the caller, but it must not abort the process: normalize it to
+    /// `INTERNAL` and preserve the requested code in `fields` so tests and
+    /// diagnostics can still find it.
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        let code = code.into();
-        assert!(
-            error_kind(&code).is_some(),
-            "unknown OKF error code: {code}"
-        );
+        let requested = code.into();
+        let mut fields = BTreeMap::new();
+        let code = if error_kind(&requested).is_some() {
+            requested
+        } else {
+            fields.insert(
+                "type".into(),
+                Value::String("unknown OKF error code".into()),
+            );
+            fields.insert("requested_code".into(), Value::String(requested));
+            "INTERNAL".to_string()
+        };
         Self {
             code,
             message: message.into(),
             op: None,
-            fields: BTreeMap::new(),
+            fields,
             remedy: None,
             data: None,
         }
@@ -133,7 +144,9 @@ impl OkfError {
     }
 
     pub fn kind(&self) -> ErrorKind {
-        error_kind(&self.code).expect("validated error code")
+        // `new` normalizes unknown codes, but deserialized/legacy payloads can
+        // still carry one. Treat those as state errors rather than panicking.
+        error_kind(&self.code).unwrap_or(ErrorKind::State)
     }
 
     pub fn exit_code(&self) -> i32 {
@@ -226,6 +239,30 @@ mod tests {
         assert_eq!(error_kind("UNKNOWN_CONCEPT"), Some(ErrorKind::State));
         assert_eq!(error_kind("DOCTOR_FINDINGS"), Some(ErrorKind::Outcome));
         assert_eq!(error_kind("NOPE"), None);
+    }
+
+    #[test]
+    fn unknown_code_normalizes_to_internal() {
+        let err = OkfError::new("IO_ERROR", "disk full");
+        assert_eq!(err.code, "INTERNAL");
+        assert_eq!(err.message, "disk full");
+        assert_eq!(err.kind(), ErrorKind::State);
+        assert_eq!(
+            err.fields.get("requested_code"),
+            Some(&Value::String("IO_ERROR".into()))
+        );
+        assert_eq!(err.exit_code(), 1);
+    }
+
+    #[test]
+    fn deserialized_unknown_code_does_not_panic() {
+        let err: OkfError = serde_json::from_value(serde_json::json!({
+            "code": "NOT_A_CODE",
+            "message": "legacy"
+        }))
+        .expect("deserialize");
+        assert_eq!(err.kind(), ErrorKind::State);
+        assert_eq!(err.exit_code(), 1);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::model::{extra_value, normalize_tags, utc_now_datetime, PyDateTime};
 use crate::pycompat::{content_sig, python_datetime_isoformat, PyValue};
 use crate::settings::Settings;
 use crate::store::Store;
-use lbug::{LogicalType, Value};
+use lbug::{Connection, LogicalType, Value};
 use serde_json::{Map, Value as Json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,9 +37,18 @@ pub(crate) struct Parsed {
     pub(crate) timestamp: Option<PyDateTime>,
     pub(crate) authored: BTreeMap<String, PyValue>,
     pub(crate) body: String,
+    /// Text used for the concept embedding when it differs from the stored
+    /// body (Python's BibTeX ingest embeds the pre-lint `concept.body`).
+    pub(crate) search_text_override: Option<String>,
     pub(crate) extra: BTreeMap<String, String>,
     pub(crate) sig: String,
     pub(crate) path: PathBuf,
+    /// Multi-root namespace (empty for the primary tree).
+    pub(crate) alias: String,
+    /// Synthesized from a converter rather than read from a real bundle file.
+    /// Such items have no `FileHash` ledger entry and may have a temporary
+    /// `path` that is removed before the graph commit.
+    pub(crate) synthetic: bool,
 }
 
 pub fn import_files(
@@ -88,12 +97,20 @@ pub fn import_files(
 /// Import a whole bundle with Python's directory-delta detection. Unchanged
 /// trees are skipped; changed directories are compared per file, so a single
 /// edit does not re-embed its untouched siblings.
-pub fn import_bundle(
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ImportOptions {
+    pub prune_missing: bool,
+    pub force: bool,
+}
+
+fn import_bundle_one(
     store: &Store,
     settings: &Settings,
     embedder: &EmbedderPool,
     pools: &Pools,
     bundle_path: Option<&str>,
+    options: ImportOptions,
+    alias: &str,
 ) -> Result<Json> {
     let configured = settings.bundle_root.as_deref().map(PathBuf::from);
     let root = match bundle_path {
@@ -121,13 +138,72 @@ pub fn import_bundle(
     let engine = embedder.get(settings)?;
     pin_graph(store, settings, engine.as_ref())?;
 
+    // Python isolates an explicit tree that differs from the router-owned
+    // bundle root: every file is imported, but no deletion baseline is read
+    // or written and prune_missing is ignored. A temp/foreign tree must
+    // never tombstone the configured graph.
+    let owned_root = if alias.is_empty() {
+        settings.bundle_root.as_ref()
+    } else {
+        settings.roots.get(alias)
+    };
+    let isolated = bundle_path.is_some()
+        && owned_root.is_some_and(|configured| canonicalish(Path::new(configured)) != root);
+    if isolated {
+        let mut parsed = walk_source_files(&root)?
+            .iter()
+            .map(|path| {
+                let mut item = parse_file_alias(path, settings, Some(&root), alias)?;
+                item.synthetic = true;
+                Ok(item)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let concept_ids = parsed
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        if !parsed.is_empty() {
+            commit_parsed(
+                store,
+                settings,
+                engine.as_ref(),
+                pools,
+                &parsed,
+                Some(&root),
+                true,
+            )?;
+        } else {
+            finish_indexes(store)?;
+        }
+        let mut images = Map::new();
+        for item in &parsed {
+            images.insert(
+                item.id.clone(),
+                Json::from(store.list_images(&item.id)?.len() as i64),
+            );
+        }
+        parsed.clear();
+        return Ok(serde_json::json!({
+            "concept_ids": concept_ids,
+            "images": images,
+            "duplicates": [],
+            "moved": [],
+            "delta": {"changed_dirs": 0, "queued": 0, "actually_changed": 0},
+        }));
+    }
+
     let files = walk_source_files(&root)?;
-    let stored_dirs = store.dir_hashes()?;
-    let stored_files = store.file_hashes()?;
+    let mut stored_dirs = store.dir_hashes()?;
+    let mut stored_files = store.file_hashes()?;
+    if !alias.is_empty() {
+        let prefix = format!("@{alias}/");
+        stored_dirs.retain(|key, _| key.starts_with(&prefix));
+        stored_files.retain(|key, _| key.starts_with(&prefix));
+    }
     let mut current_dirs: BTreeMap<String, DirState> = BTreeMap::new();
     for file in &files {
         let rel = native_rel(file, &root);
-        let dir = parent_key(&rel);
+        let dir = namespaced_key(alias, &parent_key(&rel));
         let entry = current_dirs.entry(dir).or_default();
         let name = file
             .file_name()
@@ -149,13 +225,13 @@ pub fn import_bundle(
         if stored != Some(hash.as_str()) {
             changed_dir_names.insert(dir.clone());
             for file in &files {
-                if parent_key(&native_rel(file, &root)) != *dir {
+                if namespaced_key(alias, &parent_key(&native_rel(file, &root))) != *dir {
                     continue;
                 }
                 let rel = native_rel(file, &root);
                 let digest = file_digest(file)?;
                 let unchanged = stored_files
-                    .get(&rel)
+                    .get(&namespaced_key(alias, &rel))
                     .map(|value| value.0 == digest && store.node_exists(&value.1).unwrap_or(false))
                     .unwrap_or(false);
                 if !unchanged {
@@ -170,8 +246,9 @@ pub fn import_bundle(
         if !current_dirs.contains_key(dir) {
             if let Some((_, files_json)) = stored_dirs.get(dir) {
                 if let Ok(names) = serde_json::from_str::<Vec<String>>(files_json) {
+                    let native = strip_namespace(alias, dir);
                     for name in names {
-                        deleted.push(join_native(dir, &name));
+                        deleted.push(namespaced_key(alias, &join_native(native, &name)));
                     }
                 }
             }
@@ -189,13 +266,14 @@ pub fn import_bundle(
         };
         // Python caches a recursive listing here; match it so nested files
         // are not tombstoned just because their parent directory is direct.
-        let current: BTreeSet<String> = walk_source_files(&root.join(dir))?
+        let native = strip_namespace(alias, dir);
+        let current: BTreeSet<String> = walk_source_files(&root.join(native))?
             .iter()
-            .map(|file| native_rel(file, &root.join(dir)))
+            .map(|file| native_rel(file, &root.join(native)))
             .collect();
         for name in stored_names {
             if !current.contains(&name) {
-                deleted.push(join_native(dir, &name));
+                deleted.push(namespaced_key(alias, &join_native(native, &name)));
             }
         }
         let _ = state;
@@ -203,18 +281,22 @@ pub fn import_bundle(
     deleted.sort();
     deleted.dedup();
 
+    let queued_dirs: BTreeSet<String> = changed
+        .iter()
+        .map(|path| parent_key(&native_rel(path, &root)))
+        .collect();
     let stats = serde_json::json!({
-        "changed_dirs": changed_dir_names.len(),
+        "changed_dirs": queued_dirs.len(),
         "queued": changed.len(),
         "actually_changed": actually_changed,
     });
 
     let mut parsed: Vec<Parsed> = changed
         .iter()
-        .map(|path| parse_file(path, settings, Some(&root)))
+        .map(|path| parse_file_alias(path, settings, Some(&root), alias))
         .collect::<Result<Vec<_>>>()?;
     let (mut duplicates, moved) =
-        resolve_identity_conflicts(store, &mut parsed, &stored_files, &root)?;
+        resolve_identity_conflicts(store, &mut parsed, &stored_files, &root, alias)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -223,6 +305,45 @@ pub fn import_bundle(
         let removed = moved.iter().any(|value| value.replace('/', "\\") == *path);
         if !removed {
             store.record_deleted_path(path, now)?;
+        }
+    }
+
+    if options.prune_missing {
+        let live_ids: BTreeSet<String> = parsed.iter().map(|item| item.id.clone()).collect();
+        let mut purged = BTreeSet::new();
+        // Consume this run's detections *and* tombstones left by earlier
+        // no-prune runs. Python keeps them until purge resolves them.
+        let mut pending: BTreeSet<String> = store
+            .pending_deletions()?
+            .into_iter()
+            .filter(|path| {
+                if alias.is_empty() {
+                    !path.starts_with('@')
+                } else {
+                    path.starts_with(&format!("@{alias}/"))
+                }
+            })
+            .collect();
+        pending.extend(deleted.iter().cloned());
+        for path in &pending {
+            if moved.iter().any(|value| value.replace('/', "\\") == *path) {
+                store.delete_deleted_path(path)?;
+                continue;
+            }
+            let Some((_, concept_id)) = stored_files.get(path) else {
+                // Stale tombstone (already purged or no owned concept).
+                store.delete_deleted_path(path)?;
+                continue;
+            };
+            if live_ids.contains(concept_id) {
+                // The file moved and its concept was re-imported: a move,
+                // not a deletion. Drop the stale tombstone.
+                store.delete_deleted_path(path)?;
+                continue;
+            }
+            if purged.insert(concept_id.clone()) {
+                crate::purge::purge_concept(store, concept_id)?;
+            }
         }
     }
 
@@ -236,13 +357,15 @@ pub fn import_bundle(
             Some(&root),
             true,
         )?;
-        let mut file_hashes: BTreeMap<String, (String, String)> = BTreeMap::new();
+        let mut file_hashes: BTreeMap<String, (String, String, String)> = BTreeMap::new();
         for item in &parsed {
-            let rel = native_rel(&item.path, &root);
-            file_hashes.insert(rel.clone(), (file_digest(&item.path)?, item.id.clone()));
+            let Some((rel, hash, dir)) = file_hash_entry(settings, Some(&root), item)? else {
+                continue;
+            };
+            file_hashes.insert(rel, (hash, item.id.clone(), dir));
         }
-        for (path, (hash, cid)) in file_hashes {
-            store.set_file_hash(&path, &hash, &cid, &parent_key(&path))?;
+        for (path, (hash, cid, dir)) in file_hashes {
+            store.set_file_hash(&path, &hash, &cid, &dir)?;
         }
     } else {
         finish_indexes(store)?;
@@ -278,6 +401,146 @@ pub fn import_bundle(
         object.insert("images".into(), Json::Object(images));
     }
     Ok(detail)
+}
+
+pub fn import_bundle(
+    store: &Store,
+    settings: &Settings,
+    embedder: &EmbedderPool,
+    pools: &Pools,
+    bundle_path: Option<&str>,
+    options: ImportOptions,
+) -> Result<Json> {
+    if bundle_path.is_some() || settings.roots.is_empty() {
+        let alias = bundle_path
+            .map(|path| alias_for_path(settings, Path::new(path)))
+            .unwrap_or_default();
+        return import_bundle_one(
+            store,
+            settings,
+            embedder,
+            pools,
+            bundle_path,
+            options,
+            &alias,
+        );
+    }
+
+    let mut targets: Vec<(String, String)> = Vec::new();
+    if let Some(root) = settings.bundle_root.as_ref() {
+        targets.push((String::new(), root.clone()));
+    }
+    targets.extend(settings.roots.iter().map(|(a, p)| (a.clone(), p.clone())));
+    if targets.is_empty() {
+        return import_bundle_one(store, settings, embedder, pools, None, options, "");
+    }
+
+    if options.prune_missing {
+        let mut absent = Vec::new();
+        if settings
+            .bundle_root
+            .as_ref()
+            .is_some_and(|root| !Path::new(root).is_dir())
+        {
+            absent.push("<primary>".to_string());
+        }
+        for (alias, root) in &settings.roots {
+            if !Path::new(root).is_dir() {
+                absent.push(alias.clone());
+            }
+        }
+        if !absent.is_empty() {
+            let names = absent
+                .iter()
+                .map(|name| format!("'{name}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(OkfError::new(
+                "PURGE_REFUSED_ABSENT_ROOT",
+                format!(
+                    "purge refused: root(s) [{names}] not present — remount them so every tree's state is known, then retry."
+                ),
+            )
+            .op("import_bundle")
+            .field(
+                "roots",
+                Json::Array(absent.into_iter().map(Json::String).collect()),
+            )
+            .remedy("remount the absent roots, then retry"));
+        }
+    }
+
+    let mut concept_ids = Vec::new();
+    let mut images = Map::new();
+    let mut duplicates = Vec::new();
+    let mut moved = Vec::new();
+    let mut delta = serde_json::json!({"changed_dirs": 0, "queued": 0, "actually_changed": 0});
+    let mut imported_any = false;
+    for (alias, root) in targets {
+        // An absent root is unmounted, not deleted (Python skips it with a
+        // warning instead of tombstoning every file in it).
+        if !Path::new(&root).is_dir() {
+            continue;
+        }
+        imported_any = true;
+        let report = import_bundle_one(
+            store,
+            settings,
+            embedder,
+            pools,
+            Some(&root),
+            options,
+            &alias,
+        )?;
+        if let Some(object) = report.as_object() {
+            if let Some(ids) = object.get("concept_ids").and_then(Json::as_array) {
+                concept_ids.extend(ids.iter().cloned());
+            }
+            if let Some(items) = object.get("images").and_then(Json::as_object) {
+                for (key, value) in items {
+                    images.insert(key.clone(), value.clone());
+                }
+            }
+            if let Some(items) = object.get("duplicates").and_then(Json::as_array) {
+                duplicates.extend(items.iter().cloned());
+            }
+            if let Some(items) = object.get("moved").and_then(Json::as_array) {
+                moved.extend(items.iter().cloned());
+            }
+            if let Some(stats) = object.get("delta").and_then(Json::as_object) {
+                if let Some(target) = delta.as_object_mut() {
+                    for key in ["changed_dirs", "queued", "actually_changed"] {
+                        let add = stats.get(key).and_then(Json::as_i64).unwrap_or(0);
+                        let current = target.get(key).and_then(Json::as_i64).unwrap_or(0);
+                        target.insert(key.into(), Json::from(current + add));
+                    }
+                }
+            }
+        }
+    }
+    let _ = imported_any;
+    Ok(serde_json::json!({
+        "concept_ids": concept_ids,
+        "images": images,
+        "duplicates": duplicates,
+        "moved": moved,
+        "delta": delta,
+    }))
+}
+
+fn alias_for_path(settings: &Settings, path: &Path) -> String {
+    let wanted = canonicalish(path);
+    if let Some(root) = settings.bundle_root.as_ref() {
+        if canonicalish(Path::new(root)) == wanted {
+            return String::new();
+        }
+    }
+    settings
+        .roots
+        .iter()
+        .find(|(_, root)| canonicalish(Path::new(root)) == wanted)
+        .map(|(alias, _)| alias.clone())
+        .unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -360,6 +623,7 @@ fn resolve_identity_conflicts(
     parsed: &mut Vec<Parsed>,
     stored_files: &BTreeMap<String, (String, String)>,
     root: &Path,
+    alias: &str,
 ) -> Result<(Vec<String>, Vec<String>)> {
     let mut seen = BTreeMap::new();
     let mut duplicates = Vec::new();
@@ -372,14 +636,16 @@ fn resolve_identity_conflicts(
         }
         seen.insert(item.id.clone(), item.path.clone());
         let rel = native_rel(&item.path, root);
+        let db_rel = namespaced_key(alias, &rel);
         let old = stored_files
             .iter()
-            .filter(|(path, (_, cid))| cid == &item.id && path.as_str() != rel)
+            .filter(|(path, (_, cid))| cid == &item.id && path.as_str() != db_rel)
             .map(|(path, _)| path.clone())
             .collect::<Vec<_>>();
         for path in old {
-            if !root.join(&path).exists() {
-                moved.push(path.replace('\\', "/"));
+            let native = strip_namespace(alias, &path);
+            if !root.join(native).exists() {
+                moved.push(native.replace('\\', "/"));
                 store.forget_file_hash(&path)?;
             } else {
                 duplicates.push(native_rel(&item.path, root).replace('\\', "/"));
@@ -403,12 +669,17 @@ pub(crate) fn walk_source_files(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn walk_dir(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Ok(());
-    };
-    for entry in entries.flatten() {
+    let entries = fs::read_dir(dir)?;
+    for entry in entries {
+        let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
+        // Never follow symlinked directories: they can escape the bundle or
+        // form cycles. Symlinked files are skipped for the same reason.
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
             let skip = path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -428,6 +699,9 @@ fn walk_dir(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
+        if name.starts_with('.') {
+            continue;
+        }
         let lower = name.to_ascii_lowercase();
         if matches!(lower.as_str(), "index.md" | "log.md") {
             continue;
@@ -460,10 +734,14 @@ fn parent_key(rel: &str) -> String {
 }
 
 fn join_native(dir: &str, name: &str) -> String {
-    if dir == "." {
+    let clean = dir
+        .strip_suffix("/.")
+        .or_else(|| dir.strip_suffix(r"\."))
+        .unwrap_or(dir);
+    if clean == "." || clean.is_empty() {
         name.to_string()
     } else {
-        Path::new(dir).join(name).to_string_lossy().into_owned()
+        Path::new(clean).join(name).to_string_lossy().into_owned()
     }
 }
 
@@ -487,15 +765,50 @@ fn directory_hash(hashes: &[(String, String)]) -> String {
         .collect()
 }
 
-fn pin_graph(store: &Store, settings: &Settings, engine: &dyn Embedder) -> Result<()> {
+pub(crate) fn pin_graph(store: &Store, settings: &Settings, engine: &dyn Embedder) -> Result<()> {
     if store.meta_int("schema_version")?.is_none() {
         return Err(OkfError::new(
-            "STATE_INVALID",
+            "CONFIG_INVALID",
             "database has no v10 schema; call okf init first",
-        ));
+        )
+        .remedy("run okf init"));
     }
     let pins = store_pin_json(store)?;
+    let empty = pins.get("empty").and_then(Json::as_bool).unwrap_or(false);
     check_pins(settings, &pins)?;
+    if !empty {
+        if let Some(pinned) = store.meta_int("embedding_precision")? {
+            let pinned = match pinned {
+                8 => "int8",
+                16 => "fp16",
+                32 => "fp32",
+                _ => "",
+            };
+            if !pinned.is_empty() && pinned != engine.precision() {
+                return Err(OkfError::new(
+                    "PRECISION_PIN_MISMATCH",
+                    format!(
+                        "graph is pinned to precision '{pinned}', engine loaded '{}'",
+                        engine.precision()
+                    ),
+                )
+                .field("pinned", Json::String(pinned.into()))
+                .field("configured", Json::String(engine.precision().into())));
+            }
+        }
+        if let (Some(pinned), Some(configured)) =
+            (store.meta_text("embedding_space")?, engine.space())
+        {
+            if pinned != configured {
+                return Err(OkfError::new(
+                    "SPACE_PIN_MISMATCH",
+                    "graph vector space does not match the loaded embedding space",
+                )
+                .field("pinned", Json::String(pinned))
+                .field("configured", Json::String(configured)));
+            }
+        }
+    }
     let code = match engine.precision() {
         "fp16" => 16,
         "fp32" => 32,
@@ -507,13 +820,13 @@ fn pin_graph(store: &Store, settings: &Settings, engine: &dyn Embedder) -> Resul
             ))
         }
     };
-    if store.meta_int("embedding_precision")?.is_none() {
+    if empty || store.meta_int("embedding_precision")?.is_none() {
         store.set_meta_int("embedding_precision", code)?;
     }
-    if store.meta_text("embedding_model")?.is_none() {
+    if empty || store.meta_text("embedding_model")?.is_none() {
         store.set_meta_text("embedding_model", engine.model_id())?;
     }
-    if store.meta_text("embedding_space")?.is_none() {
+    if empty || store.meta_text("embedding_space")?.is_none() {
         if let Some(space) = engine.space() {
             store.set_meta_text("embedding_space", &space)?;
         }
@@ -532,6 +845,8 @@ fn store_pin_json(store: &Store) -> Result<Json> {
         "pinned": {
             "model_id": store.meta_text("embedding_model")?,
             "precision": precision,
+            "embedding_dim": store.schema_embedding_dim()?,
+            "space": store.meta_text("embedding_space")?,
         },
         "empty": store.counts()?.0 == 0,
     }))
@@ -549,16 +864,82 @@ fn relative_id(path: &Path, root: Option<&Path>) -> String {
 }
 
 pub(crate) fn parse_file(path: &Path, settings: &Settings, root: Option<&Path>) -> Result<Parsed> {
+    parse_file_alias(path, settings, root, "")
+}
+
+fn namespaced_id(alias: &str, id: &str) -> String {
+    if alias.is_empty() {
+        id.to_string()
+    } else {
+        format!("@{alias}/{id}")
+    }
+}
+
+pub(crate) fn parse_file_alias(
+    path: &Path,
+    settings: &Settings,
+    root: Option<&Path>,
+    alias: &str,
+) -> Result<Parsed> {
     let text = fs::read_to_string(path)?;
     let front = parse_frontmatter(&text);
     let mut meta = front.metadata.as_object().cloned().unwrap_or_default();
     let effective_root = root
         .map(Path::to_path_buf)
         .or_else(|| settings.bundle_root.as_ref().map(PathBuf::from));
-    let id = relative_id(path, effective_root.as_deref());
-    if id.is_empty() {
+    let path_id = namespaced_id(alias, &relative_id(path, effective_root.as_deref()));
+    if path_id.is_empty() {
         return Err(OkfError::new("BAD_VALUE", "empty concept id").op("import_files"));
     }
+
+    // Python's parse_source_file removes `id:` before validation/defaults and
+    // may turn it into `uid` (path identity) or the concept id (frontmatter
+    // identity). Keep `source_path` for frontmatter identity so export can
+    // write the file back to its original location.
+    let fm_id = meta.remove("id");
+    let mut id = path_id;
+    let mut uid: Option<String> = None;
+    let mut source_path: Option<String> = None;
+    if let Some(value) = &fm_id {
+        let written = scalar_text(value);
+        if settings.identity == "frontmatter" && !written.trim().is_empty() {
+            let written = written.trim().to_string();
+            if !safe_frontmatter_id(&written) {
+                return Err(OkfError::new(
+                    "BAD_VALUE",
+                    format!(
+                        "frontmatter id {written:?} is not a valid concept id \
+                         (letters, digits, '_', '.', '-' and '/' only; no '..', \
+                         no leading '/' or '@')"
+                    ),
+                )
+                .op("import_files")
+                .field("id", Json::String(written)));
+            }
+            id = namespaced_id(alias, &written);
+            uid = Some(written);
+            if let Some(root) = effective_root.as_deref() {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    source_path = Some(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        } else if !written.is_empty() && written != id {
+            uid = Some(written);
+        }
+    }
+    if let Some(uid) = &uid {
+        meta.insert("uid".into(), Json::String(uid.clone()));
+    }
+    if let Some(source_path) = &source_path {
+        meta.insert("source_path".into(), Json::String(source_path.clone()));
+    }
+    if let Some(value) = meta.get("resource").and_then(Json::as_str) {
+        meta.insert(
+            "resource".into(),
+            Json::String(sanitize_resource(value).unwrap_or_else(|| value.to_string())),
+        );
+    }
+
     let title = string_field(&meta, "title")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| {
@@ -588,14 +969,6 @@ pub(crate) fn parse_file(path: &Path, settings: &Settings, root: Option<&Path>) 
         authored.insert(key.clone(), PyValue::from_golden(value));
     }
     let mut sig_data = authored.clone();
-    let fm_id = meta.remove("id");
-    if let Some(value) = &fm_id {
-        let written = value.as_str().unwrap_or_default();
-        if !written.is_empty() && written != id {
-            sig_data.remove("id");
-            sig_data.insert("uid".into(), PyValue::from_golden(value));
-        }
-    }
     sig_data.insert("id".into(), PyValue::Str(id.clone()));
     sig_data.insert("type".into(), PyValue::Str(concept_type.clone()));
     sig_data.insert("title".into(), PyValue::Str(title.clone()));
@@ -619,9 +992,7 @@ pub(crate) fn parse_file(path: &Path, settings: &Settings, root: Option<&Path>) 
     );
     sig_data.insert(
         "timestamp".into(),
-        timestamp
-            .map(|value| PyValue::DateTime(value.isoformat()))
-            .unwrap_or(PyValue::Null),
+        sig_timestamp(&authored, timestamp.as_ref()),
     );
     let sig = content_sig(
         &PyValue::Dict(sig_data.into_iter().collect()),
@@ -629,12 +1000,6 @@ pub(crate) fn parse_file(path: &Path, settings: &Settings, root: Option<&Path>) 
     );
 
     let mut extra = BTreeMap::new();
-    if let Some(value) = fm_id {
-        let written = value.as_str().unwrap_or_default();
-        if written != id && !written.is_empty() {
-            extra.insert("uid".into(), value_to_extra(&value));
-        }
-    }
     for (key, value) in &meta {
         if [
             "type",
@@ -661,10 +1026,114 @@ pub(crate) fn parse_file(path: &Path, settings: &Settings, root: Option<&Path>) 
         timestamp,
         authored,
         body: front.content,
+        search_text_override: None,
         extra,
         sig,
         path: path.to_path_buf(),
+        alias: alias.to_string(),
+        synthetic: false,
     })
+}
+
+fn sig_timestamp(authored: &BTreeMap<String, PyValue>, timestamp: Option<&PyDateTime>) -> PyValue {
+    if let Some(value) = authored.get("timestamp") {
+        return match value {
+            PyValue::DateTime(_) => value.clone(),
+            PyValue::Date(date) => PyValue::DateTime(format!("{date}T00:00:00")),
+            PyValue::Str(text) if !text.is_empty() => PyValue::Str(text.clone()),
+            PyValue::Null => PyValue::Null,
+            _ => timestamp
+                .map(|value| PyValue::DateTime(value.isoformat()))
+                .unwrap_or(PyValue::Null),
+        };
+    }
+    timestamp
+        .map(|value| PyValue::DateTime(value.isoformat()))
+        .unwrap_or(PyValue::Null)
+}
+
+/// Recompute `content_sig` after an ingest override/extra merge. Mirrors
+/// `parse_file`'s authored data: core fields are the actual concept values,
+/// everything else comes from `authored` (including uid/source_path/extra).
+pub(crate) fn refresh_content_sig(item: &mut Parsed) {
+    let mut sig_data = item.authored.clone();
+    sig_data.insert("id".into(), PyValue::Str(item.id.clone()));
+    sig_data.insert("type".into(), PyValue::Str(item.concept_type.clone()));
+    sig_data.insert("title".into(), PyValue::Str(item.title.clone()));
+    sig_data.insert(
+        "description".into(),
+        item.description
+            .as_ref()
+            .map(|value| PyValue::Str(value.clone()))
+            .unwrap_or(PyValue::Null),
+    );
+    sig_data.insert(
+        "resource".into(),
+        item.resource
+            .as_ref()
+            .map(|value| PyValue::Str(value.clone()))
+            .unwrap_or(PyValue::Null),
+    );
+    sig_data.insert(
+        "tags".into(),
+        PyValue::List(item.tags.iter().cloned().map(PyValue::Str).collect()),
+    );
+    sig_data.insert(
+        "timestamp".into(),
+        sig_timestamp(&item.authored, item.timestamp.as_ref()),
+    );
+    item.sig = content_sig(&PyValue::Dict(sig_data.into_iter().collect()), &item.body);
+}
+
+fn scalar_text(value: &Json) -> String {
+    match value {
+        Json::String(text) => text.clone(),
+        Json::Null => "None".into(),
+        Json::Bool(true) => "True".into(),
+        Json::Bool(false) => "False".into(),
+        Json::Number(n) => n.to_string(),
+        other => extra_value(&PyValue::from_golden(other)),
+    }
+}
+
+/// Python `_FM_ID_RE`: safe relative concept ids only.
+fn safe_frontmatter_id(raw: &str) -> bool {
+    if raw.is_empty() || raw.starts_with('/') || raw.starts_with('@') || raw.contains('\\') {
+        return false;
+    }
+    raw.split('/').all(|part| {
+        if part.is_empty() || part == ".." {
+            return false;
+        }
+        let mut chars = part.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first.is_ascii_alphanumeric() || first == '_')
+            && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
+    })
+}
+
+/// Python `sanitize_resource`: only rewrite the userinfo of a URI authority.
+/// Non-URLs, mailto links, bare paths, and `okf-asset://` pass through.
+fn sanitize_resource(uri: &str) -> Option<String> {
+    let value = uri.trim();
+    let scheme_end = value.find("://")?;
+    let scheme = &value[..scheme_end];
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic()
+        || !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '-'))
+    {
+        return None;
+    }
+    let rest = &value[scheme_end + 3..];
+    let at = rest.find('@')?;
+    let userinfo = &rest[..at];
+    if userinfo.contains('/') {
+        return None;
+    }
+    Some(format!("{scheme}://***@{}", &rest[at + 1..]))
 }
 
 fn string_field(meta: &Map<String, Json>, key: &str) -> Option<String> {
@@ -672,6 +1141,9 @@ fn string_field(meta: &Map<String, Json>, key: &str) -> Option<String> {
 }
 
 fn parse_tagged_datetime(value: &Json) -> Option<PyDateTime> {
+    if let Some(text) = value.as_str() {
+        return PyDateTime::parse(text).ok();
+    }
     let obj = value.as_object()?;
     let kind = obj.get("__type__")?.as_str()?;
     let text = obj.get("value")?.as_str()?;
@@ -686,9 +1158,7 @@ fn value_to_extra(value: &Json) -> String {
     let tagged = PyValue::from_golden(value);
     match &tagged {
         PyValue::Str(text) => text.clone(),
-        PyValue::Date(text) | PyValue::DateTime(text) => {
-            python_datetime_isoformat(text.as_str()).replace('T', " ")
-        }
+        PyValue::Date(text) | PyValue::DateTime(text) => python_datetime_isoformat(text.as_str()),
         other => extra_value(other),
     }
 }
@@ -708,7 +1178,7 @@ fn effective_at(item: &Parsed, updated: &PyDateTime) -> PyDateTime {
     *updated
 }
 
-fn tag_to_json(value: &PyValue) -> Json {
+pub(crate) fn tag_to_json(value: &PyValue) -> Json {
     match value {
         PyValue::Date(text) => serde_json::json!({"__type__": "date", "value": text}),
         PyValue::DateTime(text) => serde_json::json!({"__type__": "datetime", "value": text}),
@@ -737,15 +1207,6 @@ fn import_one(
     root: Option<&Path>,
     bulk: bool,
 ) -> Result<()> {
-    store.write(
-        "MATCH (ch:Chunk {parent_doc_id: $id}) DETACH DELETE ch",
-        vec![("id", Value::String(item.id.clone()))],
-    )?;
-    store.write(
-        "MATCH (c:Concept {id: $id}) DETACH DELETE c",
-        vec![("id", Value::String(item.id.clone()))],
-    )?;
-
     let chunks = if settings.enable_chunking {
         let counter = |text: &str| {
             engine
@@ -761,49 +1222,114 @@ fn import_one(
     } else {
         Vec::new()
     };
-    if !chunks.is_empty() {
+
+    // Encode everything before the destructive step. A model/GPU failure must
+    // leave the previous concept, chunks, links, and timestamps untouched.
+    let vectors = if chunks.is_empty() {
+        None
+    } else {
         let payloads = overlap_payloads(&chunks, settings.chunk_overlap.max(0) as usize);
-        let vectors = engine.encode_many(&payloads, Task::Document)?;
-        for (chunk, vector) in chunks.iter().zip(vectors) {
-            write_chunk(store, chunk, &vector)?;
-        }
-        store.bump_write_epoch()?;
-    }
-
-    let search_text = format!(
-        "{} {} {}",
-        item.title,
-        item.description.clone().unwrap_or_default(),
-        item.body
-    );
+        Some(engine.encode_many(&payloads, Task::Document)?)
+    };
+    let search_text = item.search_text_override.clone().unwrap_or_else(|| {
+        format!(
+            "{} {} {}",
+            item.title,
+            item.description.clone().unwrap_or_default(),
+            item.body
+        )
+    });
     let embedding = engine.encode(&search_text, Task::Document)?;
-    write_concept(store, item, &embedding)?;
-    if !bulk {
-        store.bump_write_epoch()?;
-    }
 
-    for chunk in &chunks {
-        store.write(
-            "MATCH (d:Concept {id: $doc}), (ch:Chunk {id: $cid}) MERGE (d)-[:PART_OF]->(ch)",
-            vec![
-                ("doc", Value::String(item.id.clone())),
-                (
-                    "cid",
-                    Value::String(format!("{}#chunk:{}", item.id, chunk.chunk_index)),
-                ),
-            ],
+    let now = utc_now_datetime();
+    let prev = store.concept_raw(&item.id)?;
+    let created_at = prev
+        .as_ref()
+        .and_then(|row| stored_time(row, "created_at"))
+        .unwrap_or(now);
+    let prev_sig = prev
+        .as_ref()
+        .and_then(|row| row.get("content_sig"))
+        .and_then(Json::as_str);
+    let content_changed = prev_sig != Some(item.sig.as_str());
+    let updated_at = if content_changed {
+        now
+    } else {
+        prev.as_ref()
+            .and_then(|row| stored_time(row, "updated_at"))
+            .unwrap_or(now)
+    };
+    let effective_at = effective_at(item, &updated_at);
+    let file_hash = file_hash_entry(settings, root, item)?;
+
+    store.with_write_tx(|conn| {
+        // One transaction for the whole replacement: delete + chunks +
+        // concept + PART_OF + ledger row either all commit or all roll back.
+        Store::write_on(
+            conn,
+            "MATCH (ch:Chunk {parent_doc_id: $id}) DETACH DELETE ch",
+            vec![("id", Value::String(item.id.clone()))],
         )?;
-    }
-    record_file_hash(store, settings, root, item)?;
-    Ok(())
+        Store::write_on(
+            conn,
+            "MATCH (c:Concept {id: $id}) DETACH DELETE c",
+            vec![("id", Value::String(item.id.clone()))],
+        )?;
+
+        if let Some(vectors) = &vectors {
+            for (chunk, vector) in chunks.iter().zip(vectors.iter()) {
+                write_chunk(conn, chunk, vector)?;
+            }
+            Store::bump_write_epoch_on(conn)?;
+        }
+
+        write_concept(
+            conn,
+            item,
+            &embedding,
+            &created_at,
+            &updated_at,
+            &effective_at,
+        )?;
+        if !bulk {
+            Store::bump_write_epoch_on(conn)?;
+        }
+
+        for chunk in &chunks {
+            Store::write_on(
+                conn,
+                "MATCH (d:Concept {id: $doc}), (ch:Chunk {id: $cid}) \
+                 MERGE (d)-[:PART_OF]->(ch)",
+                vec![
+                    ("doc", Value::String(item.id.clone())),
+                    (
+                        "cid",
+                        Value::String(format!("{}#chunk:{}", item.id, chunk.chunk_index)),
+                    ),
+                ],
+            )?;
+        }
+
+        if let Some((rel, hash, dir)) = &file_hash {
+            Store::set_file_hash_on(conn, rel, hash, &item.id, dir)?;
+        }
+        Ok(())
+    })
 }
 
-fn write_chunk(store: &Store, chunk: &MdChunk, embedding: &[f32]) -> Result<()> {
+fn stored_time(row: &Map<String, Json>, key: &str) -> Option<PyDateTime> {
+    row.get(key)
+        .and_then(Json::as_str)
+        .and_then(|text| PyDateTime::parse(text).ok())
+}
+
+fn write_chunk(conn: &Connection<'_>, chunk: &MdChunk, embedding: &[f32]) -> Result<()> {
     let vector = Value::List(
         LogicalType::Float,
         embedding.iter().copied().map(Value::Float).collect(),
     );
-    store.write(
+    Store::write_on(
+        conn,
         "CREATE (:Chunk {id: $id, parent_doc_id: $doc, chunk_index: $idx, \
          chunk_text: $text, block_type: $block, start_offset: $start_offset, \
          end_offset: $end_offset, embedding: $emb})",
@@ -826,9 +1352,14 @@ fn write_chunk(store: &Store, chunk: &MdChunk, embedding: &[f32]) -> Result<()> 
     )
 }
 
-fn write_concept(store: &Store, item: &Parsed, embedding: &[f32]) -> Result<()> {
-    let now = utc_now_datetime();
-    let effective = effective_at(item, &now);
+fn write_concept(
+    conn: &Connection<'_>,
+    item: &Parsed,
+    embedding: &[f32],
+    created_at: &PyDateTime,
+    updated_at: &PyDateTime,
+    effective_at: &PyDateTime,
+) -> Result<()> {
     let mut params: Vec<(&str, Value)> = vec![
         ("id", Value::String(item.id.clone())),
         ("type", Value::String(item.concept_type.clone())),
@@ -856,9 +1387,9 @@ fn write_concept(store: &Store, item: &Parsed, embedding: &[f32]) -> Result<()> 
                 embedding.iter().copied().map(Value::Float).collect(),
             ),
         ),
-        ("created_at", timestamp_value(&now)),
-        ("updated_at", timestamp_value(&now)),
-        ("effective_at", timestamp_value(&effective)),
+        ("created_at", timestamp_value(created_at)),
+        ("updated_at", timestamp_value(updated_at)),
+        ("effective_at", timestamp_value(effective_at)),
         ("content_sig", Value::String(item.sig.clone())),
     ];
     let mut sql = String::from(
@@ -879,7 +1410,7 @@ fn write_concept(store: &Store, item: &Parsed, embedding: &[f32]) -> Result<()> 
         sql.push_str(", extra: MAP($extra_keys, $extra_values)");
     }
     sql.push_str("})");
-    store.write(&sql, params)
+    Store::write_on(conn, &sql, params)
 }
 
 fn maybe_string(value: Option<&str>) -> Value {
@@ -888,28 +1419,53 @@ fn maybe_string(value: Option<&str>) -> Value {
         .unwrap_or_else(|| Value::Null(LogicalType::String))
 }
 
-fn record_file_hash(
-    store: &Store,
+fn namespaced_key(alias: &str, key: &str) -> String {
+    if alias.is_empty() {
+        key.to_string()
+    } else {
+        format!("@{alias}/{key}")
+    }
+}
+
+fn strip_namespace<'a>(alias: &str, key: &'a str) -> &'a str {
+    if alias.is_empty() {
+        key
+    } else {
+        key.strip_prefix(&format!("@{alias}/")).unwrap_or(key)
+    }
+}
+
+fn file_hash_entry(
     settings: &Settings,
     root: Option<&Path>,
     item: &Parsed,
-) -> Result<()> {
+) -> Result<Option<(String, String, String)>> {
+    if item.synthetic {
+        return Ok(None);
+    }
     let effective_root = root
         .map(Path::to_path_buf)
         .or_else(|| settings.bundle_root.as_ref().map(PathBuf::from));
     let Some(effective_root) = effective_root else {
         // File-free imports mint bare IDs and do not touch the shared delta
         // ledger (Python `_root is None`).
-        return Ok(());
+        return Ok(None);
     };
-    let rel = item
-        .path
-        .strip_prefix(&effective_root)
-        .unwrap_or(&item.path)
+    // Bundle roots are commonly configured as relative paths while write
+    // helpers hand us an absolute file path. Normalize both sides so the
+    // ledger key is root-relative (never a second absolute-path row).
+    let absolute_root =
+        std::path::absolute(&effective_root).unwrap_or_else(|_| effective_root.clone());
+    let absolute_path = std::path::absolute(&item.path).unwrap_or_else(|_| item.path.clone());
+    let native_rel = absolute_path
+        .strip_prefix(&absolute_root)
+        .unwrap_or(&absolute_path)
         .to_string_lossy()
         .into_owned();
+    let rel = namespaced_key(&item.alias, &native_rel);
+    let dir = namespaced_key(&item.alias, &parent_key(&native_rel));
     let hash = file_digest(&item.path)?;
-    store.set_file_hash(&rel, &hash, &item.id, &parent_key(&rel))
+    Ok(Some((rel, hash, dir)))
 }
 
 fn create_links(store: &Store, parsed: &[Parsed]) -> Result<()> {
@@ -1021,6 +1577,28 @@ impl LinkIndex {
         }
         if self.ids.contains(ref_text) {
             return (Some(ref_text.to_string()), None, Vec::new());
+        }
+        // Multi-root links may spell `alias/rest` without the namespace
+        // sigil. Canonicalise the alias segment against the IDs already in
+        // the graph, like Python's `qualify_alias_link`.
+        if let Some((first, rest)) = ref_text.split_once('/') {
+            if !first.is_empty() && !rest.is_empty() {
+                let wanted = first.trim_start_matches('@');
+                for id in &self.ids {
+                    let Some(namespaced) = id.strip_prefix('@') else {
+                        continue;
+                    };
+                    let Some((alias, _)) = namespaced.split_once('/') else {
+                        continue;
+                    };
+                    if alias.eq_ignore_ascii_case(wanted) {
+                        let candidate = format!("@{alias}/{rest}");
+                        if self.ids.contains(&candidate) {
+                            return (Some(candidate), None, Vec::new());
+                        }
+                    }
+                }
+            }
         }
         let without_md = if ref_text.to_ascii_lowercase().ends_with(".md") {
             &ref_text[..ref_text.len() - 3]
@@ -1274,6 +1852,7 @@ pub fn extract_links_for_concept(store: &Store, concept_id: &str) -> Result<()> 
         tags: Vec::new(),
         timestamp: None,
         authored: BTreeMap::new(),
+        search_text_override: None,
         body: concept
             .get("body")
             .and_then(Json::as_str)
@@ -1282,6 +1861,8 @@ pub fn extract_links_for_concept(store: &Store, concept_id: &str) -> Result<()> 
         extra,
         sig: String::new(),
         path: PathBuf::new(),
+        alias: String::new(),
+        synthetic: false,
     };
     create_links(store, std::slice::from_ref(&item))?;
     repair_links(store)
@@ -1574,4 +2155,191 @@ fn overlap_payloads(chunks: &[MdChunk], overlap: usize) -> Vec<String> {
         }
     }
     payloads
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_md(dir: &Path, name: &str, text: &str) -> PathBuf {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent");
+        }
+        let mut file = fs::File::create(&path).expect("create");
+        file.write_all(text.as_bytes()).expect("write");
+        path
+    }
+
+    #[test]
+    fn frontmatter_identity_uses_id_and_records_source_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_md(dir.path(), "dir/a.md", "---\nid: custom\n---\n\nBody.\n");
+        let settings = Settings::default()
+            .with("identity", Json::String("frontmatter".into()))
+            .expect("settings");
+        let parsed = parse_file(&path, &settings, Some(dir.path())).expect("parse");
+        assert_eq!(parsed.id, "custom");
+        assert_eq!(parsed.extra.get("uid"), Some(&"custom".to_string()));
+        assert_eq!(
+            parsed.extra.get("source_path"),
+            Some(&"dir/a.md".to_string())
+        );
+        assert!(parsed.authored.contains_key("uid"));
+        assert!(parsed.authored.contains_key("source_path"));
+    }
+
+    #[test]
+    fn path_identity_preserves_frontmatter_id_as_uid() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_md(dir.path(), "dir/a.md", "---\nid: custom\n---\n\nBody.\n");
+        let parsed = parse_file(&path, &Settings::default(), Some(dir.path())).expect("parse");
+        assert_eq!(parsed.id, "dir/a");
+        assert_eq!(parsed.extra.get("uid"), Some(&"custom".to_string()));
+        assert!(!parsed.extra.contains_key("source_path"));
+    }
+
+    #[test]
+    fn frontmatter_identity_rejects_unsafe_ids() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_md(dir.path(), "a.md", "---\nid: ../evil\n---\n\nBody.\n");
+        let settings = Settings::default()
+            .with("identity", Json::String("frontmatter".into()))
+            .expect("settings");
+        let err = parse_file(&path, &settings, Some(dir.path())).expect_err("reject");
+        assert_eq!(err.code, "BAD_VALUE");
+        assert_eq!(err.fields.get("id"), Some(&Json::String("../evil".into())));
+    }
+
+    #[test]
+    fn resource_userinfo_is_sanitized() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_md(
+            dir.path(),
+            "a.md",
+            "---\nresource: postgres://user:pass@host/db\n---\n\nBody.\n",
+        );
+        let parsed = parse_file(&path, &Settings::default(), Some(dir.path())).expect("parse");
+        assert_eq!(parsed.resource.as_deref(), Some("postgres://***@host/db"));
+        assert!(!parsed.extra.contains_key("resource"));
+    }
+
+    #[test]
+    fn file_hash_key_is_relative_when_bundle_root_is_relative() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let dir = tempfile::Builder::new()
+            .prefix("okf-hash-")
+            .tempdir_in(&cwd)
+            .expect("tempdir");
+        let root = dir.path().strip_prefix(&cwd).expect("relative root");
+        let file = dir.path().join("alpha.md");
+        std::fs::write(
+            &file, "Alpha.
+",
+        )
+        .expect("write");
+        let mut parsed = parsed_for_test("Alpha.", "sig");
+        parsed.synthetic = false;
+        parsed.path = file;
+        let (relative, _, _) = file_hash_entry(&Settings::default(), Some(root), &parsed)
+            .expect("hash entry")
+            .expect("tracked");
+        assert_eq!(relative, "alpha.md");
+    }
+
+    #[derive(Debug)]
+    struct StubEmbedder;
+
+    impl crate::embed::Embedder for StubEmbedder {
+        fn encode(&self, _text: &str, _task: crate::embed::Task) -> Result<Vec<f32>> {
+            Ok(vec![1.0, 2.0, 3.0])
+        }
+        fn encode_many(
+            &self,
+            texts: &[String],
+            _task: crate::embed::Task,
+        ) -> Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect())
+        }
+        fn count_tokens(&self, text: &str) -> Result<usize> {
+            Ok(text.split_whitespace().count())
+        }
+        fn dim(&self) -> usize {
+            3
+        }
+        fn model_id(&self) -> &str {
+            "stub"
+        }
+        fn used_cuda(&self) -> bool {
+            false
+        }
+        fn precision(&self) -> &'static str {
+            "fp32"
+        }
+        fn max_len(&self) -> usize {
+            512
+        }
+    }
+
+    fn parsed_for_test(body: &str, sig: &str) -> Parsed {
+        Parsed {
+            id: "alpha".into(),
+            title: "Alpha".into(),
+            concept_type: "note".into(),
+            description: None,
+            resource: None,
+            tags: Vec::new(),
+            timestamp: None,
+            authored: BTreeMap::new(),
+            body: body.into(),
+            search_text_override: None,
+            extra: BTreeMap::new(),
+            sig: sig.into(),
+            path: PathBuf::from("alpha.md"),
+            alias: String::new(),
+            synthetic: true,
+        }
+    }
+
+    #[test]
+    fn reimport_preserves_times_when_content_sig_is_unchanged() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("stamps.db");
+        Store::init(&db, 3).expect("init");
+        let settings = Settings::default()
+            .with("db_path", Json::String(db.to_string_lossy().into_owned()))
+            .expect("settings");
+        let store = Store::open_writable(&settings).expect("open");
+        let engine = StubEmbedder;
+        let item = parsed_for_test("Body.", "sig-one");
+        import_one(&store, &settings, &engine, &item, None, true).expect("first");
+        let first = store.concept_raw("alpha").expect("row").expect("concept");
+        let created = first.get("created_at").cloned();
+        let updated = first.get("updated_at").cloned();
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        import_one(&store, &settings, &engine, &item, None, true).expect("same");
+        let second = store.concept_raw("alpha").expect("row").expect("concept");
+        assert_eq!(second.get("created_at").cloned(), created);
+        assert_eq!(second.get("updated_at").cloned(), updated);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let changed = parsed_for_test("Changed.", "sig-two");
+        import_one(&store, &settings, &engine, &changed, None, true).expect("changed");
+        let third = store.concept_raw("alpha").expect("row").expect("concept");
+        assert_eq!(third.get("created_at").cloned(), created);
+        assert_ne!(third.get("updated_at").cloned(), updated);
+    }
+
+    #[test]
+    fn sanitize_resource_only_rewrites_uri_userinfo() {
+        assert_eq!(
+            sanitize_resource("https://token@example.com/x"),
+            Some("https://***@example.com/x".into())
+        );
+        assert_eq!(sanitize_resource("mailto:a@b"), None);
+        assert_eq!(sanitize_resource("okf-asset://abc"), None);
+        assert_eq!(sanitize_resource("bare/path"), None);
+    }
 }

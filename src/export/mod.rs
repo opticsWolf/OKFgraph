@@ -4,7 +4,7 @@
 use crate::error::{OkfError, Result};
 use crate::store::Store;
 use serde_json::{Map, Value as Json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 const CORE: &[&str] = &[
@@ -37,6 +37,19 @@ pub fn export_bundle(
     validate_flavor(flavor, "export_bundle")?;
     let root = Path::new(output_dir);
     fs_create_dir_all(root)?;
+    let under_directory: Option<BTreeSet<String>> = match directory_id {
+        Some(dir) if !dir.is_empty() => Some(
+            store
+                .query(
+                    "MATCH (d:Directory {id: $dir})-[:CONTAINS*1..5]->(c:Concept)                      RETURN c.id AS id",
+                    vec![("dir", lbug::Value::String(dir.into()))],
+                )?
+                .into_iter()
+                .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+                .collect(),
+        ),
+        _ => None,
+    };
     let mut concepts: Vec<(String, Json, String, bool)> = Vec::new();
     for concept in store.export_concepts()? {
         let Some(id) = concept.get("id").and_then(Json::as_str).map(str::to_string) else {
@@ -56,10 +69,7 @@ pub fn export_bundle(
                 continue;
             }
         }
-        let in_subtree = match directory_id {
-            Some(dir) if !dir.is_empty() => id.starts_with(&format!("{dir}/")),
-            _ => true,
-        };
+        let in_subtree = under_directory.as_ref().is_none_or(|ids| ids.contains(&id));
         let body = concept
             .get("body")
             .and_then(Json::as_str)
@@ -87,7 +97,7 @@ pub fn export_bundle(
         if !include {
             continue;
         }
-        let path = output_path(root, id);
+        let path = output_path(root, id)?;
         if let Some(parent) = path.parent() {
             fs_create_dir_all(parent)?;
         }
@@ -98,7 +108,7 @@ pub fn export_bundle(
         write_indexes(root, &concepts)?;
     }
     Ok(serde_json::json!({
-        "output_dir": output_dir,
+        "output_dir": native_path_text(root),
         "concept_ids": selected,
         "flavor": flavor,
     }))
@@ -138,7 +148,18 @@ pub fn export_concept(
     };
     let root = Path::new(output_dir);
     fs_create_dir_all(root)?;
-    let path = root.join(format!("{concept_id}.md"));
+    if !crate::util::safe_bundle_id(concept_id) {
+        return Err(OkfError::new(
+            "BAD_VALUE",
+            format!("concept id {concept_id:?} is not safe to export as a relative path"),
+        )
+        .op("export_concept")
+        .field("concept_id", Json::String(concept_id.into())));
+    }
+    let path = root.join(format!(
+        "{}.md",
+        concept_id.replace('/', std::path::MAIN_SEPARATOR_STR)
+    ));
     if let Some(parent) = path.parent() {
         fs_create_dir_all(parent)?;
     }
@@ -148,7 +169,7 @@ pub fn export_concept(
     )?;
     Ok(serde_json::json!({
         "concept_id": concept_id,
-        "path": path.to_string_lossy().into_owned(),
+        "path": native_path_text(&path),
     }))
 }
 
@@ -298,7 +319,10 @@ fn title_counts(store: &Store) -> Result<BTreeMap<String, usize>> {
 
 fn write_indexes(root: &Path, concepts: &[(String, Json, String, bool)]) -> Result<()> {
     let mut children: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-    for (id, concept, _, _) in concepts {
+    for (id, concept, _, include) in concepts {
+        if !include {
+            continue;
+        }
         let parts: Vec<&str> = id.split('/').collect();
         for index in 1..parts.len() {
             let dir = parts[..index].join("/");
@@ -330,13 +354,25 @@ fn write_indexes(root: &Path, concepts: &[(String, Json, String, bool)]) -> Resu
     Ok(())
 }
 
-fn output_path(root: &Path, id: &str) -> PathBuf {
-    let mut path = root.to_path_buf();
-    for part in id.split('/') {
-        path.push(part);
+fn native_path_text(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
+fn output_path(root: &Path, id: &str) -> Result<PathBuf> {
+    if !crate::util::safe_bundle_id(id) {
+        return Err(OkfError::new(
+            "BAD_VALUE",
+            format!("concept id {id:?} is not safe to export as a relative path"),
+        )
+        .op("export_bundle")
+        .field("concept_id", Json::String(id.into())));
     }
-    path.set_extension("md");
-    path
+    // Append `.md`; `set_extension` would turn `v1.0` into `v1.md`.
+    Ok(root.join(format!(
+        "{}.md",
+        id.replace('/', std::path::MAIN_SEPARATOR_STR)
+    )))
 }
 
 fn native_sep() -> String {
@@ -363,29 +399,22 @@ fn wikilinks(body: &str) -> Vec<String> {
 }
 
 pub(crate) fn dump_yaml_sorted(value: &Json, indent: usize) -> String {
+    dump_yaml(&sort_json(value), indent)
+}
+
+fn sort_json(value: &Json) -> Json {
     match value {
         Json::Object(map) => {
             let mut keys: Vec<&String> = map.keys().collect();
             keys.sort();
             let mut sorted = Map::new();
             for key in keys {
-                sorted.insert(key.clone(), map[key].clone());
+                sorted.insert(key.clone(), sort_json(&map[key]));
             }
-            dump_yaml(&Json::Object(sorted), indent)
+            Json::Object(sorted)
         }
-        Json::Array(items) => {
-            let sorted: Vec<Json> = items
-                .iter()
-                .map(|item| match item {
-                    Json::Object(_) | Json::Array(_) => {
-                        Json::String(dump_yaml_sorted(item, 0).trim_end().to_string())
-                    }
-                    other => other.clone(),
-                })
-                .collect();
-            dump_yaml(&Json::Array(sorted), indent)
-        }
-        other => dump_yaml(other, indent),
+        Json::Array(items) => Json::Array(items.iter().map(sort_json).collect()),
+        other => other.clone(),
     }
 }
 
@@ -394,32 +423,77 @@ pub(crate) fn dump_yaml(value: &Json, indent: usize) -> String {
         Json::Object(map) => {
             let mut out = String::new();
             for (key, item) in map {
+                let key = yaml_key(key);
                 match item {
                     Json::Object(inner) if !inner.is_empty() => {
-                        out.push_str(&format!("{}{}:\n", " ".repeat(indent), key));
+                        out.push_str(&format!("{}{key}:\n", " ".repeat(indent)));
                         out.push_str(&dump_yaml(item, indent + 2));
                     }
                     Json::Array(items) if !items.is_empty() => {
-                        out.push_str(&format!("{}{}:\n", " ".repeat(indent), key));
-                        for entry in items {
-                            out.push_str(&format!(
-                                "{}- {}\n",
-                                " ".repeat(indent),
-                                yaml_scalar(entry)
-                            ));
-                        }
+                        out.push_str(&format!("{}{key}:\n", " ".repeat(indent)));
+                        out.push_str(&dump_sequence(items, indent));
                     }
                     _ => out.push_str(&format!(
-                        "{}{}: {}\n",
+                        "{}{key}: {}\n",
                         " ".repeat(indent),
-                        key,
                         yaml_scalar(item)
                     )),
                 }
             }
             out
         }
+        Json::Array(items) if !items.is_empty() => dump_sequence(items, indent),
         other => format!("{}{}\n", " ".repeat(indent), yaml_scalar(other)),
+    }
+}
+
+fn dump_sequence(items: &[Json], indent: usize) -> String {
+    let mut out = String::new();
+    for item in items {
+        match item {
+            Json::Object(inner) if !inner.is_empty() => {
+                let nested = dump_yaml(item, indent + 2);
+                let mut lines = nested.lines();
+                if let Some(first) = lines.next() {
+                    out.push_str(&format!("{}- {}\n", " ".repeat(indent), first.trim_start()));
+                }
+                for line in lines {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            Json::Array(inner) if !inner.is_empty() => {
+                let nested = dump_sequence(inner, indent + 2);
+                let mut lines = nested.lines();
+                if let Some(first) = lines.next() {
+                    out.push_str(&format!("{}- {}\n", " ".repeat(indent), first.trim_start()));
+                }
+                for line in lines {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            _ => out.push_str(&format!("{}- {}\n", " ".repeat(indent), yaml_scalar(item))),
+        }
+    }
+    out
+}
+
+fn yaml_key(text: &str) -> String {
+    let needs_quote = text.is_empty()
+        || text.contains(':')
+        || text.contains('#')
+        || text.contains('\n')
+        || text != text.trim()
+        || text.parse::<f64>().is_ok()
+        || matches!(
+            text.to_ascii_lowercase().as_str(),
+            "null" | "true" | "false" | "yes" | "no" | "on" | "off" | "~"
+        );
+    if needs_quote {
+        format!("'{}'", text.replace('\'', "''"))
+    } else {
+        text.to_string()
     }
 }
 
@@ -465,9 +539,9 @@ fn looks_like_timestamp(text: &str) -> bool {
 
 fn fs_create_dir_all(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path).map_err(|err| {
-        OkfError::new(
-            "IO_ERROR",
+        OkfError::internal(
             format!("cannot create {}: {err}", path.display()),
+            "std::io::Error",
         )
     })
 }
@@ -477,9 +551,32 @@ pub(crate) fn fs_write(path: &Path, content: &str) -> Result<()> {
     #[cfg(windows)]
     let content = content.replace("\r\n", "\n").replace('\n', "\r\n");
     std::fs::write(path, content).map_err(|err| {
-        OkfError::new(
-            "IO_ERROR",
+        OkfError::internal(
             format!("cannot write {}: {err}", path.display()),
+            "std::io::Error",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yaml_dump_keeps_nested_structures_and_quotes_keys() {
+        let value = serde_json::json!({
+            "a": [{"x": 1}, {"y": [2, 3]}],
+            "b": {"c": {"d": true}},
+            "weird:key": "value # not a comment",
+            "nested": [[1, 2], [3]]
+        });
+        let text = dump_yaml(&value, 0);
+        assert!(text.contains("a:\n- x: 1\n- y:\n  - 2\n  - 3\n"), "{text}");
+        assert!(text.contains("b:\n  c:\n    d: true\n"), "{text}");
+        assert!(
+            text.contains("'weird:key': 'value # not a comment'"),
+            "{text}"
+        );
+        assert!(text.contains("nested:\n- - 1\n  - 2\n- - 3\n"), "{text}");
+    }
 }

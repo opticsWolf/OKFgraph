@@ -1,0 +1,35 @@
+{
+  "name": "ingest-thoughts-folder",
+  "settings": {
+    "db_path": "parity/out/ingest-thoughts-folder-@RUNNER@.db",
+    "bundle_root": "parity/out/thoughts-folder-@RUNNER@",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/empty"
+    }
+  },
+  "ops": [
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "thoughts",
+        "thoughts": "Folder materialization is deterministic.",
+        "topic": "folders",
+        "title": "Folder Thought",
+        "folder": "thoughts-folder",
+        "extra": {"created": "2026-01-01T00:00:00"}
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "thoughts-folder/folder-thought"
+      }
+    }
+  ]
+}

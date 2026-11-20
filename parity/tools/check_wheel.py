@@ -13,8 +13,18 @@ def main() -> int:
     print("module:", okfgraph.__file__)
     print("version:", okfgraph.version())
     print("schema_version:", okfgraph.schema_version())
-    names = okfgraph.op_names()
+    names = tuple(okfgraph.op_names())
+    expected = (
+        "search", "read", "traverse", "embed", "ingest", "export_bundle",
+        "export_concept", "import_bundle", "import_file", "import_files",
+        "sync", "update", "supersede", "delete", "doctor", "diff", "reindex",
+        "reembed", "pin_info", "lanes", "list_broken_links", "repair_links",
+        "list_deleted", "recover_deleted", "purge_deleted", "detach",
+        "list_images", "get_image", "get_by_id", "list_directory",
+    )
     print("op_names:", len(names), names[:3])
+    if names != expected:
+        raise SystemExit(f"FAIL: op_names drift: {names!r} != {expected!r}")
 
     # Two 150 ms native sleeps should overlap if allow_threads releases the GIL.
     start = time.perf_counter()

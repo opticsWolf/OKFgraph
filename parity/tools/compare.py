@@ -10,6 +10,18 @@ from pathlib import Path
 from typing import Any
 
 
+def normalize(value: Any, key: str = "") -> Any:
+    """Python builds tag lists from ``set``; order is not a contract."""
+    if isinstance(value, dict):
+        return {k: normalize(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        items = [normalize(item, key) for item in value]
+        if key == "tags" and all(isinstance(item, str) for item in items):
+            return sorted(items)
+        return items
+    return value
+
+
 def diff(a: Any, b: Any, path: str, tol: float, out: list[str], ignore: set[str]) -> None:
     if isinstance(a, float) and isinstance(b, float):
         if not (math.isclose(a, b, rel_tol=tol, abs_tol=tol) or (math.isnan(a) and math.isnan(b))):
@@ -50,8 +62,8 @@ def main() -> int:
         help="skip this object key at any depth (repeatable)")
     args = ap.parse_args()
 
-    a = json.loads(Path(args.python).read_text(encoding="utf-8"))
-    b = json.loads(Path(args.rust).read_text(encoding="utf-8"))
+    a = normalize(json.loads(Path(args.python).read_text(encoding="utf-8")))
+    b = normalize(json.loads(Path(args.rust).read_text(encoding="utf-8")))
     diffs: list[str] = []
     diff(a, b, "$", args.tolerance, diffs, set(args.ignore_key))
     for line in diffs[:200]:

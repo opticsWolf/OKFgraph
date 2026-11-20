@@ -7,9 +7,77 @@
 PDF plugin, and the parity harness. Stage C surfaces (`okf serve`, MCP) are
 out of scope except where they are already referenced by a finding.
 
-**Important:** the existing parity matrix is green, but it only covers a
-narrow fixture set. This plan records the paths that are currently untested
-and, in several cases, broken. “M3 complete” should not be claimed until the
+**Implementation status (rust-core branch, after the fix series):** the P0
+crash/data-loss paths, Phase 1 import integrity, Phase 2 identity/resource/
+path safety, most Phase 3 semantic parity, multi-root/prune, ingest
+materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
+enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
+and the write lock are implemented. The broad differential matrix is green
+for 52 scenarios after normalizing wall-clock graph times/internal IDs and the
+documented intentional differences. Remaining items are listed under
+“Verification status” below rather than claimed complete.
+
+**Important:** the original review below describes the pre-fix state. It is
+kept as the evidence trail; the implementation status section records what is
+now closed and what remains. The existing parity matrix was green before the
+fixes but only covered a narrow fixture set. “M3 complete” should not be
+claimed until the remaining gate items close.
+
+### Verification status
+
+Closed with code + tests/scenarios (details in the individual findings):
+
+- BUG-001/002 crash safety; BUG-003/004/005 import integrity; BUG-006/007
+  identity/resource safety; BUG-008 dimension adoption; BUG-009 delete/trash/
+  restore; BUG-010/011 image pruning/counts; BUG-012 path safety.
+- BUG-013 external lanes fail closed with `EXTERNAL_UNAVAILABLE` (the
+  Gate-D alternative to implementing the HTTP clients).
+- BUG-014/015 pins/lanes; BUG-016/017/018/019 ingest parameters/materialize/
+  lint/thoughts; BUG-022/023/024/025 time, YAML, export paths.
+- BUG-020 multi-root; BUG-021 prune/tombstones/absent-root refusal; BUG-033
+  BibTeX macros/latin-1/slug collisions; BUG-035/036/037/038/039/041/042
+  (including root-relative `FileHash` keys when the bundle root is configured
+  as a relative path).
+- BUG-026/027 facade signatures, op methods, and native error `op`/`data`;
+  BUG-028 old/missing schemas are refused with `CONFIG_INVALID` (the Python
+  migration registry is not ported; migration remains a Python-0.15 one-time
+  step); BUG-031 index errors; BUG-032 walk/symlink/hidden-file handling.
+- BUG-029 in-process mutex + `fd-lock`, read-only enforcement, and the
+  cross-process Python↔Rust lock check (`parity/tools/check_lock_interop.py`)
+  plus read-only check (`check_read_only.py`).
+- BUG-034 real one-page PDF and DOCX conversion/import parity
+  (`ingest-pdf-real`, `ingest-office-real`), warm converter reuse under
+  `pdf_idle_seconds`, plugin config/lint/temp cleanup/discovery/cache.
+- BUG-040 whole-concept transaction; BUG-043 documentation alignment; BUG-044
+  coverage tooling (`parity/tools/check_coverage.py`).
+- Python facade/wheel smoke checks (`check_facade.py`, `check_wheel.py`) run
+  against a freshly built wheel.
+
+Deliberately partial / remaining before stable:
+
+- BUG-030: `extension_dir` and the warm PDF converter/idle close are used.
+  `wal_mode` is accepted but lbug always journals through its WAL (upstream
+  has no separate mode), so the setting is documented as compatibility-only.
+- BUG-034 is covered end-to-end for PDF and DOCX through the same bobine
+  converter path; broader Office formats remain untested but share it.
+- `doctor` now ports the scored findings (broken/ambiguous links, orphan
+  hashes, duplicate titles, orphan/missing-description/stale concepts),
+  `summary`/`score`, `detached`, and per-root status; its environment-specific
+  `info` sections (index inventory, ORT/cache/PDF/lane probes) are not ported
+  and remain ignored in the differential check.
+- Known intentional parity divergence: Python 0.15 returns a raw `INTERNAL`
+  “bobine required” error when the PDF add-on is absent; Rust returns
+  `CONVERSION_FAILED` with the documented install hint.
+- Stable comparison normalizes Python set-ordered `tags`; materialized
+  thought files therefore compare by semantic fields/DB rows rather than raw
+  `FileHash.hash` when wall-clock `created` differs.
+- PDF auto-import paths are not byte-stable: both runners use a fresh temp
+  directory and the result exposes it, so `md_path`/`image_dir` are ignored;
+  the primary output-dir tree and DB dump are compared byte/semantic-for-byte.
+- `parity/tools/check_lock_interop.py`, `check_read_only.py`,
+  `check_facade.py`, and `check_wheel.py` are gate checks outside the scenario
+  counter.
+
 P0 and P1 items below are closed and covered by differential tests.
 
 ---

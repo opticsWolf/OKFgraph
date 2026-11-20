@@ -18,11 +18,53 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_uint};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const ABI_VERSION: c_uint = 1;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Warm converter: the ONNX sessions are expensive, so repeated PDF
+    /// ingests on the same thread reuse them until the idle window expires
+    /// or the conversion configuration changes.
+    static WARM: RefCell<Option<Warm>> = const { RefCell::new(None) };
+}
+
+struct Warm {
+    key: String,
+    cache: PathBuf,
+    last_used: Instant,
+    converter: HybridConverter,
+}
+
+impl Warm {
+    fn close(mut self) {
+        self.converter.close();
+    }
+}
+
+fn take_warm(key: &str, cache: &Path, idle: Duration) -> Option<Warm> {
+    WARM.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let reusable = slot.as_ref().is_some_and(|warm| {
+            warm.key == key && warm.cache == cache && warm.last_used.elapsed() <= idle
+        });
+        if reusable {
+            return slot.take();
+        }
+        if let Some(stale) = slot.take() {
+            stale.close();
+        }
+        None
+    })
+}
+
+fn restore_warm(warm: Option<Warm>) {
+    WARM.with(|slot| {
+        if let Some(previous) = slot.replace(warm) {
+            previous.close();
+        }
+    });
 }
 
 #[no_mangle]
@@ -43,8 +85,14 @@ fn error_json(message: impl Into<String>) -> CString {
 }
 
 fn default_cache_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HF_HUB_CACHE") {
-        return PathBuf::from(home);
+    if let Ok(cache) = std::env::var("HF_HUB_CACHE") {
+        return PathBuf::from(cache);
+    }
+    if let Ok(home) = std::env::var("HF_HOME") {
+        return PathBuf::from(home).join("hub");
+    }
+    if let Ok(cache) = std::env::var("XDG_CACHE_HOME") {
+        return PathBuf::from(cache).join("huggingface").join("hub");
     }
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -81,12 +129,28 @@ pub unsafe extern "C" fn okf_pdf_convert(
         let config = str_arg(config_json)?;
         let config_value: Json =
             serde_json::from_str(&config).map_err(|err| format!("bad config: {err}"))?;
-        let mut config: ConverterConfig = serde_json::from_value(config_value.clone())
-            .map_err(|err| format!("bad config: {err}"))?;
-        if config_value.get("routing_mode").is_none() {
-            config.routing.routing_mode = bobine::config::RoutingMode::Auto;
+        let idle = config_value
+            .get("idle_seconds")
+            .and_then(Json::as_u64)
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(300));
+        // Core sends only the knobs it owns; fill every other required field
+        // from bobine's defaults before deserializing. `idle_seconds` is ours,
+        // not bobine's.
+        let mut core_value = config_value.clone();
+        if let Some(object) = core_value.as_object_mut() {
+            object.remove("idle_seconds");
         }
-        let cache = config_value
+        let mut merged = serde_json::to_value(ConverterConfig::default())
+            .map_err(|err| format!("bad config defaults: {err}"))?;
+        if let (Some(dst), Some(src)) = (merged.as_object_mut(), core_value.as_object()) {
+            for (key, value) in src {
+                dst.insert(key.clone(), value.clone());
+            }
+        }
+        let config: ConverterConfig =
+            serde_json::from_value(merged).map_err(|err| format!("bad config: {err}"))?;
+        let cache = core_value
             .get("cache_dir")
             .and_then(Json::as_str)
             .filter(|value| !value.is_empty())
@@ -96,11 +160,27 @@ pub unsafe extern "C" fn okf_pdf_convert(
         let workdir = PathBuf::from(workdir);
         std::fs::create_dir_all(&workdir).map_err(|err| err.to_string())?;
         let hooks = ProgressHooks::default();
-        let mut converter = HybridConverter::new(config, &cache);
-        let doc = converter
-            .ingest_document(&input, &workdir, None, &hooks)
-            .map_err(|err| err.to_string())?;
-        converter.close();
+        let key = config_value.to_string();
+        let mut warm = take_warm(&key, &cache, idle);
+        if warm.is_none() {
+            warm = Some(Warm {
+                key,
+                cache: cache.clone(),
+                last_used: Instant::now(),
+                converter: HybridConverter::new(config, &cache),
+            });
+        }
+        let outcome = {
+            let current = warm.as_mut().expect("warm converter initialized");
+            current
+                .converter
+                .ingest_document(&input, &workdir, None, &hooks)
+        };
+        if let Some(current) = warm.as_mut() {
+            current.last_used = Instant::now();
+        }
+        restore_warm(warm);
+        let doc = outcome.map_err(|err| err.to_string())?;
         Ok(result_json(&doc.md_path, &doc.image_dir, doc.page_count))
     }));
     match outcome {

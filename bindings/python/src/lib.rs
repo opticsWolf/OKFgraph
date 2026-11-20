@@ -36,7 +36,17 @@ fn sleep_ms(py: Python<'_>, millis: u64) {
 }
 
 fn to_py_err(err: OkfError) -> PyErr {
-    PyRuntimeError::new_err(serde_json::to_string(&err.envelope_body()).expect("error JSON"))
+    // `OKFError.from_native` needs the same op/data context the Rust envelope
+    // carries; `envelope_body()` alone loses outcome reports (lint/diff).
+    let mut payload = err.envelope_body();
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "op".into(),
+            err.op.clone().map(Value::String).unwrap_or(Value::Null),
+        );
+        object.insert("data".into(), err.data.clone().unwrap_or(Value::Null));
+    }
+    PyRuntimeError::new_err(serde_json::to_string(&payload).expect("error JSON"))
 }
 
 fn parse_settings(params_json: &str) -> PyResult<Settings> {

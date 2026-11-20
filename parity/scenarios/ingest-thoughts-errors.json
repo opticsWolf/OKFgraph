@@ -1,0 +1,62 @@
+{
+  "name": "ingest-thoughts-errors",
+  "settings": {
+    "db_path": "parity/out/ingest-thoughts-errors-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/empty"
+    }
+  },
+  "ops": [
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "thoughts",
+        "thoughts": "First.",
+        "topic": "errors",
+        "concept_id": "thoughts/errors/one",
+        "title": "Same",
+        "extra": {
+          "created": "2026-01-01T00:00:00"
+        }
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "thoughts",
+        "thoughts": "Second.",
+        "topic": "errors",
+        "concept_id": "thoughts/errors/two",
+        "title": "Same"
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "thoughts",
+        "thoughts": "Third.",
+        "topic": "errors",
+        "concept_id": "thoughts/errors/three",
+        "related": "bad"
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "thoughts",
+        "thoughts": "Fourth.",
+        "topic": "errors",
+        "concept_id": "thoughts/errors/four",
+        "related": [
+          " "
+        ]
+      }
+    }
+  ]
+}

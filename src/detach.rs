@@ -70,7 +70,13 @@ fn all_files(root: &Path, settings: &Settings) -> Vec<PathBuf> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
                 if !skipped(&path, root) {
                     walk(&path, root, settings, out);
                 }

@@ -24,10 +24,11 @@ serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.9"
 thiserror = "2"
 lbug = "=0.22.1"
-time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] }
+time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde", "local-offset"] }
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "v5"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+fd-lock = "4"
 base64 = "0.22"
 url = "2"
 libloading = "0.8"
@@ -37,10 +38,10 @@ tracing = "0.1"
 # ort must match embroider 0.15.1's API; rc.15 breaks Session::builder().
 ort = { version = "=2.0.0-rc.13", optional = true, default-features = false }
 embroider = { version = "=0.15.1", optional = true }
-image = { version = "=0.25.10", optional = true, default-features = false, features = ["png", "jpeg"] }
+image = { version = "=0.25.10", optional = true, default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 bobine = { version = "=0.9.1", optional = true }
 mordant = { version = "=0.10.1", features = ["chunker", "linter", "meta", "math", "footnotes", "emoji"] }
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "blocking"] }
 clap = { version = "4", optional = true, features = ["derive"] }
 axum = { version = "0.8", optional = true, default-features = false, features = ["json", "query", "tokio", "http1"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "net"] }

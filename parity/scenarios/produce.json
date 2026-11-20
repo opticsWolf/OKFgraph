@@ -4,6 +4,7 @@
     "db_path": "parity/fixtures/oracle-v10.db",
     "bundle_root": "parity/corpus/empty"
   },
+  "setup": {"remove": ["parity/out/produce-python", "parity/out/produce-rust"]},
   "ops": [
     {"op": "produce", "params": {"source_type": "sqlite", "source_path": "parity/fixtures/producers.sqlite", "output_dir": "parity/out/produce-@RUNNER@"}},
     {"op": "produce", "params": {"source_type": "sqlite", "source_path": "parity/fixtures/producers.sqlite", "output_dir": "parity/out/produce-@RUNNER@", "overwrite": true}},

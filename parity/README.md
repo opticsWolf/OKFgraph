@@ -255,14 +255,28 @@ them to `import_bundle`, and the Python harness forwards them after removing
 constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 (embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
-All Stage B scenarios report **0 differences** on ops output; import, links,
-delete, image, reembed, and write-op scenarios also match on semantic DB
-dumps, and export trees match byte-for-byte. The matrix is green for the
-covered fixtures, but it does not exercise frontmatter identity,
-bundle-root ingest, file-backed delete, non-default dimensions, external
-lanes, YAML block scalars, multi-root, prune/force, or image pruning. Those
-findings and the ordered fix plan are in `docs/plan-bug-fixes.md`.
-Full PDF conversion parity is pending a real PDF/model fixture; the plugin
-ABI, loader, and missing-plugin envelope are covered.
+The post-review matrix covers 52 scenarios and reports **0 differences** on
+ops output after normalizing wall-clock graph times, internal Ladybug IDs,
+set-ordered tags, runner-specific paths, and the documented
+`CONVERSION_FAILED` PDF-missing-plugin divergence. Import, links, delete,
+image, reembed, YAML/time, multi-root, prune, dimension, and write-op
+scenarios also match on semantic DB dumps; export trees match byte-for-byte.
+New coverage includes `import-identity-frontmatter`, `import-multi-root`,
+`import-prune-missing`, `prune-absent-root`, `delete-file-backed`,
+`images-prune`, `import-dim-256/768`, `ingest-materialize`,
+`ingest-thoughts-*`, `ingest-bib-bundle-root`, `ingest-thoughts-errors`,
+`export-dotted-id`, `yaml-block-and-nested`, `time-microseconds-offset`,
+`percent-escape-nonascii`, `doctor-empty`, `ingest-pdf-no-plugin`, and
+`ingest-pdf-real` and `ingest-office-real` (real PDF/DOCX fixtures through the
+optional bobine add-on).
+`parity/tools/check_coverage.py` asserts every public op appears in a
+scenario.
+
+Known remaining coverage gaps: external lanes are fail-closed only; old-schema
+migration uses the Python 0.15 one-time step; PDF and DOCX are covered, while
+other Office formats remain untested. Cross-process Python↔Rust lock interop and read-only
+refusal are checked by `check_lock_interop.py` / `check_read_only.py`; facade
+and wheel checks are `check_facade.py` / `check_wheel.py`. Full findings and
+the ordered plan are in `docs/plan-bug-fixes.md`.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

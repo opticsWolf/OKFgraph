@@ -1,7 +1,7 @@
 //! Soft-delete tombstones and recovery for the Stage B write path.
 
 use crate::error::{OkfError, Result};
-use crate::model::{normalize_tags, utc_now_datetime, PyDateTime};
+use crate::model::{local_now_datetime, normalize_tags, PyDateTime};
 use crate::pycompat::PyValue;
 use crate::store::Store;
 use lbug::{LogicalType, Value};
@@ -14,7 +14,7 @@ pub fn soft_delete(store: &Store, concept_id: &str) -> Result<bool> {
     let Some(raw) = store.concept_raw(concept_id)? else {
         return Ok(false);
     };
-    let now = utc_now_datetime();
+    let now = local_now_datetime();
     let deleted_at = now.isoformat();
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -50,6 +50,81 @@ pub fn soft_delete(store: &Store, concept_id: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Trashed files recorded on the latest tombstone: `(trash, source)`.
+pub fn read_trashed(store: &Store, concept_id: &str) -> Result<Vec<(String, String)>> {
+    let rows = store.query(
+        "MATCH (d:DeletedConcept {original_id: $id})          RETURN d.snapshot AS snapshot ORDER BY d.deleted_at DESC",
+        vec![("id", Value::String(concept_id.into()))],
+    )?;
+    let Some(snapshot) = rows
+        .first()
+        .and_then(|row| row.get("snapshot"))
+        .and_then(Json::as_str)
+    else {
+        return Ok(Vec::new());
+    };
+    let Ok(snapshot) = serde_json::from_str::<Map<String, Json>>(snapshot) else {
+        return Ok(Vec::new());
+    };
+    Ok(snapshot
+        .get("trashed_files")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let trash = entry.get("trash").and_then(Json::as_str)?;
+            let source = entry.get("source").and_then(Json::as_str)?;
+            Some((trash.to_string(), source.to_string()))
+        })
+        .collect())
+}
+
+/// Store the trash list on the latest tombstone so recovery can restore it.
+pub fn remember_trashed(
+    store: &Store,
+    concept_id: &str,
+    trashed: &[(String, String)],
+) -> Result<()> {
+    if trashed.is_empty() {
+        return Ok(());
+    }
+    let rows = store.query(
+        "MATCH (d:DeletedConcept {original_id: $id})          RETURN d.id AS id, d.snapshot AS snapshot ORDER BY d.deleted_at DESC",
+        vec![("id", Value::String(concept_id.into()))],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(());
+    };
+    let Some(tombstone_id) = row.get("id").and_then(Json::as_str) else {
+        return Ok(());
+    };
+    let snapshot = row.get("snapshot").and_then(Json::as_str).unwrap_or("{}");
+    let mut snapshot: Map<String, Json> = serde_json::from_str(snapshot).unwrap_or_default();
+    snapshot.insert(
+        "trashed_files".into(),
+        Json::Array(
+            trashed
+                .iter()
+                .map(|(trash, source)| {
+                    Json::Object(Map::from_iter([
+                        ("trash".into(), Json::String(trash.clone())),
+                        ("source".into(), Json::String(source.clone())),
+                    ]))
+                })
+                .collect(),
+        ),
+    );
+    let serialized = serde_json::to_string(&snapshot)
+        .map_err(|err| OkfError::internal(err.to_string(), "serde_json::Error"))?;
+    store.write(
+        "MATCH (d:DeletedConcept {id: $id}) SET d.snapshot = $snapshot",
+        vec![
+            ("id", Value::String(tombstone_id.into())),
+            ("snapshot", Value::String(serialized)),
+        ],
+    )
+}
+
 pub fn recover(store: &Store, concept_id: &str) -> Result<bool> {
     let rows = store.query(
         "MATCH (d:DeletedConcept {original_id: $id}) \
@@ -64,7 +139,11 @@ pub fn recover(store: &Store, concept_id: &str) -> Result<bool> {
         return Ok(false);
     };
     let snapshot: Map<String, Json> = serde_json::from_str(snapshot).map_err(|err| {
-        OkfError::new("STATE_INVALID", format!("invalid recovery snapshot: {err}"))
+        OkfError::internal(
+            format!("invalid recovery snapshot: {err}"),
+            "serde_json::Error",
+        )
+        .remedy("purge the corrupt deleted snapshot and re-import the file")
     })?;
     let id = snapshot
         .get("id")
@@ -177,7 +256,7 @@ pub fn recover(store: &Store, concept_id: &str) -> Result<bool> {
 
 pub fn purge_deleted(store: &Store, older_than: Option<i64>) -> Result<usize> {
     let window = older_than.unwrap_or(SOFT_DELETE_WINDOW as i64) as f64;
-    let now = utc_now_datetime();
+    let now = local_now_datetime();
     let rows = store.query(
         "MATCH (d:DeletedConcept) RETURN d.original_id AS id, d.deleted_at AS deleted_at",
         vec![],
@@ -246,7 +325,7 @@ pub fn purge_concept(store: &Store, concept_id: &str) -> Result<()> {
         "MATCH (b:BrokenLink {source_id: $id}) DELETE b",
         vec![("id", Value::String(concept_id.into()))],
     )?;
-    let now = utc_now_datetime();
+    let now = local_now_datetime();
     for (source, _, kind) in incoming {
         let mut link_id = format!("{source}\u{2192}{concept_id}");
         if kind != "mention" {

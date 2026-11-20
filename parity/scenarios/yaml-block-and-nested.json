@@ -1,0 +1,34 @@
+{
+  "name": "yaml-block-and-nested",
+  "settings": {
+    "db_path": "parity/out/yaml-advanced-@RUNNER@.db",
+    "bundle_root": "parity/corpus/yaml-advanced",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/yaml-advanced"
+    }
+  },
+  "ops": [
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "alpha"
+      }
+    },
+    {
+      "op": "import_bundle",
+      "params": {}
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "alpha"
+      }
+    }
+  ]
+}

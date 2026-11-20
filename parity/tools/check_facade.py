@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 from pathlib import Path
 
 import okfgraph
 from okfgraph import OKFError, OKFRouter, ConceptModel
+from okfgraph.client import OPS
 
 
 def main() -> int:
@@ -15,6 +17,10 @@ def main() -> int:
     args = ap.parse_args()
 
     assert okfgraph.version().startswith("0.16.")
+    parameters = inspect.signature(OKFRouter.__init__).parameters
+    assert "db_path" in parameters and "bundle_root" in parameters
+    missing = [name for name in OPS if not hasattr(OKFRouter, name)]
+    assert not missing, f"facade is missing op methods: {missing}"
     router = OKFRouter(
         db_path=str(Path(args.db)),
         embedding_dim=512,
@@ -33,7 +39,7 @@ def main() -> int:
         else:
             raise AssertionError("read('missing') should raise")
         report = router.doctor()
-        assert report["concepts"] == 2
+        assert report["report"]["concepts"] == 2
         print("OK: Python facade delegates read ops to Rust")
     finally:
         router.close()

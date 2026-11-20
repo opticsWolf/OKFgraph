@@ -17,17 +17,20 @@ VOLATILE = {"created_at", "updated_at", "effective_at"}
 INTERNAL = {"_ID", "_LABEL", "_SRC", "_DST"}
 
 
-def clean(value: Any) -> Any:
+def clean(value: Any, key: str = "") -> Any:
     if isinstance(value, float):
         return round(value, 6)
     if isinstance(value, dict):
         return {
-            key: clean(item)
-            for key, item in value.items()
-            if key not in VOLATILE and key not in INTERNAL
+            k: clean(item, k)
+            for k, item in value.items()
+            if k not in VOLATILE and k not in INTERNAL
         }
     if isinstance(value, list):
-        return [clean(item) for item in value]
+        items = [clean(item, key) for item in value]
+        if key == "tags" and all(isinstance(item, str) for item in items):
+            return sorted(items)
+        return items
     return value
 
 
@@ -48,6 +51,8 @@ def load(path: Path) -> dict[str, list[Any]]:
                     row = {**row, "value": 0}
             if table == "SourceRoot" and isinstance(row, dict):
                 row = {k: v for k, v in row.items() if k not in {"path", "last_seen"}}
+            if table == "DeletedPath" and isinstance(row, dict):
+                row = {**row, "detected_at": 0}
             if table == "DeletedConcept" and isinstance(row, dict):
                 row = {
                     k: v

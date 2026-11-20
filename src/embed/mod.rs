@@ -77,6 +77,15 @@ impl EmbedderPool {
     }
 
     pub fn get(&self, settings: &Settings) -> Result<Arc<dyn Embedder>> {
+        if settings.backend == "external" {
+            return Err(OkfError::new(
+                "EXTERNAL_UNAVAILABLE",
+                "external embedding lanes are not implemented in this build",
+            )
+            .field("backend", Json::String("external".into()))
+            .field("endpoint", Json::String(settings.endpoint_url.clone()))
+            .remedy("set backend='embroider' or install a build with external lanes"));
+        }
         if let Some(loaded) = self
             .inner
             .lock()
@@ -283,6 +292,18 @@ impl RerankerPool {
     }
 
     fn get(&self, settings: &Settings) -> Result<Arc<embroider::Reranker>> {
+        if settings.rerank_backend == "external" {
+            return Err(OkfError::new(
+                "EXTERNAL_UNAVAILABLE",
+                "external rerank lanes are not implemented in this build",
+            )
+            .field("backend", Json::String("external".into()))
+            .field(
+                "endpoint",
+                Json::String(settings.rerank_endpoint_url.clone()),
+            )
+            .remedy("set rerank_backend='embroider' or install a build with external lanes"));
+        }
         if let Some(loaded) = self
             .inner
             .lock()
@@ -496,6 +517,18 @@ impl VisionPool {
     }
 
     pub fn get(&self, settings: &Settings) -> Result<Arc<NativeVision>> {
+        if settings.image_backend == "external" {
+            return Err(OkfError::new(
+                "EXTERNAL_UNAVAILABLE",
+                "external vision lanes are not implemented in this build",
+            )
+            .field("backend", Json::String("external".into()))
+            .field(
+                "endpoint",
+                Json::String(settings.image_endpoint_url.clone()),
+            )
+            .remedy("set image_backend='embroider' or install a build with external lanes"));
+        }
         if let Some(loaded) = self
             .inner
             .lock()
@@ -510,6 +543,13 @@ impl VisionPool {
             .lock()
             .map_err(|_| OkfError::internal("vision lock poisoned", "mutex"))?;
         Ok(Arc::clone(guard.get_or_insert(vision)))
+    }
+
+    pub fn loaded(&self) -> Option<Arc<NativeVision>> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(Arc::clone))
     }
 
     pub fn is_loaded(&self) -> bool {
@@ -533,21 +573,24 @@ impl Pools {
 }
 
 pub fn check_pins(settings: &Settings, pins: &Json) -> Result<()> {
+    let empty = pins.get("empty").and_then(Json::as_bool).unwrap_or(false);
     let pinned_model = pins
         .get("pinned")
         .and_then(|p| p.get("model_id"))
         .and_then(Json::as_str);
-    if let Some(model) = pinned_model {
-        if model != settings.model_id {
-            return Err(OkfError::new(
-                "MODEL_PIN_MISMATCH",
-                format!(
-                    "graph is pinned to model '{model}', configured '{}'",
-                    settings.model_id
-                ),
-            )
-            .field("pinned", Json::String(model.into()))
-            .field("configured", Json::String(settings.model_id.clone())));
+    if !empty {
+        if let Some(model) = pinned_model {
+            if model != settings.model_id {
+                return Err(OkfError::new(
+                    "MODEL_PIN_MISMATCH",
+                    format!(
+                        "graph is pinned to model '{model}', configured '{}'",
+                        settings.model_id
+                    ),
+                )
+                .field("pinned", Json::String(model.into()))
+                .field("configured", Json::String(settings.model_id.clone())));
+            }
         }
     }
     let pinned_dim = pins
@@ -555,9 +598,7 @@ pub fn check_pins(settings: &Settings, pins: &Json) -> Result<()> {
         .and_then(|p| p.get("embedding_dim"))
         .and_then(Json::as_i64);
     if let Some(dim) = pinned_dim {
-        if dim != settings.embedding_dim
-            && !pins.get("empty").and_then(Json::as_bool).unwrap_or(false)
-        {
+        if dim != settings.embedding_dim && !empty {
             return Err(OkfError::new(
                 "DIM_MISMATCH",
                 format!(
@@ -567,6 +608,23 @@ pub fn check_pins(settings: &Settings, pins: &Json) -> Result<()> {
             )
             .field("pinned", Json::from(dim))
             .field("configured", Json::from(settings.embedding_dim)));
+        }
+    }
+    let pinned_precision = pins
+        .get("pinned")
+        .and_then(|p| p.get("precision"))
+        .and_then(Json::as_str);
+    if let (Some(pinned), Some(configured)) = (
+        pinned_precision,
+        (settings.precision != "auto").then_some(settings.precision.as_str()),
+    ) {
+        if pinned != configured && !empty {
+            return Err(OkfError::new(
+                "PRECISION_PIN_MISMATCH",
+                format!("graph is pinned to precision '{pinned}', configured '{configured}'"),
+            )
+            .field("pinned", Json::String(pinned.into()))
+            .field("configured", Json::String(configured.into())));
         }
     }
     Ok(())

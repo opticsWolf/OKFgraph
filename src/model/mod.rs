@@ -10,7 +10,7 @@ use crate::error::{OkfError, Result};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
+use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 pub const GRAPH_TIMES: &[&str] = &["created_at", "updated_at", "effective_at", "content_sig"];
 
@@ -51,18 +51,7 @@ impl PyDateTime {
             return Err(OkfError::new("BAD_VALUE", "empty timestamp"));
         }
         let normalized = text.replace('T', " ");
-        let normalized = normalized.strip_suffix('Z').unwrap_or(&normalized).trim();
-        // Strip a simple +HH:MM offset: all stored times are naive UTC.
-        let naive = if normalized.len() >= 6 {
-            let bytes = normalized.as_bytes();
-            if bytes[bytes.len() - 6] == b'+' || bytes[bytes.len() - 6] == b'-' {
-                &normalized[..normalized.len() - 6]
-            } else {
-                normalized
-            }
-        } else {
-            normalized
-        };
+        let (naive, offset) = split_datetime_offset(&normalized);
         let (date_part, time_part) = naive.split_once(' ').unwrap_or((naive, "00:00:00"));
         let mut date_parts = date_part.split('-');
         let year = date_parts
@@ -96,6 +85,10 @@ impl PyDateTime {
             None => (seconds.parse().map_err(|_| bad_ts(text))?, 0),
         };
         let time = Time::from_hms_nano(hour, minute, sec, nanos).map_err(|_| bad_ts(text))?;
+        // Ladybug stores TIMESTAMP as a naive wall-clock value: an ISO
+        // offset is discarded, not converted to UTC (the Python 0.15 oracle
+        // stores `2024-01-02T03:04:05+05:30` as `2024-01-02 03:04:05`).
+        let _ = offset;
         Ok(Self(PrimitiveDateTime::new(date, time)))
     }
 
@@ -113,7 +106,7 @@ impl PyDateTime {
         );
         if time.nanosecond() != 0 {
             text.push('.');
-            text.push_str(format!("{:09}", time.nanosecond()).trim_end_matches('0'));
+            text.push_str(&format!("{:06}", time.nanosecond() / 1_000));
         }
         text
     }
@@ -137,9 +130,22 @@ pub fn format_py_datetime(value: OffsetDateTime) -> String {
     let micros = (time.nanosecond() / 1_000) * 1_000;
     if micros != 0 {
         text.push('.');
-        text.push_str(format!("{micros:09}").trim_end_matches('0'));
+        text.push_str(&format!("{:06}", micros / 1_000));
     }
     text
+}
+
+/// Current local wall-clock time as a naive Python-compatible datetime.
+///
+/// Python's `datetime.now()` drives `created`, soft-delete tombstones, and
+/// `.okf-trash` stamps; graph columns use [`utc_now_datetime`] instead.
+pub fn local_now_datetime() -> PyDateTime {
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let time = now.time();
+    let micros = (time.nanosecond() / 1_000) * 1_000;
+    let truncated =
+        Time::from_hms_nano(time.hour(), time.minute(), time.second(), micros).unwrap_or(time);
+    PyDateTime::new(PrimitiveDateTime::new(now.date(), truncated))
 }
 
 /// Current naive UTC time as a Python-compatible datetime.
@@ -192,6 +198,40 @@ pub fn recency_decay(effective: Option<&str>, now: &str, half_life_days: f64) ->
         seconds / 86_400.0
     };
     0.5_f64.powf(age_days / half_life_days)
+}
+
+fn split_datetime_offset(text: &str) -> (&str, Option<UtcOffset>) {
+    let text = text.trim();
+    if let Some(body) = text.strip_suffix('Z').or_else(|| text.strip_suffix('z')) {
+        return (body.trim_end(), Some(UtcOffset::UTC));
+    }
+    let bytes = text.as_bytes();
+    if text.len() >= 6 {
+        let tail = &text[text.len() - 6..];
+        if (tail.starts_with('+') || tail.starts_with('-')) && tail.as_bytes().get(3) == Some(&b':')
+        {
+            if let (Ok(hour), Ok(minute)) = (tail[1..3].parse::<i8>(), tail[4..6].parse::<i8>()) {
+                let sign = if tail.starts_with('-') { -1 } else { 1 };
+                if let Ok(offset) = UtcOffset::from_hms(sign * hour, sign * minute, 0) {
+                    return (&text[..text.len() - 6], Some(offset));
+                }
+            }
+        }
+    }
+    if bytes.len() >= 5 {
+        let tail = &text[text.len() - 5..];
+        if (tail.starts_with('+') || tail.starts_with('-'))
+            && tail[1..].chars().all(|ch| ch.is_ascii_digit())
+        {
+            if let (Ok(hour), Ok(minute)) = (tail[1..3].parse::<i8>(), tail[3..5].parse::<i8>()) {
+                let sign = if tail.starts_with('-') { -1 } else { 1 };
+                if let Ok(offset) = UtcOffset::from_hms(sign * hour, sign * minute, 0) {
+                    return (&text[..text.len() - 5], Some(offset));
+                }
+            }
+        }
+    }
+    (text, None)
 }
 
 fn bad_ts(text: &str) -> OkfError {
@@ -400,6 +440,16 @@ mod tests {
             serde_json::to_string(&dt).expect("json"),
             "\"2024-01-02 03:04:05\""
         );
+    }
+
+    #[test]
+    fn timestamps_keep_microseconds_and_convert_offsets() {
+        let dt = PyDateTime::parse("2024-01-02T03:04:05.100000+05:30").expect("parse");
+        assert_eq!(dt.isoformat(), "2024-01-02T03:04:05.100000");
+        let dt = PyDateTime::parse("2024-01-02T03:04:05.000001-08:00").expect("parse");
+        assert_eq!(dt.isoformat(), "2024-01-02T03:04:05.000001");
+        let dt = PyDateTime::parse("2024-01-02T03:04:05Z").expect("parse");
+        assert_eq!(dt.isoformat(), "2024-01-02T03:04:05");
     }
 
     #[test]

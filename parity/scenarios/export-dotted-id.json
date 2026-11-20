@@ -1,0 +1,31 @@
+{
+  "name": "export-dotted-id",
+  "settings": {
+    "db_path": "parity/out/export-dotted-@RUNNER@.db",
+    "bundle_root": "parity/corpus/dotted",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/dotted"
+    }
+  },
+  "ops": [
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "notes/v1.0"
+      }
+    },
+    {
+      "op": "export_concept",
+      "params": {
+        "concept_id": "notes/v1.0",
+        "output_dir": "parity/out/export-dotted-@RUNNER@"
+      }
+    }
+  ]
+}

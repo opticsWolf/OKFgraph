@@ -1,0 +1,41 @@
+{
+  "name": "images-prune",
+  "settings": {
+    "db_path": "parity/out/images-prune-@RUNNER@.db",
+    "bundle_root": "parity/out/images-prune-corpus-@RUNNER@",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "copy": {
+      "from": "parity/corpus/images-prune",
+      "to": "parity/out/images-prune-corpus-@RUNNER@"
+    },
+    "import": {
+      "corpus": "parity/out/images-prune-corpus-@RUNNER@"
+    },
+    "remove": [
+      "parity/out/images-prune-corpus-@RUNNER@/one.md"
+    ]
+  },
+  "ops": [
+    {
+      "op": "import_bundle",
+      "params": {
+        "prune_missing": true
+      }
+    },
+    {
+      "op": "list_deleted",
+      "params": {}
+    },
+    {
+      "op": "get_image",
+      "params": {
+        "asset_id": "missing"
+      }
+    }
+  ]
+}

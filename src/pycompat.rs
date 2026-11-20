@@ -43,6 +43,15 @@ impl PyValue {
                     return match kind {
                         "date" => Self::Date(text),
                         "datetime" => Self::DateTime(text),
+                        "float" => match text.as_str() {
+                            "inf" | "+inf" | "Infinity" => Self::Float(f64::INFINITY),
+                            "-inf" | "-Infinity" => Self::Float(f64::NEG_INFINITY),
+                            "nan" | "NaN" => Self::Float(f64::NAN),
+                            other => other
+                                .parse::<f64>()
+                                .map(Self::Float)
+                                .unwrap_or(Self::Other(text)),
+                        },
                         _ => Self::Other(text),
                     };
                 }

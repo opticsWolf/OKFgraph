@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -27,7 +27,7 @@ jobs:
       - name: Check workspace
         run: cargo check --workspace --no-default-features
       - name: Parity runner smoke
-        run: cargo run -p okfgraph --bin parity-run -- parity/scenarios/minimal.json
+        run: cargo run -p okfgraph --no-default-features --bin parity-run -- parity/scenarios/minimal.json
 
   wheel:
     name: wheels (${{ matrix.os }})
@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-latest, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,8 +50,9 @@ jobs:
         if: runner.os == 'Windows'
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgArguments: openssl:x64-windows
-          vcpkgTriplet: x64-windows
+          runVcpkgInstall: true
+          vcpkgJsonGlob: vcpkg.json
+          doNotCache: true
       - name: Export vcpkg environment
         if: runner.os == 'Windows'
         shell: bash
@@ -69,7 +70,7 @@ jobs:
       - name: Install and smoke
         shell: bash
         run: |
-          python -m pip install --no-deps target/wheels/okfgraph-*.whl target/wheels/okfgraph_pdf-*.whl
+          python -m pip install target/wheels/okfgraph-*.whl target/wheels/okfgraph_pdf-*.whl
           mkdir -p parity/out
           cp parity/fixtures/oracle-v10.db parity/out/ci-facade.db
           python parity/tools/check_wheel.py

@@ -45,7 +45,7 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 clap = { version = "4", optional = true, features = ["derive"] }
 axum = { version = "0.8", optional = true, default-features = false, features = ["json", "query", "tokio", "http1"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
-rmcp = { version = "=3.11.0", optional = true, features = ["server", "transport-io", "transport-async-rw", "macros"] }
+rmcp = { version = "=3.11.0", optional = true, features = ["server", "transport-io", "transport-async-rw", "transport-streamable-http-server", "macros"] }
 
 [features]
 default = ["embed", "external", "vision"]
@@ -54,7 +54,7 @@ external = ["dep:reqwest"]
 vision = ["embed", "dep:image"]
 cli = ["dep:clap", "dep:tokio"]
 server = ["dep:axum", "dep:tokio"]
-mcp = ["dep:rmcp", "server", "cli"]
+mcp = ["dep:rmcp", "server", "cli", "external"]
 pdf = ["dep:bobine"]
 
 [dev-dependencies]

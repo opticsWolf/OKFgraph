@@ -7,7 +7,7 @@ use crate::error::{OkfError, Result};
 use crate::settings::Settings;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const SKILLS: &[(&str, &str)] = &[
     (
@@ -77,7 +77,7 @@ pub fn model_info(settings: &Settings, converters: bool) -> Result<Value> {
 }
 
 #[cfg(feature = "embed")]
-fn normalize(path: &Path) -> String {
+fn normalize(path: &std::path::Path) -> String {
     let mut out = path.to_path_buf();
     // Mirror os.path.normpath's removal of trailing separators.
     while !out.as_os_str().is_empty() && (out.ends_with("\\") || out.ends_with("/")) {

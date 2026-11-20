@@ -25,6 +25,8 @@ the Python and Rust cores in one process.
 - `tools/check_mcp_spike.py` — Python MCP client for the original stdio spike.
 - `tools/check_mcp.py` — Python MCP SDK client for the 11 Rust tools/annotations.
 - `tools/check_mcp_connect.py` — MCP stdio proxy through a running `okf serve`.
+- `tools/check_mcp_http.py` — MCP Streamable HTTP mount on `okf serve /mcp`.
+- `tools/check_uds.py` — `OKFClient` over a Unix socket (POSIX only; SKIPs on Windows).
 - `tools/check_jobs.py` — HTTP job submit/poll/list/cancel smoke (`okf serve`).
 - `tools/check_cli.py` — 29-verb registration and `--json` differential smoke.
 - `tools/check_facade.py` — public Python `OKFRouter`/`OKFClient` smoke test.
@@ -304,7 +306,8 @@ frontmatter hashes depend on wall-clock ordering. Cross-process Python↔Rust lo
 read-only refusal are checked by `check_lock_interop.py` /
 `check_read_only.py`; facade and wheel checks are `check_facade.py` /
 `check_wheel.py`; serve/MCP gates are `check_client.py`, `check_mcp.py`,
-`check_mcp_connect.py`, `check_jobs.py`, and `check_cli.py`. Full findings and the open register are in
+`check_mcp_connect.py`, `check_mcp_http.py`, `check_uds.py`, `check_jobs.py`,
+and `check_cli.py`. Full findings and the open register are in
 `docs/plan-bug-fixes.md` §11.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

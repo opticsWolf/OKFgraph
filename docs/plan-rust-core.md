@@ -9,7 +9,7 @@ Real EmbeddingGemma 2 ONNX inference runs on CUDA; text/rerank/vision and
 write parity scenarios are green on the covered fixtures. The review findings
 in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
 fail-closed/deferred items. Linux/macOS spikes and the remaining Stage C
-surfaces (HTTP `/mcp` mount and UDS transport) remain.
+surface: UDS transport verification on a POSIX host remains.
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -946,7 +946,10 @@ The job lane stores in-memory `{status, progress, result, error}` records;
 verifies submit → poll → result, `GET /jobs`, cancel, and unknown-job errors;
 `OKFGRAPH_JOB_TEST_DELAY_MS` is a smoke-only delay hook. The CLI now registers all 29 oracle verbs with generated global settings
 flags; `parity/tools/check_cli.py` compares command registration and 13
-`--json` cases. Remaining M4 work: the HTTP `/mcp` mount and UDS transport.
+`--json` cases. The HTTP `/mcp` mount uses rmcp Streamable HTTP on the same
+axum owner and is verified by `parity/tools/check_mcp_http.py`. UDS is
+implemented behind `okf serve --listen unix:///path` with a POSIX-only
+smoke (`check_uds.py`), pending a Linux/macOS run.
 
 **Gate:** CLI/MCP/serve contract suite green; Python `OKFRouter` and `OKFClient`
 perform every op with parity; no Python transport/runtime dependency.

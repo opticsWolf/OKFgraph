@@ -10,8 +10,14 @@ use crate::error::{Envelope, OkfError, Result};
 use crate::ops::{Router, OP_NAMES};
 use crate::settings::Settings;
 use axum::body::Bytes;
+#[cfg(feature = "mcp")]
+use axum::extract::Request;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+#[cfg(feature = "mcp")]
+use axum::response::Response;
+#[cfg(feature = "mcp")]
+use axum::routing::any;
 use axum::routing::{get, post};
 use axum::{Json, Router as AxumRouter};
 use serde::Serialize;
@@ -26,6 +32,8 @@ struct AppState {
     router: Arc<Router>,
     settings: Settings,
     jobs: JobManager,
+    #[cfg(feature = "mcp")]
+    mcp: crate::mcp::McpHttpService,
 }
 
 /// Public job view returned by `/jobs` and `/jobs/{id}`.
@@ -222,6 +230,11 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(serde_json::to_value(Envelope::success("health", data)).expect("envelope"))
 }
 
+#[cfg(feature = "mcp")]
+async fn mcp_http(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    state.mcp.handle(request).await
+}
+
 async fn list_ops() -> Json<Value> {
     Json(json!(OP_NAMES))
 }
@@ -381,19 +394,31 @@ async fn call_op(
 }
 
 pub fn http_router(router: Arc<Router>, settings: Settings) -> AxumRouter {
+    #[cfg(feature = "mcp")]
+    let mcp = crate::mcp::McpHttpService::new(
+        Arc::clone(&router) as Arc<dyn crate::ops::OpClient>,
+        settings.clone(),
+    );
     let state = Arc::new(AppState {
         router,
         settings,
         jobs: JobManager::default(),
+        #[cfg(feature = "mcp")]
+        mcp,
     });
-    AxumRouter::new()
+    #[allow(unused_mut)]
+    let mut app = AxumRouter::new()
         .route("/health", get(health))
         .route("/ops", get(list_ops))
         .route("/ops/{op}", post(call_op))
         .route("/jobs", get(list_jobs).post(submit_job_body))
         .route("/jobs/{id}", post(submit_job_op).get(get_job))
-        .route("/jobs/{id}/cancel", post(cancel_job))
-        .with_state(state)
+        .route("/jobs/{id}/cancel", post(cancel_job));
+    #[cfg(feature = "mcp")]
+    {
+        app = app.route("/mcp", any(mcp_http));
+    }
+    app.with_state(state)
 }
 
 pub fn discovery_file(db_path: &str) -> PathBuf {
@@ -405,45 +430,137 @@ pub fn discovery_file(db_path: &str) -> PathBuf {
     path.with_file_name(format!("{name}.serve.json"))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ListenTarget {
+    Tcp(String),
+    Unix(PathBuf),
+}
+
+fn parse_listen(listen: &str) -> Result<ListenTarget> {
+    if let Some(path) = listen.strip_prefix("unix://") {
+        if path.is_empty() {
+            return Err(OkfError::new(
+                "CONFIG_INVALID",
+                "unix:// listen needs a socket path",
+            ));
+        }
+        let path = std::path::absolute(path).unwrap_or_else(|_| PathBuf::from(path));
+        Ok(ListenTarget::Unix(path))
+    } else if !listen.is_empty() && listen.contains(':') {
+        Ok(ListenTarget::Tcp(listen.to_string()))
+    } else {
+        Err(OkfError::new(
+            "CONFIG_INVALID",
+            format!("invalid --listen {listen:?}; use host:port or unix:///path"),
+        ))
+    }
+}
+
+/// Write the discovery record, serve until Ctrl-C, then remove both the
+/// discovery file and a Unix socket (if this owner created one).
+async fn serve_bound<L>(
+    listener: L,
+    url: String,
+    settings: &Settings,
+    socket: Option<PathBuf>,
+) -> Result<PathBuf>
+where
+    L: axum::serve::Listener + Send + 'static,
+    L::Addr: std::fmt::Debug,
+{
+    let router = Arc::new(Router::open(settings)?);
+    let app = http_router(router, settings.clone());
+    let discovery = discovery_file(&settings.db_path);
+    let db_path =
+        std::path::absolute(&settings.db_path).unwrap_or_else(|_| PathBuf::from(&settings.db_path));
+    let record = json!({
+        "url": url,
+        "pid": std::process::id(),
+        "db_path": db_path.to_string_lossy(),
+    });
+    if let Some(parent) = discovery.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&discovery, serde_json::to_string_pretty(&record).unwrap())
+        .map_err(|err| OkfError::internal(err.to_string(), "std::io::Error"))?;
+    tracing::info!("okf serve: {url} owns {}", settings.db_path);
+    let result = axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await;
+    let _ = std::fs::remove_file(&discovery);
+    if let Some(path) = socket {
+        let _ = std::fs::remove_file(path);
+    }
+    result.map_err(|err| OkfError::internal(err.to_string(), "axum"))?;
+    Ok(discovery)
+}
+
+#[cfg(unix)]
+fn bind_unix(path: &FsPath) -> Result<tokio::net::UnixListener> {
+    match tokio::net::UnixListener::bind(path) {
+        Ok(listener) => Ok(listener),
+        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+            // A stale socket file is common after SIGKILL. Refuse to displace
+            // a live listener; otherwise clear the file and retry once.
+            if std::os::unix::net::UnixStream::connect(path).is_ok() {
+                return Err(OkfError::new(
+                    "DB_LOCKED",
+                    format!("unix socket already in use: {}", path.display()),
+                )
+                .field("path", json!(path.to_string_lossy())));
+            }
+            std::fs::remove_file(path)
+                .map_err(|err| OkfError::internal(err.to_string(), "std::io::Error"))?;
+            tokio::net::UnixListener::bind(path)
+                .map_err(|err| OkfError::internal(err.to_string(), "std::io::Error"))
+        }
+        Err(err) => Err(OkfError::internal(err.to_string(), "std::io::Error")),
+    }
+}
+
+#[cfg(unix)]
+async fn serve_unix(settings: &Settings, path: PathBuf) -> Result<PathBuf> {
+    let listener = bind_unix(&path)?;
+    let url = format!("unix://{}", path.to_string_lossy());
+    serve_bound(listener, url, settings, Some(path)).await
+}
+
+#[cfg(not(unix))]
+async fn serve_unix(_settings: &Settings, path: PathBuf) -> Result<PathBuf> {
+    Err(OkfError::new(
+        "CONFIG_INVALID",
+        format!(
+            "unix sockets are unavailable on this platform: {}",
+            path.display()
+        ),
+    ))
+}
+
 /// Own the database and serve the HTTP op plane until Ctrl-C. Returns the
-/// discovery file path so the CLI can print it.
+/// discovery file path so the CLI can print it. Accepts `host:port` and, on
+/// Unix hosts, `unix:///absolute/path`.
 pub fn serve(settings: &Settings, listen: &str) -> Result<PathBuf> {
+    let target = parse_listen(listen)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|err| OkfError::internal(err.to_string(), "tokio"))?;
     runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(listen)
-            .await
-            .map_err(|err| OkfError::internal(err.to_string(), "std::io::Error"))?;
-        let url = listener
-            .local_addr()
-            .map(|addr| format!("http://{}", addr))
-            .map_err(|err| OkfError::internal(err.to_string(), "std::io::Error"))?;
-        let router = Arc::new(Router::open(settings)?);
-        let app = http_router(router, settings.clone());
-        let discovery = discovery_file(&settings.db_path);
-        let db_path = std::path::absolute(&settings.db_path)
-            .unwrap_or_else(|_| PathBuf::from(&settings.db_path));
-        let record = json!({
-            "url": url,
-            "pid": std::process::id(),
-            "db_path": db_path.to_string_lossy(),
-        });
-        if let Some(parent) = discovery.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        match target {
+            ListenTarget::Tcp(addr) => {
+                let listener = tokio::net::TcpListener::bind(&addr)
+                    .await
+                    .map_err(|err| OkfError::internal(err.to_string(), "std::io::Error"))?;
+                let url = listener
+                    .local_addr()
+                    .map(|addr| format!("http://{}", addr))
+                    .map_err(|err| OkfError::internal(err.to_string(), "std::io::Error"))?;
+                serve_bound(listener, url, settings, None).await
+            }
+            ListenTarget::Unix(path) => serve_unix(settings, path).await,
         }
-        std::fs::write(&discovery, serde_json::to_string_pretty(&record).unwrap())
-            .map_err(|err| OkfError::internal(err.to_string(), "std::io::Error"))?;
-        tracing::info!("okf serve: {url} owns {}", settings.db_path);
-        let result = axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
-            })
-            .await;
-        let _ = std::fs::remove_file(&discovery);
-        result.map_err(|err| OkfError::internal(err.to_string(), "axum"))?;
-        Ok(discovery)
     })
 }
 
@@ -463,6 +580,63 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("job {id} never reached a terminal state");
+    }
+
+    #[test]
+    fn listen_target_supports_tcp_and_unix() {
+        assert_eq!(
+            parse_listen("127.0.0.1:8765").unwrap(),
+            ListenTarget::Tcp("127.0.0.1:8765".into())
+        );
+        let unix = parse_listen("unix:///tmp/okf.sock").unwrap();
+        match unix {
+            ListenTarget::Unix(path) => assert!(path.is_absolute()),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(parse_listen("nonsense").is_err());
+        assert!(parse_listen("unix://").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_unix_socket_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("okf.sock");
+        std::fs::write(&path, b"stale").unwrap();
+        let listener = bind_unix(&path).unwrap();
+        assert!(path.exists());
+        drop(listener);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_listener_serves_the_health_envelope() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("okf.sock");
+        let db = dir.path().join("graph.db");
+        std::fs::copy("parity/fixtures/oracle-v10.db", &db).unwrap();
+        let mut settings = Settings::default();
+        settings.db_path = db.to_string_lossy().into_owned();
+
+        let listener = bind_unix(&path).unwrap();
+        let app = http_router(Arc::new(Router::open(&settings).unwrap()), settings);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("\"op\":\"health\""), "{response}");
+        server.abort();
     }
 
     #[tokio::test]

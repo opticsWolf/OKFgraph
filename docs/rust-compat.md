@@ -57,8 +57,10 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 - [x] 29 CLI verbs, generated global flags, `--json`, exit codes; help prose
       may change (`check_cli.py`, `cli::tests::command_tree_has_all_29_verbs`).
 - [x] `okf serve` routes `/health`, `/ops`, `/ops/{op}`, `/jobs*`, discovery
-      file, and in-memory jobs with submit/poll/list/cancel (`check_jobs.py`).
-      The HTTP `/mcp` mount and UDS transport remain open.
+      file, and in-memory jobs with submit/poll/list/cancel (`check_jobs.py`),
+      plus the 11 MCP tools on `/mcp` (`check_mcp_http.py`).
+- [ ] UDS transport: implemented as `--listen unix:///path` with a POSIX-only
+      smoke (`check_uds.py`); pending a Linux/macOS verification run.
 
 ## F. Public Python API (Stage C)
 

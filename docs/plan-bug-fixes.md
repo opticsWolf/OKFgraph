@@ -103,7 +103,8 @@ Deliberately partial / remaining before stable:
   Python 0.15's `fields`/`remedy` instead of the missing-add-on install hint;
   `ingest-office-formats` covers the XLSX success and PPTX refusal paths.
 - M4 surface checks outside the scenario counter: `check_client.py`,
-  `check_mcp.py`, `check_mcp_connect.py`, `check_jobs.py`, `check_cli.py`,
+  `check_mcp.py`, `check_mcp_connect.py`, `check_mcp_http.py`,
+  `check_uds.py`, `check_jobs.py`, `check_cli.py`,
   `check_lock_interop.py`,
   `check_read_only.py`, `check_facade.py`, and `check_wheel.py`.
 
@@ -1443,6 +1444,28 @@ normalization via `python_path_str`. The scenario covers all five ops plus
 
 ---
 
+### BUG-053 — HTTP `/mcp` mount was missing
+
+**Severity:** P2, S — **Status: closed** (M4 HTTP mount slice).
+
+`okf serve` exposed the op plane and job lane, but MCP was only reachable from
+the separate stdio binary. The axum router now mounts the same 11 rmcp tools at
+`/mcp` through a `StreamableHttpService` backed by the owning router. The
+Python MCP SDK connects with `streamable_http_client`, lists all annotated
+tools, reads a concept, and receives a typed envelope for a missing concept.
+
+### BUG-054 — UDS transport was missing
+
+**Severity:** P2, S — **Status: open (code landed, POSIX verification pending)**.
+
+`--listen` accepted only `host:port` even though the public `OKFClient` already
+understood `unix:///path`. The server now parses `unix://` targets, binds a
+`tokio::net::UnixListener`, replaces stale socket files, refuses to displace a
+live listener, and removes the socket on graceful shutdown. POSIX-only unit tests cover stale-socket replacement and the health envelope;
+`parity/tools/check_uds.py` checks health/op/error through the public client. This environment is Windows and
+cannot start a Rust UDS listener, so the smoke currently SKIPs; close this bug
+after the Linux x86_64 or macOS arm64 CI run is green.
+
 ### BUG-052 — CLI command tree was incomplete
 
 **Severity:** P2, S — **Status: closed** (M4 CLI slice).
@@ -1672,7 +1695,7 @@ the semantic DB dump plus the export tree where applicable.
 
 ## 9. Deferred / explicitly out of scope for this plan
 
-- The HTTP `/mcp` mount and UDS transport (remaining Stage C surfaces).
+- UDS verification on a POSIX host (BUG-054); `/mcp` is closed by BUG-053.
 - Linux x86_64 and macOS arm64 spikes (no hosts in this environment).
 - Linux aarch64, macOS x86_64, Python 3.11.
 - Full model-download CI; tests should use cached artifacts or mocks.
@@ -1730,6 +1753,8 @@ gate is green.
 | BUG-050 | Closed | Loaded-plugin conversion failures now carry `fields` (`path`, `converter`) and the converter remedy; missing-plugin failures keep the install hint. | Keep covered by `ingest-office-formats`. |
 | BUG-051 | Closed | HTTP jobs submit/poll/list/cancel with terminal-state protection; `reembed_job` returns a job id. | Keep covered by `check_jobs.py`; revisit when jobs become durable across restarts. |
 | BUG-052 | Closed | All 29 CLI verbs, global flags, op mapping, and typed error ops are wired; `check_cli.py` is green. | Keep new verbs covered; revisit if the oracle CLI gains commands. |
+| BUG-053 | Closed | All 11 MCP tools are mounted at `okf serve /mcp` over Streamable HTTP; `check_mcp_http.py` is green. | Keep covered with stdio and `--connect` smokes. |
+| BUG-054 | Open | `--listen unix:///path` is implemented with stale-socket handling and a POSIX smoke script. | Run `check_uds.py` on Linux/macOS CI and close there. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order

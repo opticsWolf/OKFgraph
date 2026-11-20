@@ -8,8 +8,13 @@
 use crate::error::{Envelope, OkfError, Result as OkfResult};
 use crate::ops::{OpClient, OP_NAMES};
 use crate::settings::Settings;
+use axum::body::Body;
+use axum::extract::Request;
+use axum::response::Response;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -125,6 +130,34 @@ impl OkfMcp {
 
     fn settings(&self) -> &Settings {
         &self.settings
+    }
+}
+
+/// HTTP-mounted MCP service used by `okf serve /mcp`.
+///
+/// One service instance is shared by the axum router; rmcp creates a fresh
+/// `OkfMcp` per client session, all backed by the same owning `OpClient`.
+#[derive(Clone)]
+pub struct McpHttpService {
+    inner: StreamableHttpService<OkfMcp, LocalSessionManager>,
+}
+
+impl McpHttpService {
+    pub fn new(client: Arc<dyn OpClient>, settings: Settings) -> Self {
+        let config = StreamableHttpServerConfig::default()
+            .with_json_response(true)
+            .with_allowed_hosts(["localhost", "127.0.0.1", "::1"]);
+        let inner = StreamableHttpService::new(
+            move || Ok(OkfMcp::new(Arc::clone(&client), settings.clone())),
+            Arc::new(LocalSessionManager::default()),
+            config,
+        );
+        Self { inner }
+    }
+
+    /// Translate an axum request into rmcp's own `http` request/response types.
+    pub async fn handle(&self, request: Request) -> Response {
+        self.inner.handle(request).await.map(Body::new)
     }
 }
 

@@ -1,11 +1,5 @@
 {
   "name": "okfgraph-rust",
   "version-string": "0.16.0",
-  "builtin-baseline": "7a4d8f69f0ea932fca49534c947455cf10a728b8",
-  "dependencies": [
-    {
-      "name": "openssl",
-      "supports": "x64-windows"
-    }
-  ]
+  "builtin-baseline": "7a4d8f69f0ea932fca49534c947455cf10a728b8"
 }

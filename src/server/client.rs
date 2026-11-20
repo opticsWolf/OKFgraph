@@ -65,9 +65,10 @@ impl OpHttpClient {
     pub fn with_timeout(url: &str, timeout: Duration) -> Result<Self> {
         let base = url.trim_end_matches('/').to_string();
         if let Some(path) = base.strip_prefix("unix://") {
+            let socket_path = PathBuf::from(path);
             #[cfg(unix)]
             {
-                if path.is_empty() {
+                if socket_path.as_os_str().is_empty() {
                     return Err(OkfError::new(
                         "CONFIG_INVALID",
                         "unix:// client URL needs a socket path",
@@ -77,12 +78,12 @@ impl OpHttpClient {
                     base,
                     timeout,
                     http: None,
-                    socket: Some(PathBuf::from(path)),
+                    socket: Some(socket_path),
                 });
             }
             #[cfg(not(unix))]
             {
-                let _ = path;
+                let _ = socket_path;
                 return Err(OkfError::new(
                     "CONFIG_INVALID",
                     format!("unix sockets are unavailable on this platform: {url}"),

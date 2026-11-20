@@ -1163,7 +1163,7 @@ impl Router {
             ),
             "pin_info" => self.pin_info(),
             "lanes" => self.lanes(),
-            "doctor" => self.doctor(),
+            "doctor" => self.doctor(params),
             "search" => self.search(params),
             "embed" => self.embed(params),
             "read" => self.read(params),
@@ -1312,8 +1312,13 @@ impl Router {
         Ok(lanes)
     }
 
-    pub fn doctor(&self) -> Result<Json> {
+    pub fn doctor(&self, params: &Map<String, Json>) -> Result<Json> {
         use crate::model::{utc_now_datetime, PyDateTime};
+
+        let stale_days = opt_i64(params, "stale_days")?.unwrap_or(365);
+        let strict = opt_bool(params, "strict")?.unwrap_or(false);
+        let fix = opt_bool(params, "fix")?.unwrap_or(false);
+        let fixed = if fix { Some(self.doctor_fix()?) } else { None };
 
         let concepts = self.store.query(
             "MATCH (c:Concept) RETURN c.id AS id, c.title AS title, \
@@ -1497,7 +1502,7 @@ impl Router {
             if let Some(timestamp) = row.get("timestamp").and_then(Json::as_str) {
                 if let Ok(parsed) = PyDateTime::parse(timestamp) {
                     let age_days = (now.as_naive() - parsed.as_naive()).as_seconds_f64() / 86_400.0;
-                    if age_days > 365.0 {
+                    if age_days > stale_days as f64 {
                         add(
                             cid,
                             "warn",
@@ -1635,7 +1640,106 @@ impl Router {
             "score": score,
             "summary": summary,
         });
-        Ok(serde_json::json!({"report": report, "fixed": Json::Null}))
+        let result = serde_json::json!({"report": report, "fixed": fixed});
+        if strict && !findings.is_empty() {
+            return Err(OkfError::outcome(
+                "DOCTOR_FINDINGS",
+                format!("doctor found {} finding(s)", findings.len()),
+                result,
+            )
+            .op("doctor")
+            .field("findings", Json::from(findings.len() as i64))
+            .field("score", Json::from(score)));
+        }
+        Ok(result)
+    }
+
+    /// Safe doctor repairs: link repair plus orphan delta rows. Timestamp
+    /// normalization and reviewed-concept skipping are the remaining
+    /// compatibility refinements tracked by BUG-045.
+    fn doctor_fix(&self) -> Result<Json> {
+        let mut skipped: BTreeSet<String> = BTreeSet::new();
+        for row in self.store.query(
+            "MATCH (c:Concept) RETURN c.id AS id, c.extra AS extra",
+            vec![],
+        )? {
+            let reviewed = row
+                .get("extra")
+                .and_then(Json::as_object)
+                .and_then(|extra| extra.get("reviewed"))
+                .map(|value| match value {
+                    Json::String(text) => text.trim().to_ascii_lowercase(),
+                    Json::Bool(true) => "true".into(),
+                    Json::Number(number) => number.to_string(),
+                    _ => String::new(),
+                })
+                .is_some_and(|value| matches!(value.as_str(), "true" | "1" | "yes"));
+            if reviewed {
+                if let Some(id) = row.get("id").and_then(Json::as_str) {
+                    skipped.insert(id.to_string());
+                }
+            }
+        }
+        let repaired = crate::ingest::repair_links_public_skip(&self.store, &skipped)?;
+        let live: BTreeSet<String> = self
+            .store
+            .query("MATCH (c:Concept) RETURN c.id AS id", vec![])?
+            .into_iter()
+            .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+            .collect();
+        let tombstoned: BTreeSet<String> = self
+            .store
+            .query(
+                "MATCH (d:DeletedConcept) RETURN d.original_id AS id",
+                vec![],
+            )
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+            .collect();
+        let mut cleared_files = 0i64;
+        let mut cleared_dirs = 0i64;
+        let mut dirs: BTreeSet<String> = BTreeSet::new();
+        for row in self.store.query(
+            "MATCH (f:FileHash) RETURN f.path AS path, f.concept_id AS cid, f.dir AS dir",
+            vec![],
+        )? {
+            let path = row.get("path").and_then(Json::as_str).unwrap_or("");
+            let cid = row.get("cid").and_then(Json::as_str);
+            let orphan = cid.is_none_or(|id| !live.contains(id) && !tombstoned.contains(id));
+            if !orphan {
+                continue;
+            }
+            let dir = row
+                .get("dir")
+                .and_then(Json::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    Path::new(path)
+                        .parent()
+                        .map(|parent| parent.to_string_lossy().into_owned())
+                        .filter(|parent| !parent.is_empty())
+                        .unwrap_or_else(|| ".".to_string())
+                });
+            self.store.forget_file_hash(path)?;
+            cleared_files += 1;
+            dirs.insert(dir);
+        }
+        // Python counts the attempted parent deletions even when a legacy
+        // graph never wrote the DirHash row (the fixture's orphan is such a
+        // case); the DELETE itself is idempotent.
+        for dir in dirs {
+            self.store.delete_dir_hash(&dir)?;
+            cleared_dirs += 1;
+        }
+        Ok(serde_json::json!({
+            "repaired_links": repaired,
+            "normalized_timestamps": 0,
+            "skipped_reviewed": skipped,
+            "cleared_orphan_hashes": cleared_files,
+            "cleared_dir_hashes": cleared_dirs,
+        }))
     }
 
     pub fn read(&self, params: &Map<String, Json>) -> Result<Json> {
@@ -3948,7 +4052,10 @@ mod tests {
 
     #[test]
     fn opens_fixture_and_reads() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("oracle.db");
+        std::fs::copy(&source, &path).expect("copy fixture");
         let settings = Settings::default()
             .with("db_path", Json::String(path.to_string_lossy().into_owned()))
             .expect("settings");

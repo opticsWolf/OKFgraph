@@ -174,8 +174,22 @@ class OKFRouter:
     def reembed(self, **kwargs: Any) -> Dict[str, Any]:
         return self.call("reembed", kwargs)
 
-    def doctor(self) -> Dict[str, Any]:
-        return self.call("doctor", {})
+    def doctor(
+        self,
+        *,
+        stale_days: int = 365,
+        fix: bool = False,
+        strict: bool = False,
+        cache_dir: str | None = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "stale_days": stale_days,
+            "fix": fix,
+            "strict": strict,
+        }
+        if cache_dir is not None:
+            params["cache_dir"] = cache_dir
+        return self.call("doctor", params)
 
     # ------------------------------------------------------------------
     # info

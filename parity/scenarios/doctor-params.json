@@ -1,0 +1,49 @@
+{
+  "name": "doctor-params",
+  "settings": {
+    "db_path": "parity/out/doctor-params-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2"
+  },
+  "setup": {
+    "copy_file": {
+      "from": "parity/fixtures/oracle-v10.db",
+      "to": "parity/out/doctor-params-@RUNNER@.db"
+    }
+  },
+  "ops": [
+    {
+      "op": "doctor",
+      "params": {
+        "stale_days": 10
+      }
+    },
+    {
+      "op": "doctor",
+      "params": {
+        "fix": true,
+        "stale_days": 10
+      }
+    },
+    {
+      "op": "doctor",
+      "params": {
+        "strict": true,
+        "stale_days": 10
+      }
+    },
+    {
+      "op": "doctor",
+      "params": {
+        "stale_days": 100000
+      }
+    },
+    {
+      "op": "doctor",
+      "params": {
+        "stale_days": 365,
+        "cache_dir": "parity/out"
+      }
+    }
+  ]
+}

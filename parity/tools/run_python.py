@@ -64,6 +64,13 @@ def main() -> int:
         if target.exists():
             shutil.rmtree(target)
         shutil.copytree(source, target)
+    copied_file = setup.get("copy_file")
+    if copied_file:
+        import shutil
+        source = Path(_expand_runner(copied_file["from"], "python"))
+        target = Path(_expand_runner(copied_file["to"], "python"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
     imported = setup.get("import")
     if imported:
         corpus = Path(_expand_runner(imported["corpus"], "python"))

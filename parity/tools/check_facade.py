@@ -21,6 +21,8 @@ def main() -> int:
     assert "db_path" in parameters and "bundle_root" in parameters
     missing = [name for name in OPS if not hasattr(OKFRouter, name)]
     assert not missing, f"facade is missing op methods: {missing}"
+    doctor_params = inspect.signature(OKFRouter.doctor).parameters
+    assert {"stale_days", "fix", "strict", "cache_dir"} <= set(doctor_params)
     router = OKFRouter(
         db_path=str(Path(args.db)),
         embedding_dim=512,

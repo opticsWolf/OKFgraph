@@ -2129,7 +2129,10 @@ mod tests {
 
     #[test]
     fn read_only_store_refuses_writes() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("oracle.db");
+        std::fs::copy(&source, &path).expect("copy fixture");
         let settings = Settings::default()
             .with("db_path", Json::String(path.to_string_lossy().into_owned()))
             .expect("settings");
@@ -2142,7 +2145,10 @@ mod tests {
 
     #[test]
     fn opens_oracle_fixture() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("oracle.db");
+        std::fs::copy(&source, &path).expect("copy fixture");
         let settings = Settings::default()
             .with("db_path", Json::String(path.to_string_lossy().into_owned()))
             .expect("settings");

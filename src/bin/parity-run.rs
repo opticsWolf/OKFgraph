@@ -102,6 +102,31 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     }
+    if let Some(copied) = scenario
+        .get("setup")
+        .and_then(|value| value.get("copy_file"))
+    {
+        let source = copied
+            .get("from")
+            .and_then(Value::as_str)
+            .map(|value| expand_runner(Value::String(value.to_string()), "rust"))
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let target = copied
+            .get("to")
+            .and_then(Value::as_str)
+            .map(|value| expand_runner(Value::String(value.to_string()), "rust"))
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let target_path = PathBuf::from(&target);
+        if let Some(parent) = target_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Err(err) = fs::copy(&source, &target_path) {
+            eprintln!("cannot copy scenario file: {err}");
+            return ExitCode::from(1);
+        }
+    }
     if let Some(imported) = scenario.get("setup").and_then(|value| value.get("import")) {
         let corpus = imported
             .get("corpus")

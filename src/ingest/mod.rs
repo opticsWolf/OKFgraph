@@ -583,7 +583,7 @@ pub(crate) fn commit_parsed(
         store.link_concepts(&source, &target, &kind)?;
     }
     create_directories(store, parsed)?;
-    repair_links(store)?;
+    repair_links(store, &BTreeSet::new())?;
     for item in parsed {
         let base_dir = item.path.parent();
         crate::image_ingest::ingest_concept_images(
@@ -1846,17 +1846,21 @@ pub fn extract_links_for_concept(store: &Store, concept_id: &str) -> Result<()> 
         synthetic: false,
     };
     create_links(store, std::slice::from_ref(&item))?;
-    repair_links(store)
+    repair_links(store, &BTreeSet::new())
 }
 
 pub fn repair_links_public(store: &Store) -> Result<usize> {
+    repair_links_public_skip(store, &BTreeSet::new())
+}
+
+pub fn repair_links_public_skip(store: &Store, skip_sources: &BTreeSet<String>) -> Result<usize> {
     let before = store.list_broken_links()?.len();
-    repair_links(store)?;
+    repair_links(store, skip_sources)?;
     let after = store.list_broken_links()?.len();
     Ok(before.saturating_sub(after))
 }
 
-fn repair_links(store: &Store) -> Result<()> {
+fn repair_links(store: &Store, skip_sources: &BTreeSet<String>) -> Result<()> {
     let index = load_link_index(store)?;
     for broken in store.list_broken_links()? {
         let source = broken
@@ -1864,7 +1868,7 @@ fn repair_links(store: &Store) -> Result<()> {
             .and_then(Json::as_str)
             .unwrap_or_default()
             .to_string();
-        if source.is_empty() || !index.ids.contains(&source) {
+        if source.is_empty() || !index.ids.contains(&source) || skip_sources.contains(&source) {
             continue;
         }
         let target_text = broken

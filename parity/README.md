@@ -255,9 +255,9 @@ them to `import_bundle`, and the Python harness forwards them after removing
 constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 (embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
-The post-review matrix covers 54 scenarios: **53 report 0 differences** on ops
+The post-review matrix covers 55 scenarios: **54 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,
-set-ordered tags, and runner-specific paths. The 54th,
+set-ordered tags, and runner-specific paths. The 55th,
 `ingest-pdf-no-plugin`, intentionally records the Python raw-`INTERNAL` vs Rust
 `CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op
@@ -267,7 +267,7 @@ New coverage includes `import-identity-frontmatter`, `import-multi-root`,
 `images-prune`, `import-dim-256/768`, `ingest-materialize`,
 `ingest-thoughts-*`, `ingest-bib-bundle-root`, `ingest-thoughts-errors`,
 `export-dotted-id`, `yaml-block-and-nested`, `time-microseconds-offset`,
-`percent-escape-nonascii`, `doctor-empty`, `ingest-params`,
+`percent-escape-nonascii`, `doctor-empty`, `doctor-params`, `ingest-params`,
 `import-resource-sanitize`, `ingest-pdf-no-plugin`, and
 `ingest-pdf-real` / `ingest-office-real` (real PDF/DOCX fixtures through the
 optional bobine add-on).
@@ -276,9 +276,13 @@ scenario.
 
 Known remaining coverage gaps: external lanes are fail-closed only; old-schema
 migration uses the Python 0.15 one-time step; PDF and DOCX are covered, while
-other Office formats remain untested. Cross-process Python↔Rust lock interop and read-only
-refusal are checked by `check_lock_interop.py` / `check_read_only.py`; facade
-and wheel checks are `check_facade.py` / `check_wheel.py`. Full findings and
-the ordered plan are in `docs/plan-bug-fixes.md`.
+other Office formats remain untested. `doctor` parameters are covered by
+`doctor-params`; its environment `info` probes are still not ported, and
+`check_coverage.py` only checks op presence, not the required per-op
+success/error matrix. Cross-process Python↔Rust lock interop and
+read-only refusal are checked by `check_lock_interop.py` /
+`check_read_only.py`; facade and wheel checks are `check_facade.py` /
+`check_wheel.py`. Full findings and the open register are in
+`docs/plan-bug-fixes.md` §11.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

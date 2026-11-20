@@ -1,7 +1,8 @@
 # OKFgraph Rust Core — Bug Findings and Fix Plan
 
-**Status:** draft plan based on a read-only review of commit `6a71fec`
-(`docs: update Stage B parity status`).
+**Status:** review plan from `6a71fec`, updated after the
+`a7da87a`–`391b46a` fix series. The remaining open work is tracked in
+section 11; findings marked “partial” are not closed.
 
 **Scope:** the Rust core, the PyO3 binding, the Python facade, the optional
 PDF plugin, and the parity harness. Stage C surfaces (`okf serve`, MCP) are
@@ -13,11 +14,11 @@ path safety, most Phase 3 semantic parity, multi-root/prune, ingest
 materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
 and the write lock are implemented. The broad differential matrix is green
-for 53 differential scenarios after normalizing wall-clock graph times/internal
-IDs and the documented intentional differences; the 54th,
+for 54 differential scenarios after normalizing wall-clock graph times/internal
+IDs and the documented intentional differences; the 55th,
 `ingest-pdf-no-plugin`, records the intentional missing-plugin error
 divergence instead of a green comparison. Remaining items are listed under
-“Verification status” below rather than claimed complete.
+“Verification status” below and the authoritative register in section 11.
 
 **Important:** the original review below describes the pre-fix state. It is
 kept as the evidence trail; the implementation status section records what is
@@ -42,9 +43,11 @@ Closed with code + tests/scenarios (details in the individual findings):
   (including root-relative `FileHash` keys when the bundle root is configured
   as a relative path).
 - BUG-026/027 facade signatures, op methods, and native error `op`/`data`;
-  BUG-028 old/missing schemas are refused with `CONFIG_INVALID` (the Python
-  migration registry is not ported; migration remains a Python-0.15 one-time
-  step); BUG-031 index errors; BUG-032 walk/symlink/hidden-file handling.
+  BUG-031 index errors; BUG-032 walk/symlink/hidden-file handling.
+- BUG-028 is **partial**: old/missing schemas are refused with `CONFIG_INVALID`
+  and `okf init` no longer stamps an existing DB, but the Python v1→v10
+  migration registry is not ported. Schema migration remains a Python-0.15
+  one-time step and the migration-fixture gate is open.
 - BUG-029 in-process mutex + `fd-lock`, read-only enforcement, and the
   cross-process Python↔Rust lock check (`parity/tools/check_lock_interop.py`)
   plus read-only check (`check_read_only.py`).
@@ -54,8 +57,11 @@ Closed with code + tests/scenarios (details in the individual findings):
 - BUG-016 missing-param/`rebuild` ingest envelopes (`ingest-params`);
   BUG-007 resource sanitization (`import-resource-sanitize`); BUG-014
   model/dim/precision/space pin unit tests plus empty-graph re-pin.
-- BUG-040 whole-concept transaction; BUG-043 documentation alignment; BUG-044
-  coverage tooling (`parity/tools/check_coverage.py`).
+- BUG-040 is **partial**: whole-concept transactions/atomicity landed; the
+  required import benchmark and timing smoke test are open.
+- BUG-043 documentation alignment; BUG-044 is **partial**:
+  `parity/tools/check_coverage.py` proves every public op appears in a
+  scenario, but the required per-op success/error matrix is open.
 - Python facade/wheel smoke checks (`check_facade.py`, `check_wheel.py`) run
   against a freshly built wheel.
 
@@ -66,6 +72,11 @@ Deliberately partial / remaining before stable:
   has no separate mode), so the setting is documented as compatibility-only.
 - BUG-034 is covered end-to-end for PDF and DOCX through the same bobine
   converter path; broader Office formats remain untested but share it.
+- BUG-045 is closed: `doctor` now accepts `stale_days`/`fix`/`strict`/
+  `cache_dir`, returns `DOCTOR_FINDINGS`, and the safe fix repairs links and
+  orphan delta rows; `doctor-params` covers it.
+- BUG-046 is open: most of `doctor`’s environment `info` probes are not
+  ported.
 - `doctor` now ports the scored findings (broken/ambiguous links, orphan
   hashes, duplicate titles, orphan/missing-description/stale concepts),
   `summary`/`score`, `detached`, and per-root status; its environment-specific
@@ -175,8 +186,8 @@ then API/storage hardening.
 | 2 | Security/privacy | BUG-006, BUG-007, BUG-012, BUG-041 | M | Phase 1 |
 | 3 | Core semantic parity | BUG-014, BUG-015, BUG-016, BUG-017, BUG-018, BUG-019, BUG-022, BUG-023, BUG-024, BUG-025 | XL | Phase 1–2 |
 | 4 | Missing documented features | BUG-013, BUG-020, BUG-021, BUG-033, BUG-034, BUG-035, BUG-036, BUG-037 | XL | Phase 3 |
-| 5 | API, storage, packaging | BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-032, BUG-038, BUG-039, BUG-040, BUG-042, BUG-043 | L | Phases 1–4 |
-| 6 | Verification and release gates | BUG-044 | M | All |
+| 5 | API, storage, packaging | BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-032, BUG-038, BUG-039, BUG-040, BUG-042, BUG-043, BUG-045 | L | Phases 1–4 |
+| 6 | Verification and release gates | BUG-044, BUG-046, BUG-047 | M | All |
 
 “Size” is S (< half day), M (1–3 days), L (3–5 days), XL (1–2 weeks) for one
 experienced Rust developer; split each work package into reviewable commits.
@@ -1383,6 +1394,85 @@ appears in at least one success and one error scenario.
 
 ---
 
+### BUG-045 — `doctor` parameters were ignored
+
+**Severity:** P2, M — **Status: closed** (fix series after `391b46a`).
+
+**Where:** `src/ops/mod.rs` (`doctor`/`doctor_fix`),
+`python/okfgraph/router.py:177` (`def doctor(...)`).
+
+**Historical evidence:** Python exposes
+`doctor(stale_days=365, fix=False, strict=False, cache_dir=None)`.
+The Rust op originally took no parameters: the stale threshold was hardcoded
+to 365 days, `fix=True` returned `fixed: null`, `strict=True` never raised
+`DOCTOR_FINDINGS`, and the facade exposed no keyword arguments.
+
+**Resolution:** `doctor` now parses/validates the four parameters; threads
+`stale_days` into stale findings; returns the `DOCTOR_FINDINGS` outcome with
+the full report on `err.data` and `findings`/`score` fields for `strict`;
+implements safe `fix` (reviewed-concept skipping, link repair, orphan
+FileHash/DirHash clearing) and reports `skipped_reviewed`; and the facade
+forwards the keyword arguments. `parity/scenarios/doctor-params.json` covers
+custom thresholds, fix counts, strict outcome, and `cache_dir` acceptance.
+Timestamp normalization is a no-op for canonical v10 TIMESTAMP columns (the
+doctor fixture reports 0, matching Python).
+
+**Tests:** `doctor-params` op/DB parity and the full matrix; `cargo test`
+all/no-default, clippy green.
+
+---
+
+### BUG-046 — `doctor` environment/info probes are not ported
+
+**Severity:** P3, M
+
+**Where:** `src/ops/mod.rs:1315-1518` (`doctor` report construction).
+
+**Evidence:** Python `DoctorManager.diagnose()` emits `info` entries for
+`search_index`, image routes, ORT runtime/wheel hints, converter cache, PDF
+converter state, cache hygiene, embed/rerank/image lanes, stale write locks,
+and the `db_created` state. The Rust implementation emits only
+`hub_concentration`; the parity harness ignores the entire `info` array
+(`--ignore-key info`), so the gap is invisible.
+
+**Impact:** `okf doctor` gives operators a materially poorer report than the
+Python release and can hide missing indexes, unavailable search, an
+unexpected ORT wheel, a stale lock, or a warm/released PDF converter.
+
+**Fix:** port the probes that are portable (index inventory, image routes,
+lane identity, stale lock, PDF state), and explicitly document any
+environment-specific probe that is intentionally omitted. Do not hide the
+whole array in the parity comparison once the portable subset lands; compare
+that subset and ignore only host-specific cache/ORT paths.
+
+**Tests:** fake/real extension inventory; image-route counts; lane identity;
+lock probe; PDF released/warm state; a scenario that asserts the portable
+`info` entries rather than ignoring the array.
+
+---
+
+### BUG-047 — Unit tests shared the mutable oracle fixture
+
+**Severity:** P3, S — **Status: closed** (fix series after `391b46a`).
+
+**Where:** `src/store/mod.rs` (`read_only_store_refuses_writes`,
+`opens_oracle_fixture`), `src/ops/mod.rs` (`opens_fixture_and_reads`).
+
+**Historical evidence:** three tests opened
+`parity/fixtures/oracle-v10.db` directly. Because Ladybug can leave checkpoint
+recovery state around an open/close, running the suites in sequence (or in
+parallel) occasionally produced `checkpoint recovery pending` and a spurious
+failure, while the same test passed in isolation.
+
+**Resolution:** each test copies the fixture into a fresh `TempDir` before
+opening it. The fixture is no longer mutated by the unit suite, and both
+`--no-default-features` and `--all-features` runs are stable.
+
+**Tests:** both library suites pass consecutively without restoring the fixture
+between them.
+
+---
+
 ## 7. Required regression/parity scenarios
 
 Add these before calling the beta usable:
@@ -1411,6 +1501,7 @@ Add these before calling the beta usable:
 | `pins-mismatch` | BUG-014, BUG-015 |
 | `facade-api` | BUG-026, BUG-027 |
 | `lock-and-read-only` | BUG-029 |
+| `doctor-params` | BUG-045 |
 | `op-names` | BUG-038 |
 
 For each scenario, include both success and typed-error envelopes, and compare
@@ -1489,3 +1580,36 @@ the semantic DB dump plus the export tree where applicable.
 18. `docs: update M3 status and release notes`
 
 Each commit should include its tests; do not batch P0 fixes with refactors.
+
+---
+
+## 11. Open follow-ups (status register)
+
+This is the authoritative list of work that is still open after the
+`a7da87a`–`391b46a` fix series. “Closed” above means the code path is safe or
+the documented behavior is implemented; it does **not** mean every release
+gate is green.
+
+| Finding | State | Why it is open | Required close action |
+| --- | --- | --- | --- |
+| BUG-013 | Fail-closed (Gate-D alternative) | HTTP clients for external embed/rerank/vision are not implemented; `EXTERNAL_UNAVAILABLE` is deliberate. | Implement clients behind `external` with mock-server request/identity/auth/pin tests, or remove the settings from the documented stable surface. |
+| BUG-028 | Partial | Old schemas are refused safely; no v1→v10 migration registry or migration fixtures. | Port migrations (or formally narrow compatibility to v10), add old-schema fixtures and Python-reopen checks. |
+| BUG-030 | Partial | `extension_dir` and warm PDF idle reuse work; `wal_mode` is a compatibility no-op because lbug only journals through its WAL. | Reject/document `wal_mode` explicitly, or add an upstream-supported journal knob. |
+| BUG-040 | Partial | Whole-concept transaction/rollback landed; no import benchmark. | Add a filters-corpus timing smoke/benchmark and record the baseline/threshold. |
+| BUG-044 | Partial | Scenario coverage expanded to 54 files; `check_coverage.py` checks presence only, not success+error per op. | Extend the checker/scenario matrix so every public op has a success and an error case; make the broad loop fail on non-zero diffs. |
+| BUG-045 | Closed | Parameters, strict outcome, safe fix, facade kwargs, and `doctor-params` parity landed. | Keep covered by `doctor-params`; revisit only if further Python doctor semantics are ported. |
+| BUG-046 | Open | Most `doctor` `info` probes are absent and hidden by `--ignore-key info`. | Port portable probes and compare the portable subset. |
+| BUG-047 | Closed | Unit tests copy the oracle fixture into a temp dir instead of sharing checkpoint state. | Keep the copy-fixture pattern for any new DB tests. |
+| BUG-034 | Covered for PDF/DOCX | Other Office formats are untested. | Add representative XLSX/PPTX fixtures through the same bobine path. |
+| PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
+
+### Immediate order
+
+1. BUG-046 (doctor usefulness).
+2. BUG-044 error matrix and BUG-040 benchmark (release evidence).
+3. BUG-028 migrations or an explicit v10-only compatibility statement.
+4. BUG-030 `wal_mode` disposition and broader Office fixtures.
+5. BUG-013 external clients only if the stable surface promises them.
+
+Each close needs code + regression test + parity/scenario (or an explicit
+documented exclusion) + updated status in this file.

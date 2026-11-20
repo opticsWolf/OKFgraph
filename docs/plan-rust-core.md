@@ -892,11 +892,13 @@ set-ordered tags, and the explicitly documented PDF-missing-plugin divergence.
 
 Remaining M3/stable gaps: external embedding/rerank/vision lanes fail closed
 (`EXTERNAL_UNAVAILABLE`) by design; old/missing schemas are refused for a
-one-time Python-0.15 migration instead of ported; `doctor` findings/score are
-ported but its environment-specific info probes are not. Real PDF/DOCX fixture parity, warm converter reuse, cross-process
+one-time Python-0.15 migration instead of ported; `doctor` findings/score and
+parameters (`stale_days`/`fix`/`strict`/`cache_dir`) are ported, but its
+environment-specific info probes are not. Error-path coverage and the import
+benchmark are also still open. Real PDF/DOCX fixture parity, warm converter reuse, cross-process
 Python↔Rust lock interop, read-only refusal, and facade/wheel smokes are now
 covered. M3 should not be called cutover-complete until the remaining gate
-items close.
+items in `docs/plan-bug-fixes.md` §11 close.
 
 **Gate:** a fresh Rust import of the parity corpus produces a DB dump and export
 tree semantically identical to Python; re-import of unchanged files performs no

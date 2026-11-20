@@ -173,7 +173,22 @@ impl Plugin {
         let value: Json = serde_json::from_str(&text)
             .map_err(|err| failed(format!("PDF plugin returned invalid JSON: {err}")))?;
         if let Some(error) = value.get("error").and_then(Json::as_str) {
-            return Err(failed(error));
+            // A loaded-but-failing converter is a typed conversion outcome
+            // (bad file, unsupported format), not a missing add-on. The
+            // add-on carries Python 0.15's fields/remedy for that case; a
+            // bare string is an ABI/setup failure and keeps the install hint.
+            let mut err = OkfError::new("CONVERSION_FAILED", error);
+            if let Some(remedy) = value.get("remedy").and_then(Json::as_str) {
+                err = err.remedy(remedy);
+            } else {
+                err = err.remedy(hint());
+            }
+            if let Some(fields) = value.get("fields").and_then(Json::as_object) {
+                for (key, field) in fields {
+                    err.fields.insert(key.clone(), field.clone());
+                }
+            }
+            return Err(err);
         }
         let md_path = value
             .get("md_path")

@@ -22,7 +22,9 @@ the Python and Rust cores in one process.
 - `tools/gen_pycompat.py` — regenerates `golden/pycompat.json` from the oracle.
 - `tools/check_rust_write.py` — verifies Python 0.15 reopens a Rust-written DB.
 - `tools/check_wheel.py` — wheel import + GIL-release smoke test.
-- `tools/check_mcp_spike.py` — Python MCP client for the Rust stdio spike.
+- `tools/check_mcp_spike.py` — Python MCP client for the original stdio spike.
+- `tools/check_mcp.py` — Python MCP SDK client for the 11 Rust tools/annotations.
+- `tools/check_mcp_connect.py` — MCP stdio proxy through a running `okf serve`.
 - `tools/check_facade.py` — public Python `OKFRouter`/`OKFClient` smoke test.
 - `tools/check_client.py` — public `OKFClient` against the Rust `okf serve`.
 - `tools/make_import_oracle.py` / `tools/check_reopen_import.py` — fresh oracle
@@ -263,9 +265,9 @@ them to `import_bundle`, and the Python harness forwards them after removing
 constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 (embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
-The post-review matrix covers 56 scenarios: **55 report 0 differences** on ops
+The post-review matrix covers 57 scenarios: **56 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,
-set-ordered tags, and runner-specific paths. The 56th,
+set-ordered tags, and runner-specific paths. The 57th,
 `ingest-pdf-no-plugin`, intentionally records the Python raw-`INTERNAL` vs Rust
 `CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op
@@ -279,13 +281,16 @@ New coverage includes `import-identity-frontmatter`, `import-multi-root`,
 `ingest-params`,
 `import-resource-sanitize`, `ingest-pdf-no-plugin`, and
 `ingest-pdf-real` / `ingest-office-real` (real PDF/DOCX fixtures through the
-optional bobine add-on).
+optional bobine add-on), and `ingest-office-formats` (XLSX conversion success
+and a PPTX refusal with identical typed envelopes).
 `parity/tools/check_coverage.py` asserts every public op appears in a
 scenario.
 
 Known remaining coverage gaps: external lanes are fail-closed only; old-schema
-migration uses the Python 0.15 one-time step; PDF and DOCX are covered, while
-other Office formats remain untested. `doctor` parameters are covered by
+migration uses the Python 0.15 one-time step (v10-only compatibility). PDF,
+DOCX and XLSX are covered; pinned bobine refuses PPTX in both runners, which
+`ingest-office-formats` records as a typed conversion outcome rather than a
+divergence. `doctor` parameters are covered by
 `doctor-params`; portable `info` probes (index inventory, image routes, stale
 lock, lanes) are now compared with `--ignore-info-rule` for only the
 host-specific `ort_*`, `converter_cache`, `cache_hygiene`, `pdf_converter`,
@@ -296,7 +301,8 @@ for thoughts/ingest-params scenarios are skipped because their materialized
 frontmatter hashes depend on wall-clock ordering. Cross-process Python↔Rust lock interop and
 read-only refusal are checked by `check_lock_interop.py` /
 `check_read_only.py`; facade and wheel checks are `check_facade.py` /
-`check_wheel.py`. Full findings and the open register are in
+`check_wheel.py`; serve/MCP gates are `check_client.py`, `check_mcp.py` and
+`check_mcp_connect.py`. Full findings and the open register are in
 `docs/plan-bug-fixes.md` §11.
 
 M2 note: current parity matrix is green; Linux x86_64 and macOS arm64 remain.

@@ -5,17 +5,12 @@ use crate::settings::{row, SettingKind, Settings, SETTINGS};
 use clap::{Arg, ArgAction, ArgMatches, Command, Id};
 use serde_json::{Map, Value};
 
-pub fn command() -> Command {
-    let mut cmd = Command::new("okf")
-        .version(super::version())
-        .about("OKFgraph Rust core")
-        .arg(
-            Arg::new("json")
-                .long("json")
-                .global(true)
-                .action(ArgAction::SetTrue)
-                .help("Emit the uniform JSON envelope"),
-        );
+/// Global settings flags shared by `okf` and `okf-mcp`.
+///
+/// Both binaries must resolve the same `--db-path`/`--bundle-root` grammar;
+/// keeping one generator avoids the drift the Python CLI epilog warns about.
+pub fn with_global_args(cmd: Command) -> Command {
+    let mut cmd = cmd;
     for def in SETTINGS {
         if !def.cli {
             continue;
@@ -52,6 +47,21 @@ pub fn command() -> Command {
             .action(ArgAction::Append)
             .value_name("ALIAS=PATH")
             .help("Named bundle root (repeatable)"),
+    )
+}
+
+pub fn command() -> Command {
+    with_global_args(
+        Command::new("okf")
+            .version(super::version())
+            .about("OKFgraph Rust core")
+            .arg(
+                Arg::new("json")
+                    .long("json")
+                    .global(true)
+                    .action(ArgAction::SetTrue)
+                    .help("Emit the uniform JSON envelope"),
+            ),
     )
     .subcommand(Command::new("init").about("Initialize database and schema"))
     .subcommand(
@@ -267,7 +277,7 @@ fn insert_str(params: &mut Map<String, Value>, matches: &ArgMatches, name: &str)
     }
 }
 
-fn settings_from(matches: &ArgMatches) -> Result<Settings> {
+pub fn settings_from(matches: &ArgMatches) -> Result<Settings> {
     let mut map = Map::new();
     for def in SETTINGS {
         if !def.cli {

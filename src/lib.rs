@@ -40,5 +40,7 @@ pub mod util;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod ingest;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 #[cfg(feature = "server")]
 pub mod server;

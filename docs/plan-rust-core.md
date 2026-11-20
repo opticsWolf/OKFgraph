@@ -1,12 +1,14 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** M3 Stage B bug-fix pass plus the first M4 slice — Windows spikes,
-`pycompat`, M1, M2, the Stage B write/ingest/export/delete/reembed/PDF slices,
-and the `okf serve` HTTP op plane with the public `OKFClient` are implemented.
+**Status:** M3 Stage B bug-fix pass plus the M4 serve/MCP/client slice —
+Windows spikes, `pycompat`, M1, M2, the Stage B write/ingest/export/delete/
+reembed/PDF slices, the `okf serve` HTTP op plane, the public `OKFClient`, and
+the 11-tool rmcp server (stdio + `--connect`) are implemented.
 Real EmbeddingGemma 2 ONNX inference runs on CUDA; text/rerank/vision and
 write parity scenarios are green on the covered fixtures. The review findings
 in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
-fail-closed/deferred items. Linux/macOS spikes and Stage C surfaces remain.
+fail-closed/deferred items. Linux/macOS spikes and the remaining Stage C
+surfaces (HTTP job lane, `/mcp` mount, full 29-command CLI, UDS) remain.
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -543,7 +545,10 @@ Rules:
 
 ### 5.1 Database
 
-- Open and migrate v1→v10; write v10. Never bump the schema during the port.
+- Open and write **v10 only**; never bump the schema during the port. Older
+  schemas (including v1–v9 and a missing `schema_version`) are refused with
+  `CONFIG_INVALID` so Python 0.15 can perform a one-time migration. The
+  Python v1→v10 registry is deliberately not ported; see BUG-028.
 - Same table/column names, primary keys, `MAP` encoding, index names/recipes.
 - Same `Meta`/`MetaText` pin keys and refusal semantics
   (`MODEL_PIN_MISMATCH`, `PRECISION_PIN_MISMATCH`, `SPACE_PIN_MISMATCH`,
@@ -923,15 +928,19 @@ embedding; a Python 0.15 process can reopen the Rust-written DB.
 - Tests: CLI golden JSON, exit codes, MCP schema/annotation snapshots, serve
   lifecycle, concurrent clients, stale discovery, job cancel, UDS, Python client.
 
-**M4 progress (first slice):** `src/server/mod.rs` now runs an axum owner for
-one database with `GET /health`, `GET /ops`, `POST /ops/<op>`, the in-memory
-job endpoints (`/jobs*`, currently empty/unknown), and the
-`<db>.serve.json` discovery file removed on graceful shutdown. `okf serve
---listen host:port` starts it; `parity/tools/check_client.py` verifies the
-public `OKFClient`, `discover()`, `health()`, op calls, and typed errors
-against the Rust owner. The Python facade's `client.py` is no longer a stub.
-Remaining M4 work: HTTP jobs, `/mcp` mount, the 11 rmcp tools, `okf-mcp
---connect`, TCP/UDS parity, and the rest of the CLI commands.
+**M4 progress (serve + MCP slice):** `src/server/mod.rs` runs an axum owner
+for one database with `GET /health`, `GET /ops`, `POST /ops/<op>`, placeholder
+`/jobs*` endpoints, and the `<db>.serve.json` discovery file removed on
+graceful shutdown. `okf serve --listen host:port` starts it;
+`parity/tools/check_client.py` verifies the public `OKFClient`, `discover()`,
+`health()`, op calls, and typed errors. `src/mcp/mod.rs` exposes all 11 oracle
+tools with rmcp annotations and canonical envelope strings; the stdio binary
+can open a DB directly or proxy through `okf-mcp --connect URL` via a typed
+HTTP `OpClient`. `parity/tools/check_mcp.py` and `check_mcp_connect.py` connect
+with the Python MCP SDK. The Python `client.py` and `mcp_server.py` shims
+delegate to Rust; `bindings/python` exposes `run_cli`/`run_mcp`.
+Remaining M4 work: real HTTP jobs with progress/cancel, the `/mcp` mount,
+TCP/UDS parity, and the rest of the 29 CLI commands (10 are wired today).
 
 **Gate:** CLI/MCP/serve contract suite green; Python `OKFRouter` and `OKFClient`
 perform every op with parity; no Python transport/runtime dependency.

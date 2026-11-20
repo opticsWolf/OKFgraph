@@ -30,6 +30,11 @@ fn run_cli(argv: Vec<String>) -> u32 {
 }
 
 #[pyfunction]
+fn run_mcp(argv: Vec<String>) -> u32 {
+    okfgraph::mcp::run(argv) as u32
+}
+
+#[pyfunction]
 fn sleep_ms(py: Python<'_>, millis: u64) {
     // PyO3 0.30 renamed allow_threads to detach.
     py.detach(|| std::thread::sleep(std::time::Duration::from_millis(millis)));
@@ -103,6 +108,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(op_names, m)?)?;
     m.add_function(wrap_pyfunction!(sleep_ms, m)?)?;
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
+    m.add_function(wrap_pyfunction!(run_mcp, m)?)?;
     m.add_class::<NativeRouter>()?;
     Ok(())
 }

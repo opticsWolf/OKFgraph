@@ -121,6 +121,32 @@ impl OkfError {
         err
     }
 
+    /// Rebuild a typed error from the `error` object of a remote envelope.
+    ///
+    /// Used by `okf-mcp --connect`: the serving process may be a different
+    /// build, so an unknown code is normalized just like a local one.
+    pub fn from_error_value(value: &Value) -> Self {
+        let code = value
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("INTERNAL");
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("server error");
+        let mut err = Self::new(code, message);
+        if let Some(fields) = value.get("fields").and_then(Value::as_object) {
+            for (key, field) in fields {
+                err.fields.insert(key.clone(), field.clone());
+            }
+        }
+        err.remedy = value
+            .get("remedy")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        err
+    }
+
     pub fn internal(message: impl Into<String>, type_name: &str) -> Self {
         let mut err = Self::new("INTERNAL", message);
         err.fields

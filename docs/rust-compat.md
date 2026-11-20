@@ -6,13 +6,16 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 
 ## A. Database (Stage A)
 
-- [ ] open v10; migrate v1→v10; never bump schema during the port
+- [x] open and write **v10 only**; never bump the schema during the port.
+      Older/missing schemas are refused with `CONFIG_INVALID`; Python 0.15
+      remains the one-time migration path (BUG-028 disposition).
 - [ ] same table/column names, primary keys, index names and recipes
 - [ ] same `Meta`/`MetaText` pin keys and refusal semantics
 - [ ] same write/index epoch dirty tracking; `reindex` force drops/recreates
 - [ ] same single-writer discipline; `DB_LOCKED`/`WRITE_LOCK_TIMEOUT`
 - [ ] Python 0.15 reopens Rust-written DBs
-- [ ] schema migration is allowed in Stage A; content writes are not
+- [x] schema migration is **not** part of the Rust core: v10 compatibility is
+      explicit, and stage A allowed no content writes.
 - [x] `wal_mode` is accepted for 0.15 compatibility but is a documented no-op:
       `lbug 0.22.1` always journals through its WAL and exposes no separate
       journal mode to switch. The setting's help text remains unchanged so the
@@ -49,7 +52,8 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 
 - [ ] envelope field order `{ok, op, data, warnings, error}`
 - [ ] error code/message/fields/remedy/data; exit 2 usage, 1 state/outcome
-- [ ] 11 MCP tool names/schemas/annotations/content shape
+- [x] 11 MCP tool names, schemas, annotations and envelope content shape
+      (`check_mcp.py`); `--connect` proxy (`check_mcp_connect.py`).
 - [ ] 29 CLI commands, flags, `--json`, exit codes; help prose may change
 - [ ] `okf serve` routes, jobs, health, MCP mount, discovery file
 
@@ -60,7 +64,8 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 - [ ] `okfgraph.models`: `ConceptModel`, `ChunkModel`, `ImageAssetModel`
 - [ ] `okfgraph.client`: `OKFClient`, `OPS`, `discover`, `serve_file_for`
 - [ ] `okfgraph.settings` constants and table view
-- [ ] `okf`, `okf-mcp`, `-m okfgraph.cli`, `-m okfgraph.mcp_server`
+- [x] `okf`, `okf-mcp`, `-m okfgraph.cli`, `-m okfgraph.mcp_server` (all
+      delegate to the Rust binaries/functions).
 - [ ] extras-independent imports; no optional import in user code
 
 ## G. Approved breakages / changes

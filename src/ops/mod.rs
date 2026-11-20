@@ -88,6 +88,18 @@ pub const WRITE_OPS: &[&str] = &[
     "ingest",
 ];
 
+/// The smallest surface the adapters (MCP/HTTP/Python) need. Keeping it a
+/// trait lets `okf-mcp --connect` proxy to `okf serve` without owning a DB.
+pub trait OpClient: Send + Sync {
+    fn call(&self, op: &str, params: &Map<String, Json>) -> Result<Json>;
+}
+
+impl OpClient for Router {
+    fn call(&self, op: &str, params: &Map<String, Json>) -> Result<Json> {
+        Router::call(self, op, params)
+    }
+}
+
 pub fn is_op(name: &str) -> bool {
     // `lint` and `produce` are CLI/parity verbs implemented by this crate but
     // not part of the public 0.15 `OPS` vocabulary (which has 30 entries).

@@ -1,7 +1,7 @@
 # OKFgraph Rust Core — Bug Findings and Fix Plan
 
-**Status:** review plan from `6a71fec`, updated after the
-`a7da87a`–`391b46a` fix series. The remaining open work is tracked in
+**Status:** review plan from `6a71fec`, updated after the fix series through
+`ef22a05` and the M4 serve/MCP slice. The remaining open work is tracked in
 section 11; findings marked “partial” are not closed.
 
 **Scope:** the Rust core, the PyO3 binding, the Python facade, the optional
@@ -13,11 +13,12 @@ crash/data-loss paths, Phase 1 import integrity, Phase 2 identity/resource/
 path safety, most Phase 3 semantic parity, multi-root/prune, ingest
 materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
-and the write lock are implemented. The broad differential matrix is green
-for 55 scenarios after normalizing wall-clock graph times/internal
-IDs and the documented intentional differences; the 56th,
-`ingest-pdf-no-plugin`, records the intentional missing-plugin error
-divergence instead of a green comparison. Remaining items are listed under
+and the write lock are implemented. The M4 serve/MCP/client slice is also in:
+11 rmcp tools, `--connect`, the public `OKFClient`, and typed conversion-error
+envelopes. The broad differential matrix is green for **56 scenarios** after
+normalizing wall-clock graph times/internal IDs and the documented intentional
+differences; the 57th, `ingest-pdf-no-plugin`, records the intentional
+missing-plugin error divergence instead of a green comparison. Remaining items are listed under
 “Verification status” below and the authoritative register in section 11.
 
 **Important:** the original review below describes the pre-fix state. It is
@@ -44,10 +45,10 @@ Closed with code + tests/scenarios (details in the individual findings):
   as a relative path).
 - BUG-026/027 facade signatures, op methods, and native error `op`/`data`;
   BUG-031 index errors; BUG-032 walk/symlink/hidden-file handling.
-- BUG-028 is **partial**: old/missing schemas are refused with `CONFIG_INVALID`
-  and `okf init` no longer stamps an existing DB, but the Python v1→v10
-  migration registry is not ported. Schema migration remains a Python-0.15
-  one-time step and the migration-fixture gate is open.
+- BUG-028 is **closed by explicit disposition**: compatibility is v10-only.
+  Old/missing schemas are refused with `CONFIG_INVALID`, `okf init` no longer
+  stamps an existing DB, and `docs/rust-compat.md` §A states that Python 0.15
+  remains the one-time migration path. The v1→v10 registry is not ported.
 - BUG-029 in-process mutex + `fd-lock`, read-only enforcement, and the
   cross-process Python↔Rust lock check (`parity/tools/check_lock_interop.py`)
   plus read-only check (`check_read_only.py`).
@@ -73,8 +74,10 @@ Deliberately partial / remaining before stable:
   `wal_mode` is accepted but lbug always journals through its WAL (upstream
   has no separate mode); the compatibility-only behavior is now explicitly
   documented in `docs/rust-compat.md` §A.
-- BUG-034 is covered end-to-end for PDF and DOCX through the same bobine
-  converter path; broader Office formats remain untested but share it.
+- BUG-034 is covered end-to-end for PDF, DOCX and XLSX through the same bobine
+  converter path. A minimal PPTX fixture is also covered: pinned bobine 0.9.1
+  refuses it in both runners with a typed `CONVERSION_FAILED`, verified by
+  `ingest-office-formats`.
 - BUG-045 is closed: `doctor` now accepts `stale_days`/`fix`/`strict`/
   `cache_dir`, returns `DOCTOR_FINDINGS`, and the safe fix repairs links and
   orphan delta rows; `doctor-params` covers it.
@@ -96,9 +99,12 @@ Deliberately partial / remaining before stable:
 - PDF auto-import paths are not byte-stable: both runners use a fresh temp
   directory and the result exposes it, so `md_path`/`image_dir` are ignored;
   the primary output-dir tree and DB dump are compared byte/semantic-for-byte.
-- `parity/tools/check_lock_interop.py`, `check_read_only.py`,
-  `check_facade.py`, and `check_wheel.py` are gate checks outside the scenario
-  counter.
+- BUG-050 is closed: a loaded plugin's real conversion failure now carries
+  Python 0.15's `fields`/`remedy` instead of the missing-add-on install hint;
+  `ingest-office-formats` covers the XLSX success and PPTX refusal paths.
+- M4 surface checks outside the scenario counter: `check_client.py`,
+  `check_mcp.py`, `check_mcp_connect.py`, `check_lock_interop.py`,
+  `check_read_only.py`, `check_facade.py`, and `check_wheel.py`.
 
 P0 and P1 items below are closed and covered by differential tests.
 
@@ -1436,6 +1442,20 @@ normalization via `python_path_str`. The scenario covers all five ops plus
 
 ---
 
+### BUG-050 — Loaded-plugin conversion errors used the install hint
+
+**Severity:** P2, S — **Status: closed** (M4 serve/MCP slice).
+
+`Plugin::convert` mapped every plugin `{"error": ...}` to
+`CONVERSION_FAILED` plus the `pip install "okfgraph[cpu,pdf]"` remedy. That
+hint is correct when the add-on is missing or ABI-incompatible, but wrong once
+the plugin is loaded and bobine rejects one file. Python 0.15 emits
+`fields: {path, converter: "bobine"}` and the “check the file opens in another
+reader” remedy. `addons/pdf` now returns those fields for `ingest_document`
+failures, and the core copies them into the typed error while retaining the
+install hint for bare ABI/setup errors. `ingest-office-formats` verifies the
+XLSX success and the PPTX refusal with zero differences.
+
 ### BUG-045 — `doctor` parameters were ignored
 
 **Severity:** P2, M — **Status: closed** (fix series after `391b46a`).
@@ -1569,6 +1589,7 @@ Add these before calling the beta usable:
 | `time-microseconds-offset` | BUG-022 |
 | `percent-escape-nonascii` | BUG-002 |
 | `pdf-real-fixture` | BUG-034 |
+| `ingest-office-formats` | BUG-034, BUG-050 (XLSX success, PPTX typed failure) |
 | `external-lanes-mock` | BUG-013 |
 | `pins-mismatch` | BUG-014, BUG-015 |
 | `facade-api` | BUG-026, BUG-027 |
@@ -1667,7 +1688,7 @@ gate is green.
 | Finding | State | Why it is open | Required close action |
 | --- | --- | --- | --- |
 | BUG-013 | Fail-closed (Gate-D alternative) | HTTP clients for external embed/rerank/vision are not implemented; `EXTERNAL_UNAVAILABLE` is deliberate. | Implement clients behind `external` with mock-server request/identity/auth/pin tests, or remove the settings from the documented stable surface. |
-| BUG-028 | Partial | Old schemas are refused safely; no v1→v10 migration registry or migration fixtures. | Port migrations (or formally narrow compatibility to v10), add old-schema fixtures and Python-reopen checks. |
+| BUG-028 | Closed | Compatibility is explicitly v10-only; older schemas are refused with `CONFIG_INVALID` and Python 0.15 remains the one-time migration path (`docs/rust-compat.md` §A). | Revisit only if a legacy DB must be opened directly by Rust. |
 | BUG-030 | Closed | `extension_dir` and warm PDF idle reuse work; `wal_mode` is a documented compatibility no-op (`docs/rust-compat.md` §A). | Revisit only if upstream adds a journal knob. |
 | BUG-040 | Closed | Real-model filters import benchmark and delta no-op smoke landed; baseline ~10.3 s / ~1.1 s on the CUDA dev box. | Re-run before release; update the recorded baseline if hardware changes. |
 | BUG-044 | Closed | `run_matrix.py` fails on diffs and `check_coverage.py` enforces success+typed-error coverage with nine documented no-error waivers. | Keep new ops covered and re-run the matrix before release. |
@@ -1676,14 +1697,16 @@ gate is green.
 | BUG-047 | Closed | Unit tests copy the oracle fixture into a temp dir instead of sharing checkpoint state. | Keep the copy-fixture pattern for any new DB tests. |
 | BUG-048 | Closed | `doctor --fix` takes the same write lock as other writes; idle lock sidecars are unlinked like Python. | Keep lock interop/read-only checks in the release gate. |
 | BUG-049 | Closed | Typed-error envelopes for embed/traverse/import/sync match the oracle. | Keep `op-error-matrix` in the gate. |
-| BUG-034 | Covered for PDF/DOCX | Other Office formats are untested. | Add representative XLSX/PPTX fixtures through the same bobine path. |
+| BUG-034 | Covered for PDF/DOCX/XLSX/PPTX | XLSX converts in both runners; pinned bobine refuses PPTX in both with the same typed envelope (`ingest-office-formats`). | Re-test PPTX if bobine/office_oxide is upgraded. |
+| BUG-050 | Closed | Loaded-plugin conversion failures now carry `fields` (`path`, `converter`) and the converter remedy; missing-plugin failures keep the install hint. | Keep covered by `ingest-office-formats`. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order
 
-1. BUG-028 migrations or an explicit v10-only compatibility statement.
-2. Broader Office fixtures (XLSX/PPTX).
-3. BUG-013 external clients only if the stable surface promises them.
+1. ~~BUG-028 migrations or an explicit v10-only compatibility statement.~~ Done.
+2. ~~Broader Office fixtures (XLSX/PPTX).~~ Done for the pinned converter.
+3. BUG-013 external clients only if the stable surface promises them; the
+   fail-closed alternative is the documented stable contract.
 
 Each close needs code + regression test + parity/scenario (or an explicit
 documented exclusion) + updated status in this file.

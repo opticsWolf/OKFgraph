@@ -84,6 +84,20 @@ fn error_json(message: impl Into<String>) -> CString {
         .unwrap_or_else(|_| CString::new("{\"error\":\"plugin error\"}").expect("literal"))
 }
 
+/// A bobine failure about one file is a conversion outcome, not a missing
+/// add-on. Mirror Python 0.15's typed `CONVERSION_FAILED` envelope so both
+/// runners report the same code/fields/remedy for corrupt or unsupported
+/// inputs.
+fn conversion_error_json(input: &Path, message: impl Into<String>) -> CString {
+    let source = input.to_string_lossy();
+    let value = json!({
+        "error": format!("bobine could not convert {source}: {}", message.into()),
+        "fields": {"path": source, "converter": "bobine"},
+        "remedy": "check the file opens in another reader, or route it through a different converter",
+    });
+    CString::new(value.to_string()).unwrap_or_else(|_| error_json("invalid path"))
+}
+
 fn default_cache_dir() -> PathBuf {
     if let Ok(cache) = std::env::var("HF_HUB_CACHE") {
         return PathBuf::from(cache);
@@ -180,7 +194,10 @@ pub unsafe extern "C" fn okf_pdf_convert(
             current.last_used = Instant::now();
         }
         restore_warm(warm);
-        let doc = outcome.map_err(|err| err.to_string())?;
+        let doc = match outcome {
+            Ok(doc) => doc,
+            Err(err) => return Ok(conversion_error_json(&input, err.to_string())),
+        };
         Ok(result_json(&doc.md_path, &doc.image_dir, doc.page_count))
     }));
     match outcome {

@@ -23,6 +23,10 @@ def main() -> int:
         "list_images", "get_image", "get_by_id", "list_directory",
     )
     print("op_names:", len(names), names[:3])
+    assert callable(_native.run_cli) and callable(_native.run_mcp)
+    from okfgraph import mcp_server
+
+    assert callable(mcp_server.main)
     if names != expected:
         raise SystemExit(f"FAIL: op_names drift: {names!r} != {expected!r}")
 

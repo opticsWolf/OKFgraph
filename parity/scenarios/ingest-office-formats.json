@@ -1,0 +1,54 @@
+{
+  "name": "ingest-office-formats",
+  "settings": {
+    "db_path": "parity/out/ingest-office-formats-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/empty"
+    },
+    "remove": [
+      "parity/out/office-formats-@RUNNER@"
+    ]
+  },
+  "ops": [
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/fixtures/sample.xlsx",
+        "output_dir": "parity/out/office-formats-@RUNNER@",
+        "auto_import": false
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/fixtures/sample.xlsx",
+        "auto_import": true
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/fixtures/sample.pptx",
+        "output_dir": "parity/out/office-formats-@RUNNER@",
+        "auto_import": false
+      }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/fixtures/sample.pptx",
+        "auto_import": true
+      }
+    }
+  ]
+}

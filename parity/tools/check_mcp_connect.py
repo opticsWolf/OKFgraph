@@ -40,6 +40,7 @@ def main() -> None:
     ap.add_argument("--serve-exe", default="target/debug/okf.exe")
     ap.add_argument("--mcp-exe", default="target/debug/okf-mcp.exe")
     ap.add_argument("--fixture", default="parity/fixtures/oracle-v10.db")
+    ap.add_argument("--listen", default="127.0.0.1:8787")
     args = ap.parse_args()
     serve_exe = Path(args.serve_exe)
     mcp_exe = Path(args.mcp_exe)
@@ -54,7 +55,7 @@ def main() -> None:
     if disc.exists():
         disc.unlink()
     owner = subprocess.Popen(
-        [str(serve_exe), "--db-path", str(db), "serve"],
+        [str(serve_exe), "--db-path", str(db), "serve", "--listen", args.listen],
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

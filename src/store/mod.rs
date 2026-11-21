@@ -35,6 +35,9 @@ pub const REL_TABLES: &[&str] = &["CONTAINS", "LINKS_TO", "INCLUDES_ASSET", "PAR
 /// Concept ids and directed LINKS_TO edges for ranking algorithms.
 pub type LinkGraph = (Vec<String>, Vec<(String, String)>);
 
+/// One ranked search candidate: node id and index score.
+pub type RankedHit = (String, f64);
+
 /// A read/write handle to a Ladybug v10 graph.
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -453,6 +456,33 @@ impl Store {
     }
 
     /// Metadata for ranked concept ids, preserving no inherent order.
+    /// Lightweight search-result metadata. Avoiding `body` matters: Ladybug
+    /// pays per returned property, and search rows never expose the body.
+    pub fn concept_meta_by_ids(&self, ids: &[String], include_extra: bool) -> Result<Vec<Json>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let extra = if include_extra {
+            ", c.extra AS extra"
+        } else {
+            ""
+        };
+        let cypher = format!(
+            "MATCH (c:Concept)              WHERE c.id IN $ids              RETURN c.id AS id, c.title AS title, c.type AS type,                     c.description AS description, c.tags AS tags,                     c.effective_at AS effective_at{extra}"
+        );
+        let rows = self.query(
+            &cypher,
+            vec![(
+                "ids",
+                Value::List(
+                    LogicalType::String,
+                    ids.iter().cloned().map(Value::String).collect(),
+                ),
+            )],
+        )?;
+        Ok(rows.into_iter().map(Json::Object).collect())
+    }
+
     pub fn concepts_by_ids(&self, ids: &[String]) -> Result<Vec<Json>> {
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -1726,6 +1756,111 @@ impl Store {
                 "precision": if self.settings.rerank_precision == "auto" { None } else { Some(self.settings.rerank_precision.clone()) }
             }
         }))
+    }
+
+    /// Vector and FTS candidates from one read-only search connection.
+    ///
+    /// Opening a Ladybug DB plus its extensions is the dominant cost of a
+    /// small-graph search, so the common hybrid path pays it once instead of
+    /// once per index. Results match [`Store::vector_hits`] and
+    /// [`Store::fts_hits`] shapes exactly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn hybrid_hits(
+        &self,
+        table: &str,
+        vector_index: &str,
+        fts_index: &str,
+        vector: &[f32],
+        text: &str,
+        k: i64,
+        efs: Option<i64>,
+    ) -> Result<(Vec<RankedHit>, Vec<RankedHit>)> {
+        self.with_search_conn(|conn| {
+            let values = Value::List(
+                LogicalType::Float,
+                vector.iter().copied().map(Value::Float).collect(),
+            );
+            let vector_sql = if efs.is_some() {
+                format!(
+                    "CALL QUERY_VECTOR_INDEX('{table}', '{vector_index}', $vec, $k, efs := $efs)                      RETURN node, distance"
+                )
+            } else {
+                format!(
+                    "CALL QUERY_VECTOR_INDEX('{table}', '{vector_index}', $vec, $k)                      RETURN node, distance"
+                )
+            };
+            let vec_hits = {
+                let mut stmt = conn.prepare(&vector_sql).map_err(map_search_lbug)?;
+                let mut params: Vec<(&str, Value)> =
+                    vec![("vec", values), ("k", Value::Int64(k))];
+                if let Some(efs) = efs {
+                    params.push(("efs", Value::Int64(efs)));
+                }
+                let result = conn.execute(&mut stmt, params).map_err(map_search_lbug)?;
+                let columns = result.get_column_names();
+                let mut hits = Vec::new();
+                for row in result {
+                    let mut node_json = None;
+                    let mut distance = 0.0;
+                    for (name, value) in columns.iter().zip(row) {
+                        match name.as_str() {
+                            "node" => node_json = Some(value_to_json(value)),
+                            "distance" => {
+                                distance = json_f64(&value_to_json(value)).unwrap_or(0.0)
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(node) = node_json {
+                        let id = node
+                            .get("id")
+                            .and_then(Json::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        hits.push((id, 1.0 - distance));
+                    }
+                }
+                hits
+            };
+
+            let fts_sql = format!(
+                "CALL QUERY_FTS_INDEX('{table}', '{fts_index}', $query, top := $k)                  RETURN node, score"
+            );
+            let fts_hits = {
+                let mut stmt = conn.prepare(&fts_sql).map_err(map_search_lbug)?;
+                let result = conn
+                    .execute(
+                        &mut stmt,
+                        vec![
+                            ("query", Value::String(text.into())),
+                            ("k", Value::Int64(k)),
+                        ],
+                    )
+                    .map_err(map_search_lbug)?;
+                let columns = result.get_column_names();
+                let mut hits = Vec::new();
+                for row in result {
+                    let mut node_json = None;
+                    let mut score = 0.0;
+                    for (name, value) in columns.iter().zip(row) {
+                        match name.as_str() {
+                            "node" => node_json = Some(value_to_json(value)),
+                            "score" => score = json_f64(&value_to_json(value)).unwrap_or(0.0),
+                            _ => {}
+                        }
+                    }
+                    if let Some(id) = node_json
+                        .as_ref()
+                        .and_then(|n| n.get("id"))
+                        .and_then(Json::as_str)
+                    {
+                        hits.push((id.to_string(), score));
+                    }
+                }
+                hits
+            };
+            Ok((vec_hits, fts_hits))
+        })
     }
 }
 

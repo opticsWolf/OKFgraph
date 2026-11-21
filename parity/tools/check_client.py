@@ -17,6 +17,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", default="target/debug/okf.exe")
     ap.add_argument("--fixture", default="parity/fixtures/oracle-v10.db")
+    ap.add_argument("--listen", default="127.0.0.1:8787")
     args = ap.parse_args()
     from okfgraph.client import OPS, OKFClient, discover, serve_file_for
     from okfgraph.errors import OKFError
@@ -32,7 +33,7 @@ def main() -> int:
     if disc.exists():
         disc.unlink()
     proc = subprocess.Popen(
-        [str(exe), "--db-path", str(db), "serve"],
+        [str(exe), "--db-path", str(db), "serve", "--listen", args.listen],
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

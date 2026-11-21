@@ -136,6 +136,7 @@ A stable 0.16.0 may be published only when:
 
 - hosted CI is green on Windows x64, Linux x86_64 and macOS arm64;
 - the manual GPU matrix above is green and recorded;
+- the paired benchmark meets the parity gate in `docs/performance-findings.md`;
 - coverage and all surface gates are green;
 - the wheel contains the thin facade and native extension only, with no
   Python core implementation.

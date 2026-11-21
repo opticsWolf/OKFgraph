@@ -50,6 +50,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--serve-exe", default="target/debug/okf.exe")
     ap.add_argument("--fixture", default="parity/fixtures/oracle-v10.db")
+    ap.add_argument("--listen", default="127.0.0.1:8787")
     args = ap.parse_args()
     exe = Path(args.serve_exe)
     if not exe.is_absolute():
@@ -61,7 +62,7 @@ def main() -> None:
     if disc.exists():
         disc.unlink()
     owner = subprocess.Popen(
-        [str(exe), "--db-path", str(db), "serve"],
+        [str(exe), "--db-path", str(db), "serve", "--listen", args.listen],
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

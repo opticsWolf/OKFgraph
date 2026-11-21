@@ -4,7 +4,7 @@
 
 #[cfg(feature = "embed")]
 use crate::embed::RerankerPool;
-use crate::embed::{check_engine_pins, EmbedderPool, Pools, Task};
+use crate::embed::{check_engine_pins, Embedder, EmbedderPool, Pools, Task};
 use crate::error::{OkfError, Result};
 use crate::markdown;
 use crate::pycompat::from_json;
@@ -119,6 +119,10 @@ pub struct Router {
     write_lock: std::sync::Arc<std::sync::Mutex<()>>,
     db_created: bool,
     reembed_active: Arc<AtomicBool>,
+    /// `check_engine_pins` is a safety gate, not a per-query workload: the
+    /// oracle validates pins when the lazy session opens. Cache the first
+    /// successful check and invalidate on writes/reembeds that can move pins.
+    pin_checked: Arc<AtomicBool>,
 }
 
 impl Router {
@@ -172,6 +176,7 @@ impl Router {
             write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
             db_created: Self::db_created_for(settings),
             reembed_active: Arc::new(AtomicBool::new(false)),
+            pin_checked: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -187,6 +192,7 @@ impl Router {
             write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
             db_created: Self::db_created_for(settings),
             reembed_active: Arc::new(AtomicBool::new(false)),
+            pin_checked: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -203,7 +209,17 @@ impl Router {
             write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
             db_created: Self::db_created_for(settings),
             reembed_active: Arc::new(AtomicBool::new(false)),
+            pin_checked: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    fn ensure_engine_pins(&self, embedder: &Arc<dyn Embedder>) -> Result<()> {
+        if self.pin_checked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        check_engine_pins(&self.settings, &self.store.pin_info()?, embedder.as_ref())?;
+        self.pin_checked.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Whether this handle created its database on this boot (Python's
@@ -499,6 +515,7 @@ impl Router {
             ));
         }
         let _guard = ReembedGuard(Arc::clone(&self.reembed_active));
+        self.pin_checked.store(false, Ordering::Release);
         let dry_run = opt_bool(params, "dry_run")?.unwrap_or(false);
         let engine = self.embedder.get(&self.settings)?;
         let dim = engine.dim();
@@ -1258,7 +1275,11 @@ impl Router {
                 }
             }
         };
-        run()
+        let result = run();
+        if result.is_ok() {
+            self.pin_checked.store(false, Ordering::Release);
+        }
+        result
     }
 
     /// Unlink an idle `<db>.lock` when no other process holds it, matching
@@ -2718,7 +2739,7 @@ impl Router {
             }
         };
         let embedder = self.embedder.get(&self.settings)?;
-        check_engine_pins(&self.settings, &self.store.pin_info()?, embedder.as_ref())?;
+        self.ensure_engine_pins(&embedder)?;
         let vectors = embedder.encode_many(&texts, task)?;
         let mut vectors: Vec<Vec<f32>> = vectors;
         let mut renormalised = false;
@@ -2884,7 +2905,7 @@ impl Router {
         #[cfg(feature = "embed")]
         {
             let embedder = self.embedder.get(&self.settings)?;
-            check_engine_pins(&self.settings, &self.store.pin_info()?, embedder.as_ref())?;
+            self.ensure_engine_pins(&embedder)?;
             embedder.encode(query, Task::Query)
         }
         #[cfg(not(feature = "embed"))]
@@ -2936,16 +2957,15 @@ impl Router {
             )
         } else {
             let k = search::fetch_k(want.max(search::PAGE_WINDOW), filtered);
-            let vec = self.store.vector_hits(
+            let (vec, fts) = self.store.hybrid_hits(
                 "Concept",
                 "concept_embedding",
+                "concept_fts",
                 query_vector,
+                &params.query,
                 k,
                 params.efs,
             )?;
-            let fts = self
-                .store
-                .fts_hits("Concept", "concept_fts", &params.query, k)?;
             let combined = search::rrf_fuse(&vec, &fts);
             let full = vec.len() as i64 >= k || fts.len() as i64 >= k;
             (combined, full)
@@ -2965,16 +2985,15 @@ impl Router {
                 want.max(search::PAGE_WINDOW),
                 full,
             ) {
-                let vec = self.store.vector_hits(
+                let (vec, fts) = self.store.hybrid_hits(
                     "Concept",
                     "concept_embedding",
+                    "concept_fts",
                     query_vector,
+                    &params.query,
                     deeper,
                     params.efs,
                 )?;
-                let fts = self
-                    .store
-                    .fts_hits("Concept", "concept_fts", &params.query, deeper)?;
                 let combined = search::rrf_fuse(&vec, &fts);
                 rows = self.concept_rows(
                     &combined
@@ -3064,7 +3083,9 @@ impl Router {
         scores: &[(String, f64)],
         params: &SearchParams,
     ) -> Result<Vec<Json>> {
-        let rows = self.store.concepts_by_ids(ids)?;
+        let rows = self
+            .store
+            .concept_meta_by_ids(ids, !params.where_map.is_empty())?;
         let score_by_id: BTreeMap<&str, f64> = scores
             .iter()
             .map(|(id, score)| (id.as_str(), *score))

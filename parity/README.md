@@ -17,6 +17,9 @@ the Python and Rust cores in one process.
   any unexpected op or DB difference.
 - `tools/check_coverage.py` — verifies success and typed-error coverage for
   every public op, with documented waivers.
+- `examples/perf_bench.rs` / `tools/python_bench.py` /
+  `tools/check_perf_bench.py` — paired release benchmark for import, embed,
+  search, RSS and startup; writes `docs/performance-baseline.md`.
 - `examples/import_bench.rs` / `tools/check_import_bench.py` — real-model
   filters-corpus timing smoke and unchanged-import delta check.
 - `tools/gen_pycompat.py` — regenerates `golden/pycompat.json` from the oracle.

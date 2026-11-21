@@ -1828,6 +1828,27 @@ byte-exact CR-only fixture via `setup.write_file`.
 `markdown::tests::universal_newlines_normalize_lone_carriage_returns`, and
 `parity/scenarios/frontmatter-cr-only.json` (ops and DB dumps green).
 
+### BUG-063 — Rust performance is below the Python 0.15 oracle
+
+**Severity:** P1, L — **Status: open** (M6 performance gate).
+
+**Where:** `src/store/mod.rs`, `src/ops/mod.rs`, `examples/perf_bench.rs`,
+`parity/tools/check_perf_bench.py`, `docs/performance-findings.md`.
+
+**Evidence:** release-profile Rust is 2.37x slower on cold import, 6.21x
+slower on warm search and 2.41x slower on warm embed. The gap is recorded in
+`docs/performance-baseline.md`; no waiver is proposed.
+
+**Partial fixes:** the per-query pin check was cached, vector/FTS candidates
+now share one search connection, and search rows no longer fetch `body`/`extra`
+unconditionally. The dominant remaining cause is that `Store` reopens a
+Ladybug DB and loads extensions for every query, while Python keeps a
+long-lived connection.
+
+**Required close action:** add a reusable read-only query/search connection,
+profile delta re-import, and make the paired benchmark meet the release gate
+in `docs/performance-findings.md`.
+
 ---
 
 ## 9. Deferred / explicitly out of scope for this plan
@@ -1900,6 +1921,7 @@ gate is green.
 | BUG-060 | Closed | Job ids, statuses, record fields, mode validation, dedupe, 404s and cooperative reembed cancel match Python 0.15 (`check_jobs.py`). | Revisit when jobs become durable or the oracle changes its record shape. |
 | BUG-061 | Closed | Rust CLI and MCP proxy borrow a live `okf serve` owner through `server::client`, with `OKFGRAPH_NO_SERVER=1` opt-out. | Keep CLI-to-owner and stale-discovery checks in `check_client.py`. |
 | BUG-062 | Closed | Universal-newline parsing now normalizes lone CR; fuzz seed, unit regression and `frontmatter-cr-only` parity scenario are green. | Keep fuzz properties in CI and expand only for new parser surfaces. |
+| BUG-063 | **Open** | Paired release benchmark shows Rust below Python: 2.37x import, 6.21x search, 2.41x embed. See `docs/performance-findings.md`. | Reuse Ladybug connections, profile delta import, meet the parity gate before 0.16.0 stable. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order

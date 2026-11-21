@@ -63,6 +63,7 @@ assert_cmd = "2"
 insta = "1"
 proptest = "1"
 criterion = "0.5"
+sysinfo = "0.31"
 
 [[bin]]
 name = "okf"

@@ -1023,8 +1023,10 @@ the old root Python package can be deleted without breaking differential
 testing. The full matrix was rerun green in 15m21s with that package hidden.
 Fuzz hardening is complete: frontmatter/YAML, chunk offsets, safe ids/paths,
 wikilinks, op params and closed error codes are covered, and the found
-CR-only newline bug is closed as BUG-062. The full GPU matrix is retained as
-a documented manual release gate in `docs/release-gate.md`; hosted CI remains a build/smoke gate and no self-hosted
+CR-only newline bug is closed as BUG-062. Paired performance benchmarks landed,
+but performance parity is not met; BUG-063 remains open and blocks stable
+0.16.0. The full GPU matrix is retained as a documented manual release gate in
+`docs/release-gate.md`; hosted CI remains a build/smoke gate and no self-hosted
 runner is required for 0.16.0.
 
 **Gate:** parity suite green on all target platforms; all 1,241 behaviors either

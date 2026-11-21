@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "vision")]
+#[cfg(any(feature = "vision", feature = "external"))]
 const VISION_CONTRACT: &str = "smart32/min262144/max1310720/bicubic-rgb";
 const ASSET_STORE_DIRNAME: &str = "_assets";
 const NAMESPACE: &str = "6f6b6661-0000-0000-0000-6f6b66617373";
@@ -497,6 +497,7 @@ fn pin_image_graph(
             }
             return Ok(());
         }
+        #[cfg(feature = "vision")]
         let revision = embroider::builtin_models()
             .iter()
             .find(|spec| spec.id == model_id)
@@ -506,11 +507,21 @@ fn pin_image_graph(
                 _ => spec.fp32.revision,
             })
             .unwrap_or_default();
-        let space = format!(
-            "embroider/{model_id}@{revision}:{precision}:{}:0:vision:v1",
-            settings.embedding_dim
-        );
-        store.set_meta_text("embedding_image_space", &space)?;
+        #[cfg(feature = "vision")]
+        {
+            let space = format!(
+                "embroider/{model_id}@{revision}:{precision}:{}:0:vision:v1",
+                settings.embedding_dim
+            );
+            store.set_meta_text("embedding_image_space", &space)?;
+        }
+        #[cfg(not(feature = "vision"))]
+        {
+            return Err(crate::error::OkfError::new(
+                "IMAGE_PIN_MISMATCH",
+                "an external vision host must name its vector space",
+            ));
+        }
     }
     if store.meta_text("embedding_image_text_space")?.is_none() {
         if let Some(space) = engine.space() {
@@ -603,11 +614,11 @@ pub fn ingest_concept_images(
                 {
                     pools.vision.get(settings)?.encode_image(&data)?
                 }
-                #[cfg(not(feature = "vision"))]
+                #[cfg(not(any(feature = "vision", feature = "external")))]
                 {
                     return Err(crate::error::OkfError::new(
                         "BAD_VALUE",
-                        "vision image ingestion requires a build with --features vision",
+                        "vision image ingestion requires a build with --features vision or external",
                     ));
                 }
             }

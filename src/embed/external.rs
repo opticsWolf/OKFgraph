@@ -13,8 +13,9 @@ use base64::Engine as _;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Map, Value as Json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -255,6 +256,184 @@ fn http_client(timeout: Duration) -> Result<Client> {
         .timeout(timeout)
         .build()
         .map_err(|err| OkfError::internal(err.to_string(), "reqwest::Client"))
+}
+
+/// A chars/token prior measured from a GGUF header's vocabulary.
+///
+/// Port of `okfgraph/components/gguf_meta.py`: no tokenizer crate enters the
+/// graph; only the header's `tokenizer.ggml.tokens` array is read and matched
+/// greedily against a fixed English probe.
+fn chars_per_token_from_gguf(path: &str) -> std::result::Result<f64, String> {
+    const MIN_VOCAB: u64 = 1000;
+    const MAX_KV_PAIRS: u64 = 4096;
+    const MAX_STRING: u64 = 1 << 22;
+    const MAX_TOKEN_STR: usize = 48;
+    const MAX_KV_SCAN: u64 = 4_000_000;
+    const PROBE: &str = "Retrieval-augmented generation grounds an answer in the evidence a knowledge graph stores: every concept, title and chunk of text is mapped into one vector space, where cosine similarity finds the nearest neighbours. In 2024 open embedding models reached 768 or 1024 dimensions, with matryoshka truncation trading a little accuracy for much smaller vectors. The declared contract matters — prefixes such as search_query: and search_document: flavour each side of retrieval, mean pooling keeps long passages stable, and a careful batch budget keeps memory flat while encoding 4,096 rows. ";
+
+    fn read_exact(
+        file: &mut std::fs::File,
+        len: usize,
+        what: &str,
+    ) -> std::result::Result<Vec<u8>, String> {
+        let mut bytes = vec![0u8; len];
+        file.read_exact(&mut bytes)
+            .map_err(|_| format!("truncated GGUF header ({what})"))?;
+        Ok(bytes)
+    }
+
+    fn u32le(file: &mut std::fs::File) -> std::result::Result<u32, String> {
+        let bytes = read_exact(file, 4, "u32")?;
+        Ok(u32::from_le_bytes(bytes.try_into().expect("4 bytes")))
+    }
+
+    fn u64le(file: &mut std::fs::File) -> std::result::Result<u64, String> {
+        let bytes = read_exact(file, 8, "u64")?;
+        Ok(u64::from_le_bytes(bytes.try_into().expect("8 bytes")))
+    }
+
+    fn string(file: &mut std::fs::File) -> std::result::Result<String, String> {
+        let len = u64le(file)?;
+        if len > MAX_STRING {
+            return Err(format!("header string too long: {len}"));
+        }
+        let bytes = read_exact(file, len as usize, "string")?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn skip(file: &mut std::fs::File, kind: u32) -> std::result::Result<(), String> {
+        let size = match kind {
+            0 | 1 | 7 | 10 | 11 => 1,
+            2 | 3 => 2,
+            4..=6 => 4,
+            12 => 8,
+            8 => {
+                string(file)?;
+                return Ok(());
+            }
+            9 => {
+                let element = u32le(file)?;
+                let count = u64le(file)?;
+                if element == 9 {
+                    return Err("nested arrays are not supported".into());
+                }
+                if element == 8 {
+                    for _ in 0..count.min(MAX_KV_SCAN) {
+                        string(file)?;
+                    }
+                    return Ok(());
+                }
+                let width = match element {
+                    0 | 1 | 7 | 10 | 11 => 1,
+                    2 | 3 => 2,
+                    4..=6 => 4,
+                    12 => 8,
+                    other => return Err(format!("unknown GGUF value type {other}")),
+                };
+                file.seek(SeekFrom::Current((count * width) as i64))
+                    .map_err(|err| err.to_string())?;
+                return Ok(());
+            }
+            other => return Err(format!("unknown GGUF value type {other}")),
+        };
+        file.seek(SeekFrom::Current(size as i64))
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    let mut file = std::fs::File::open(path).map_err(|err| err.to_string())?;
+    if read_exact(&mut file, 4, "magic")? != b"GGUF" {
+        return Err("not a GGUF file (no GGUF magic)".into());
+    }
+    let version = u32le(&mut file)?;
+    if version < 2 {
+        return Err(format!("GGUF v{version} unsupported (need v2+)"));
+    }
+    let _tensors = u64le(&mut file)?;
+    let kv_count = u64le(&mut file)?;
+    for _ in 0..kv_count.min(MAX_KV_PAIRS) {
+        let key = string(&mut file)?;
+        let kind = u32le(&mut file)?;
+        if key == "tokenizer.ggml.tokens" {
+            if kind != 9 {
+                return Err(format!(
+                    "tokenizer.ggml.tokens is a type-{kind} array, not strings"
+                ));
+            }
+            if u32le(&mut file)? != 8 {
+                return Err("tokenizer.ggml.tokens is not a string array".into());
+            }
+            let count = u64le(&mut file)?;
+            if !(MIN_VOCAB..=MAX_KV_SCAN).contains(&count) {
+                return Err(format!("impossible vocab size: {count}"));
+            }
+            let mut tokens = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                tokens.push(string(&mut file)?);
+            }
+            let specials = tokens
+                .iter()
+                .filter(|token| token.starts_with('<') && token.ends_with('>'))
+                .count();
+            if specials * 3 >= tokens.len() {
+                return Err(format!(
+                    "vocab looks like special tokens only ({specials}/{})",
+                    tokens.len()
+                ));
+            }
+            let mut pieces = HashSet::new();
+            for raw in tokens {
+                if raw.is_empty() || raw.chars().count() > MAX_TOKEN_STR {
+                    continue;
+                }
+                if raw.starts_with('<') && raw.ends_with('>') {
+                    continue;
+                }
+                pieces.insert(raw.clone());
+                if raw.contains('\u{2581}') {
+                    pieces.insert(raw.replace('\u{2581}', " "));
+                }
+                if raw.contains('\u{120}') {
+                    pieces.insert(raw.replace('\u{120}', " "));
+                }
+            }
+            if pieces.is_empty() {
+                return Err("no usable pieces in the vocabulary".into());
+            }
+            let max_len = pieces
+                .iter()
+                .map(|piece| piece.chars().count())
+                .max()
+                .unwrap_or(1);
+            let probe: Vec<char> = PROBE.chars().collect();
+            let mut index = 0;
+            let (mut chars, mut count) = (0usize, 0usize);
+            while index < probe.len() {
+                let mut matched = None;
+                for width in (1..=max_len.min(probe.len() - index)).rev() {
+                    let candidate: String = probe[index..index + width].iter().collect();
+                    if pieces.contains(&candidate) {
+                        matched = Some(width);
+                        break;
+                    }
+                }
+                let width = matched.unwrap_or(1);
+                chars += width;
+                count += 1;
+                index += width;
+            }
+            if count == 0 {
+                return Err("the probe tokenised to nothing".into());
+            }
+            let prior = chars as f64 / count as f64;
+            if !(1.0..=64.0).contains(&prior) {
+                return Err(format!("implausible prior: {prior:.2} chars/token"));
+            }
+            return Ok(prior);
+        }
+        skip(&mut file, kind)?;
+    }
+    Err(format!("no tokenizer.ggml.tokens array in {path}'s header"))
 }
 
 // ── text embeddings ──────────────────────────────────────────────────────
@@ -662,13 +841,18 @@ impl ExternalEmbedder {
             "declared" => {
                 state.cpt = self.chars_per_token;
             }
-            "gguf-meta" => {
-                // A valid GGUF path is required by settings validation. The
-                // Rust lane has no tokenizer crate; a header that cannot be
-                // read degrades loudly to the heuristic, exactly like the
-                // oracle's GgufCounterError path.
-                ok = false;
-            }
+            "gguf-meta" => match chars_per_token_from_gguf(&self.counter_gguf) {
+                Ok(prior) => {
+                    state.cpt = prior;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "[embedding] embed_counter_gguf={}: {err}; degrading to the heuristic",
+                        self.counter_gguf
+                    );
+                    ok = false;
+                }
+            },
             "heuristic" => {}
             other => {
                 return Err(OkfError::new(
@@ -1669,6 +1853,35 @@ impl VisionEncoder for ExternalVision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gguf_counter_reads_a_vocabulary_header() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens.gguf");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&1u64.to_le_bytes()); // one KV pair
+        let key = b"tokenizer.ggml.tokens";
+        bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(key);
+        bytes.extend_from_slice(&9u32.to_le_bytes()); // array
+        bytes.extend_from_slice(&8u32.to_le_bytes()); // string elements
+        let tokens: Vec<String> = (0..1000).map(|index| format!("word{index} ")).collect();
+        bytes.extend_from_slice(&(tokens.len() as u64).to_le_bytes());
+        for token in &tokens {
+            bytes.extend_from_slice(&(token.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(token.as_bytes());
+        }
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&bytes).unwrap();
+
+        let prior = chars_per_token_from_gguf(path.to_str().unwrap()).unwrap();
+        assert!((1.0..=64.0).contains(&prior), "{prior}");
+    }
 
     #[test]
     fn endpoint_normalization_matches_oracle() {

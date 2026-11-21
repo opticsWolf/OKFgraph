@@ -277,6 +277,9 @@ them to `import_bundle`, and the Python harness forwards them after removing
 constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 (embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
+The full GPU-dependent matrix is a manual stable-release gate; see
+`docs/release-gate.md`. Hosted CI remains a build/smoke gate.
+
 The Python side of the harness never imports the root `okfgraph/` package.
 `tools/oracle.py` resolves `python-oracle-0.15.0` into a cached detached
 worktree at `parity/tmp/oracle-0.15.0` and prepends it to `PYTHONPATH`. Local

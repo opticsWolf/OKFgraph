@@ -1021,6 +1021,9 @@ and `okf-mcp` run from the wheel.
 **M6 progress:** the harness is now tag-based (`parity/tools/oracle.py`), so
 the old root Python package can be deleted without breaking differential
 testing. The full matrix was rerun green in 15m21s with that package hidden.
+The full GPU matrix is retained as a documented manual release gate in
+`docs/release-gate.md`; hosted CI remains a build/smoke gate and no self-hosted
+runner is required for 0.16.0.
 
 **Gate:** parity suite green on all target platforms; all 1,241 behaviors either
 ported, covered by an equivalent test, or explicitly waived in the parity report;

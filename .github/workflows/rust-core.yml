@@ -1,3 +1,5 @@
+# Hosted CI is a build/smoke gate. The full GPU-dependent parity matrix is a
+# documented manual release gate; see docs/release-gate.md.
 name: rust-core
 
 on:

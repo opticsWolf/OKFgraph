@@ -1570,9 +1570,11 @@ the same way as the doctor `info` rules.
 always returned `[]` or `unknown job`. `OKFClient.reembed_job()` sent
 `mode="job"` and got a synchronous reembed result instead of a job id. The
 owner now keeps in-memory job records, runs each op on the same
-`spawn_blocking` pool, and exposes submit/poll/list/cancel. A late cancel
-wins over an already-computed result; terminal jobs are not restarted.
-`src/server/mod.rs` unit tests cover completion and cancellation, and
+`spawn_blocking` pool, and exposes submit/poll/list/cancel. A cancel before
+or between reembed batches produces the checked `cancelled: true` report with
+partial counts; a cancel after a job is terminal does not rewrite its result,
+and terminal jobs are not restarted (BUG-060 refined this behavior).
+`src/server/mod.rs` unit tests cover completion and late cancel, and
 `parity/tools/check_jobs.py` checks the HTTP contract end-to-end. The
 `OKFGRAPH_JOB_TEST_DELAY_MS` hook is test-only.
 

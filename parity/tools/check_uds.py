@@ -48,15 +48,17 @@ def main() -> int:
     )
     try:
         url = None
+        discovery = Path(str(db) + ".serve.json")
         for _ in range(100):
-            if sock.exists():
-                info = json.loads(Path(str(db) + ".serve.json").read_text(encoding="utf-8"))
+            if discovery.exists():
+                info = json.loads(discovery.read_text(encoding="utf-8"))
                 url = info["url"]
                 break
             if owner.poll() is not None:
                 raise SystemExit(f"serve exited: {owner.stderr.read()}")
             time.sleep(0.1)
         assert url and url.startswith("unix://"), url
+        assert sock.exists(), sock
 
         import okfgraph
         from okfgraph import OKFClient

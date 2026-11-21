@@ -29,6 +29,21 @@ claimed until the remaining gate items close.
 
 ### Verification status
 
+Final verification on `rust-core` at `66df990`:
+
+- `parity/tools/run_matrix.py --pdf-plugin target/debug/okfgraph_pdf.dll`:
+  `TOTAL:56 FAILS:0` in **14m37s** on the CUDA dev box. The 57th scenario,
+  `ingest-pdf-no-plugin`, remains the documented intentional divergence.
+- `parity/tools/check_coverage.py`: 30/30 success ops, 21 typed-error ops,
+  nine documented waivers, 61 output files scanned.
+- `parity/tools/check_external_lanes.py`: green against four local mock hosts,
+  including TEI rerank fallback and a generated valid GGUF counter fixture.
+- Rust suites: 75 all-feature tests and 54 no-default tests pass; Clippy is
+  clean with all features and with no default features.
+- The full six-job CI matrix was green on `44899657898` for code commit
+  `333f8df`. The final commit `66df990` changes only docs and the parity
+  harness, and its CI run was stopped by the operator before completion.
+
 Closed with code + tests/scenarios (details in the individual findings):
 
 - BUG-001/002 crash safety; BUG-003/004/005 import integrity; BUG-006/007
@@ -1834,7 +1849,7 @@ gate is green.
 | BUG-028 | Closed | Compatibility is explicitly v10-only; older schemas are refused with `CONFIG_INVALID` and Python 0.15 remains the one-time migration path (`docs/rust-compat.md` §A). | Revisit only if a legacy DB must be opened directly by Rust. |
 | BUG-030 | Closed | `extension_dir` and warm PDF idle reuse work; `wal_mode` is a documented compatibility no-op (`docs/rust-compat.md` §A). | Revisit only if upstream adds a journal knob. |
 | BUG-040 | Closed | Real-model filters import benchmark and delta no-op smoke landed; baseline ~10.3 s / ~1.1 s on the CUDA dev box. | Re-run before release; update the recorded baseline if hardware changes. |
-| BUG-044 | Closed | `run_matrix.py` fails on diffs and `check_coverage.py` enforces success+typed-error coverage with nine documented no-error waivers. | Keep new ops covered and re-run the matrix before release. |
+| BUG-044 | Closed | `run_matrix.py` fails on diffs and `check_coverage.py` enforces success+typed-error coverage with nine documented no-error waivers. Final run: 56/56 green, 30/30 success ops. | Keep new ops covered and re-run the matrix before release. |
 | BUG-045 | Closed | Parameters, strict outcome, safe fix, facade kwargs, and `doctor-params` parity landed. | Keep covered by `doctor-params`; revisit only if further Python doctor semantics are ported. |
 | BUG-046 | Closed | Portable info probes are emitted and compared; only host-specific rules are ignored by name. | Extend only if a portable probe is still missing. |
 | BUG-047 | Closed | Unit tests copy the oracle fixture into a temp dir instead of sharing checkpoint state. | Keep the copy-fixture pattern for any new DB tests. |

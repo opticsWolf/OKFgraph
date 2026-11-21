@@ -12,7 +12,10 @@ in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
 deferred items. CI builds wheels and runs the Python 3.12–3.14
 matrix on Windows, Linux and macOS; POSIX UDS client smoke is green in CI.
 External embed/rerank/vision lanes are implemented and covered by mock-host
-differential checks. The remaining Stage C surface is M6 hardening.
+differential checks. Final bug-round verification: 56/56 matrix scenarios
+green in 14m37s, 30/30 success-op coverage, 75 all-feature / 54 no-default
+Rust tests, and a green six-job CI run on the last code-affecting commit. The
+remaining Stage C surface is M6 hardening.
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,

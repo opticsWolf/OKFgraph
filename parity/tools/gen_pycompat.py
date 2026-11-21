@@ -8,12 +8,15 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from oracle import prepend_oracle_path  # noqa: E402
+
+ORACLE = prepend_oracle_path()
 
 import importlib.util
 
 _spec = importlib.util.spec_from_file_location(
-    "oracle_timestamps", ROOT / "okfgraph" / "components" / "timestamps.py"
+    "oracle_timestamps", ORACLE / "okfgraph" / "components" / "timestamps.py"
 )
 _timestamps = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None

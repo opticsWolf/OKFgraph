@@ -14,8 +14,10 @@ matrix on Windows, Linux and macOS; POSIX UDS client smoke is green in CI.
 External embed/rerank/vision lanes are implemented and covered by mock-host
 differential checks. Final bug-round verification: 56/56 matrix scenarios
 green in 14m37s, 30/30 success-op coverage, 75 all-feature / 54 no-default
-Rust tests, and a green six-job CI run on the last code-affecting commit. The
-remaining Stage C surface is M6 hardening.
+Rust tests, and a green six-job CI run on the last code-affecting commit. M6
+step 1 is also complete: the parity harness imports the oracle from a cached
+worktree of `python-oracle-0.15.0`, and the full matrix passed with the root
+Python package hidden. The remaining Stage C surface is M6 hardening.
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -1015,6 +1017,10 @@ and `okf-mcp` run from the wheel.
   guide (DB/bundle compatible; internals broken), release notes.
 - Release 0.16.0 stable (Stage C) with the parity report attached. Stage A and B
   are prereleases/beta, not silent cutovers.
+
+**M6 progress:** the harness is now tag-based (`parity/tools/oracle.py`), so
+the old root Python package can be deleted without breaking differential
+testing. The full matrix was rerun green in 15m21s with that package hidden.
 
 **Gate:** parity suite green on all target platforms; all 1,241 behaviors either
 ported, covered by an equivalent test, or explicitly waived in the parity report;

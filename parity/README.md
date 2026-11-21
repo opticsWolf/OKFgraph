@@ -277,14 +277,23 @@ them to `import_bundle`, and the Python harness forwards them after removing
 constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 (embroider 0.15.1) while keeping the GPU ORT DLL path from the main venv.
 
+The Python side of the harness never imports the root `okfgraph/` package.
+`tools/oracle.py` resolves `python-oracle-0.15.0` into a cached detached
+worktree at `parity/tmp/oracle-0.15.0` and prepends it to `PYTHONPATH`. Local
+runs may override the checkout with `OKFGRAPH_ORACLE_ROOT` or select another
+reference with `OKFGRAPH_ORACLE_TAG`. This keeps differential tests working
+after the old Python implementation is removed from the default tree.
+
 The post-review matrix covers 57 scenarios: **56 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,
-set-ordered tags, and runner-specific paths. The final run at `66df990`
-reported `TOTAL:56 FAILS:0` in **14m37s**; `check_coverage.py` then reported
-30/30 success ops, 21 typed-error ops, nine documented waivers and 61 output
-files scanned. The 57th scenario, `ingest-pdf-no-plugin`, intentionally
-records the Python raw-`INTERNAL` vs Rust `CONVERSION_FAILED` missing-plugin
-divergence. Import, links, delete,
+set-ordered tags, and runner-specific paths. The run at `66df990` reported
+`TOTAL:56 FAILS:0` in **14m37s**. The same matrix then passed in **15m21s**
+using only the tag worktree with the root `okfgraph/` package temporarily
+hidden; `check_cli.py` was `13/13 OK` and `check_external_lanes.py` stayed
+green under the same condition. `check_coverage.py` reported 30/30 success
+ops, 21 typed-error ops, nine documented waivers and 61 output files
+scanned. The 57th scenario, `ingest-pdf-no-plugin`, intentionally records the
+Python raw-`INTERNAL` vs Rust `CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op
 scenarios also match on semantic DB dumps; export trees match byte-for-byte.
 New coverage includes `import-identity-frontmatter`, `import-multi-root`,

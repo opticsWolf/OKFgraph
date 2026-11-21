@@ -38,6 +38,9 @@ Final verification on `rust-core` at `66df990`:
   nine documented waivers, 61 output files scanned.
 - `parity/tools/check_external_lanes.py`: green against four local mock hosts,
   including TEI rerank fallback and a generated valid GGUF counter fixture.
+- The same full matrix, `check_cli.py` and `check_external_lanes.py` also pass
+  when the root `okfgraph/` package is hidden: all oracle imports now come
+  from a cached worktree of `python-oracle-0.15.0`.
 - Rust suites: 75 all-feature tests and 54 no-default tests pass; Clippy is
   clean with all features and with no default features.
 - The full six-job CI matrix was green on `44899657898` for code commit

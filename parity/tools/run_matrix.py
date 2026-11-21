@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from oracle import oracle_root  # noqa: E402
 
 OPS_IGNORE_KEYS = [
     "created_at", "updated_at", "effective_at", "timestamp", "path",
@@ -75,6 +77,7 @@ def main() -> int:
     ap.add_argument("--scenario-dir", default="parity/scenarios")
     ap.add_argument("--out-dir", default="parity/out")
     ap.add_argument("--oracle-python", default="parity/.venv-oracle/Scripts/python.exe")
+    ap.add_argument("--oracle-root", default=None)
     ap.add_argument("--rust-bin", default="")
     ap.add_argument("--pdf-plugin", default="")
     ap.add_argument("--include-divergence", action="store_true")
@@ -104,6 +107,7 @@ def main() -> int:
         env = os.environ.copy()
         env["PYTHONHASHSEED"] = "0"
         env["PYTHONIOENCODING"] = "utf-8"
+        env["OKFGRAPH_ORACLE_ROOT"] = str(oracle_root(args.oracle_root))
         if args.pdf_plugin:
             env["OKFGRAPH_PDF_PLUGIN"] = args.pdf_plugin
 

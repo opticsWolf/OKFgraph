@@ -23,6 +23,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from oracle import oracle_root  # noqa: E402
 from run_matrix import (  # noqa: E402
     DB_IGNORE_KEYS,
     INFO_IGNORE_RULES,
@@ -305,6 +306,7 @@ def main() -> int:
             "PYTHONHASHSEED": "0",
             "PYTHONIOENCODING": "utf-8",
             "HF_HUB_OFFLINE": "1",
+            "OKFGRAPH_ORACLE_ROOT": str(oracle_root()),
             API_KEY_ENV: API_KEY,
         })
         out = ROOT / "parity/out"

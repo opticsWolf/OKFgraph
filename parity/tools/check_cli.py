@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compare import diff, drop_info_rules, normalize  # noqa: E402
+from oracle import oracle_root  # noqa: E402
 
 HOST_INFO_RULES = {
     "ort_runtime",
@@ -80,8 +81,13 @@ def main() -> int:
     ap.add_argument("--python", default="parity/.venv-oracle/Scripts/python.exe")
     ap.add_argument("--rust", default="target/debug/okf.exe")
     ap.add_argument("--fixture", default="parity/fixtures/oracle-v10.db")
+    ap.add_argument("--oracle-root", default=None)
     args = ap.parse_args()
 
+    oracle_dir = oracle_root(args.oracle_root)
+    if str(oracle_dir) in sys.path:
+        sys.path.remove(str(oracle_dir))
+    sys.path.insert(0, str(oracle_dir))
     python = [str(ROOT / args.python), "-m", "okfgraph.cli"]
     rust = [str(ROOT / args.rust)]
     py_db = ROOT / "parity/out/cli-diff-python.db"
@@ -91,11 +97,14 @@ def main() -> int:
     shutil.copyfile(ROOT / args.fixture, rs_db)
 
     env = dict(os.environ, HF_HUB_OFFLINE="1", PYTHONHASHSEED="0", PYTHONIOENCODING="utf-8")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(oracle_dir), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
     os.environ.update(env)
 
     # Command registration: the Rust help must list exactly the oracle verbs.
     import importlib.util
-    spec = importlib.util.spec_from_file_location("oracle_cli", ROOT / "okfgraph/cli.py")
+    spec = importlib.util.spec_from_file_location("oracle_cli", oracle_dir / "okfgraph/cli.py")
     assert spec and spec.loader
     oracle = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(oracle)

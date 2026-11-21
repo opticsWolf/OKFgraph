@@ -10,6 +10,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from oracle import oracle_root  # noqa: E402
 
 
 def load_error_payload(exc: BaseException, op: str) -> dict[str, Any]:
@@ -49,8 +50,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--oracle-root", default=None)
     args = ap.parse_args()
 
+    sys.path.insert(0, str(oracle_root(args.oracle_root)))
     scenario = json.loads(Path(args.scenario).read_text(encoding="utf-8"))
     from okfgraph import OKFRouter  # oracle import, on purpose
 

@@ -10,23 +10,23 @@ workstation. Numbers are regression evidence, not a cross-machine SLA.
 
 | Metric | Rust | Python 0.15 | Rust / Python |
 | --- | ---: | ---: | ---: |
-| Cold import | 8.697s | 3.663s | 2.37x |
-| Unchanged re-import | 0.994s | 0.007s | 148.52x |
-| Embed median (warm) | 0.042s | 0.017s | 2.41x |
-| Search median (warm) | 0.139s | 0.022s | 6.21x |
-| Peak RSS | 1096144 | 0 | n/a |
-| Full process wall time | 12.467s | 5.130s | 2.43x |
+| Cold import | 2.604s | 3.706s | 0.70x |
+| Unchanged re-import | 0.011s | 0.005s | 1.97x |
+| Embed median (warm) | 0.010s | 0.014s | 0.68x |
+| Search median (warm) | 0.023s | 0.022s | 1.06x |
+| Peak RSS | 1193052 | 1362544 | 0.88x |
+| Full process wall time | 3.429s | 5.237s | 0.65x |
 
 Additional counters:
 
 - Rust concepts: 8; Python concepts: 8
 - Rust search results: 3; Python search results: 3
 - Rust delta queue: 0; Python delta queue: 0
-- Rust search-with-vector samples: [0.1215477, 0.1233533, 0.1368227, 0.1290909, 0.1297041]
-- Rust embed samples: [0.0416121, 0.0456976, 0.0383017, 0.0568756, 0.0225539]
-- Python embed samples: [0.017399400006979704, 0.017234499915502965, 0.016623300034552813, 0.01729330001398921, 0.015820199972949922]
-- Rust search samples: [0.1426287, 0.1317931, 0.1393899, 0.1458666, 0.1243229]
-- Python search samples: [0.019134400063194335, 0.02244599990081042, 0.023236700100824237, 0.029229700099676847, 0.019095399999059737]
+- Rust search-with-vector samples: [0.0198054, 0.01053, 0.0107932, 0.0083779, 0.0077776]
+- Rust embed samples: [0.0102766, 0.0098201, 0.0098515, 0.0094144, 0.0101282]
+- Python embed samples: [0.014433100004680455, 0.014181100064888597, 0.014397499966435134, 0.014625899959355593, 0.014649300021119416]
+- Rust search samples: [0.02887, 0.0231327, 0.022368, 0.0222751, 0.0421255]
+- Python search samples: [0.021168699953705072, 0.019828599994070828, 0.02189540001563728, 0.02653679996728897, 0.025798599934205413]
 
 ## Methodology
 

@@ -37,10 +37,19 @@ def peak_rss_kb() -> int:
                 ("PeakPagefileUsage", ctypes.c_size_t),
             ]
 
+        psapi = ctypes.WinDLL("psapi.dll", use_last_error=True)
+        psapi.GetProcessMemoryInfo.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+            wintypes.DWORD,
+        ]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
         counters = PROCESS_MEMORY_COUNTERS()
         counters.cb = ctypes.sizeof(counters)
-        ok = ctypes.windll.psapi.GetProcessMemoryInfo(
-            ctypes.windll.kernel32.GetCurrentProcess(),
+        ok = psapi.GetProcessMemoryInfo(
+            kernel32.GetCurrentProcess(),
             ctypes.byref(counters),
             counters.cb,
         )

@@ -1,16 +1,20 @@
 //! Ladybug wrapper, schema v10, migrations, indexes, and locking.
 //!
-//! M1 uses a fresh connection per call. That avoids self-referential borrows
-//! (`Connection<'db>` borrows `Database`) and keeps the store `Send + Sync`.
-//! A pooled/owned connection can be introduced later without changing the ops.
+//! Read queries reuse one owned `Database`/`Connection` pair through
+//! `self_cell`; writes still get a dedicated transactional connection and
+//! invalidate the read handle so later reads see committed data. The Store
+//! remains `Send + Sync` and Clone via `Arc<Mutex<SharedConnection>>`.
 
 use crate::error::{OkfError, Result};
 use crate::model::python_datetime_str;
 use crate::settings::Settings;
 use lbug::{Connection, Database, LogicalType, SystemConfig, Value};
+use self_cell::self_cell;
 use serde_json::{Map, Value as Json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 pub const SCHEMA_VERSION: u16 = crate::SCHEMA_VERSION;
 
@@ -38,12 +42,35 @@ pub type LinkGraph = (Vec<String>, Vec<(String, String)>);
 /// One ranked search candidate: node id and index score.
 pub type RankedHit = (String, f64);
 
+self_cell!(
+    struct OwnedLbugConnection {
+        owner: Database,
+
+        #[not_covariant]
+        dependent: Connection,
+    }
+);
+
+impl fmt::Debug for OwnedLbugConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnedLbugConnection")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Default)]
+struct SharedConnection {
+    cell: Option<OwnedLbugConnection>,
+    extensions_loaded: bool,
+}
+
 /// A read/write handle to a Ladybug v10 graph.
 #[derive(Debug, Clone)]
 pub struct Store {
     path: PathBuf,
     settings: Settings,
     read_only: bool,
+    shared: Arc<Mutex<SharedConnection>>,
 }
 
 impl Store {
@@ -60,6 +87,7 @@ impl Store {
             path,
             settings: settings.clone(),
             read_only: true,
+            shared: Arc::new(Mutex::new(SharedConnection::default())),
         };
         let mut settings = settings.clone();
         // The on-disk column width is authoritative: a caller that opened the
@@ -119,6 +147,7 @@ impl Store {
             path,
             settings: Settings::default(),
             read_only: false,
+            shared: Arc::new(Mutex::new(SharedConnection::default())),
         };
         let mut warnings = Vec::new();
         store.create_schema(embedding_dim, &mut warnings)?;
@@ -130,6 +159,15 @@ impl Store {
     pub fn open_writable(settings: &Settings) -> Result<Self> {
         let mut store = Self::open(settings)?;
         store.read_only = false;
+        // `open` validated the schema through a read-only shared handle.
+        // Drop it before this Store starts writing.
+        let mut shared = store
+            .shared
+            .lock()
+            .map_err(|_| OkfError::internal("connection lock poisoned", "mutex"))?;
+        shared.cell = None;
+        shared.extensions_loaded = false;
+        drop(shared);
         Ok(store)
     }
 
@@ -141,14 +179,39 @@ impl Store {
         &self.settings
     }
 
+    fn with_shared_conn<T>(
+        &self,
+        search: bool,
+        f: impl for<'a> FnOnce(&Connection<'a>) -> Result<T>,
+    ) -> Result<T> {
+        let mut shared = self
+            .shared
+            .lock()
+            .map_err(|_| OkfError::internal("connection lock poisoned", "mutex"))?;
+        if shared.cell.is_none() {
+            let config = SystemConfig::default().read_only(self.read_only);
+            let map_err = if search { map_search_lbug } else { map_lbug };
+            let db = Database::new(&self.path, config).map_err(map_err)?;
+            let cell = OwnedLbugConnection::try_new(db, |db| Connection::new(db).map_err(map_err))?;
+            shared.cell = Some(cell);
+        }
+        if search && !shared.extensions_loaded {
+            shared
+                .cell
+                .as_ref()
+                .expect("shared connection initialised")
+                .with_dependent(|_, conn| self.load_extensions(conn))?;
+            shared.extensions_loaded = true;
+        }
+        let cell = shared.cell.as_ref().expect("shared connection initialised");
+        cell.with_dependent(|_, conn| f(conn))
+    }
+
     fn with_conn<T>(&self, f: impl for<'a> FnOnce(&Connection<'a>) -> Result<T>) -> Result<T> {
-        let config = SystemConfig::default().read_only(self.read_only);
-        let db = Database::new(&self.path, config).map_err(map_lbug)?;
-        let conn = Connection::new(&db).map_err(map_lbug)?;
         // lbug always journals through its WAL. The 0.15 `wal_mode`
         // setting is therefore accepted for interface compatibility but has
         // no separate mode to switch on (the upstream PRAGMA is not Cypher).
-        f(&conn)
+        self.with_shared_conn(false, f)
     }
 
     /// Writable connection with the index extensions loaded. Ladybug
@@ -165,12 +228,10 @@ impl Store {
             )
             .remedy("reopen the router with write access"));
         }
-        let config = SystemConfig::default().read_only(false);
-        let db = Database::new(&self.path, config).map_err(map_lbug)?;
-        let conn = Connection::new(&db).map_err(map_lbug)?;
-        // lbug's WAL is always enabled; see the note in `with_conn`.
-        self.load_extensions(&conn)?;
-        f(&conn)
+        // Writable stores own one connection for both reads and writes.
+        // Serialising through `shared` keeps the mutex re-entrant for
+        // `with_write_tx` callers, which pass that same connection explicitly.
+        self.with_shared_conn(true, f)
     }
 
     pub fn write(&self, sql: &str, params: Vec<(&str, Value)>) -> Result<()> {
@@ -321,15 +382,7 @@ impl Store {
         &self,
         f: impl for<'a> FnOnce(&Connection<'a>) -> Result<T>,
     ) -> Result<T> {
-        let config = SystemConfig::default().read_only(true);
-        let db = Database::new(&self.path, config).map_err(map_search_lbug)?;
-        let conn = Connection::new(&db).map_err(map_search_lbug)?;
-        self.load_extensions(&conn).map_err(|err| {
-            OkfError::new("SEARCH_UNAVAILABLE", err.message.clone())
-                .field("cause", Json::String(err.code))
-                .remedy("check extension_dir and reinstall the vector/fts extensions")
-        })?;
-        f(&conn)
+        self.with_shared_conn(true, f)
     }
 
     /// Vector index hits as `(id, 1 - distance)`, one row per node.

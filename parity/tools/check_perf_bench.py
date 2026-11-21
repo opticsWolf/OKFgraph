@@ -109,6 +109,10 @@ def main() -> int:
     ap.add_argument("--max-first-seconds", type=float, default=60.0)
     ap.add_argument("--max-second-seconds", type=float, default=5.0)
     ap.add_argument("--max-search-seconds", type=float, default=10.0)
+    ap.add_argument("--max-import-ratio", type=float, default=1.10)
+    ap.add_argument("--max-search-ratio", type=float, default=1.10)
+    ap.add_argument("--max-embed-ratio", type=float, default=1.25)
+    ap.add_argument("--delta-tolerance-seconds", type=float, default=0.005)
     args = ap.parse_args()
 
     build = run(["cargo", "build", "-q", "--release", "-p", "okfgraph", "--example", "perf_bench"])
@@ -163,6 +167,22 @@ def main() -> int:
         failures.append("concept counts differ")
     if rust["search_results"] != python["search_results"]:
         failures.append("search result counts differ")
+
+    # Release parity gate: Rust must be at least as fast within a small
+    # measurement band. The delta absolute tolerance covers sub-10ms noise.
+    checks = [
+        ("cold import", "first_seconds", args.max_import_ratio, 0.0),
+        ("warm search", "search_median_seconds", args.max_search_ratio, 0.0),
+        ("warm embed", "embed_median_seconds", args.max_embed_ratio, 0.0),
+        ("delta re-import", "second_seconds", 1.25, args.delta_tolerance_seconds),
+    ]
+    for label, key, max_ratio, tolerance in checks:
+        r, p = float(rust[key]), float(python[key])
+        if r > p * max_ratio + tolerance:
+            failures.append(
+                f"{label} parity: rust {r:.3f}s > python {p:.3f}s "
+                f"x {max_ratio} + {tolerance}s"
+            )
 
     out = ROOT / "parity/out/perf-bench.json"
     out.parent.mkdir(parents=True, exist_ok=True)

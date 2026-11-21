@@ -1,8 +1,8 @@
 # OKFgraph Rust Core — Bug Findings and Fix Plan
 
 **Status:** review plan from `6a71fec`, updated after the fix series through
-`8b1d54e` and the M4/M5 slices. The remaining open work is tracked in
-section 11; findings marked “partial” are not closed.
+the M4/M5 slices and the BUG-013 external-lane implementation. The remaining
+open work is tracked in section 11; findings marked “partial” are not closed.
 
 **Scope:** the Rust core, the PyO3 binding, the Python facade, the optional
 PDF plugin, and the parity harness. Stage C surfaces (`okf serve`, MCP) are
@@ -34,9 +34,9 @@ Closed with code + tests/scenarios (details in the individual findings):
 - BUG-001/002 crash safety; BUG-003/004/005 import integrity; BUG-006/007
   identity/resource safety; BUG-008 dimension adoption; BUG-009 delete/trash/
   restore; BUG-010/011 image pruning/counts; BUG-012 path safety.
-- BUG-013 external lanes fail closed with `EXTERNAL_UNAVAILABLE` (the
-  Gate-D alternative to implementing the HTTP clients); unit tests cover
-  embed, rerank, and vision lanes.
+- BUG-013 is closed: the external embed, rerank and vision lanes speak the
+  oracle's HTTP wires behind `external`; `check_external_lanes.py` compares
+  both runners against three mock hosts.
 - BUG-014/015 pins/lanes; BUG-016/017/018/019 ingest parameters/materialize/
   lint/thoughts; BUG-022/023/024/025 time, YAML, export paths.
 - BUG-020 multi-root; BUG-021 prune/tombstones/absent-root refusal; BUG-033
@@ -620,31 +620,36 @@ lands), and a normal `notes/v1.0`.
 
 ## 5. P1 — Documented behavior and missing M3 features
 
-### BUG-013 — External embedding/rerank/vision lanes are not implemented
+### BUG-013 — External embedding/rerank/vision lanes were not implemented
 
-**Severity:** P1, XL
+**Severity:** P1, XL — **Status: closed** (BUG-013 external-lane slice).
 
-**Where:** `src/settings/mod.rs:370-444` (validation), `src/embed/mod.rs:80-113`
-(`EmbedderPool`), `:285` (`RerankerPool`), `:498` (`VisionPool`),
-`src/store/mod.rs:1465` (`lanes`).
+**Where:** `src/embed/external.rs`, `src/embed/mod.rs`, `src/image_ingest.rs`,
+`src/ops/mod.rs`, `parity/tools/check_external_lanes.py`.
 
-**Evidence:** settings accept `backend="external"`,
-`rerank_backend="external"`, and `image_backend="external"`, but every pool
-constructs a native `embroider` session. `lanes` reports external endpoints
-and identities that are never used.
+**Resolution:** all three lanes are implemented behind the existing
+`external` feature. They share endpoint normalisation, bearer-key headers,
+`GET /v1/models` identity probes, and the typed outage/refusal split from
+Python's `_http` module. The text lane speaks OpenAI-shaped
+`/v1/embeddings`, applies declared prefixes, requests Matryoshka
+`dimensions` with a loud client-side fallback, and supports the four
+declared token counters. The rerank lane probes the standard `/v1/rerank`
+wire and falls back to TEI `/rerank`, latches its dialect, and disables
+itself for the session after a failure. The vision lane requires an
+embroider identity with a text partner and posts original image bytes to
+`/v1/images/embeddings`.
 
-**Impact:** a configured external host is ignored; users get a native model
-load or an unrelated error. The M2/M4 external lane contract is unmet.
+`pin_info` now reports the external family and loaded image precision/space,
+and a declared engine pins only the model id while an embroider host pins
+precision and space exactly like the native lane. Transport failures are
+`EXTERNAL_UNAVAILABLE`; per-request refusals stay typed `INTERNAL` with the
+host message.
 
-**Fix:** implement HTTP clients for embeddings, reranking, and vision
-(OpenAI-shaped `/v1/embeddings`, rerank host protocol, vision host), or
-fail closed at construction with `EXTERNAL_UNAVAILABLE` and remove the
-settings until implemented. Given the documented API, implement the clients
-behind the existing `external` feature and share the request/response types
-with the Python oracle.
-
-**Tests:** a local mock server for each lane; assert request shape, auth env,
-identity probe, dimensions, precision/space pins, and error mapping.
+**Tests:** `parity/tools/check_external_lanes.py` runs both runners against
+three Python mock hosts and compares envelopes and DB dumps while asserting
+request shape, bearer keys, identity probes, tokenize, rerank payloads and
+image bytes. Rust unit tests cover declared prefixes/dimensions and outage
+mapping; all-feature and no-default suites stay green.
 
 ---
 
@@ -1769,7 +1774,7 @@ the semantic DB dump plus the export tree where applicable.
 
 - Multi-root and prune/force are implemented or explicitly removed from the
   documented API.
-- External lanes are implemented or fail closed.
+- External lanes are implemented and covered by mock-host differential checks.
 - Python facade signature/method/error parity is verified against 0.15.
 - Schema migration fixtures pass and Python 0.15 can reopen Rust-written DBs.
 - File lock interoperability is tested across Python and Rust processes.
@@ -1823,7 +1828,7 @@ gate is green.
 
 | Finding | State | Why it is open | Required close action |
 | --- | --- | --- | --- |
-| BUG-013 | Fail-closed (Gate-D alternative) | HTTP clients for external embed/rerank/vision are not implemented; `EXTERNAL_UNAVAILABLE` is deliberate. | Implement clients behind `external` with mock-server request/identity/auth/pin tests, or remove the settings from the documented stable surface. |
+| BUG-013 | Closed | External embed/rerank/vision HTTP clients are implemented behind `external`; `check_external_lanes.py` covers identity, auth, wire shapes, pins and typed outages. | Keep the mock differential and all-feature unit tests green. |
 | BUG-028 | Closed | Compatibility is explicitly v10-only; older schemas are refused with `CONFIG_INVALID` and Python 0.15 remains the one-time migration path (`docs/rust-compat.md` §A). | Revisit only if a legacy DB must be opened directly by Rust. |
 | BUG-030 | Closed | `extension_dir` and warm PDF idle reuse work; `wal_mode` is a documented compatibility no-op (`docs/rust-compat.md` §A). | Revisit only if upstream adds a journal knob. |
 | BUG-040 | Closed | Real-model filters import benchmark and delta no-op smoke landed; baseline ~10.3 s / ~1.1 s on the CUDA dev box. | Re-run before release; update the recorded baseline if hardware changes. |
@@ -1852,8 +1857,8 @@ gate is green.
 
 1. ~~BUG-028 migrations or an explicit v10-only compatibility statement.~~ Done.
 2. ~~Broader Office fixtures (XLSX/PPTX).~~ Done for the pinned converter.
-3. BUG-013 external clients only if the stable surface promises them; the
-   fail-closed alternative is the documented stable contract.
+3. ~~BUG-013 external clients.~~ Done: the documented stable surface keeps
+   the lanes and the clients are covered by mock-host parity.
 
 Each close needs code + regression test + parity/scenario (or an explicit
 documented exclusion) + updated status in this file.

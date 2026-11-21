@@ -602,6 +602,7 @@ impl Router {
             "fp16" => 16,
             "int8" => 8,
             "fp32" => 32,
+            // A declared external engine does not name its numerics.
             _ => 0,
         };
         if code > 0 {
@@ -1528,13 +1529,49 @@ impl Router {
         let empty = info.get("empty").and_then(Json::as_bool).unwrap_or(true);
         if let Some(embedder) = self.embedder.loaded() {
             if let Some(configured) = info.get_mut("configured").and_then(Json::as_object_mut) {
+                let precision = embedder.precision();
                 configured.insert(
                     "expected_precision".into(),
-                    Json::String(embedder.precision().into()),
+                    if precision == "external" {
+                        Json::Null
+                    } else {
+                        Json::String(precision.into())
+                    },
                 );
                 configured.insert(
                     "space".into(),
                     embedder.space().map(Json::String).unwrap_or(Json::Null),
+                );
+                let family = embedder.family();
+                configured.insert("embedding_family".into(), Json::String(family));
+            }
+        }
+        #[cfg(any(feature = "vision", feature = "external"))]
+        if let Some(vision) = self.pools.vision.loaded() {
+            if let Some(image) = info.get_mut("image").and_then(Json::as_object_mut) {
+                image.insert(
+                    "configured_model".into(),
+                    Json::String(vision.model_id().into()),
+                );
+                let precision = vision.precision();
+                image.insert(
+                    "configured_precision".into(),
+                    if precision == "external" {
+                        Json::Null
+                    } else {
+                        Json::String(precision.into())
+                    },
+                );
+                image.insert(
+                    "configured_space".into(),
+                    vision.space().map(Json::String).unwrap_or(Json::Null),
+                );
+                image.insert(
+                    "configured_text_space".into(),
+                    vision
+                        .text_space()
+                        .map(|value| Json::String(value.to_string()))
+                        .unwrap_or(Json::Null),
                 );
             }
         }
@@ -2709,6 +2746,32 @@ impl Router {
                 }
             }
         }
+        // Declared external engines publish their supported Matryoshka
+        // ladder; never guess that a host can produce a shorter vector.
+        if let Some(dim) = opt_i64(params, "dim")? {
+            let dim = dim as usize;
+            if !embedder.supports_dim(dim) {
+                return Err(OkfError::new(
+                    "BAD_VALUE",
+                    format!(
+                        "dim {dim} is not on the declared ladder of {}",
+                        embedder.family()
+                    ),
+                )
+                .op("embed")
+                .field("dim", Json::from(dim as i64))
+                .field(
+                    "ladder",
+                    Json::Array(
+                        embedder
+                            .declared_ladder()
+                            .into_iter()
+                            .map(Json::from)
+                            .collect(),
+                    ),
+                ));
+            }
+        }
         let dim = vectors.first().map_or(embedder.dim(), Vec::len);
         Ok(serde_json::json!({
             "vectors": vectors,
@@ -2716,8 +2779,8 @@ impl Router {
             "model_id": embedder.model_id(),
             "task": task.as_str(),
             "renormalised": renormalised,
-            "honours_dimensions": true,
-            "counter": "crate",
+            "honours_dimensions": embedder.honours_dimensions(),
+            "counter": embedder.counter(),
         }))
     }
 

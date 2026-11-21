@@ -67,6 +67,17 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 - [x] UDS client smoke: `check_uds.py` runs in the Linux/macOS wheel jobs and
       exercises the public `OKFClient` over a real Unix socket.
 
+## E1. External lanes (BUG-013)
+
+- [x] `backend='external'` speaks OpenAI-shaped `/v1/embeddings` with declared
+      prefixes, identity probes, Matryoshka `dimensions`, and typed counters.
+- [x] `rerank_backend='external'` speaks `/v1/rerank` with TEI fallback and
+      session down-latching.
+- [x] `image_backend='external'` requires an embroider vision identity and
+      posts original bytes to `/v1/images/embeddings`.
+- [x] Identity, bearer key, precision/space pins, and outage/refusal mapping
+      are compared by `check_external_lanes.py`.
+
 ## F. Public Python API (Stage C)
 
 - [x] `from okfgraph import OKFRouter` and `OKFClient` (`check_facade.py`)

@@ -124,3 +124,6 @@ jobs:
         run: |
           cargo build -p okfgraph --no-default-features --features cli,server,mcp --bin okf
           python parity/tools/check_uds.py
+      - name: External lane unit tests
+        shell: bash
+        run: cargo test -p okfgraph --all-features --lib embed::external

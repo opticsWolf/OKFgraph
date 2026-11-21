@@ -171,12 +171,19 @@ impl Settings {
     pub fn from_map(map: &Map<String, Value>) -> Result<Self> {
         let mut full = Map::new();
         for def in SETTINGS {
-            full.insert(
-                def.name.to_string(),
-                map.get(def.name)
-                    .cloned()
-                    .unwrap_or_else(|| def.default_value()),
-            );
+            let value = map
+                .get(def.name)
+                .or_else(|| {
+                    // Python's constructor calls this setting `embed_backend`;
+                    // the canonical Rust name is `backend`. Parity scenarios
+                    // use the public spelling, so accept both.
+                    (def.name == "backend")
+                        .then(|| map.get("embed_backend"))
+                        .flatten()
+                })
+                .cloned()
+                .unwrap_or_else(|| def.default_value());
+            full.insert(def.name.to_string(), value);
         }
         full.insert(
             "roots".to_string(),

@@ -790,19 +790,24 @@ pub(crate) fn pin_graph(store: &Store, settings: &Settings, engine: &dyn Embedde
         }
     }
     check_engine_pins(settings, &pins, engine)?;
-    let code = match engine.precision() {
-        "fp16" => 16,
-        "fp32" => 32,
-        "int8" => 8,
-        other => {
-            return Err(OkfError::new(
-                "PRECISION_PIN_MISMATCH",
-                format!("cannot pin unknown precision {other:?}"),
-            ))
+    // A declared external engine leaves its numerics to its owner: Python
+    // pins only the model id for that lane. An embroider host reports a real
+    // precision/space and is pinned exactly like the in-process engine.
+    if engine.precision() != "external" {
+        let code = match engine.precision() {
+            "fp16" => 16,
+            "fp32" => 32,
+            "int8" => 8,
+            other => {
+                return Err(OkfError::new(
+                    "PRECISION_PIN_MISMATCH",
+                    format!("cannot pin unknown precision {other:?}"),
+                ))
+            }
+        };
+        if empty || store.meta_int("embedding_precision")?.is_none() {
+            store.set_meta_int("embedding_precision", code)?;
         }
-    };
-    if empty || store.meta_int("embedding_precision")?.is_none() {
-        store.set_meta_int("embedding_precision", code)?;
     }
     if empty || store.meta_text("embedding_model")?.is_none() {
         store.set_meta_text("embedding_model", engine.model_id())?;

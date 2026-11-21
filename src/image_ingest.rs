@@ -3,6 +3,8 @@
 //! lane. Asset IDs, captions, hashes, and MIME sniffing follow the Python 0.15
 //! `okfgraph.images` contract.
 
+#[cfg(any(feature = "vision", feature = "external"))]
+use crate::embed::VisionEncoder;
 use crate::embed::{Embedder, Pools, Task};
 use crate::error::Result;
 use crate::settings::Settings;
@@ -424,7 +426,7 @@ fn text_hash(caption: &str) -> String {
     sha256_hex(&[b"text", b"|", caption.as_bytes()])
 }
 
-#[cfg(feature = "vision")]
+#[cfg(any(feature = "vision", feature = "external"))]
 fn vision_hash(model_id: &str, precision: &str, data: &[u8]) -> String {
     sha256_hex(&[
         b"vision-onnx",
@@ -439,7 +441,7 @@ fn vision_hash(model_id: &str, precision: &str, data: &[u8]) -> String {
     ])
 }
 
-#[cfg(feature = "vision")]
+#[cfg(any(feature = "vision", feature = "external"))]
 fn configured_image_model(settings: &Settings) -> String {
     settings
         .image_model_id
@@ -447,7 +449,7 @@ fn configured_image_model(settings: &Settings) -> String {
         .unwrap_or_else(|| crate::embed::default_image_model_id(&settings.model_id))
 }
 
-#[cfg(feature = "vision")]
+#[cfg(any(feature = "vision", feature = "external"))]
 fn precision_code(precision: &str) -> i64 {
     match precision {
         "fp16" => 16,
@@ -456,14 +458,18 @@ fn precision_code(precision: &str) -> i64 {
     }
 }
 
-#[cfg(feature = "vision")]
+#[cfg(any(feature = "vision", feature = "external"))]
 fn pin_image_graph(
     store: &Store,
     settings: &Settings,
     engine: &dyn Embedder,
-    vision: &crate::embed::NativeVision,
+    vision: &dyn VisionEncoder,
 ) -> Result<()> {
-    let model_id = configured_image_model(settings);
+    let model_id = if settings.image_backend == "external" {
+        vision.model_id().to_string()
+    } else {
+        configured_image_model(settings)
+    };
     let precision = vision.precision();
     if let Some(pinned) = store.meta_text("embedding_image_model")? {
         if pinned != model_id {
@@ -479,6 +485,18 @@ fn pin_image_graph(
         store.set_meta_int("embedding_image_precision", precision_code(precision))?;
     }
     if store.meta_text("embedding_image_space")?.is_none() {
+        if let Some(space) = vision.space() {
+            store.set_meta_text("embedding_image_space", &space)?;
+            if let Some(text_space) = vision.text_partner() {
+                if text_space != settings.model_id {
+                    return Err(crate::error::OkfError::new(
+                        "IMAGE_PIN_MISMATCH",
+                        format!("vision host serves text partner '{text_space}', but the graph uses '{}'", settings.model_id),
+                    ));
+                }
+            }
+            return Ok(());
+        }
         let revision = embroider::builtin_models()
             .iter()
             .find(|spec| spec.id == model_id)
@@ -512,7 +530,10 @@ fn vector_value(vector: &[f32]) -> Value {
 /// Ingest the images referenced by one concept. Returns the number of linked
 /// assets, matching Python's `stats["total"] - stats["skipped"]`.
 #[allow(clippy::too_many_arguments)]
-#[cfg_attr(not(feature = "vision"), allow(unused_variables))]
+#[cfg_attr(
+    not(any(feature = "vision", feature = "external")),
+    allow(unused_variables)
+)]
 pub fn ingest_concept_images(
     store: &Store,
     settings: &Settings,
@@ -528,12 +549,12 @@ pub fn ingest_concept_images(
         return Ok(0);
     }
     let total = images.len();
-    #[cfg(feature = "vision")]
+    #[cfg(any(feature = "vision", feature = "external"))]
     if images.iter().any(|img| img.data.is_some())
         && matches!(settings.mode.as_str(), "optional" | "omni")
     {
         let vision = pools.vision.get(settings)?;
-        pin_image_graph(store, settings, engine, &vision)?;
+        pin_image_graph(store, settings, engine, vision.as_ref())?;
     }
     let mut planned = BTreeSet::new();
     let mut skip = 0;
@@ -545,21 +566,24 @@ pub fn ingest_concept_images(
             continue;
         }
         let (route, caption) = route_and_caption(&img, &settings.mode, concept_id);
-        #[cfg_attr(not(feature = "vision"), allow(unused_variables))]
+        #[cfg_attr(
+            not(any(feature = "vision", feature = "external")),
+            allow(unused_variables)
+        )]
         let data = img.data.clone().unwrap_or_default();
         let content_hash = match route {
             Route::Text => text_hash(&caption),
             Route::Vision => {
-                #[cfg(feature = "vision")]
+                #[cfg(any(feature = "vision", feature = "external"))]
                 {
                     let vision = pools.vision.get(settings)?;
                     vision_hash(vision.model_id(), vision.precision(), &data)
                 }
-                #[cfg(not(feature = "vision"))]
+                #[cfg(not(any(feature = "vision", feature = "external")))]
                 {
                     return Err(crate::error::OkfError::new(
                         "BAD_VALUE",
-                        "vision image ingestion requires a build with --features vision",
+                        "vision image ingestion requires a build with --features vision or external",
                     ));
                 }
             }
@@ -575,7 +599,7 @@ pub fn ingest_concept_images(
         let embedding = match route {
             Route::Text => engine.encode(&caption, Task::Document)?,
             Route::Vision => {
-                #[cfg(feature = "vision")]
+                #[cfg(any(feature = "vision", feature = "external"))]
                 {
                     pools.vision.get(settings)?.encode_image(&data)?
                 }

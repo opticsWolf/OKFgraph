@@ -7,13 +7,16 @@
 //! GPU embedding. No Python, no model downloads in normal parity runs (the
 //! pinned HF revisions are expected to be cached).
 
+#[cfg(feature = "external")]
+pub mod external;
+
 use crate::error::{OkfError, Result};
 use crate::settings::Settings;
 #[cfg(feature = "embed")]
 use embroider::{diag, DeviceReq, JinaV5, Precision};
 #[cfg(feature = "vision")]
 use embroider::{GemmaVision, JinaV5Vision};
-use serde_json::{Map, Value as Json};
+use serde_json::{json, Map, Value as Json};
 use std::fmt;
 #[cfg(feature = "embed")]
 use std::path::PathBuf;
@@ -44,10 +47,30 @@ pub trait Embedder: Send + Sync + fmt::Debug {
     fn dim(&self) -> usize;
     fn model_id(&self) -> &str;
     fn used_cuda(&self) -> bool;
-    fn precision(&self) -> &'static str;
+    fn precision(&self) -> &str;
     fn max_len(&self) -> usize;
     fn space(&self) -> Option<String> {
         None
+    }
+    /// Effective token counter reported by `embed` (`crate` for embroider).
+    fn counter(&self) -> String {
+        "crate".into()
+    }
+    /// Whether a host honoured a requested Matryoshka `dimensions` value.
+    fn honours_dimensions(&self) -> bool {
+        true
+    }
+    fn supports_dim(&self, _dim: usize) -> bool {
+        true
+    }
+    fn declared_ladder(&self) -> Vec<usize> {
+        Vec::new()
+    }
+    fn family(&self) -> String {
+        String::new()
+    }
+    fn spec_report(&self) -> Result<Json> {
+        Ok(json!({"backend": "in-process"}))
     }
 }
 
@@ -78,13 +101,34 @@ impl EmbedderPool {
 
     pub fn get(&self, settings: &Settings) -> Result<Arc<dyn Embedder>> {
         if settings.backend == "external" {
-            return Err(OkfError::new(
-                "EXTERNAL_UNAVAILABLE",
-                "external embedding lanes are not implemented in this build",
-            )
-            .field("backend", Json::String("external".into()))
-            .field("endpoint", Json::String(settings.endpoint_url.clone()))
-            .remedy("set backend='embroider' or install a build with external lanes"));
+            #[cfg(feature = "external")]
+            {
+                if let Some(loaded) = self
+                    .inner
+                    .lock()
+                    .map_err(|_| OkfError::internal("embedder lock poisoned", "mutex"))?
+                    .as_ref()
+                {
+                    return Ok(Arc::clone(loaded));
+                }
+                let embedder: Arc<dyn Embedder> =
+                    Arc::new(external::ExternalEmbedder::open(settings)?);
+                let mut guard = self
+                    .inner
+                    .lock()
+                    .map_err(|_| OkfError::internal("embedder lock poisoned", "mutex"))?;
+                return Ok(Arc::clone(guard.get_or_insert(embedder)));
+            }
+            #[cfg(not(feature = "external"))]
+            {
+                return Err(OkfError::new(
+                    "EXTERNAL_UNAVAILABLE",
+                    "external embedding lanes are not implemented in this build",
+                )
+                .field("backend", Json::String("external".into()))
+                .field("endpoint", Json::String(settings.endpoint_url.clone()))
+                .remedy("rebuild with --features external"));
+            }
         }
         if let Some(loaded) = self
             .inner
@@ -255,7 +299,7 @@ impl Embedder for NativeEmbedder {
         self.used_cuda
     }
 
-    fn precision(&self) -> &'static str {
+    fn precision(&self) -> &str {
         self.precision
     }
 
@@ -268,14 +312,76 @@ impl Embedder for NativeEmbedder {
     }
 }
 
-/// Lazy cross-encoder pool. The rerank model only opens on first use.
-#[cfg(feature = "embed")]
-#[derive(Clone, Default)]
-pub struct RerankerPool {
-    inner: Arc<Mutex<Option<Arc<embroider::Reranker>>>>,
+/// Cross-encoder contract shared by the native and HTTP rerank lanes.
+#[cfg(any(feature = "embed", feature = "external"))]
+pub trait Reranker: Send + Sync + fmt::Debug {
+    fn score_many(&self, pairs: &[(&str, &str)]) -> Result<Vec<f64>>;
+    fn count_tokens(&self, text: &str, cap: usize) -> usize {
+        (text.chars().count() / 4).max(8).min(cap.max(8))
+    }
+    fn model_id(&self) -> &str;
+    fn max_length(&self) -> usize;
+    fn precision(&self) -> Option<&str> {
+        None
+    }
+    fn precision_label(&self) -> Option<&'static str> {
+        None
+    }
+    fn spec_report(&self) -> Json {
+        json!({"model_id": self.model_id(), "max_length": self.max_length()})
+    }
 }
 
 #[cfg(feature = "embed")]
+struct NativeReranker(embroider::Reranker);
+
+#[cfg(feature = "embed")]
+impl fmt::Debug for NativeReranker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeReranker")
+            .field("model_id", &self.0.model_id())
+            .finish()
+    }
+}
+
+#[cfg(feature = "embed")]
+impl Reranker for NativeReranker {
+    fn score_many(&self, pairs: &[(&str, &str)]) -> Result<Vec<f64>> {
+        self.0
+            .score_many(pairs)
+            .map(|scores| scores.into_iter().map(f64::from).collect())
+            .map_err(|err| OkfError::internal(err.to_string(), "embroider::Reranker::score_many"))
+    }
+
+    fn count_tokens(&self, text: &str, _cap: usize) -> usize {
+        self.0.count_tokens(text).unwrap_or(text.len() / 4)
+    }
+
+    fn model_id(&self) -> &str {
+        self.0.model_id()
+    }
+
+    fn max_length(&self) -> usize {
+        self.0.max_len()
+    }
+
+    fn precision(&self) -> Option<&str> {
+        Some(self.0.precision().as_str())
+    }
+
+    fn precision_label(&self) -> Option<&'static str> {
+        Some(self.0.precision().as_str())
+    }
+}
+
+/// Lazy cross-encoder pool. The rerank model only opens on first use.
+#[cfg(any(feature = "embed", feature = "external"))]
+#[derive(Clone, Default)]
+pub struct RerankerPool {
+    inner: Arc<Mutex<Option<Arc<dyn Reranker>>>>,
+}
+
+#[cfg(any(feature = "embed", feature = "external"))]
 impl fmt::Debug for RerankerPool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let loaded = self.inner.lock().map(|g| g.is_some()).unwrap_or(false);
@@ -285,63 +391,103 @@ impl fmt::Debug for RerankerPool {
     }
 }
 
-#[cfg(feature = "embed")]
+#[cfg(any(feature = "embed", feature = "external"))]
 impl RerankerPool {
     pub fn new() -> Self {
         Self::default()
     }
 
-    fn get(&self, settings: &Settings) -> Result<Arc<embroider::Reranker>> {
+    fn get(&self, settings: &Settings) -> Result<Arc<dyn Reranker>> {
         if settings.rerank_backend == "external" {
-            return Err(OkfError::new(
-                "EXTERNAL_UNAVAILABLE",
-                "external rerank lanes are not implemented in this build",
-            )
-            .field("backend", Json::String("external".into()))
-            .field(
-                "endpoint",
-                Json::String(settings.rerank_endpoint_url.clone()),
-            )
-            .remedy("set rerank_backend='embroider' or install a build with external lanes"));
+            #[cfg(feature = "external")]
+            {
+                if let Some(loaded) = self
+                    .inner
+                    .lock()
+                    .map_err(|_| OkfError::internal("reranker lock poisoned", "mutex"))?
+                    .as_ref()
+                {
+                    return Ok(Arc::clone(loaded));
+                }
+                let reranker: Arc<dyn Reranker> =
+                    Arc::new(external::ExternalReranker::open(settings)?);
+                let mut guard = self
+                    .inner
+                    .lock()
+                    .map_err(|_| OkfError::internal("reranker lock poisoned", "mutex"))?;
+                return Ok(Arc::clone(guard.get_or_insert(reranker)));
+            }
+            #[cfg(not(feature = "external"))]
+            {
+                return Err(OkfError::new(
+                    "EXTERNAL_UNAVAILABLE",
+                    "external rerank lanes are not implemented in this build",
+                )
+                .field("backend", Json::String("external".into()))
+                .field(
+                    "endpoint",
+                    Json::String(settings.rerank_endpoint_url.clone()),
+                )
+                .remedy("rebuild with --features external"));
+            }
         }
-        if let Some(loaded) = self
-            .inner
-            .lock()
-            .map_err(|_| OkfError::internal("reranker lock poisoned", "mutex"))?
-            .as_ref()
+        #[cfg(feature = "embed")]
         {
-            return Ok(Arc::clone(loaded));
+            if let Some(loaded) = self
+                .inner
+                .lock()
+                .map_err(|_| OkfError::internal("reranker lock poisoned", "mutex"))?
+                .as_ref()
+            {
+                return Ok(Arc::clone(loaded));
+            }
+            NativeEmbedder::configure_runtime()?;
+            let device = DeviceReq::parse(&settings.rerank_device)
+                .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
+            let precision = Precision::parse(&settings.rerank_precision)
+                .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
+            let reranker = embroider::Reranker::open(
+                &settings.rerank_model_id,
+                None,
+                settings.cache_dir.as_ref().map(PathBuf::from),
+                device,
+                settings
+                    .rerank_window
+                    .and_then(|v| usize::try_from(v).ok())
+                    .filter(|v| *v > 0),
+                precision,
+                settings.cpu_arena,
+            )
+            .map_err(|err| OkfError::internal(err.to_string(), "embroider::Reranker"))?;
+            let reranker: Arc<dyn Reranker> = Arc::new(NativeReranker(reranker));
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| OkfError::internal("reranker lock poisoned", "mutex"))?;
+            Ok(Arc::clone(guard.get_or_insert(reranker)))
         }
-        NativeEmbedder::configure_runtime()?;
-        let device = DeviceReq::parse(&settings.rerank_device)
-            .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
-        let precision = Precision::parse(&settings.rerank_precision)
-            .map_err(|err| OkfError::new("CONFIG_INVALID", err.to_string()))?;
-        let reranker = embroider::Reranker::open(
-            &settings.rerank_model_id,
-            None,
-            settings.cache_dir.as_ref().map(PathBuf::from),
-            device,
-            settings
-                .rerank_window
-                .and_then(|v| usize::try_from(v).ok())
-                .filter(|v| *v > 0),
-            precision,
-            settings.cpu_arena,
-        )
-        .map_err(|err| OkfError::internal(err.to_string(), "embroider::Reranker"))?;
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|_| OkfError::internal("reranker lock poisoned", "mutex"))?;
-        Ok(Arc::clone(guard.get_or_insert_with(|| Arc::new(reranker))))
+        #[cfg(not(feature = "embed"))]
+        {
+            let _ = settings;
+            Err(OkfError::new(
+                "BAD_VALUE",
+                "rerank requires a build with --features embed or external",
+            ))
+        }
     }
 
     pub fn precision(&self) -> Option<&'static str> {
         self.inner
             .lock()
             .ok()
-            .and_then(|guard| guard.as_ref().map(|r| r.precision().as_str()))
+            .and_then(|guard| guard.as_ref().and_then(|r| r.precision_label()))
+    }
+
+    pub fn loaded(&self) -> Option<Arc<dyn Reranker>> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(Arc::clone))
     }
 
     pub fn score(&self, settings: &Settings, query: &str, docs: &[String]) -> Result<Vec<f64>> {
@@ -350,12 +496,7 @@ impl RerankerPool {
         }
         let reranker = self.get(settings)?;
         let pairs: Vec<(&str, &str)> = docs.iter().map(|doc| (query, doc.as_str())).collect();
-        Ok(reranker
-            .score_many(&pairs)
-            .map_err(|err| OkfError::internal(err.to_string(), "embroider::Reranker::score_many"))?
-            .into_iter()
-            .map(f64::from)
-            .collect())
+        reranker.score_many(&pairs)
     }
 }
 
@@ -406,6 +547,28 @@ pub fn default_image_model_id(text_model_id: &str) -> String {
 enum VisionEngine {
     Jina(Box<JinaV5Vision>),
     Gemma(GemmaVision),
+}
+
+/// Image encoder contract shared by the native and HTTP vision lanes.
+#[cfg(any(feature = "vision", feature = "external"))]
+pub trait VisionEncoder: Send + Sync + fmt::Debug {
+    fn encode_image(&self, data: &[u8]) -> Result<Vec<f32>>;
+    fn model_id(&self) -> &str;
+    fn dim(&self) -> usize;
+    fn used_cuda(&self) -> bool;
+    fn precision(&self) -> &str;
+    fn space(&self) -> Option<String> {
+        None
+    }
+    fn text_partner(&self) -> Option<&str> {
+        None
+    }
+    fn text_space(&self) -> Option<&str> {
+        None
+    }
+    fn spec_report(&self) -> Json {
+        json!({"model_id": self.model_id(), "backend": "in-process"})
+    }
 }
 
 #[cfg(feature = "vision")]
@@ -496,12 +659,35 @@ impl NativeVision {
 }
 
 #[cfg(feature = "vision")]
-#[derive(Clone, Default)]
-pub struct VisionPool {
-    inner: Arc<Mutex<Option<Arc<NativeVision>>>>,
+impl VisionEncoder for NativeVision {
+    fn encode_image(&self, data: &[u8]) -> Result<Vec<f32>> {
+        NativeVision::encode_image(self, data)
+    }
+
+    fn model_id(&self) -> &str {
+        self.model_id()
+    }
+
+    fn dim(&self) -> usize {
+        self.dim()
+    }
+
+    fn used_cuda(&self) -> bool {
+        self.used_cuda()
+    }
+
+    fn precision(&self) -> &str {
+        self.precision
+    }
 }
 
-#[cfg(feature = "vision")]
+#[cfg(any(feature = "vision", feature = "external"))]
+#[derive(Clone, Default)]
+pub struct VisionPool {
+    inner: Arc<Mutex<Option<Arc<dyn VisionEncoder>>>>,
+}
+
+#[cfg(any(feature = "vision", feature = "external"))]
 impl fmt::Debug for VisionPool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VisionPool")
@@ -510,42 +696,74 @@ impl fmt::Debug for VisionPool {
     }
 }
 
-#[cfg(feature = "vision")]
+#[cfg(any(feature = "vision", feature = "external"))]
 impl VisionPool {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn get(&self, settings: &Settings) -> Result<Arc<NativeVision>> {
+    pub fn get(&self, settings: &Settings) -> Result<Arc<dyn VisionEncoder>> {
         if settings.image_backend == "external" {
-            return Err(OkfError::new(
-                "EXTERNAL_UNAVAILABLE",
-                "external vision lanes are not implemented in this build",
-            )
-            .field("backend", Json::String("external".into()))
-            .field(
-                "endpoint",
-                Json::String(settings.image_endpoint_url.clone()),
-            )
-            .remedy("set image_backend='embroider' or install a build with external lanes"));
+            #[cfg(feature = "external")]
+            {
+                if let Some(loaded) = self
+                    .inner
+                    .lock()
+                    .map_err(|_| OkfError::internal("vision lock poisoned", "mutex"))?
+                    .as_ref()
+                {
+                    return Ok(Arc::clone(loaded));
+                }
+                let vision: Arc<dyn VisionEncoder> =
+                    Arc::new(external::ExternalVision::open(settings)?);
+                let mut guard = self
+                    .inner
+                    .lock()
+                    .map_err(|_| OkfError::internal("vision lock poisoned", "mutex"))?;
+                return Ok(Arc::clone(guard.get_or_insert(vision)));
+            }
+            #[cfg(not(feature = "external"))]
+            {
+                return Err(OkfError::new(
+                    "EXTERNAL_UNAVAILABLE",
+                    "external vision lanes are not implemented in this build",
+                )
+                .field("backend", Json::String("external".into()))
+                .field(
+                    "endpoint",
+                    Json::String(settings.image_endpoint_url.clone()),
+                )
+                .remedy("rebuild with --features external"));
+            }
         }
-        if let Some(loaded) = self
-            .inner
-            .lock()
-            .map_err(|_| OkfError::internal("vision lock poisoned", "mutex"))?
-            .as_ref()
+        #[cfg(feature = "vision")]
         {
-            return Ok(Arc::clone(loaded));
+            if let Some(loaded) = self
+                .inner
+                .lock()
+                .map_err(|_| OkfError::internal("vision lock poisoned", "mutex"))?
+                .as_ref()
+            {
+                return Ok(Arc::clone(loaded));
+            }
+            let vision: Arc<dyn VisionEncoder> = Arc::new(NativeVision::open(settings)?);
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| OkfError::internal("vision lock poisoned", "mutex"))?;
+            Ok(Arc::clone(guard.get_or_insert(vision)))
         }
-        let vision = Arc::new(NativeVision::open(settings)?);
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|_| OkfError::internal("vision lock poisoned", "mutex"))?;
-        Ok(Arc::clone(guard.get_or_insert(vision)))
+        #[cfg(not(feature = "vision"))]
+        {
+            let _ = settings;
+            Err(OkfError::new(
+                "BAD_VALUE",
+                "vision image ingestion requires a build with --features vision",
+            ))
+        }
     }
 
-    pub fn loaded(&self) -> Option<Arc<NativeVision>> {
+    pub fn loaded(&self) -> Option<Arc<dyn VisionEncoder>> {
         self.inner
             .lock()
             .ok()
@@ -562,7 +780,7 @@ impl VisionPool {
 
 #[derive(Debug, Clone, Default)]
 pub struct Pools {
-    #[cfg(feature = "vision")]
+    #[cfg(any(feature = "vision", feature = "external"))]
     pub vision: VisionPool,
 }
 
@@ -681,7 +899,10 @@ pub fn check_engine_pins(settings: &Settings, pins: &Json, engine: &dyn Embedder
         .and_then(Json::as_str);
     if let Some(pinned) = pinned_precision {
         let landed = engine.precision();
-        if pinned != landed {
+        if landed == "external" {
+            // A declared host leaves its numerics to the owner; only the
+            // model pin applies, exactly like Python's _enforce_pins.
+        } else if pinned != landed {
             return Err(OkfError::new(
                 "PRECISION_PIN_MISMATCH",
                 format!("graph is pinned to precision '{pinned}', engine loaded '{landed}'"),
@@ -773,7 +994,7 @@ mod tests {
         fn used_cuda(&self) -> bool {
             false
         }
-        fn precision(&self) -> &'static str {
+        fn precision(&self) -> &str {
             self.precision
         }
         fn max_len(&self) -> usize {
@@ -797,23 +1018,22 @@ mod tests {
     }
 
     #[test]
-    fn external_embed_lane_fails_closed() {
+    fn external_embed_lane_requires_a_live_identity_or_declaration() {
         let settings = Settings {
             backend: "external".into(),
             endpoint_url: "http://127.0.0.1:9".into(),
             ..Default::default()
         };
         let err = EmbedderPool::new().get(&settings).expect_err("fail closed");
+        #[cfg(feature = "external")]
+        assert_eq!(err.code, "CONFIG_INVALID");
+        #[cfg(not(feature = "external"))]
         assert_eq!(err.code, "EXTERNAL_UNAVAILABLE");
-        assert_eq!(
-            err.fields.get("backend"),
-            Some(&Json::String("external".into()))
-        );
     }
 
     #[cfg(feature = "embed")]
     #[test]
-    fn external_rerank_lane_fails_closed() {
+    fn external_rerank_lane_requires_a_live_identity_or_declaration() {
         let settings = Settings {
             rerank_backend: "external".into(),
             rerank_endpoint_url: "http://127.0.0.1:9".into(),
@@ -822,12 +1042,15 @@ mod tests {
         let err = RerankerPool::new()
             .score(&settings, "query", &["doc".into()])
             .expect_err("fail closed");
+        #[cfg(feature = "external")]
+        assert_eq!(err.code, "CONFIG_INVALID");
+        #[cfg(not(feature = "external"))]
         assert_eq!(err.code, "EXTERNAL_UNAVAILABLE");
     }
 
     #[cfg(feature = "vision")]
     #[test]
-    fn external_vision_lane_fails_closed() {
+    fn external_vision_lane_requires_a_live_embroider_host() {
         let settings = Settings {
             image_backend: "external".into(),
             image_endpoint_url: "http://127.0.0.1:9".into(),

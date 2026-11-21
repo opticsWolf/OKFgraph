@@ -9,10 +9,10 @@ full 29-command CLI are implemented.
 Real EmbeddingGemma 2 ONNX inference runs on CUDA; text/rerank/vision and
 write parity scenarios are green on the covered fixtures. The review findings
 in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
-fail-closed/deferred items. CI builds wheels and runs the Python 3.12–3.14
+deferred items. CI builds wheels and runs the Python 3.12–3.14
 matrix on Windows, Linux and macOS; POSIX UDS client smoke is green in CI.
-The remaining Stage C surface is M6 hardening (plus the documented BUG-013
-fail-closed alternative).
+External embed/rerank/vision lanes are implemented and covered by mock-host
+differential checks. The remaining Stage C surface is M6 hardening.
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -900,8 +900,8 @@ absent-root refusal, parameter matrices, and op-name/coverage checks. The
 broad matrix is green after normalizing wall-clock graph times, internal IDs,
 set-ordered tags, and the explicitly documented PDF-missing-plugin divergence.
 
-Remaining M3/stable gaps: external embedding/rerank/vision lanes fail closed
-(`EXTERNAL_UNAVAILABLE`) by design; old/missing schemas are refused for a
+External embedding/rerank/vision lanes are implemented behind `external` and
+covered by `check_external_lanes.py`; old/missing schemas are refused for a
 one-time Python-0.15 migration instead of ported; `doctor` findings/score,
 parameters (`stale_days`/`fix`/`strict`/`cache_dir`), and portable info probes
 (index inventory, image routes, stale lock, lanes) are ported, while
@@ -957,7 +957,9 @@ opening the DB. The CLI registers all 29 oracle verbs with generated global
 flags; `check_cli.py` compares registration, 13 `--json` cases and two exit
 code cases. `/mcp` uses rmcp Streamable HTTP on the same owner and is verified
 by `check_mcp_http.py`. UDS is implemented behind `--listen unix:///path`,
-with unit tests plus `check_uds.py`; CI runs the client smoke on POSIX.
+with unit tests plus `check_uds.py`; CI runs the client smoke on POSIX. The
+external lanes are Rust-owned HTTP clients verified against the Python oracle
+by `check_external_lanes.py`.
 
 **Gate:** CLI/MCP/serve contract suite green; Python `OKFRouter` and `OKFClient`
 perform every op with parity; no Python transport/runtime dependency.

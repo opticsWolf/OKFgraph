@@ -64,8 +64,8 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
       (`check_client.py`).
 - [x] CLI/mcp proxy borrow a live owner via `server::client` discovery;
       `OKFGRAPH_NO_SERVER=1` opts out (`check_client.py`).
-- [ ] UDS client smoke: `check_uds.py` is now run by POSIX CI; close after a
-      green Linux/macOS job.
+- [x] UDS client smoke: `check_uds.py` runs in the Linux/macOS wheel jobs and
+      exercises the public `OKFClient` over a real Unix socket.
 
 ## F. Public Python API (Stage C)
 

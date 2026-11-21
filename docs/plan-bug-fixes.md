@@ -1777,7 +1777,7 @@ the semantic DB dump plus the export tree where applicable.
 
 ## 9. Deferred / explicitly out of scope for this plan
 
-- UDS client verification on a POSIX host (BUG-054); `/mcp` is closed by BUG-053.
+- UDS client verification is closed by BUG-054; `/mcp` is closed by BUG-053.
 - Local Linux/macOS hosts (CI now builds and smokes both platforms).
 - Linux aarch64, macOS x86_64, Python 3.11.
 - Full model-download CI; tests should use cached artifacts or mocks.
@@ -1836,7 +1836,7 @@ gate is green.
 | BUG-051 | Closed | HTTP jobs submit/poll/list/cancel with terminal-state protection; `reembed_job` returns a job id. | Keep covered by `check_jobs.py`; revisit when jobs become durable across restarts. |
 | BUG-052 | Closed | All 29 CLI verbs, global flags, op mapping, and typed error ops are wired; `check_cli.py` is green. | Keep new verbs covered; revisit if the oracle CLI gains commands. |
 | BUG-053 | Closed | All 11 MCP tools are mounted at `okf serve /mcp` over Streamable HTTP; `check_mcp_http.py` is green. | Keep covered with stdio and `--connect` smokes. |
-| BUG-054 | Open (gate added) | `--listen unix:///path` is implemented with stale-socket handling; CI now runs `check_uds.py` on Linux/macOS after building the CLI. | Confirm the POSIX CI job is green, then close. |
+| BUG-054 | Closed | `--listen unix:///path` handles stale sockets; `check_uds.py` runs in CI on Linux and macOS (run `44861850111`) with the public `OKFClient`. | Keep both POSIX wheel jobs green. |
 | BUG-055 | Closed | `okfgraph-pdf` builds as a PEP 517 wheel with the native plugin; clean-venv auto-discovery converts a real PDF. | Keep both wheels in the packaging gate. |
 | BUG-056 | Closed | Wheel metadata pins 3.12–3.14, no bytecode in the wheel, public client/settings exports present. | Extend `check_packaging.py` with new metadata rules. |
 | BUG-057 | Closed | `build_wheel.py` always passes auditwheel repair, clears the maturin scratch dir, and the Windows wheel contains OpenSSL DLLs. | Keep static gate green. |

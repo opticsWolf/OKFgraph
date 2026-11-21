@@ -10,8 +10,9 @@ Real EmbeddingGemma 2 ONNX inference runs on CUDA; text/rerank/vision and
 write parity scenarios are green on the covered fixtures. The review findings
 in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
 fail-closed/deferred items. CI builds wheels and runs the Python 3.12–3.14
-matrix on Windows, Linux and macOS. The remaining Stage C surface is UDS
-client verification on POSIX (gate added) and M6 hardening.
+matrix on Windows, Linux and macOS; POSIX UDS client smoke is green in CI.
+The remaining Stage C surface is M6 hardening (plus the documented BUG-013
+fail-closed alternative).
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,

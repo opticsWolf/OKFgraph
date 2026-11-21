@@ -12,7 +12,7 @@ in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
 deferred items. CI builds wheels and runs the Python 3.12–3.14
 matrix on Windows, Linux and macOS; POSIX UDS client smoke is green in CI.
 External embed/rerank/vision lanes are implemented and covered by mock-host
-differential checks. Final bug-round verification: 56/56 matrix scenarios
+differential checks. Final bug-round verification: 57/57 matrix scenarios
 green in 14m37s, 30/30 success-op coverage, 75 all-feature / 54 no-default
 Rust tests, and a green six-job CI run on the last code-affecting commit. M6
 step 1 is also complete: the parity harness imports the oracle from a cached
@@ -1021,8 +1021,10 @@ and `okf-mcp` run from the wheel.
 **M6 progress:** the harness is now tag-based (`parity/tools/oracle.py`), so
 the old root Python package can be deleted without breaking differential
 testing. The full matrix was rerun green in 15m21s with that package hidden.
-The full GPU matrix is retained as a documented manual release gate in
-`docs/release-gate.md`; hosted CI remains a build/smoke gate and no self-hosted
+Fuzz hardening is complete: frontmatter/YAML, chunk offsets, safe ids/paths,
+wikilinks, op params and closed error codes are covered, and the found
+CR-only newline bug is closed as BUG-062. The full GPU matrix is retained as
+a documented manual release gate in `docs/release-gate.md`; hosted CI remains a build/smoke gate and no self-hosted
 runner is required for 0.16.0.
 
 **Gate:** parity suite green on all target platforms; all 1,241 behaviors either

@@ -17,7 +17,7 @@ and the write lock are implemented. The M4 serve/MCP/client slice is also in:
 11 rmcp tools, `--connect`, the public `OKFClient`, the HTTP job lane, the
 full 29-command CLI, and typed conversion-error envelopes. The broad differential matrix is green for **56 scenarios** after
 normalizing wall-clock graph times/internal IDs and the documented intentional
-differences; the 57th, `ingest-pdf-no-plugin`, records the intentional
+differences; the 58th, `ingest-pdf-no-plugin`, records the intentional
 missing-plugin error divergence instead of a green comparison. Remaining items are listed under
 “Verification status” below and the authoritative register in section 11.
 
@@ -29,20 +29,26 @@ claimed until the remaining gate items close.
 
 ### Verification status
 
-Final verification on `rust-core` at `66df990`:
+Final verification on `rust-core` through the M6 fuzz hardening round:
 
 - `parity/tools/run_matrix.py --pdf-plugin target/debug/okfgraph_pdf.dll`:
-  `TOTAL:56 FAILS:0` in **14m37s** on the CUDA dev box. The 57th scenario,
+  `TOTAL:56 FAILS:0` in **14m37s** on the CUDA dev box. The new
+  `frontmatter-cr-only` scenario followed the fuzz fix with
+  `TOTAL:57 FAILS:0` in **15m55s**; the 58th scenario,
   `ingest-pdf-no-plugin`, remains the documented intentional divergence.
 - `parity/tools/check_coverage.py`: 30/30 success ops, 21 typed-error ops,
-  nine documented waivers, 61 output files scanned.
+  nine documented waivers, 62 output files scanned.
 - `parity/tools/check_external_lanes.py`: green against four local mock hosts,
   including TEI rerank fallback and a generated valid GGUF counter fixture.
+- Fuzz properties cover frontmatter/YAML, chunk offsets, safe ids/paths,
+  wikilink scanning/resolution, op params and closed error codes; the
+  generated regression seed is checked in.
 - The same full matrix, `check_cli.py` and `check_external_lanes.py` also pass
   when the root `okfgraph/` package is hidden: all oracle imports now come
   from a cached worktree of `python-oracle-0.15.0`.
-- Rust suites: 75 all-feature tests and 54 no-default tests pass; Clippy is
-  clean with all features and with no default features.
+- Rust suites: 78 all-feature tests, 57 no-default tests and 9 fuzz
+  properties pass; Clippy is clean with all features and with no default
+  features.
 - The full six-job CI matrix was green on `44899657898` for code commit
   `333f8df`. The final commit `66df990` changes only docs and the parity
   harness, and its CI run was stopped by the operator before completion.
@@ -1802,6 +1808,28 @@ the semantic DB dump plus the export tree where applicable.
 
 ---
 
+### BUG-062 — Lone CR frontmatter diverged from Python universal newlines
+
+**Severity:** P2, S — **Status: closed** (M6 fuzz hardening).
+
+**Where:** `src/markdown/mod.rs`, `parity/scenarios/frontmatter-cr-only.json`,
+`tests/fuzz_robustness.rs`.
+
+**Cause:** `parse_frontmatter` normalized CRLF to LF but left lone `\r` bytes.
+Python's `Path.read_text` uses universal-newline translation, so CR-only
+frontmatter produced different titles, tags, bodies and content signatures.
+
+**Resolution:** both CRLF and lone CR are normalized to LF before delimiters
+are split or YAML is parsed. The proptest seed is checked in, a unit regression
+covers CR-only delimiters and bodies, and the differential harness can write a
+byte-exact CR-only fixture via `setup.write_file`.
+
+**Tests:** `tests/fuzz_robustness.rs`,
+`markdown::tests::universal_newlines_normalize_lone_carriage_returns`, and
+`parity/scenarios/frontmatter-cr-only.json` (ops and DB dumps green).
+
+---
+
 ## 9. Deferred / explicitly out of scope for this plan
 
 - UDS client verification is closed by BUG-054; `/mcp` is closed by BUG-053.
@@ -1852,7 +1880,7 @@ gate is green.
 | BUG-028 | Closed | Compatibility is explicitly v10-only; older schemas are refused with `CONFIG_INVALID` and Python 0.15 remains the one-time migration path (`docs/rust-compat.md` §A). | Revisit only if a legacy DB must be opened directly by Rust. |
 | BUG-030 | Closed | `extension_dir` and warm PDF idle reuse work; `wal_mode` is a documented compatibility no-op (`docs/rust-compat.md` §A). | Revisit only if upstream adds a journal knob. |
 | BUG-040 | Closed | Real-model filters import benchmark and delta no-op smoke landed; baseline ~10.3 s / ~1.1 s on the CUDA dev box. | Re-run before release; update the recorded baseline if hardware changes. |
-| BUG-044 | Closed | `run_matrix.py` fails on diffs and `check_coverage.py` enforces success+typed-error coverage with nine documented no-error waivers. Final run: 56/56 green, 30/30 success ops. | Keep new ops covered and re-run the matrix before release. |
+| BUG-044 | Closed | `run_matrix.py` fails on diffs and `check_coverage.py` enforces success+typed-error coverage with nine documented no-error waivers. Final run: 57/57 green, 30/30 success ops. | Keep new ops covered and re-run the matrix before release. |
 | BUG-045 | Closed | Parameters, strict outcome, safe fix, facade kwargs, and `doctor-params` parity landed. | Keep covered by `doctor-params`; revisit only if further Python doctor semantics are ported. |
 | BUG-046 | Closed | Portable info probes are emitted and compared; only host-specific rules are ignored by name. | Extend only if a portable probe is still missing. |
 | BUG-047 | Closed | Unit tests copy the oracle fixture into a temp dir instead of sharing checkpoint state. | Keep the copy-fixture pattern for any new DB tests. |
@@ -1871,6 +1899,7 @@ gate is green.
 | BUG-059 | Closed | One `op_lock` serialises HTTP ops and jobs; four concurrent clients pass `check_client.py`. | Keep the concurrency assertion in the client gate. |
 | BUG-060 | Closed | Job ids, statuses, record fields, mode validation, dedupe, 404s and cooperative reembed cancel match Python 0.15 (`check_jobs.py`). | Revisit when jobs become durable or the oracle changes its record shape. |
 | BUG-061 | Closed | Rust CLI and MCP proxy borrow a live `okf serve` owner through `server::client`, with `OKFGRAPH_NO_SERVER=1` opt-out. | Keep CLI-to-owner and stale-discovery checks in `check_client.py`. |
+| BUG-062 | Closed | Universal-newline parsing now normalizes lone CR; fuzz seed, unit regression and `frontmatter-cr-only` parity scenario are green. | Keep fuzz properties in CI and expand only for new parser surfaces. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order

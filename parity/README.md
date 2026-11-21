@@ -268,6 +268,8 @@ Additional Stage B scenarios:
 - `sync.json` — incremental producer cursor and import of written files.
 - `ingest-md.json`, `ingest-bib.json`, `ingest-thoughts.json` — `ingest` kind
   validation plus markdown, BibTeX, and thoughts single-concept conversion.
+- `frontmatter-cr-only.json` — CR-only frontmatter written by the harness,
+  proving Python universal-newline normalization and Rust parsing agree.
 - `ingest-pdf-no-plugin.json` — Rust-only check that a missing plugin returns
   `CONVERSION_FAILED` with the install hint while a missing file returns
   `FILE_NOT_FOUND`.
@@ -287,7 +289,7 @@ runs may override the checkout with `OKFGRAPH_ORACLE_ROOT` or select another
 reference with `OKFGRAPH_ORACLE_TAG`. This keeps differential tests working
 after the old Python implementation is removed from the default tree.
 
-The post-review matrix covers 57 scenarios: **56 report 0 differences** on ops
+The post-review matrix covers 58 scenarios: **57 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,
 set-ordered tags, and runner-specific paths. The run at `66df990` reported
 `TOTAL:56 FAILS:0` in **14m37s**. The same matrix then passed in **15m21s**
@@ -295,7 +297,9 @@ using only the tag worktree with the root `okfgraph/` package temporarily
 hidden; `check_cli.py` was `13/13 OK` and `check_external_lanes.py` stayed
 green under the same condition. `check_coverage.py` reported 30/30 success
 ops, 21 typed-error ops, nine documented waivers and 61 output files
-scanned. The 57th scenario, `ingest-pdf-no-plugin`, intentionally records the
+scanned. After the fuzz-found CR-only newline bug was fixed, the expanded
+matrix reported `TOTAL:57 FAILS:0` in **15m55s** and coverage scanned 62
+output files. The 58th scenario, `ingest-pdf-no-plugin`, intentionally records the
 Python raw-`INTERNAL` vs Rust `CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op
 scenarios also match on semantic DB dumps; export trees match byte-for-byte.

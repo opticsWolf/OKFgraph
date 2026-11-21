@@ -74,6 +74,13 @@ def main() -> int:
         target = Path(_expand_runner(copied_file["to"], "python"))
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+    written = setup.get("write_file")
+    if written:
+        target = Path(_expand_runner(written["path"], "python"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # newline="" preserves CR-only fixtures exactly as generated.
+        with target.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(_expand_runner(written["text"], "python"))
     imported = setup.get("import")
     if imported:
         corpus = Path(_expand_runner(imported["corpus"], "python"))

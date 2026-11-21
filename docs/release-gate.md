@@ -46,10 +46,11 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo test --workspace --all-features --lib
 cargo test -p okfgraph --no-default-features --lib
+cargo test -p okfgraph --no-default-features --test fuzz_robustness
 ```
 
-Expected at the last recorded gate: 75 all-feature tests and 54 no-default
-tests pass.
+Expected at the last recorded gate: 78 all-feature tests, 57 no-default
+tests and 9 fuzz properties pass.
 
 ### Full differential matrix
 
@@ -61,7 +62,7 @@ parity/.venv-oracle/Scripts/python.exe parity/tools/run_matrix.py \
 Expected:
 
 ```text
-TOTAL:56 FAILS:0
+TOTAL:57 FAILS:0
 ```
 
 `ingest-pdf-no-plugin` remains the one intentional skipped divergence. Any
@@ -120,7 +121,7 @@ Store a short release note beside the parity output, for example
 release: 0.16.0
 commit: <sha>
 oracle: python-oracle-0.15.0 via parity/tools/oracle.py
-matrix: TOTAL:56 FAILS:0, <duration>
+matrix: TOTAL:57 FAILS:0, <duration>
 coverage: 30/30 success, 21 typed errors, 9 waivers
 rust tests: <all-feature count> / <no-default count>
 surface gates: pass/fail list with tool names

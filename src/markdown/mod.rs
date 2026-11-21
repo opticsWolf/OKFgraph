@@ -189,9 +189,9 @@ pub struct Frontmatter {
 
 /// Parse `---` delimited frontmatter. Closing delimiter may be `---` or `...`.
 pub fn parse_frontmatter(text: &str) -> Frontmatter {
-    // Python reads bundle files with universal-newline translation, so a
-    // CRLF file written by `Path.write_text` on Windows is parsed as LF.
-    let normalized = text.replace("\r\n", "\n");
+    // Python reads bundle files with universal-newline translation: CRLF and
+    // lone CR both become LF. Normalize both spellings before splitting.
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let text = normalized.as_str();
     let mut lines = text.split_inclusive('\n');
     let Some(first) = lines.next() else {
@@ -830,6 +830,19 @@ Alpha links to beta.
         );
         assert!(parsed.metadata.as_object().unwrap().is_empty());
         assert_eq!(parsed.content, "Alpha links to beta.");
+    }
+
+    #[test]
+    fn universal_newlines_normalize_lone_carriage_returns() {
+        // Fuzz seed: CR-only line endings must behave like Python universal
+        // newlines, not leave an embedded CRLF in the markdown body.
+        let parsed = parse_frontmatter("\r\r\n\r");
+        assert!(parsed.metadata.as_object().unwrap().is_empty());
+        assert_eq!(parsed.content, "");
+
+        let parsed = parse_frontmatter("---\r\ntitle: CR Only\r---\rBody one\rBody two");
+        assert_eq!(parsed.metadata["title"], "CR Only");
+        assert_eq!(parsed.content, "Body one\nBody two");
     }
 
     #[test]

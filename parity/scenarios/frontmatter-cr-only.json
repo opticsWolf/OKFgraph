@@ -1,0 +1,37 @@
+{
+  "name": "frontmatter-cr-only",
+  "settings": {
+    "db_path": "parity/out/frontmatter-cr-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "write_file": {
+      "path": "parity/out/frontmatter-cr-corpus-@RUNNER@/cr-only.md",
+      "text": "---\r\ntitle: CR Only\rtags:\r  - fuzz\r  - newline\r---\r\rBody one\rBody two\r"
+    },
+    "import": {
+      "corpus": "parity/out/frontmatter-cr-corpus-@RUNNER@"
+    }
+  },
+  "ops": [
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "cr-only"
+      }
+    },
+    {
+      "op": "read",
+      "params": {
+        "concept_id": "cr-only",
+        "include": "body"
+      }
+    }
+  ]
+}

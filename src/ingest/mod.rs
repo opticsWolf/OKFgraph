@@ -2150,6 +2150,7 @@ fn overlap_payloads(chunks: &[MdChunk], overlap: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::io::Write;
 
     fn write_md(dir: &Path, name: &str, text: &str) -> PathBuf {
@@ -2440,5 +2441,58 @@ mod tests {
         assert_eq!(sanitize_resource("mailto:a@b"), None);
         assert_eq!(sanitize_resource("okf-asset://abc"), None);
         assert_eq!(sanitize_resource("bare/path"), None);
+    }
+
+    fn fuzz_text() -> impl Strategy<Value = String> {
+        prop::collection::vec(
+            prop_oneof![
+                prop::char::range('a', 'z'),
+                prop::char::range('A', 'Z'),
+                Just(' '),
+                Just('\n'),
+                Just('\r'),
+                Just('['),
+                Just(']'),
+                Just('|'),
+                Just('#'),
+                Just('/'),
+                Just('.'),
+                Just('@'),
+            ],
+            0..180,
+        )
+        .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(96))]
+
+        #[test]
+        fn wikilink_scan_is_total(body in fuzz_text()) {
+            let links = wikilinks(&body);
+            prop_assert!(links.len() <= body.matches("[[").count());
+            for link in links {
+                prop_assert!(!link.is_empty());
+            }
+        }
+
+        #[test]
+        fn wiki_resolution_is_total(reference in fuzz_text()) {
+            let mut index = LinkIndex::default();
+            index.ids.insert("alpha".into());
+            index.ids.insert("@docs/beta".into());
+            index.alias.insert("first".into(), "alpha".into());
+            index.title.insert("beta title".into(), "@docs/beta".into());
+
+            let first = index.resolve_wiki(&reference);
+            let second = index.resolve_wiki(&reference);
+            prop_assert_eq!(&first, &second);
+            if let Some(target) = first.0 {
+                prop_assert!(index.ids.contains(&target));
+            }
+            if let Some(reason) = first.1 {
+                prop_assert!(reason == "missing" || reason == "ambiguous");
+            }
+        }
     }
 }

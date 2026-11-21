@@ -35,7 +35,8 @@ the Python and Rust cores in one process.
 - `tools/check_python_matrix.py` — clean venvs for Python 3.12, 3.13 and 3.14.
 - `tools/check_facade.py` — public Python `OKFRouter`/`OKFClient` smoke test.
 - `tools/check_external_lanes.py` — mock-host differential for external
-  embed/rerank/vision lanes (identity, auth, wire shapes, pins, DB dumps).
+  embed/rerank/vision lanes (identity, auth, wire shapes, TEI fallback,
+  GGUF counting, pins, DB dumps).
 - `tools/check_client.py` — public `OKFClient` against the Rust `okf serve`,
   plus concurrent clients, CLI-to-owner routing and stale discovery.
 - `tools/make_import_oracle.py` / `tools/check_reopen_import.py` — fresh oracle
@@ -297,8 +298,8 @@ and a PPTX refusal with identical typed envelopes).
 `parity/tools/check_coverage.py` asserts every public op appears in a
 scenario.
 
-External lanes are covered by `check_external_lanes.py` against three local
-mock hosts. The remaining coverage gaps are the Python 0.15 one-time
+External lanes are covered by `check_external_lanes.py` against four local
+mock hosts, including TEI rerank fallback and a generated GGUF counter. The remaining coverage gaps are the Python 0.15 one-time
 old-schema migration step (v10-only compatibility) and any host-specific
 model cache state that cannot be reproduced deterministically. PDF,
 DOCX and XLSX are covered; pinned bobine refuses PPTX in both runners, which

@@ -646,10 +646,12 @@ precision and space exactly like the native lane. Transport failures are
 host message.
 
 **Tests:** `parity/tools/check_external_lanes.py` runs both runners against
-three Python mock hosts and compares envelopes and DB dumps while asserting
+four Python mock hosts and compares envelopes and DB dumps while asserting
 request shape, bearer keys, identity probes, tokenize, rerank payloads and
-image bytes. Rust unit tests cover declared prefixes/dimensions and outage
-mapping; all-feature and no-default suites stay green.
+image bytes. It also drives the TEI `/rerank` fallback and a generated but
+valid GGUF counter fixture. Rust unit tests cover declared
+prefixes/dimensions, outage mapping and GGUF header parsing; all-feature and
+no-default suites stay green.
 
 ---
 
@@ -1828,7 +1830,7 @@ gate is green.
 
 | Finding | State | Why it is open | Required close action |
 | --- | --- | --- | --- |
-| BUG-013 | Closed | External embed/rerank/vision HTTP clients are implemented behind `external`; `check_external_lanes.py` covers identity, auth, wire shapes, pins and typed outages. | Keep the mock differential and all-feature unit tests green. |
+| BUG-013 | Closed | External embed/rerank/vision HTTP clients are implemented behind `external`; `check_external_lanes.py` covers identity, auth, wire shapes, TEI fallback, GGUF counting, pins and typed outages. | Keep the mock differential and all-feature unit tests green. |
 | BUG-028 | Closed | Compatibility is explicitly v10-only; older schemas are refused with `CONFIG_INVALID` and Python 0.15 remains the one-time migration path (`docs/rust-compat.md` §A). | Revisit only if a legacy DB must be opened directly by Rust. |
 | BUG-030 | Closed | `extension_dir` and warm PDF idle reuse work; `wal_mode` is a documented compatibility no-op (`docs/rust-compat.md` §A). | Revisit only if upstream adds a journal knob. |
 | BUG-040 | Closed | Real-model filters import benchmark and delta no-op smoke landed; baseline ~10.3 s / ~1.1 s on the CUDA dev box. | Re-run before release; update the recorded baseline if hardware changes. |

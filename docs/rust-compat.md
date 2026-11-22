@@ -4,7 +4,7 @@ This is the executable form of §5 of `docs/plan-rust-core.md`. Every unchecked
 item is a release blocker for its stage. Status values: `open`, `wip`,
 `covered`, `waived` (waivers require the parity report).
 
-**Status note (0.16.0):** sections A–D keep their M0–M3 planning granularity;
+**Status note (0.16.1):** sections A–D keep their M0–M3 planning granularity;
 they are exercised end-to-end by the differential matrix, semantic DB dumps
 and fuzz properties rather than by ticking each box. Sections E–J record the
 binding contract for the shipped release.

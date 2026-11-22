@@ -3374,7 +3374,7 @@ dependencies = [
 
 [[package]]
 name = "okfgraph"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "assert_cmd",
  "axum",
@@ -3412,7 +3412,7 @@ dependencies = [
 
 [[package]]
 name = "okfgraph-pdf"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "bobine",
  "serde_json",
@@ -3420,7 +3420,7 @@ dependencies = [
 
 [[package]]
 name = "okfgraph-py"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "okfgraph",
  "pyo3",

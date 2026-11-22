@@ -1,4 +1,4 @@
-# Migration guide — Python 0.15 to Rust 0.16.0
+# Migration guide — Python 0.15 to Rust 0.16.1
 
 See [`docs/README.md`](README.md) for the documentation map and
 [`quickref.md`](quickref.md) for the new command/op surface.
@@ -8,13 +8,13 @@ See [`docs/README.md`](README.md) for the documentation map and
 - v10 databases and bundle trees are compatible. Rust opens and writes them
   without conversion.
 - Older or schema-less databases are refused with `CONFIG_INVALID`. Migrate
-  them once with Python 0.15, then reopen with 0.16.0.
+  them once with Python 0.15, then reopen with 0.16.1.
 - Do not run a Python 0.15 core and the Rust core in one process. Use separate
   processes; the `<db>.lock` protocol excludes writers across both.
 
 ## Python API
 
-| 0.15 | 0.16.0 |
+| 0.15 | 0.16.1 |
 | --- | --- |
 | `from okfgraph import OKFRouter` | unchanged |
 | `OKFRouter(...)` constructor kwargs | unchanged |

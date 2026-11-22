@@ -1,5 +1,8 @@
 # OKFgraph 0.16.0 release notes
 
+> **Historical release notes.** These describe the 0.16.0 cutover. The current
+> patch release is [`0.16.1`](release-notes-0.16.1.md).
+
 ## Summary
 
 0.16.0 is the Rust-core cutover. The entire graph, retrieval, ingest, CLI,

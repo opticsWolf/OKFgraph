@@ -4,9 +4,9 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [Unreleased]
+## [0.16.1] — 2026-11-22
 
-**0.17.0 dependency refresh.**
+**Patch release. No public API, op, CLI, MCP or schema change.**
 
 ### Changed
 
@@ -17,6 +17,8 @@ commit history, newest first.
   Markdown output is unchanged.
 - The parity oracle venv now uses the same `bobine`/`mordant` versions; the
   tagged Python 0.15 source itself is unchanged.
+
+See `docs/release-notes-0.16.1.md`.
 
 ## [0.16.0] — 2026-11-22
 

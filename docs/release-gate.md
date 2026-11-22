@@ -1,4 +1,4 @@
-# Manual release gate — OKFgraph 0.16.0
+# Manual release gate — OKFgraph 0.16.1
 
 Documentation for the release is indexed in [`docs/README.md`](README.md);
 operators should use [`docs/quickref.md`](quickref.md) during sign-off.
@@ -11,7 +11,7 @@ CUDA/ORT environment required by the full differential matrix.
 The full GPU-dependent parity suite is a **manual release gate** run on the
 maintainer's CUDA workstation before publishing a stable release. It must be
 recorded in the release evidence. No self-hosted GitHub runner is required for
-0.16.0.
+0.16.1.
 
 ## Prerequisites
 
@@ -137,7 +137,7 @@ Store a short release note beside the parity output, for example
 `parity/out/release-gate.md`, containing:
 
 ```text
-release: 0.16.0
+release: 0.16.1
 python-core-in-tree: false
 commit: <sha>
 oracle: python-oracle-0.15.0 via parity/tools/oracle.py
@@ -152,7 +152,7 @@ date: <UTC date>
 
 ## Release condition
 
-A stable 0.16.0 may be published only when:
+A stable 0.16.1 may be published only when:
 
 - hosted CI is green on Windows x64, Linux x86_64 and macOS arm64;
 - the manual GPU matrix above is green and recorded;

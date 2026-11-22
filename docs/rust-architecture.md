@@ -1,4 +1,4 @@
-# Rust architecture (0.16.0)
+# Rust architecture (0.16.1)
 
 This is the architecture of the shipped implementation. The older
 `docs/architecture.md` is retained as historical Python 0.15 design evidence.

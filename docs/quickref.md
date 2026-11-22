@@ -1,4 +1,4 @@
-# Quick reference — OKFgraph 0.16.0
+# Quick reference — OKFgraph 0.16.1
 
 One-page reference for the Rust-backed release. For explanation, see
 [`docs/rust-architecture.md`](rust-architecture.md) and
@@ -104,7 +104,7 @@ okf-mcp --connect http://127.0.0.1:8765   # proxy through owner
 | `mode` | Per-ingest image mode: `text`, `optional`, `omni` |
 | `extension_dir` | Directory with `libvector`/`libfts` extensions |
 | `allow_remote_images`, `allowed_image_domains` | SSRF opt-in and allowlist |
-| `wal_mode` | Accepted for compatibility; no-op in 0.16.0 |
+| `wal_mode` | Accepted for compatibility; no-op since 0.16.0 |
 
 Config file: `okfgraph.toml` in the working directory or user config dir.
 CLI flags override environment variables, which override TOML.

@@ -1,4 +1,4 @@
-"""Thin public facade for the Rust OKFgraph 0.16.0 core.
+"""Thin public facade for the Rust OKFgraph 0.16.1 core.
 
 Only documented API objects are exported here. The native extension is loaded
 lazily so import failures remain reportable; there is no Python fallback.

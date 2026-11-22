@@ -1,4 +1,4 @@
-# OKFgraph 0.16.0
+# OKFgraph 0.16.1
 
 [![PyPI](https://img.shields.io/badge/pypi-okfgraph-blue)](https://pypi.org/project/okfgraph/)
 [![crates.io](https://img.shields.io/crates/v/okfgraph.svg)](https://crates.io/crates/okfgraph)
@@ -18,9 +18,12 @@ chunk-level retrieval, **model-free PPR retrieval that works with no embedding
 model loaded**, structural diffing, scored health checks, and Obsidian-vault
 compatible wikilinks — in a single LadybugDB file.
 
-Starting with 0.16.0 the implementation is **Rust**. One native core powers the
+Since 0.16.0 the implementation has been **Rust**. One native core powers the
 CLI, MCP server, HTTP owner and Python facade. Python is a thin PyO3 layer with
 the same public API as 0.15; there is no Python core and no Python fallback.
+
+0.16.1 is a patch release: no public API, router op, CLI verb, MCP tool or
+schema change.
 
 Design stance: **one wheel, few dependencies, no legacy fallbacks.** Embeddings
 run through the `embroider` Rust crate (ONNX Runtime, no torch / transformers /
@@ -443,7 +446,7 @@ Write/ingest (17):
 - v10 databases and bundles remain compatible. Rust opens and writes them
   without conversion.
 - Older or schema-less databases are refused with `CONFIG_INVALID`. Migrate
-  once with Python 0.15, then reopen with 0.16.0.
+  once with Python 0.15, then reopen with 0.16.1.
 - Do not run a Python 0.15 core and the Rust core in one process. The
   `<db>.lock` protocol excludes writers across both.
 - The public Python API, settings constants, models, errors, console scripts

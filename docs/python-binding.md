@@ -1,4 +1,4 @@
-# Python binding guide (0.16.0)
+# Python binding guide (0.16.1)
 
 The Python package is a facade over the native Rust core. It deliberately
 supports only the documented public surface. For commands, ops and environment

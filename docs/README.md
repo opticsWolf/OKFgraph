@@ -1,6 +1,6 @@
 # Documentation index
 
-OKFgraph 0.16.0 is Rust-first. This index separates current documentation
+OKFgraph 0.16.1 is Rust-first. This index separates current documentation
 from historical design and release records. When a historical document
 conflicts with a current one, the current one wins.
 
@@ -13,6 +13,7 @@ conflicts with a current one, the current one wins.
 | [`rust-architecture.md`](rust-architecture.md) | Runtime model, store, locks, search, ingest, packaging |
 | [`python-binding.md`](python-binding.md) | Supported Python public API and failure behavior |
 | [`migration-guide.md`](migration-guide.md) | Upgrading from Python 0.15 |
+| [`release-notes-0.16.1.md`](release-notes-0.16.1.md) | Patch notes for the dependency refresh |
 | [`release-notes-0.16.0.md`](release-notes-0.16.0.md) | What changed in the stable cutover |
 | [`rust-compat.md`](rust-compat.md) | Executable compatibility checklist |
 | [`release-gate.md`](release-gate.md) | Manual GPU release sign-off procedure |

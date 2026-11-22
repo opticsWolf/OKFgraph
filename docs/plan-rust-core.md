@@ -1,6 +1,7 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** M6 complete; 0.16.0 stable cutover prepared. The Rust core in
+**Status:** M6 complete; 0.16.0 cutover shipped and the 0.16.1 patch refresh
+prepared. The Rust core in
 `src/` implements all 30 router ops, the 29-command CLI, 11 MCP tools, HTTP
 ops/jobs with `okf serve`, TCP/UDS transports, a public stdlib `OKFClient`,
 native/external embed/rerank/vision lanes, transactional ingest, full doctor,
@@ -12,9 +13,11 @@ divergence), 30/30 success ops, 111 all-feature / 86 no-default Rust tests,
 9 fuzz properties, paired performance parity, green wheels for Python
 3.12–3.14, and clean fmt/clippy. All post-cutover findings BUG-067–BUG-089
 are closed. Hosted CI and the manual GPU release gate must be signed off
-before publishing the tag.
+before publishing the tag. The 0.16.1 dependency refresh adds targeted 7/7
+parity with aligned oracle dependencies; the full GPU matrix remains the
+release gate.
 
-**Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
+**Target:** okfgraph 0.16.1 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the frozen Python 0.15 tag `python-oracle-0.15.0` (24,242 LOC,
 164 modules, 1,241 tests), resolved by `parity/tools/oracle.py`

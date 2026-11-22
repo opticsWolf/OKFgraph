@@ -61,7 +61,7 @@ def main() -> int:
     okf_mcp = scripts / ("okf-mcp.exe" if os.name == "nt" else "okf-mcp")
     assert okf.is_file() and okf_mcp.is_file(), (okf, okf_mcp)
     version = subprocess.check_output([str(okf), "--version"], text=True)
-    assert "0.16.0" in version, version
+    assert "0.16.1" in version, version
     help_text = subprocess.check_output([str(okf_mcp), "--help"], text=True)
     assert "OKFgraph MCP server" in help_text, help_text
 

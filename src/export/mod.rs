@@ -254,7 +254,9 @@ fn enrich_body(
                 || wiki_refs
                     .iter()
                     .any(|value| value.eq_ignore_ascii_case(label))
-                || body.contains(&format!("]({target}"));
+                || markdown_link_destinations(body)
+                    .iter()
+                    .any(|url| url.contains(target));
             if !exists {
                 lines.push(render_link(target, label, flavor, title_counts));
             }
@@ -377,6 +379,23 @@ fn output_path(root: &Path, id: &str) -> Result<PathBuf> {
 
 fn native_sep() -> String {
     std::path::MAIN_SEPARATOR.to_string()
+}
+
+/// Link destinations from `[label](destination)` spans. Python 0.15's
+/// link check matches the target anywhere in a destination, not only at the
+/// beginning, so `dir/target.md` suppresses a synthetic link to `target.md`.
+fn markdown_link_destinations(body: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while let Some(relative) = body[cursor..].find("](") {
+        let start = cursor + relative + 2;
+        let Some(end) = body[start..].find(')') else {
+            break;
+        };
+        out.push(&body[start..start + end]);
+        cursor = start + end + 1;
+    }
+    out
 }
 
 fn wikilinks(body: &str) -> Vec<String> {
@@ -578,5 +597,17 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("nested:\n- - 1\n  - 2\n- - 3\n"), "{text}");
+    }
+
+    #[test]
+    fn markdown_link_destinations_match_links_anywhere_in_the_url() {
+        let body = "[a](target.md) [b](dir/target.md) [c](../target.md)";
+        assert_eq!(
+            markdown_link_destinations(body),
+            vec!["target.md", "dir/target.md", "../target.md"]
+        );
+        assert!(markdown_link_destinations(body)
+            .iter()
+            .any(|url| url.contains("target.md")));
     }
 }

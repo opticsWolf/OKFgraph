@@ -18,7 +18,7 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::server::client::OpHttpClient as HttpOpClient;
 
@@ -28,15 +28,46 @@ pub struct OkfMcp {
     tool_router: ToolRouter<Self>,
     client: Arc<dyn OpClient>,
     settings: Settings,
+    /// `okf serve` passes its owner lock so MCP tools and HTTP ops serialise
+    /// on the same router. A direct stdio server owns its process and needs
+    /// no extra lock.
+    op_lock: Option<Arc<Mutex<()>>>,
 }
 
 impl OkfMcp {
     pub fn new(client: Arc<dyn OpClient>, settings: Settings) -> Self {
+        Self::with_lock(client, settings, None)
+    }
+
+    pub fn with_lock(
+        client: Arc<dyn OpClient>,
+        settings: Settings,
+        op_lock: Option<Arc<Mutex<()>>>,
+    ) -> Self {
         Self {
             tool_router: Self::tool_router(),
             client,
             settings,
+            op_lock,
         }
+    }
+
+    async fn invoke(&self, op: &'static str, params: Map<String, Value>) -> String {
+        let client = Arc::clone(&self.client);
+        let op_lock = self.op_lock.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let _guard = op_lock
+                .as_ref()
+                .map(|lock| lock.lock().expect("owner op lock"));
+            client.call(op, &params)
+        })
+        .await
+        .unwrap_or_else(|err| Err(OkfError::internal(err.to_string(), "join")));
+        match result {
+            Ok(data) => Envelope::success(op, data).to_json_pretty(),
+            Err(err) => Envelope::failure(op, &err).to_json_pretty(),
+        }
+        .unwrap_or_else(|_| "{\"ok\":false}".to_string())
     }
 
     fn params<T: Serialize>(value: T) -> Map<String, Value> {
@@ -61,12 +92,18 @@ pub struct McpHttpService {
 }
 
 impl McpHttpService {
-    pub fn new(client: Arc<dyn OpClient>, settings: Settings) -> Self {
+    pub fn new(client: Arc<dyn OpClient>, settings: Settings, op_lock: Arc<Mutex<()>>) -> Self {
         let config = StreamableHttpServerConfig::default()
             .with_json_response(true)
             .with_allowed_hosts(["localhost", "127.0.0.1", "::1"]);
         let inner = StreamableHttpService::new(
-            move || Ok(OkfMcp::new(Arc::clone(&client), settings.clone())),
+            move || {
+                Ok(OkfMcp::with_lock(
+                    Arc::clone(&client),
+                    settings.clone(),
+                    Some(Arc::clone(&op_lock)),
+                ))
+            },
             Arc::new(LocalSessionManager::default()),
             config,
         );
@@ -77,17 +114,6 @@ impl McpHttpService {
     pub async fn handle(&self, request: Request) -> Response {
         self.inner.handle(request).await.map(Body::new)
     }
-}
-
-async fn invoke(client: Arc<dyn OpClient>, op: &'static str, params: Map<String, Value>) -> String {
-    let result = tokio::task::spawn_blocking(move || client.call(op, &params))
-        .await
-        .unwrap_or_else(|err| Err(OkfError::internal(err.to_string(), "join")));
-    match result {
-        Ok(data) => Envelope::success(op, data).to_json_pretty(),
-        Err(err) => Envelope::failure(op, &err).to_json_pretty(),
-    }
-    .unwrap_or_else(|_| "{\"ok\":false}".to_string())
 }
 
 // `rmcp`'s attribute accepts a literal token list, so each tool repeats the
@@ -285,7 +311,7 @@ impl OkfMcp {
         )
     )]
     async fn search(&self, Parameters(req): Parameters<SearchRequest>) -> String {
-        invoke(self.client.clone(), "search", Self::params(req)).await
+        self.invoke("search", Self::params(req)).await
     }
 
     #[tool(
@@ -299,7 +325,7 @@ impl OkfMcp {
         )
     )]
     async fn read(&self, Parameters(req): Parameters<ReadRequest>) -> String {
-        invoke(self.client.clone(), "read", Self::params(req)).await
+        self.invoke("read", Self::params(req)).await
     }
 
     #[tool(
@@ -313,7 +339,7 @@ impl OkfMcp {
         )
     )]
     async fn traverse(&self, Parameters(req): Parameters<TraverseRequest>) -> String {
-        invoke(self.client.clone(), "traverse", Self::params(req)).await
+        self.invoke("traverse", Self::params(req)).await
     }
 
     #[tool(
@@ -330,7 +356,7 @@ impl OkfMcp {
         if req.mode.is_none() {
             req.mode = Some(self.settings().mode.clone());
         }
-        invoke(self.client.clone(), "ingest", Self::params(req)).await
+        self.invoke("ingest", Self::params(req)).await
     }
 
     #[tool(
@@ -344,7 +370,7 @@ impl OkfMcp {
         )
     )]
     async fn export_bundle(&self, Parameters(req): Parameters<ExportBundleRequest>) -> String {
-        invoke(self.client.clone(), "export_bundle", Self::params(req)).await
+        self.invoke("export_bundle", Self::params(req)).await
     }
 
     #[tool(
@@ -358,7 +384,7 @@ impl OkfMcp {
         )
     )]
     async fn export_concept(&self, Parameters(req): Parameters<ExportConceptRequest>) -> String {
-        invoke(self.client.clone(), "export_concept", Self::params(req)).await
+        self.invoke("export_concept", Self::params(req)).await
     }
 
     #[tool(
@@ -372,7 +398,7 @@ impl OkfMcp {
         )
     )]
     async fn list_images(&self, Parameters(req): Parameters<IdRequest>) -> String {
-        invoke(self.client.clone(), "list_images", Self::params(req)).await
+        self.invoke("list_images", Self::params(req)).await
     }
 
     #[tool(
@@ -386,7 +412,7 @@ impl OkfMcp {
         )
     )]
     async fn get_image(&self, Parameters(req): Parameters<AssetRequest>) -> String {
-        invoke(self.client.clone(), "get_image", Self::params(req)).await
+        self.invoke("get_image", Self::params(req)).await
     }
 
     #[tool(
@@ -400,7 +426,7 @@ impl OkfMcp {
         )
     )]
     async fn update(&self, Parameters(req): Parameters<UpdateRequest>) -> String {
-        invoke(self.client.clone(), "update", Self::params(req)).await
+        self.invoke("update", Self::params(req)).await
     }
 
     #[tool(
@@ -414,7 +440,7 @@ impl OkfMcp {
         )
     )]
     async fn supersede(&self, Parameters(req): Parameters<SupersedeRequest>) -> String {
-        invoke(self.client.clone(), "supersede", Self::params(req)).await
+        self.invoke("supersede", Self::params(req)).await
     }
 
     #[tool(
@@ -430,7 +456,7 @@ impl OkfMcp {
     async fn delete(&self, Parameters(req): Parameters<IdRequest>) -> String {
         let mut params = Self::params(req);
         params.insert("remove_file".into(), Value::Bool(true));
-        invoke(self.client.clone(), "delete", params).await
+        self.invoke("delete", params).await
     }
 }
 
@@ -560,5 +586,38 @@ mod tests {
         assert!(HttpOpClient::new("unix:///tmp/okf.sock").is_ok() || cfg!(not(unix)));
         assert!(HttpOpClient::new("http://127.0.0.1:8765").is_ok());
         assert!(HttpOpClient::new("nonsense").is_err());
+    }
+
+    struct SlowClient {
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl OpClient for SlowClient {
+        fn call(&self, _op: &str, _params: &Map<String, Value>) -> crate::error::Result<Value> {
+            use std::sync::atomic::Ordering;
+            let now = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+            self.peak.fetch_max(now, Ordering::AcqRel);
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            self.active.fetch_sub(1, Ordering::AcqRel);
+            Ok(Value::Null)
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_calls_share_the_owner_lock() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let client = Arc::new(SlowClient {
+            active: Arc::clone(&active),
+            peak: Arc::clone(&peak),
+        });
+        let owner = OkfMcp::with_lock(client, Settings::default(), Some(Arc::new(Mutex::new(()))));
+        tokio::join!(
+            owner.invoke("read", Map::new()),
+            owner.invoke("read", Map::new()),
+        );
+        assert_eq!(peak.load(Ordering::Acquire), 1);
     }
 }

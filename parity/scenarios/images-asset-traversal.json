@@ -1,0 +1,21 @@
+{
+  "name": "images-asset-traversal",
+  "settings": {
+    "db_path": "parity/out/images-asset-traversal-@RUNNER@.db",
+    "bundle_root": "parity/corpus/asset-traversal",
+    "model_id": "google/embeddinggemma-2",
+    "embedding_dim": 512,
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/asset-traversal"
+    }
+  },
+  "ops": [
+    {"op": "list_images", "params": {"concept_id": "doc"}},
+    {"op": "get_by_id", "params": {"concept_id": "doc"}}
+  ]
+}

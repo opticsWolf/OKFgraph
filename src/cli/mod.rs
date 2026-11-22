@@ -1082,6 +1082,153 @@ fn import_cmd(
     Ok(("import_file", json!([data])))
 }
 
+const PDF_EXTENSIONS: &[&str] = &["pdf", "docx", "xlsx", "pptx", "doc", "xls", "ppt"];
+
+fn is_convertible_pdf(path: &std::path::Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    path.is_file()
+        && !name.starts_with("~$")
+        && !name.starts_with('.')
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                PDF_EXTENSIONS
+                    .iter()
+                    .any(|value| value.eq_ignore_ascii_case(ext))
+            })
+}
+
+fn sorted_convertible(
+    paths: impl IntoIterator<Item = std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    let mut paths: Vec<_> = paths
+        .into_iter()
+        .filter(|path| is_convertible_pdf(path))
+        .collect();
+    paths.sort_by_key(|path| {
+        path.file_name()
+            .map(|value| value.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    });
+    paths
+}
+
+fn pdf_path_not_found(
+    message: String,
+    field: &str,
+    shown: String,
+    remedy: &'static str,
+) -> OkfError {
+    OkfError::new("FILE_NOT_FOUND", message)
+        .op("ingest")
+        .field(field, Value::String(shown))
+        .field("extensions", json!(PDF_EXTENSIONS))
+        .remedy(remedy)
+}
+
+/// Python 0.15 expands directories and literal `*?` patterns inside the CLI
+/// so PowerShell's unexpanded globs still work. Literal paths are passed
+/// through untouched: bobine's own refusal is the better error.
+fn expand_pdf_paths(raw: &[String]) -> Result<Vec<String>> {
+    let mut expanded = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut add = |shown: String| {
+        let key = std::fs::canonicalize(&shown)
+            .or_else(|_| std::path::absolute(&shown))
+            .unwrap_or_else(|_| std::path::PathBuf::from(&shown))
+            .to_string_lossy()
+            .to_lowercase();
+        if seen.insert(key) {
+            expanded.push(shown);
+        }
+    };
+    for text in raw {
+        let path = std::path::Path::new(text);
+        if path.is_dir() {
+            let entries = std::fs::read_dir(path)
+                .map_err(|err| OkfError::internal(err.to_string(), "std::io::Error"))?
+                .flatten()
+                .map(|entry| entry.path());
+            let matches = sorted_convertible(entries);
+            if matches.is_empty() {
+                return Err(pdf_path_not_found(
+                    format!("no convertible files in folder: {text}"),
+                    "path",
+                    text.clone(),
+                    "pass a PDF/Office file, a folder that contains one, or a pattern such as 'dir/*.pdf'",
+                ));
+            }
+            for item in matches {
+                add(item.to_string_lossy().into_owned());
+            }
+        } else if text.contains('*') || text.contains('?') {
+            // A `[` is a literal character in Python's CLI glob grammar.
+            let pattern = text.replace('[', "[[]");
+            let matches = sorted_convertible(
+                glob::glob(&pattern)
+                    .map_err(|err| OkfError::new("BAD_VALUE", format!("bad PDF pattern: {err}")))?
+                    .filter_map(std::result::Result::ok),
+            );
+            if matches.is_empty() {
+                return Err(pdf_path_not_found(
+                    format!("no convertible files match: {text}"),
+                    "pattern",
+                    text.clone(),
+                    "check the pattern, or pass the files directly",
+                ));
+            }
+            for item in matches {
+                add(item.to_string_lossy().into_owned());
+            }
+        } else {
+            add(text.clone());
+        }
+    }
+    Ok(expanded)
+}
+
+fn ingest_many_pdfs(
+    router: &dyn OpClient,
+    base: &Map<String, Value>,
+    paths: &[String],
+) -> Result<(&'static str, Value)> {
+    let mut files = Vec::new();
+    let mut first_error = None;
+    for path in paths {
+        let mut params = base.clone();
+        params.insert("pdf_path".into(), Value::String(path.clone()));
+        match router.call("ingest", &params) {
+            Ok(result) => files.push(json!({
+                "pdf_path": path,
+                "ok": true,
+                "result": result,
+            })),
+            Err(err) => {
+                files.push(json!({
+                    "pdf_path": path,
+                    "ok": false,
+                    "error": err.envelope_body(),
+                }));
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        }
+    }
+    let data = json!({ "files": files });
+    match first_error {
+        Some(mut err) => {
+            err.data = Some(data);
+            Err(err)
+        }
+        None => Ok(("ingest", data)),
+    }
+}
+
 fn ingest_cmd(
     router: &dyn OpClient,
     settings: &Settings,
@@ -1104,12 +1251,17 @@ fn ingest_cmd(
     ] {
         put_str(&mut params, sub, key);
     }
-    if let Some(paths) = sub.get_many::<String>("pdf-path") {
-        params.insert(
-            "pdf_path".into(),
-            Value::Array(paths.cloned().map(Value::String).collect()),
-        );
-    }
+    let pdf_paths: Vec<String> = sub
+        .get_many::<String>("pdf-path")
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default();
+    let expanded = if sub.get_one::<String>("kind").map(String::as_str) == Some("pdf")
+        && !pdf_paths.is_empty()
+    {
+        expand_pdf_paths(&pdf_paths)?
+    } else {
+        pdf_paths.clone()
+    };
     put_csv(&mut params, sub, "tags");
     if let Some(values) = sub.get_many::<String>("related") {
         params.insert(
@@ -1142,6 +1294,14 @@ fn ingest_cmd(
     put_bool(&mut params, sub, "prune-missing");
     put_bool(&mut params, sub, "force");
     put_bool(&mut params, sub, "materialize");
+    if sub.get_one::<String>("kind").map(String::as_str) == Some("pdf") {
+        if expanded.len() > 1 {
+            return ingest_many_pdfs(router, &params, &expanded);
+        }
+        if let Some(path) = expanded.first() {
+            params.insert("pdf_path".into(), Value::String(path.clone()));
+        }
+    }
     Ok(("ingest", router.call("ingest", &params)?))
 }
 
@@ -1434,5 +1594,81 @@ mod tests {
         let sub = matches.subcommand().unwrap().1;
         let err = kv_pairs(sub, "extra", "--extra").unwrap_err();
         assert_eq!(err.code, "BAD_VALUE");
+    }
+
+    #[test]
+    fn pdf_paths_expand_folders_patterns_and_dedupe() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("docs");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("b.PDF"), b"b").unwrap();
+        std::fs::write(dir.join("a.pdf"), b"a").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"n").unwrap();
+        let folder = dir.to_string_lossy().into_owned();
+        let expanded = expand_pdf_paths(std::slice::from_ref(&folder)).unwrap();
+        assert_eq!(expanded.len(), 2);
+        assert!(expanded[0].to_lowercase().ends_with("a.pdf"));
+
+        let pattern = format!("{}/b.*", folder);
+        let expanded = expand_pdf_paths(&[
+            format!("{}/a.pdf", folder),
+            pattern,
+            format!("{}/a.pdf", folder),
+        ])
+        .unwrap();
+        assert_eq!(expanded.len(), 2, "{expanded:?}");
+
+        let err = expand_pdf_paths(&[format!("{}/missing-*.pdf", folder)]).unwrap_err();
+        assert_eq!(err.code, "FILE_NOT_FOUND");
+        assert_eq!(
+            err.fields["pattern"],
+            json!(format!("{}/missing-*.pdf", folder))
+        );
+    }
+
+    struct RecordingClient {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl OpClient for RecordingClient {
+        fn call(&self, op: &str, params: &Map<String, Value>) -> Result<Value> {
+            assert_eq!(op, "ingest");
+            let path = params["pdf_path"].as_str().unwrap().to_string();
+            self.calls.lock().unwrap().push(path.clone());
+            if path.ends_with("bad.pdf") {
+                return Err(OkfError::new("CONVERSION_FAILED", "bad PDF"));
+            }
+            Ok(json!({ "page_count": 1 }))
+        }
+    }
+
+    #[test]
+    fn multiple_pdf_batch_reports_every_file_and_first_error() {
+        let client = RecordingClient {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let base = Map::new();
+        let paths = vec!["good.pdf".to_string(), "good2.pdf".to_string()];
+        let (op, data) = ingest_many_pdfs(&client, &base, &paths).unwrap();
+        assert_eq!(op, "ingest");
+        let files = data["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["ok"], json!(true));
+        assert_eq!(files[1]["ok"], json!(true));
+        assert_eq!(client.calls.lock().unwrap().len(), 2);
+
+        let err = ingest_many_pdfs(&client, &base, &["bad.pdf".to_string()]).unwrap_err();
+        assert_eq!(err.code, "CONVERSION_FAILED");
+        assert_eq!(err.data.as_ref().unwrap()["files"][0]["ok"], json!(false));
+
+        let err = ingest_many_pdfs(&client, &base, &["bad.pdf".to_string()]).unwrap_err();
+        assert_eq!(err.code, "CONVERSION_FAILED");
+        assert_eq!(
+            err.data.as_ref().unwrap()["files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

@@ -93,35 +93,80 @@ fn extract_refs(body: &str) -> Vec<(String, String)> {
             cursor = close_alt + 1;
             continue;
         }
-        let Some(close_src) = body[opening + 1..].find(')') else {
-            break;
-        };
-        let src = body[opening + 1..opening + 1 + close_src].trim();
-        let src = if src.starts_with('<') && src.ends_with('>') {
-            src[1..src.len() - 1].trim()
-        } else {
-            src
-        };
-        if !src.is_empty() {
-            out.push((
-                body[start + 2..close_alt].trim().to_string(),
-                src.to_string(),
-            ));
+        // Python's image regex is `src=<...>|[^)\s]+` followed by an
+        // optional quoted title. A title is not part of the source and must
+        // not leak into the asset id or the on-disk lookup.
+        let mut p = opening + 1;
+        while body.as_bytes().get(p).is_some_and(u8::is_ascii_whitespace) {
+            p += 1;
         }
-        cursor = opening + close_src + 1;
+        let src = if body.as_bytes().get(p) == Some(&b'<') {
+            let Some(end) = body[p + 1..].find('>') else {
+                break;
+            };
+            let value = body[p + 1..p + 1 + end].trim().to_string();
+            p += end + 2;
+            value
+        } else {
+            let begin = p;
+            while let Some(byte) = body.as_bytes().get(p) {
+                if byte.is_ascii_whitespace() || *byte == b')' {
+                    break;
+                }
+                p += 1;
+            }
+            body[begin..p].to_string()
+        };
+        if body.as_bytes().get(p).is_some_and(u8::is_ascii_whitespace) {
+            while body.as_bytes().get(p).is_some_and(u8::is_ascii_whitespace) {
+                p += 1;
+            }
+            if let Some(quote @ (b'\'' | b'"')) = body.as_bytes().get(p).copied() {
+                p += 1;
+                while let Some(byte) = body.as_bytes().get(p) {
+                    if *byte == quote {
+                        p += 1;
+                        break;
+                    }
+                    p += 1;
+                }
+                while body.as_bytes().get(p).is_some_and(u8::is_ascii_whitespace) {
+                    p += 1;
+                }
+            }
+        }
+        if body.as_bytes().get(p) != Some(&b')') {
+            cursor = opening + 1;
+            continue;
+        }
+        if !src.is_empty() {
+            out.push((body[start + 2..close_alt].trim().to_string(), src));
+        }
+        cursor = p + 1;
     }
     out
 }
 
-fn okf_asset_id(src: &str) -> Option<&str> {
-    src.strip_prefix("okf-asset://")
-        .map(|value| value.trim().trim_matches('/'))
-        .filter(|value| !value.is_empty())
+/// Accept only a single stored asset name. Python 0.15 trusts whatever
+/// follows `okf-asset://`; that permits `..`, absolute paths and Windows
+/// drive/colon paths to escape the bundle and read arbitrary local bytes.
+/// This is an intentional hardening divergence: those ids are refused here.
+fn okf_asset_id(src: &str) -> Option<String> {
+    let ident = src.strip_prefix("okf-asset://")?.trim().trim_matches('/');
+    if ident.is_empty()
+        || ident == "."
+        || ident.contains("..")
+        || ident.contains(['/', '\\', ':', '%', '\0'])
+        || ident.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(ident.to_string())
 }
 
 fn asset_id(concept_id: &str, index: usize, src: &str) -> String {
     if let Some(found) = okf_asset_id(src) {
-        return found.to_string();
+        return found;
     }
     let namespace = uuid::Uuid::parse_str(NAMESPACE).expect("valid uuid namespace");
     let id = uuid::Uuid::new_v5(&namespace, format!("{concept_id}:{index}:{src}").as_bytes());
@@ -130,7 +175,7 @@ fn asset_id(concept_id: &str, index: usize, src: &str) -> String {
 
 fn filename_from_src(src: &str) -> String {
     if let Some(found) = okf_asset_id(src) {
-        return found.to_string();
+        return found;
     }
     if let Some(header) = src.strip_prefix("data:") {
         let header = header.split(',').next().unwrap_or("image/png");
@@ -227,10 +272,14 @@ fn within_root(path: &Path, root: Option<&Path>) -> bool {
 }
 
 fn asset_store_bytes(asset_id: &str, search_dirs: &[PathBuf]) -> Option<Vec<u8>> {
+    // Defense in depth: every caller validates, but a stored asset id must
+    // never become a path outside its own store directory.
+    let asset_id = okf_asset_id(&format!("okf-asset://{asset_id}"))?;
+    let prefix = format!("{asset_id}.");
     for base in search_dirs {
         for dir in [base.join(ASSET_STORE_DIRNAME), base.clone()] {
-            let exact = dir.join(asset_id);
-            if exact.is_file() {
+            let exact = dir.join(&asset_id);
+            if exact.is_file() && within_root(&exact, Some(&dir)) {
                 if let Ok(data) = fs::read(&exact) {
                     return Some(data);
                 }
@@ -246,13 +295,15 @@ fn asset_store_bytes(asset_id: &str, search_dirs: &[PathBuf]) -> Option<Vec<u8>>
                         && path
                             .file_name()
                             .and_then(|name| name.to_str())
-                            .is_some_and(|name| name.starts_with(&format!("{asset_id}.")))
+                            .is_some_and(|name| name.starts_with(&prefix))
                 })
                 .collect();
             matches.sort();
             for path in matches {
-                if let Ok(data) = fs::read(path) {
-                    return Some(data);
+                if within_root(&path, Some(&dir)) {
+                    if let Ok(data) = fs::read(path) {
+                        return Some(data);
+                    }
                 }
             }
         }
@@ -389,7 +440,7 @@ fn load_bytes(
         return decode_data_uri(src);
     }
     if let Some(id) = okf_asset_id(src) {
-        return asset_store_bytes(id, search_dirs);
+        return asset_store_bytes(&id, search_dirs);
     }
     if remote_src(src) {
         if !settings.allow_remote_images {
@@ -480,6 +531,20 @@ fn route_and_caption(img: &Extracted, mode: &str, concept_id: &str) -> (Route, S
         "optional" | "omni" if img.data.is_some() => (Route::Vision, String::new()),
         _ => (Route::Text, img.alt_text.clone().unwrap_or(fallback)),
     }
+}
+
+/// Python's `_caption_route`: the fallback for an image whose bytes the
+/// vision lane refused to embed (other than a declared host outage).
+fn caption_route(img: &Extracted, concept_id: &str) -> (Route, String) {
+    let caption = img
+        .alt_text
+        .clone()
+        .unwrap_or_else(|| fallback_caption(&img.filename, img.index, concept_id));
+    (Route::Text, caption)
+}
+
+fn is_lane_outage(err: &crate::error::OkfError) -> bool {
+    err.code == "EXTERNAL_UNAVAILABLE"
 }
 
 fn text_hash(caption: &str) -> String {
@@ -620,12 +685,28 @@ pub fn ingest_concept_images(
         return Ok(0);
     }
     let total = images.len();
+    #[cfg_attr(
+        not(any(feature = "vision", feature = "external")),
+        allow(unused_variables)
+    )]
+    let mut vision_unavailable = false;
     #[cfg(any(feature = "vision", feature = "external"))]
     if images.iter().any(|img| img.data.is_some())
         && matches!(settings.mode.as_str(), "optional" | "omni")
     {
-        let vision = pools.vision.get(settings)?;
-        pin_image_graph(store, settings, engine, vision.as_ref())?;
+        match pools.vision.get(settings) {
+            Ok(vision) => pin_image_graph(store, settings, engine, vision.as_ref())?,
+            Err(err) if is_lane_outage(&err) => return Err(err),
+            Err(err) => {
+                // Missing/incompatible vision runtime is a per-image
+                // problem in Python 0.15: the concept survives on captions.
+                tracing::warn!(
+                    "image ingestion: vision lane unavailable, falling back to captions: {}",
+                    err.message
+                );
+                vision_unavailable = true;
+            }
+        }
     }
     let mut planned = BTreeSet::new();
     let mut skip = 0;
@@ -639,19 +720,48 @@ pub fn ingest_concept_images(
             skip += 1;
             continue;
         }
-        let (route, caption) = route_and_caption(&img, &settings.mode, concept_id);
+        let (mut route, mut caption) = route_and_caption(&img, &settings.mode, concept_id);
+        if route == Route::Vision && vision_unavailable {
+            (route, caption) = caption_route(&img, concept_id);
+        }
         #[cfg_attr(
             not(any(feature = "vision", feature = "external")),
             allow(unused_variables)
         )]
         let data = img.data.clone().unwrap_or_default();
-        let content_hash = match route {
-            Route::Text => text_hash(&caption),
+        let (content_hash, embedding) = match route {
+            Route::Text => (
+                text_hash(&caption),
+                engine.encode(&caption, Task::Document)?,
+            ),
             Route::Vision => {
                 #[cfg(any(feature = "vision", feature = "external"))]
                 {
-                    let vision = pools.vision.get(settings)?;
-                    vision_hash(vision.model_id(), vision.precision(), &data)
+                    let encoded = (|| -> crate::error::Result<(String, Vec<f32>)> {
+                        let vision = pools.vision.get(settings)?;
+                        let embedding = vision.encode_image(&data)?;
+                        let hash = vision_hash(vision.model_id(), vision.precision(), &data);
+                        Ok((hash, embedding))
+                    })();
+                    match encoded {
+                        Ok(value) => value,
+                        Err(err) if is_lane_outage(&err) => return Err(err),
+                        Err(err) => {
+                            // Undecodable bytes or a host refusing one image:
+                            // keep the document with a caption row.
+                            tracing::warn!(
+                                "image ingestion: {} image(s) embedded as captions: {}::{}",
+                                1,
+                                err.code,
+                                err.message.chars().take(160).collect::<String>()
+                            );
+                            (route, caption) = caption_route(&img, concept_id);
+                            (
+                                text_hash(&caption),
+                                engine.encode(&caption, Task::Document)?,
+                            )
+                        }
+                    }
                 }
                 #[cfg(not(any(feature = "vision", feature = "external")))]
                 {
@@ -670,22 +780,6 @@ pub fn ingest_concept_images(
             store.link_image_asset(concept_id, &img.asset_id)?;
             continue;
         }
-        let embedding = match route {
-            Route::Text => engine.encode(&caption, Task::Document)?,
-            Route::Vision => {
-                #[cfg(any(feature = "vision", feature = "external"))]
-                {
-                    pools.vision.get(settings)?.encode_image(&data)?
-                }
-                #[cfg(not(any(feature = "vision", feature = "external")))]
-                {
-                    return Err(crate::error::OkfError::new(
-                        "BAD_VALUE",
-                        "vision image ingestion requires a build with --features vision or external",
-                    ));
-                }
-            }
-        };
         pending.push((img, route, caption, content_hash, embedding));
     }
     for (asset_id, _) in store.image_asset_fingerprints_for_concept(concept_id)? {
@@ -745,6 +839,59 @@ mod tests {
         assert_eq!(percent_decode("%4"), "%4");
         assert_eq!(percent_decode("%GG"), "%GG");
         assert_eq!(percent_decode("100%25"), "100%");
+    }
+
+    #[test]
+    fn image_refs_ignore_titles_and_keep_angle_sources() {
+        let body = concat!(
+            "![fox](pic.png \"A titled fox\")\n",
+            "![other](<path with spaces.png> 'single title')\n",
+            "![plain](plain.png)\n",
+        );
+        assert_eq!(
+            super::extract_refs(body),
+            vec![
+                ("fox".to_string(), "pic.png".to_string()),
+                ("other".to_string(), "path with spaces.png".to_string()),
+                ("plain".to_string(), "plain.png".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn asset_ids_refuse_traversal_and_absolute_paths() {
+        let valid = "img_01234567-89ab-cdef-0123-456789abcdef";
+        assert_eq!(
+            super::okf_asset_id(&format!("okf-asset://{valid}")),
+            Some(valid.to_string())
+        );
+        for bad in [
+            "okf-asset://../../etc/passwd",
+            "okf-asset:///etc/passwd",
+            "okf-asset://C:/Users/secret.txt",
+            "okf-asset://name:stream",
+            "okf-asset://..",
+            "okf-asset://.",
+            "okf-asset://",
+            "okf-asset://%2e%2e%2fsecret",
+        ] {
+            assert_eq!(super::okf_asset_id(bad), None, "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn asset_store_never_reads_outside_the_store_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("bundle");
+        let assets = root.join("_assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(temp.path().join("secret.txt"), b"top secret").unwrap();
+        std::fs::write(assets.join("img_ok.png"), b"public").unwrap();
+        assert_eq!(
+            super::asset_store_bytes("img_ok", std::slice::from_ref(&root)),
+            Some(b"public".to_vec())
+        );
+        assert_eq!(super::asset_store_bytes("../secret", &[root]), None);
     }
 
     #[cfg(feature = "external")]

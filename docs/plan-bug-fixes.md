@@ -2,9 +2,10 @@
 
 **Status:** review plan from `6a71fec`, updated after the complete M6 cutover
 and the post-cutover review at `a62d1c9`. All code findings through BUG-066 are
-closed. The post-cutover rounds have closed **BUG-067–BUG-082** (settings/open
-contract, named-root/write integrity and semantic parity); **BUG-083–BUG-089**
-remain open in section 8A.
+closed. All post-cutover findings **BUG-067–BUG-089** are closed by four fix
+rounds (settings/open contract, named-root/write integrity, semantic parity,
+and image/BibTeX/export/surface hardening). The original review remains in
+section 8A as the evidence trail.
 Section 11 is the authoritative register and records the one intentional
 divergence and the ongoing gate obligations. The original review below is kept
 as the evidence trail.
@@ -20,7 +21,7 @@ materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
 and the write lock are implemented. The M4 serve/MCP/client slice is also in:
 11 rmcp tools, `--connect`, the public `OKFClient`, the HTTP job lane, the
-full 29-command CLI, and typed conversion-error envelopes. The broad differential matrix is green for **68 comparable scenarios**
+full 29-command CLI, and typed conversion-error envelopes. The broad differential matrix is green for **72 comparable scenarios**
 after normalizing wall-clock graph times/internal IDs and the documented
 intentional differences; `ingest-pdf-no-plugin` records the
 intentional missing-plugin error divergence instead of a green comparison.
@@ -86,8 +87,10 @@ Final verification on `rust-core` through the M6 security hardening round:
   `file-free-writes` and `detached-write-refusal` were green after the final
   Windows path-normalization fix. The semantic-parity round
   (BUG-077–BUG-082) reran the full matrix at `TOTAL:69 FAILS:0` with seven new
-  scenarios; `check_coverage.py` reports 74 outputs scanned. Rust suites are
-  103 all-feature, 81 no-default and 9 fuzz; fmt and clippy are clean.
+  scenarios; `check_coverage.py` reports 74 outputs scanned. The final
+  image/BibTeX/export/job/MCP round reran the matrix at `TOTAL:73 FAILS:0`
+  with four new scenarios; coverage reports 78 outputs. Rust suites are 111
+  all-feature, 86 no-default and 9 fuzz; fmt and clippy are clean. `check_cli_pdf_batch.py`, `check_jobs.py` and MCP HTTP/serialization smokes are green.
 - The full six-job CI matrix was green on `44899657898` for code commit
   `333f8df`. The final commit `66df990` changes only docs and the parity
   harness, and its CI run was stopped by the operator before completion.
@@ -1830,12 +1833,12 @@ Add these before calling the beta usable:
 | `links-code-encoding-ambiguity` | BUG-081 |
 | `import-uppercase-extensions` | BUG-082 |
 | `images-corrupt-and-title` | BUG-083 |
-| `images-asset-traversal` | BUG-084 |
+| `images-asset-traversal` (plus Rust-only traversal unit tests) | BUG-084 |
 | `bibtex-sparse-entry` | BUG-085 |
 | `export-existing-links` | BUG-086 |
-| `ingest-pdf-multiple` | BUG-087 |
-| `jobs-reembed-lock` | BUG-088 |
-| `mcp-http-serialization` | BUG-089 |
+| `check_cli_pdf_batch.py` (two paths, folder, glob, unmatched, mixed) | BUG-087 |
+| `check_jobs.py` plus Rust claim/lock unit tests | BUG-088 |
+| MCP unit serialization test plus `check_mcp_http.py` | BUG-089 |
 
 For each scenario, include both success and typed-error envelopes, and compare
 the semantic DB dump plus the export tree where applicable. BUG-075 and
@@ -2008,8 +2011,10 @@ pruning; the CLI differential smoke remains 13/13.
 
 ## 8A. Post-cutover review findings (BUG-067–BUG-089)
 
-BUG-067–BUG-071 are closed by the settings/open fix round; BUG-072–BUG-089
-remain open.
+All findings in this section are closed: BUG-067–BUG-071 by the settings/open
+round, BUG-072–BUG-076 by named-root/write integrity, BUG-077–BUG-082 by
+semantic parity, and BUG-083–BUG-089 by the image/BibTeX/export and surface
+rounds.
 
 **Review baseline:** `a62d1c9` (`docs: refresh Rust-first 0.16 documentation set`).
 This review exercised the public Python facade, `okf`, `okf serve`, and the
@@ -2668,7 +2673,16 @@ names; compare file sets and DB dumps.
 
 ### BUG-083 — Image ingestion aborts on vision failures and ignores optional image titles
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed** (final image/BibTeX round).
+
+**Resolution:** image refs now parse optional quoted titles and `<...>`
+sources into the source id only. Non-outage vision errors (undecodable bytes,
+missing/incompatible runtime, host refusal of one image) fall back to the
+caption route with Python's alt/filename caption and text hash; only
+`EXTERNAL_UNAVAILABLE` aborts. `images-corrupt-and-title` compares the rows
+and DB dump; unit tests cover the title forms.
+
+
 
 **Where:** `src/image_ingest.rs:673-688` (`ingest_concept_images`),
 `82-112` (`extract_refs`), `476-481` (`route_and_caption`).
@@ -2697,7 +2711,16 @@ lane outage still aborts; valid image with `"title"`, `'title'`, and
 
 ### BUG-084 — `okf-asset://` paths can escape the bundle and read arbitrary local files
 
-**Severity:** P0, S — **Status: open (security; inherited from Python 0.15)**.
+**Severity:** P0, S — **Status: closed** (intentional hardening divergence).
+
+**Resolution:** `okf_asset_id` now accepts only a single safe name component:
+no separators, drive/colon forms, `..`, percent escapes, control characters,
+or absolute paths. `asset_store_bytes` revalidates and canonicalizes every
+candidate under the asset store before reading. Python 0.15 is intentionally
+left unchanged, so arbitrary-file reads remain a documented divergence; Rust
+unit tests prove `..`, absolute, drive, colon and encoded ids are refused and
+that no file outside the store can be read. The differential scenario uses a
+missing id so both runners skip it.
 
 **Where:** `src/image_ingest.rs:116-128` (`okf_asset_id`), `229-250`
 (`asset_store_bytes`), `382-393` (`load_bytes`).
@@ -2726,7 +2749,14 @@ store; assert no read outside root and no asset row for rejected ids.
 
 ### BUG-085 — BibTeX sparse entries lose the citation fallback and keep untrimmed metadata
 
-**Severity:** P2, S — **Status: open**.
+**Severity:** P2, S — **Status: closed** (final image/BibTeX round).
+
+**Resolution:** `unwrap_braces` now matches Python's repeated
+`{([^{}]*)}` substitution; author/year/venue/DOI/URL/abstract are trimmed,
+and the citation uses `f"{head}. {venue}".strip(" .")` with the entry key
+fallback. `bibtex-sparse-entry` compares padded/braced and title-only entries.
+
+
 
 **Where:** `src/converters.rs:922-1000` (`ingest_bib`), `547-620`
 (`parse_bibtex`).
@@ -2751,7 +2781,15 @@ frontmatter, tags, and DB dump.
 
 ### BUG-086 — Export “See Also” duplicates links whose target appears mid-URL
 
-**Severity:** P2, S — **Status: open**.
+**Severity:** P2, S — **Status: closed** (final image/BibTeX round).
+
+**Resolution:** See Also suppression now scans every `](destination)` and
+checks whether the destination contains the target id, matching Python's
+regex instead of matching only a URL prefix. `export-existing-links` compares
+the exported tree; a unit test covers `target.md`, `dir/target.md` and
+`../target.md`.
+
+
 
 **Where:** `src/export/mod.rs:234-265` (`enrich_body`).
 
@@ -2774,7 +2812,16 @@ duplicate See Also and compare export trees.
 
 ### BUG-087 — CLI PDF ingestion cannot take multiple paths or folders
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed** (final surface round).
+
+**Resolution:** the CLI expands folders, literal `*?` patterns and multiple
+`--pdf-path` values exactly like Python, deduplicates by resolved path, and
+calls the single-path op once per file. One file keeps the existing envelope;
+multiple files return `data.files` with per-file result/error records and the
+first error as the envelope error. `check_cli_pdf_batch.py` compares two
+paths, a folder, a glob, an unmatched glob and a mixed valid/missing batch.
+
+
 
 **Where:** `src/cli/mod.rs:1103-1107`, `src/converters.rs:1671-1676`.
 
@@ -2798,7 +2845,17 @@ on a preflight failure.
 
 ### BUG-088 — Job-lane reembed bypasses the write lock and diverges from Python’s job contract
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed** (final surface round).
+
+**Resolution:** jobs are limited to Python's `JOB_OPS = ("reembed",)`.
+Submission atomically claims `Router::try_claim_reembed`, so a queued job and
+a sync reembed cannot race; the worker takes the owner `op_lock` and the same
+write lock as a sync reembed. Job views keep the last progress phase and
+report `elapsed: 0.0` until `started`; `mode` is removed from stored kwargs.
+Unit tests cover the claim guard; `check_jobs.py` covers refusal, dedupe,
+elapsed, kwargs and cancel semantics.
+
+
 
 **Where:** `src/server/mod.rs:155-226` (`JobManager::submit`), `278-284`
 (`view_with_elapsed`), `347-353` (`finish`), `478-520`
@@ -2835,7 +2892,15 @@ job refusal; CLI writer during reembed sees `WRITE_LOCK_TIMEOUT`; compare
 
 ### BUG-089 — MCP tool calls bypass the owner’s `op_lock`
 
-**Severity:** P1, S — **Status: open**.
+**Severity:** P1, S — **Status: closed** (final surface round).
+
+**Resolution:** `McpHttpService` now receives the owner `op_lock` and every
+`OkfMcp` tool call acquires it in `spawn_blocking` before invoking the router,
+matching HTTP `/ops` and jobs. Direct stdio servers still own their process
+without an extra lock. A tokio unit test asserts two slow MCP calls never
+overlap; `check_mcp_http.py` remains green.
+
+
 
 **Where:** `src/mcp/mod.rs:82-90` (`invoke`), `src/server/mod.rs:28-50`
 (`AppState.op_lock`).
@@ -2959,13 +3024,13 @@ it does **not** mean every release gate is green.
 | BUG-080 | Closed | Core field types and timestamps are validated; malformed YAML is skipped with DirHash retry; anchors/aliases are explicitly rejected. | Keep the rejected-YAML unit tests and `frontmatter-type-errors` green. |
 | BUG-081 | Closed | Code spans/fences are blanked, titles and angle sources parse, percent escapes decode, escaping `..` stays broken, and three-way ambiguity never resolves. | Keep link unit tests and the differential scenario green. |
 | BUG-082 | Closed | One lowercasing `is_concept_file` predicate drives import, detach, lint, diff and sync. | Reuse the predicate for any new source-discovery path. |
-| BUG-083 | Open | Vision-route errors abort the concept; Python falls back to captions except lane outages. Image refs ignore optional titles. | Catch per-image non-outage failures, preserve outage behavior, parse titles/angle sources; compare rows. |
-| BUG-084 | Open (security) | `okf-asset://` ids are joined without rejecting `..`/absolute/drive paths, allowing arbitrary local file reads into `ImageAsset`. | Validate to a safe asset id, canonicalize/within-root check every branch, test Windows/POSIX traversal. |
-| BUG-085 | Open | BibTeX citations lose the `entry.key` fallback and keep untrimmed/braced author/venue/abstract fields. | Reproduce Python citation fallback, trimming and `unwrap_braces`; test sparse/padded entries. |
-| BUG-086 | Open | Export See Also only detects `](target` at the start of a URL; links like `dir/target.md` get duplicated. | Compare resolved link destinations, not a prefix substring; test relative/up-level/alias links. |
-| BUG-087 | Open | CLI sends `pdf_path` as an array but `ingest_pdf` expects one string; multi-path/folder/glob PDF ingest fails. | Accept a list or loop in the CLI, add folder/glob expansion, preserve per-file reports. |
-| BUG-088 | Open | Job reembed bypasses `with_write_lock`; `_reembed_active` is not checked at submission; any op is accepted; queued elapsed/phase differ. | Route jobs through the same lock/op wrapper, limit `JOB_OPS`, match phase/elapsed/kwargs, test races. |
-| BUG-089 | Open | MCP `invoke` calls the router without `op_lock`; Python serializes MCP and HTTP through `LockedRouter`. | Pass the owner lock into `OkfMcp`/`McpHttpService`; test MCP+HTTP write/search serialization. |
+| BUG-083 | Closed | Vision failures fall back to Python-shaped captions (outages still abort), and optional titles/angle sources no longer change asset ids. | Keep `images-corrupt-and-title` green. |
+| BUG-084 | Closed | Asset ids are single safe names revalidated under the store root; traversal, drive and encoded ids are refused (intentional divergence from Python 0.15). | Keep the Rust unit regressions green. |
+| BUG-085 | Closed | Sparse citations use the key fallback, all text fields are trimmed, and brace unwrapping matches PyYAML/PyBibTeX input. | Keep `bibtex-sparse-entry` green. |
+| BUG-086 | Closed | See Also suppression scans any `](...)` destination containing the target id. | Keep `export-existing-links` green. |
+| BUG-087 | Closed | CLI expands folders/globs/multiple paths and returns Python-shaped per-file reports; preflight errors stay typed. | Keep `check_cli_pdf_batch.py` green. |
+| BUG-088 | Closed | Reembed jobs claim the active slot at submit, share owner and write locks, and use Python job view semantics. | Keep `check_jobs.py` and claim-unit tests green. |
+| BUG-089 | Closed | MCP calls acquire the owner op lock; stdio servers remain lock-free owners. | Keep the serialization unit test and MCP HTTP smoke green. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order
@@ -2990,9 +3055,11 @@ Post-cutover review:
    for traversal, search bounds, frontmatter, links and file discovery.~~
    Done: seven new scenarios, shared source-discovery predicate, typed YAML
    skipping, Python-shaped link extraction and traverse/search semantics.
-4. BUG-083, BUG-084, BUG-085, BUG-086, BUG-087 — images, BibTeX, export and
-   CLI PDF surfaces.
-5. BUG-088, BUG-089 — job and MCP serialization.
+4. ~~BUG-083, BUG-084, BUG-085, BUG-086, BUG-087 — images, BibTeX, export and
+   CLI PDF surfaces.~~ Done: caption fallback, safe asset ids, sparse BibTeX,
+   See Also matching and CLI PDF batch envelopes.
+5. ~~BUG-088, BUG-089 — job and MCP serialization.~~ Done: job claim/write
+   lock, Python job views and owner-wide MCP locking.
 
 Each close needs code + regression test + parity/scenario (or an explicit
 documented exclusion) + updated status in this file.

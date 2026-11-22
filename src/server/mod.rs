@@ -78,6 +78,9 @@ struct JobManager {
 const KEEP_TERMINAL: usize = 64;
 const RETIRE_AFTER_SECS: u64 = 3600;
 
+/// Python's `JOB_OPS`: only `reembed` may be submitted as a background job.
+pub const JOB_OPS: &[&str] = &["reembed"];
+
 impl JobManager {
     fn new_id(&self) -> String {
         let n = self.next.fetch_add(1, Ordering::Relaxed) + 1;
@@ -159,7 +162,14 @@ impl JobManager {
         router: Arc<Router>,
         op_lock: Arc<Mutex<()>>,
     ) -> Result<String> {
-        if op == "reembed" && self.has_running("reembed") {
+        if !JOB_OPS.contains(&op) {
+            return Err(
+                OkfError::new("BAD_VALUE", format!("'{op}' cannot run as a job"))
+                    .op("jobs")
+                    .field("job_ops", json!(JOB_OPS)),
+            );
+        }
+        if self.has_running("reembed") || router.reembed_active() {
             return Err(OkfError::new(
                 "REEMBED_IN_PROGRESS",
                 "another reembed is already running (or queued) on this graph",
@@ -167,6 +177,17 @@ impl JobManager {
             .op("reembed")
             .remedy("watch GET /jobs/<id>, or cancel it with POST /jobs/<id>/cancel"));
         }
+        // Claim before publishing the queued record: a second submit (or a
+        // sync reembed) must see the slot taken immediately. The guard is
+        // moved into the worker and released on every exit path.
+        let Some(claim) = router.try_claim_reembed() else {
+            return Err(OkfError::new(
+                "REEMBED_IN_PROGRESS",
+                "another reembed is already running (or queued) on this graph",
+            )
+            .op("reembed")
+            .remedy("watch GET /jobs/<id>, or cancel it with POST /jobs/<id>/cancel"));
+        };
         let id = self.new_id();
         let cancel = Arc::new(AtomicBool::new(false));
         let view = JobView {
@@ -193,7 +214,7 @@ impl JobManager {
         );
         let jobs = self.clone();
         let job_id = id.clone();
-        let run: Box<dyn FnOnce() -> Result<Value> + Send> = if op == "reembed" {
+        let run: Box<dyn FnOnce() -> Result<Value> + Send> = {
             let progress_jobs = jobs.clone();
             let progress_id = job_id.clone();
             let progress = move |phase: &str, done: usize, total: usize| {
@@ -207,21 +228,18 @@ impl JobManager {
             let router = Arc::clone(&router);
             let reembed_lock = Arc::clone(&op_lock);
             Box::new(move || {
-                let _guard = reembed_lock.lock().expect("op lock");
-                router.reembed_with_control(
+                // Same order as a sync `/ops/reembed`: owner lock, then the
+                // inter-process write lock. No `Router::call` here, so the
+                // write lock is not taken twice.
+                let _owner_guard = reembed_lock.lock().expect("op lock");
+                router.reembed_with_control_locked(
                     &params,
                     crate::ops::ReembedControl {
                         progress: Some(Arc::new(progress)),
                         cancelled: Some(Arc::new(cancelled)),
                     },
+                    claim,
                 )
-            })
-        } else {
-            let op_name = op.to_string();
-            let call_lock = Arc::clone(&op_lock);
-            Box::new(move || {
-                let _guard = call_lock.lock().expect("op lock");
-                router.call(&op_name, &params)
             })
         };
         tokio::task::spawn_blocking(move || {
@@ -277,9 +295,14 @@ impl JobManager {
 
     fn view_with_elapsed(view: &JobView) -> JobView {
         let mut view = view.clone();
-        let end = view.finished.unwrap_or_else(now_secs);
-        let start = view.started.unwrap_or(view.submitted);
-        view.elapsed = (end.saturating_sub(start) as f64 * 10.0).round() / 10.0;
+        // Python's `view()` reports 0.0 until the worker actually starts.
+        view.elapsed = match view.started {
+            Some(started) => {
+                let end = view.finished.unwrap_or_else(now_secs);
+                (end.saturating_sub(started) as f64 * 10.0).round() / 10.0
+            }
+            None => 0.0,
+        };
         view
     }
 
@@ -350,7 +373,7 @@ impl JobManager {
             job.view.finished = Some(now_secs());
             job.view.result = result;
             job.view.error = error;
-            job.view.phase = None;
+            // Python keeps the last progress phase on terminal records.
         }
     }
 }
@@ -401,8 +424,10 @@ fn unknown_op(op: &str) -> (StatusCode, Json<Value>) {
 fn submit_result(
     state: &Arc<AppState>,
     op: &str,
-    params: Map<String, Value>,
+    mut params: Map<String, Value>,
 ) -> (StatusCode, Json<Value>) {
+    // The transport-level switch is not an op argument stored on the record.
+    params.remove("mode");
     match state.jobs.submit(
         op,
         params,
@@ -481,8 +506,11 @@ async fn submit_job_op(
     body: Bytes,
 ) -> (StatusCode, Json<Value>) {
     let op = id;
-    if !OP_NAMES.contains(&op.as_str()) {
-        return unknown_op(&op);
+    if !JOB_OPS.contains(&op.as_str()) {
+        let err = OkfError::new("BAD_VALUE", format!("'{op}' cannot run as a job"))
+            .op("jobs")
+            .field("job_ops", json!(JOB_OPS));
+        return envelope_json_status("job", Err(err), StatusCode::BAD_REQUEST);
     }
     let params = parse_params(&body, &op);
     let params = match params {
@@ -513,7 +541,13 @@ async fn submit_job_body(
         }
     };
     let op = match request.get("op").and_then(Value::as_str) {
-        Some(op) if OP_NAMES.contains(&op) => op.to_string(),
+        Some(op) if JOB_OPS.contains(&op) => op.to_string(),
+        Some(op) if OP_NAMES.contains(&op) => {
+            let err = OkfError::new("BAD_VALUE", format!("'{op}' cannot run as a job"))
+                .op("jobs")
+                .field("job_ops", json!(JOB_OPS));
+            return envelope_json_status("job", Err(err), StatusCode::BAD_REQUEST);
+        }
         Some(op) => {
             let err = OkfError::new("BAD_VALUE", format!("unknown op '{op}'"))
                 .field("op", json!(op))
@@ -626,15 +660,17 @@ async fn call_op(
 
 pub fn http_router(router: Arc<Router>, settings: Settings) -> AxumRouter {
     #[cfg(feature = "mcp")]
+    let op_lock = Arc::new(Mutex::new(()));
     let mcp = crate::mcp::McpHttpService::new(
         Arc::clone(&router) as Arc<dyn crate::ops::OpClient>,
         settings.clone(),
+        Arc::clone(&op_lock),
     );
     let state = Arc::new(AppState {
         router,
         settings,
         jobs: JobManager::default(),
-        op_lock: Arc::new(Mutex::new(())),
+        op_lock,
         #[cfg(feature = "mcp")]
         mcp,
     });

@@ -67,7 +67,14 @@ def main() -> int:
         assert bad_mode["ok"] is False, bad_mode
         assert bad_mode["error"]["code"] == "BAD_VALUE", bad_mode
 
+        not_a_job = client._request("POST", "/jobs/search", {"query": "alpha"})
+        assert not_a_job["ok"] is False, not_a_job
+        assert not_a_job["error"]["code"] == "BAD_VALUE", not_a_job
+        assert not_a_job["error"]["fields"]["job_ops"] == ["reembed"], not_a_job
+
         job_id = client.reembed_job(dry_run=True)
+        queued = client.job(job_id)
+        assert queued["elapsed"] == 0.0, queued
         try:
             client.reembed_job(dry_run=True)
         except OKFError as err:
@@ -78,6 +85,7 @@ def main() -> int:
         assert len(job_id) == 12 and all(c in "0123456789abcdef" for c in job_id), job_id
         listed = [row for row in client.jobs() if row["id"] == job_id]
         assert listed and listed[0]["kwargs"] == {"dry_run": True}, listed
+        assert "mode" not in listed[0]["kwargs"], listed
         row = wait_terminal(client, job_id)
         assert row["status"] == "done", row
         assert row["error"] is None, row

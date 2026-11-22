@@ -1,0 +1,24 @@
+{
+  "name": "export-existing-links",
+  "settings": {
+    "db_path": "parity/out/export-existing-links.db",
+    "bundle_root": "parity/corpus/export-existing-links",
+    "model_id": "google/embeddinggemma-2",
+    "embedding_dim": 512,
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false
+  },
+  "setup": {
+    "import": {"corpus": "parity/corpus/export-existing-links"}
+  },
+  "ops": [
+    {
+      "op": "export_bundle",
+      "params": {
+        "output_dir": "parity/out/export-existing-links-@RUNNER@",
+        "flavor": "okf"
+      }
+    }
+  ]
+}

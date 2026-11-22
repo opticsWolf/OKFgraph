@@ -393,45 +393,33 @@ fn slugify(value: &str) -> String {
     }
 }
 
+/// Python's `re.sub(r"{([^{}]*)}", r"\1", value)` applied until stable.
+/// The previous hand-rolled version dropped nested groups but kept the outer
+/// spaces/braces, which changed sparse-entry abstracts and content hashes.
 fn unwrap_braces(value: &str) -> String {
     let mut current = value.to_string();
     loop {
-        let mut out = String::new();
-        let mut changed = false;
-        let mut chars = current.char_indices().peekable();
-        while let Some((_, ch)) = chars.next() {
-            if ch == '{' {
-                let mut inner = String::new();
-                let mut closed = false;
-                for (_, next) in chars.by_ref() {
-                    if next == '}' {
-                        closed = true;
+        let bytes = current.as_bytes();
+        let mut open = None;
+        let mut pair = None;
+        for (index, byte) in bytes.iter().enumerate() {
+            if *byte == b'{' {
+                open = Some(index);
+            } else if *byte == b'}' {
+                if let Some(start) = open {
+                    if !bytes[start + 1..index].contains(&b'{') {
+                        pair = Some((start, index));
                         break;
                     }
-                    if next == '{' {
-                        changed = false;
-                        break;
-                    }
-                    inner.push(next);
                 }
-                if closed && !inner.contains('{') {
-                    out.push_str(&inner);
-                    changed = true;
-                } else {
-                    out.push('{');
-                    out.push_str(&inner);
-                    if closed {
-                        out.push('}');
-                    }
-                }
-            } else {
-                out.push(ch);
+                open = None;
             }
         }
-        if !changed || out == current {
-            return out;
-        }
-        current = out;
+        let Some((start, end)) = pair else {
+            return current;
+        };
+        let inner = current[start + 1..end].to_string();
+        current.replace_range(start..=end, &inner);
     }
 }
 
@@ -924,19 +912,22 @@ fn ingest_bib(
             .fields
             .get("title")
             .map(|value| unwrap_braces(value))
-            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
             .unwrap_or_else(|| entry.key.clone());
-        let authors = entry.fields.get("author").cloned().unwrap_or_default();
-        let year = entry.fields.get("year").cloned().unwrap_or_default();
+        let field = |name: &str| {
+            entry
+                .fields
+                .get(name)
+                .map(|value| value.trim().to_string())
+                .unwrap_or_default()
+        };
+        let authors = field("author");
+        let year = field("year");
         let venue = ["journal", "booktitle", "school", "publisher"]
             .iter()
-            .find_map(|key| {
-                entry
-                    .fields
-                    .get(*key)
-                    .filter(|value| !value.is_empty())
-                    .cloned()
-            })
+            .map(|key| field(key))
+            .find(|value| !value.is_empty())
             .unwrap_or_default();
         let head = [
             authors,
@@ -950,11 +941,16 @@ fn ingest_bib(
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-        let citation = [head, venue.clone()]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join(". ");
+        // Python: `f"{head}. {venue}".strip(" .")` with a citekey fallback.
+        // Filtering empty parts is not equivalent: a title-only entry still
+        // has to produce a citation.
+        let citation = if head.is_empty() && venue.is_empty() {
+            entry.key.clone()
+        } else {
+            format!("{head}. {venue}")
+                .trim_matches(|ch| ch == ' ' || ch == '.')
+                .to_string()
+        };
         let mut tags = vec!["reference".to_string(), entry.entrytype.clone()];
         if !year.is_empty() {
             tags.push(year.clone());
@@ -974,8 +970,9 @@ fn ingest_bib(
             ("doi", "doi"),
             ("url", "url"),
         ] {
-            if let Some(value) = entry.fields.get(bib_key).filter(|value| !value.is_empty()) {
-                meta.insert(key.to_string(), Json::String(value.clone()));
+            let value = field(bib_key);
+            if !value.is_empty() {
+                meta.insert(key.to_string(), Json::String(value));
             }
         }
         if !venue.is_empty() {
@@ -984,21 +981,26 @@ fn ingest_bib(
         let yaml = crate::export::dump_yaml(&Json::Object(meta.into_iter().collect()), 0);
         let mut body = format!("## Citation\n\n{citation}\n\n");
         let mut links = Vec::new();
-        if let Some(doi) = entry.fields.get("doi").filter(|value| !value.is_empty()) {
+        let doi = field("doi");
+        if !doi.is_empty() {
             links.push(format!("[DOI](https://doi.org/{doi})"));
         }
-        if let Some(url) = entry.fields.get("url").filter(|value| !value.is_empty()) {
+        let url = field("url");
+        if !url.is_empty() {
             links.push(format!("[URL]({url})"));
         }
         if !links.is_empty() {
             body.push_str(&format!("{}\n\n", links.join(" ")));
         }
-        let abstract_text = entry
-            .fields
-            .get("abstract")
-            .filter(|value| !value.is_empty())
-            .cloned()
-            .unwrap_or_else(|| "_No abstract provided._".into());
+        let abstract_text = {
+            let value = unwrap_braces(&field("abstract"));
+            let value = value.trim();
+            if value.is_empty() {
+                "_No abstract provided._".to_string()
+            } else {
+                value.to_string()
+            }
+        };
         body.push_str(&format!("## Abstract\n\n{abstract_text}\n"));
         let raw_markdown = format!(
             "---

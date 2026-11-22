@@ -34,6 +34,7 @@ base64 = "0.22"
 url = "2"
 libloading = "0.8"
 tracing = "0.1"
+glob = "0.3"
 
 # Optional core capabilities. Versions are pinned to the Python 0.15 oracle.
 # ort must match embroider 0.15.1's API; rc.15 breaks Session::builder().

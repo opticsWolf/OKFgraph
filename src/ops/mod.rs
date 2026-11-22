@@ -162,7 +162,10 @@ pub struct ReembedControl {
     pub cancelled: Option<CancelledFn>,
 }
 
-struct ReembedGuard(Arc<AtomicBool>);
+/// RAII claim on the single reembed slot. The HTTP job lane claims the slot
+/// at submission time so a second sync or job reembed is refused instead of
+/// silently queueing behind the batch lock.
+pub struct ReembedGuard(Arc<AtomicBool>);
 
 impl Drop for ReembedGuard {
     fn drop(&mut self) {
@@ -576,6 +579,34 @@ impl Router {
         self.reembed_with_control(params, ReembedControl::default())
     }
 
+    /// True while a sync reembed or a queued/running reembed job owns the slot.
+    pub fn reembed_active(&self) -> bool {
+        self.reembed_active.load(Ordering::Acquire)
+    }
+
+    /// Claim the single reembed slot before a job is published. Returns
+    /// `None` when either a sync reembed or another job already owns it.
+    pub fn try_claim_reembed(&self) -> Option<ReembedGuard> {
+        self.reembed_active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
+            .ok()
+            .map(|_| ReembedGuard(Arc::clone(&self.reembed_active)))
+    }
+
+    /// Job-lane reembed: hold the claim and take the same write lock a sync
+    /// `Router::call("reembed", ...)` takes, so a CLI writer cannot run during
+    /// the batches.
+    pub fn reembed_with_control_locked(
+        &self,
+        params: &Map<String, Json>,
+        control: ReembedControl,
+        guard: ReembedGuard,
+    ) -> Result<Json> {
+        self.with_write_lock("reembed", || {
+            self.reembed_with_control_claimed(params, control, guard)
+        })
+    }
+
     /// Reembed with the HTTP job lane's cooperative progress/cancel hooks.
     /// The public op path uses `ReembedControl::default()`.
     pub fn reembed_with_control(
@@ -583,21 +614,25 @@ impl Router {
         params: &Map<String, Json>,
         control: ReembedControl,
     ) -> Result<Json> {
-        if self
-            .reembed_active
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
-            .is_err()
-        {
-            return Err(OkfError::new(
+        let guard = self.try_claim_reembed().ok_or_else(|| {
+            OkfError::new(
                 "REEMBED_IN_PROGRESS",
                 "another reembed is already running on this graph",
             )
             .op("reembed")
             .remedy(
                 "poll GET /jobs/<id> on the owner server, or cancel it with POST /jobs/<id>/cancel",
-            ));
-        }
-        let _guard = ReembedGuard(Arc::clone(&self.reembed_active));
+            )
+        })?;
+        self.reembed_with_control_claimed(params, control, guard)
+    }
+
+    fn reembed_with_control_claimed(
+        &self,
+        params: &Map<String, Json>,
+        control: ReembedControl,
+        _guard: ReembedGuard,
+    ) -> Result<Json> {
         self.pin_checked.store(false, Ordering::Release);
         let dry_run = opt_bool(params, "dry_run")?.unwrap_or(false);
         let engine = self.embedder.get(&self.settings)?;
@@ -5157,6 +5192,23 @@ mod tests {
         let reopened = Router::open(&settings).expect("reopen");
         assert!(!reopened.db_created());
         assert_eq!(reopened.settings().embedding_dim, 256);
+    }
+
+    #[test]
+    fn reembed_slot_is_claimed_until_the_guard_drops() {
+        let settings = Settings::from_map(&Map::from_iter([(
+            "db_path".to_string(),
+            Json::String(":memory:".into()),
+        )]))
+        .expect("settings");
+        let router = Router::open(&settings).expect("router");
+        assert!(!router.reembed_active());
+        let claim = router.try_claim_reembed().expect("first claim");
+        assert!(router.reembed_active());
+        assert!(router.try_claim_reembed().is_none());
+        drop(claim);
+        assert!(!router.reembed_active());
+        assert!(router.try_claim_reembed().is_some());
     }
 
     #[test]

@@ -1,0 +1,28 @@
+{
+  "name": "images-corrupt-and-title",
+  "settings": {
+    "db_path": "parity/out/images-edge-@RUNNER@.db",
+    "bundle_root": "parity/corpus/images-edge",
+    "model_id": "google/embeddinggemma-2",
+    "embedding_dim": 512,
+    "device": "cuda",
+    "precision": "auto",
+    "image_precision": "fp16",
+    "enable_chunking": false
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/images-edge",
+      "mode": "omni"
+    }
+  },
+  "ops": [
+    {
+      "op": "import_bundle",
+      "params": {"bundle_path": "parity/corpus/images-edge", "mode": "omni"}
+    },
+    {"op": "list_images", "params": {"concept_id": "titled"}},
+    {"op": "list_images", "params": {"concept_id": "broken"}},
+    {"op": "get_by_id", "params": {"concept_id": "broken"}}
+  ]
+}

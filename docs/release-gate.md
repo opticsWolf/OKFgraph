@@ -53,8 +53,8 @@ cargo test -p okfgraph --no-default-features --lib
 cargo test -p okfgraph --no-default-features --test fuzz_robustness
 ```
 
-Expected after the settings/open fix round: 91 all-feature tests, 69
-no-default tests and 9 fuzz properties pass.
+Expected: 111 all-feature tests, 86 no-default tests and 9 fuzz properties
+pass.
 
 ### Full differential matrix
 
@@ -120,6 +120,7 @@ python parity/tools/check_wheel.py
 python parity/tools/check_facade.py
 python parity/tools/check_client.py
 python parity/tools/check_jobs.py
+python parity/tools/check_cli_pdf_batch.py --pdf-plugin target/debug/okfgraph_pdf.dll
 python parity/tools/check_mcp.py
 python parity/tools/check_mcp_connect.py
 python parity/tools/check_mcp_http.py

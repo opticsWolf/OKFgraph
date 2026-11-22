@@ -42,6 +42,15 @@ environment variable, error code and important path.
   `OKFGRAPH_NO_SERVER=1`.
 - `wal_mode` is accepted for compatibility but is a no-op: Ladybug 0.22.1
   always journals through WAL.
+- Settings resolve as CLI > environment > `okfgraph.toml` > defaults; programmatic
+  callers get strict validation, while CLI `--root` and CSV shapes are
+  normalized centrally.
+- `OKFRouter`/`okf` create a missing database and parent directory; the graph
+  width is adopted from the stored schema.
+- `okf ingest --kind pdf --pdf-path` takes multiple files, folders and globs
+  and reports each file.
+- Only `reembed` is job-capable; HTTP ops, jobs and MCP tools share one owner
+  lock.
 
 ## Removed
 
@@ -83,6 +92,23 @@ See [`docs/migration-guide.md`](migration-guide.md) and
 - `deny.toml`, `docs/license-review.md` and CI `cargo deny check` cover the
   dependency audit.
 
+## Post-cutover fixes
+
+The review after the cutover closed BUG-067–BUG-089. The shipped behavior
+includes:
+
+- settings precedence and strict validation, create-on-open, `:memory:`
+  schemas and schema-width adoption;
+- shared named-root resolution, graph-only writes, detach guards, staged
+  delete and the 24-hour recovery window;
+- path-mode `traverse`, `_as_ts` search bounds, Python-shaped frontmatter
+  errors, code-span-aware link extraction and case-insensitive discovery;
+- caption fallback for non-outage vision failures and confined
+  `okf-asset://` ids;
+- sparse BibTeX citations, See Also matching inside link destinations, and
+  multi-path/folder/glob PDF ingest;
+- reembed-only job claiming and owner-wide MCP serialization.
+
 ## Performance
 
 The paired CUDA benchmark meets the release gate:
@@ -103,12 +129,13 @@ See [`docs/performance-baseline.md`](performance-baseline.md) and
 
 ## Verification
 
-- 58 comparable differential scenarios green; one intentional
+- 72 comparable differential scenarios green (73 reported); one intentional
   missing-plugin divergence.
-- 30/30 success ops, 21 typed-error ops, nine documented waivers.
-- 82 all-feature Rust tests, 60 no-default tests, 9 fuzz properties.
-- Wheel, facade, client, jobs, PDF, CLI, external-lane, MCP and Python
-  3.12–3.14 smokes green on the manual workstation gate.
+- 30/30 success ops, 21 typed-error ops, nine documented waivers, 78 output
+  files scanned.
+- 111 all-feature Rust tests, 86 no-default tests, 9 fuzz properties.
+- Wheel, facade, client, jobs, PDF, CLI, CLI PDF batches, external-lane, MCP
+  and Python 3.12–3.14 smokes green on the manual workstation gate.
 - Hosted CI covers format, clippy, no-default checks/tests, wheel build and
   smokes on Windows, Linux and macOS.
 

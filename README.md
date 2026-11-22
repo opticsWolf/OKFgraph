@@ -15,6 +15,12 @@ facade. There is no Python core in the wheel and no Python fallback.
 - Compatibility: v10 databases and bundles only. Python 0.15 remains the
   one-time migration path for older schemas.
 
+All findings in the bug register are closed (BUG-001…BUG-089). The
+post-cutover review round restored the settings/open contract, named-root and
+write integrity, traversal/search/frontmatter/link semantics, image and BibTeX
+handling, CLI PDF batches, and job/MCP locking. See
+[`docs/plan-bug-fixes.md`](docs/plan-bug-fixes.md) for the evidence trail.
+
 ## Installation
 
 ```bash
@@ -92,6 +98,10 @@ okf setup extensions
 settings flags as Python 0.15 and emit either human output or `--json`
 envelopes.
 
+`okf ingest --kind pdf --pdf-path` accepts several files, folders and
+`*?` patterns. Multiple matches return a per-file `data.files` report and the
+first failure as the envelope error.
+
 ## HTTP and MCP
 
 Run one owner process per database:
@@ -105,6 +115,10 @@ It exposes:
 - `GET /health`, `GET /ops`, `POST /ops/<op>`
 - `POST /jobs`, `GET /jobs`, `GET /jobs/<id>`, cancel
 - `/mcp` with all 11 annotated MCP tools
+
+Only `reembed` is accepted as a job (`JOB_OPS`). The server serializes every
+HTTP op, job and MCP tool through one owner lock, and a reembed job claims the
+active reembed slot before it is queued.
 
 The public `OKFClient` is stdlib-only:
 

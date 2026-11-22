@@ -6,12 +6,13 @@ ops/jobs with `okf serve`, TCP/UDS transports, a public stdlib `OKFClient`,
 native/external embed/rerank/vision lanes, transactional ingest, full doctor,
 and the slim wheel plus optional native PDF add-on. Python is a thin public
 facade over PyO3; the old Python core is deleted from the default tree and
-available only at tag `python-oracle-0.15.0`. Final local evidence: 59/59
+available only at tag `python-oracle-0.15.0`. Final local evidence: 72/73
 comparable differential scenarios green (one intentional missing-plugin
-divergence), 30/30 success ops, 91 all-feature / 69 no-default Rust tests, 9
-fuzz properties, paired performance parity, green wheels for Python
-3.12–3.14, and clean fmt/clippy. Hosted CI and the manual GPU release gate
-must be signed off before publishing the tag.
+divergence), 30/30 success ops, 111 all-feature / 86 no-default Rust tests,
+9 fuzz properties, paired performance parity, green wheels for Python
+3.12–3.14, and clean fmt/clippy. All post-cutover findings BUG-067–BUG-089
+are closed. Hosted CI and the manual GPU release gate must be signed off
+before publishing the tag.
 
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  

@@ -26,7 +26,7 @@ conflicts with a current one, the current one wins.
 | Document | Status |
 | --- | --- |
 | [`plan-rust-core.md`](plan-rust-core.md) | Milestones M0–M6 and Rust-core contract |
-| [`plan-bug-fixes.md`](plan-bug-fixes.md) | BUG-001…066 evidence and authoritative open register |
+| [`plan-bug-fixes.md`](plan-bug-fixes.md) | BUG-001…089 evidence, resolutions and gate obligations |
 
 ## Historical — Python 0.15 implementation records
 

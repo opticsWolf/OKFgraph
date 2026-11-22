@@ -4,6 +4,11 @@ This is the executable form of §5 of `docs/plan-rust-core.md`. Every unchecked
 item is a release blocker for its stage. Status values: `open`, `wip`,
 `covered`, `waived` (waivers require the parity report).
 
+**Status note (0.16.0):** sections A–D keep their M0–M3 planning granularity;
+they are exercised end-to-end by the differential matrix, semantic DB dumps
+and fuzz properties rather than by ticking each box. Sections E–J record the
+binding contract for the shipped release.
+
 Command and environment lookup: [`docs/quickref.md`](quickref.md).
 
 ## A. Database (Stage A)
@@ -123,3 +128,35 @@ Command and environment lookup: [`docs/quickref.md`](quickref.md).
       error line and in `fields.crash_report` (BUG-066).
 - [x] dependency audit policy is checked in as `deny.toml`; the generated
       license inventory is `docs/license-review.md`.
+
+## J. Post-cutover contract (BUG-067–089)
+
+- [x] `Router` adopts the stored schema width; `open` creates missing DBs and
+      parent directories plus `:memory:` schemas, while `open_read_only`
+      refuses missing files.
+- [x] `Settings::from_map` validates and normalizes programmatic callers;
+      `Settings::load` applies CLI > environment > TOML > defaults.
+- [x] `roots.rs` validates aliases and resolves longest-prefix owners for
+      import, materialize, update, delete and detach.
+- [x] every write path refuses while detached; `rebuild=defer|force` is honored
+      on reattach, and a per-call import `batch_size` is refused.
+- [x] delete stages file and graph changes together and keeps trashed files
+      recoverable for 24 hours.
+- [x] `traverse(target=...)` validates ignored params and both endpoints, and
+      supports all four relationship kinds in both directions.
+- [x] search time bounds follow Python `_as_ts`; invalid bounds are
+      `BAD_VALUE`.
+- [x] frontmatter null/type errors are typed, failed files retry on the next
+      import, and YAML anchors/aliases are rejected.
+- [x] link extraction ignores code spans, decodes destinations and reports
+      ambiguity.
+- [x] discovery matches source extensions case-insensitively.
+- [x] image titles and `<...>` sources do not change asset ids; non-outage
+      vision errors fall back to caption rows; asset ids stay inside the
+      store (intentional hardening divergence from Python 0.15).
+- [x] BibTeX brace unwrapping/trimming and export See Also matching follow
+      Python.
+- [x] CLI PDF batches expand files, folders and globs with per-file reports.
+- [x] `JOB_OPS = ["reembed"]` claims the active slot at submit; job views keep
+      Python phase, elapsed and kwargs.
+- [x] MCP HTTP tools acquire the owner `op_lock`, matching HTTP ops and jobs.

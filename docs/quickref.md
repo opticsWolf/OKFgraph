@@ -47,6 +47,10 @@ router.close()
 `{ok, op, data, warnings, error}` envelope. Exit codes: `0` success, `2`
 usage, `1` state/outcome error.
 
+`okf ingest --kind pdf --pdf-path` takes one or more files, folders, or
+`*?` patterns. Multiple matches are deduplicated and sorted; the result is a
+per-file `data.files` report and the first failure is the envelope error.
+
 ## Router ops (30)
 
 Read-oriented: `search`, `read`, `traverse`, `embed`, `doctor`, `pin_info`,
@@ -78,7 +82,10 @@ print(serve_file_for("graph.db"))
 ```
 
 HTTP: `GET /health`, `GET /ops`, `POST /ops/<op>`, `/jobs`, `/mcp`.
-Jobs are in-memory and non-durable. Discovery file: `<db>.serve.json`.
+Jobs are in-memory and non-durable, and only `reembed` is job-capable
+(`JOB_OPS`). A reembed job claims the active slot before it is queued; every
+HTTP op, job and MCP tool shares one owner lock. Discovery file:
+`<db>.serve.json`.
 
 ```bash
 okf-mcp                                   # stdio, direct DB
@@ -89,8 +96,8 @@ okf-mcp --connect http://127.0.0.1:8765   # proxy through owner
 
 | Setting | Purpose |
 | --- | --- |
-| `db_path` | Ladybug DB path; default `.okfgraph/okfgraph.db` |
-| `bundle_root` | Markdown root(s), `ALIAS=PATH` for multi-root |
+| `db_path` | Ladybug DB path; default `.okfgraph/okfgraph.db`. `OKFRouter`/`okf` create the file and parent dirs; `open_read_only` refuses a missing file |
+| `bundle_root` | Markdown root(s), `ALIAS=PATH` for multi-root. Defaults to `.` for the CLI and the DB parent for `serve`/MCP |
 | `model_id`, `embedding_dim` | Text engine identity and width |
 | `device`, `precision` | `cpu`/`cuda`, `auto`/`fp16`/`int8`/`fp32` |
 | `enable_chunking`, `chunk_size`, `chunk_overlap` | Chunking contract |
@@ -138,7 +145,7 @@ Unknown codes normalize to `INTERNAL`. Empty Python `fields` are `null`.
 | --- | --- |
 | `<db>.lock` | Inter-process write lock; compatible with Python `fasteners` |
 | `<db>.serve.json` | Live `okf serve` discovery record |
-| `<root>/.okf-trash/<stamp>/` | Trashed source files |
+| `<root>/.okf-trash/<stamp>/` | Trashed source files (recoverable for 24 h) |
 | `<root>/_assets/` | Bundled image assets |
 | `OKF_CRASH_DIR` or platform state dir | Redacted crash reports (newest 20) |
 

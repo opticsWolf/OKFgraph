@@ -47,11 +47,20 @@ Errors keep the closed code set and envelope order
 
 ## Behavior changes
 
+- Settings resolve as CLI > environment > `okfgraph.toml` > defaults; `OKFRouter`
+  and `okf` create a missing database instead of failing.
+- `bundle_root` defaults to `.` for the CLI and the database parent for
+  `serve`/MCP.
 - Engine pins are checked against the loaded engine; `max_length` is ignored.
 - External lanes pin only declared model ids; embroider-backed hosts also pin
   precision and space.
-- Image import mode is per operation (`mode=text|optional|omni`).
-- HTTP jobs are in-memory and non-durable.
+- Image import mode is per operation (`mode=text|optional|omni`). Non-outage
+  vision failures fall back to caption rows; `okf-asset://` ids are confined
+  to the asset store (stricter than Python 0.15).
+- All writes refuse while a graph is detached; `detach` takes
+  `rebuild=defer|force`.
+- `okf ingest --kind pdf --pdf-path` accepts several files, folders and globs.
+- HTTP jobs are in-memory and non-durable, and only `reembed` is job-capable.
 - `wal_mode` is accepted for compatibility but is a no-op: `lbug 0.22.1`
   always journals through WAL.
 

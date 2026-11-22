@@ -4,8 +4,8 @@
 and the post-cutover review at `a62d1c9`. All code findings through BUG-066 are
 closed. All post-cutover findings **BUG-067–BUG-089** are closed by four fix
 rounds (settings/open contract, named-root/write integrity, semantic parity,
-and image/BibTeX/export/surface hardening). The original review remains in
-section 8A as the evidence trail.
+and image/BibTeX/export/surface hardening), with the final round committed as
+`310b1bb`. The original review remains in section 8A as the evidence trail.
 Section 11 is the authoritative register and records the one intentional
 divergence and the ongoing gate obligations. The original review below is kept
 as the evidence trail.
@@ -90,7 +90,9 @@ Final verification on `rust-core` through the M6 security hardening round:
   scenarios; `check_coverage.py` reports 74 outputs scanned. The final
   image/BibTeX/export/job/MCP round reran the matrix at `TOTAL:73 FAILS:0`
   with four new scenarios; coverage reports 78 outputs. Rust suites are 111
-  all-feature, 86 no-default and 9 fuzz; fmt and clippy are clean. `check_cli_pdf_batch.py`, `check_jobs.py` and MCP HTTP/serialization smokes are green.
+  all-feature, 86 no-default and 9 fuzz; fmt and clippy are clean.
+  `check_cli_pdf_batch.py`, `check_jobs.py` and the MCP HTTP/serialization
+  smokes are green.
 - The full six-job CI matrix was green on `44899657898` for code commit
   `333f8df`. The final commit `66df990` changes only docs and the parity
   harness, and its CI run was stopped by the operator before completion.

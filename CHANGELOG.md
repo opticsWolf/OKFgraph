@@ -4,7 +4,9 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
-## [0.16.0] — Rust core cutover
+## [0.16.0] — 2026-11-22
+
+**Rust core cutover.**
 
 ### Added
 
@@ -47,6 +49,14 @@ commit history, newest first.
   and lean search row projection; the paired benchmark now meets parity.
 - Remote-image SSRF redirects/DNS rebinding, extension load verification and
   redacted CLI crash reports.
+- Post-cutover review fixes (BUG-067–089): schema-width adoption and
+  create-on-open; strict settings precedence and CLI shape normalization;
+  shared named-root resolution; graph-only writes, detach guards, staged
+  delete and the 24-hour recovery window; Python-shaped traversal, search
+  bounds, frontmatter, link and discovery semantics; image caption fallback
+  and confined `okf-asset://` ids; sparse BibTeX, export See Also matching
+  and multi-path PDF ingest; reembed-only job claiming and owner-wide MCP
+  serialization.
 
 ### Compatibility
 

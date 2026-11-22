@@ -15,7 +15,9 @@ is verified against `GET /health` before use.
 All ops run through `Router::call`. The server serializes them with one
 per-owner `op_lock`; writes additionally take a 300 s inter-process
 `<db>.lock` compatible with Python `fasteners`. Cancellation stays lock-free
-and cooperative.
+and cooperative. HTTP ops, reembed jobs and the MCP tools all pass through
+that same `op_lock`; only `reembed` is accepted as a job, and it claims the
+active reembed slot before the queued record is published.
 
 ## Store and connections
 
@@ -29,6 +31,11 @@ and cooperative.
 
 This keeps Python 0.15 connection lifetime behavior without per-query DB
 opens. Pin checks are cached per `Router` and invalidated on writes.
+
+`Router::open` is the writable constructor: it creates a missing database and
+its parent directory, and it initializes a `:memory:` schema. `open_read_only`
+still refuses a missing file. The graph width comes from the stored schema
+`FLOAT[N]`, never from `Meta.embedding_dim`.
 
 ## Data model
 
@@ -52,7 +59,18 @@ destructive delete, then one write transaction replaces the concept, chunks,
 links and ledger rows. File hashes are keyed root-relative after absolute
 normalization. Remote images are fetched only after DNS/IP screening, with
 redirects disabled and a 20 MiB body cap. Failed remote fetches keep a
-caption-row asset for retry.
+caption-row asset for retry. A vision-route failure that is not a lane outage
+falls back to the same caption row instead of aborting the import, and
+`okf-asset://` ids are confined to one safe name inside the asset store.
+
+## Roots, writes and lifecycle
+
+`src/roots.rs` owns alias validation, longest-prefix root matching and
+namespaced key resolution; import, materialize, update and delete all write
+through the owning root. Every write path checks `detach::require_attached`,
+and `rebuild=defer|force` is honored on reattach. Delete stages the file move
+and graph transaction so a failure rolls both back; trashed files stay
+recoverable for 24 hours before purge.
 
 ## Optional PDF plugin
 

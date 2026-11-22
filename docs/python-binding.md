@@ -37,7 +37,8 @@ Also available:
 delegator to `okfgraph._native.NativeRouter`; no graph logic is implemented in
 Python. Every documented operation is available as a method, including
 `search`, `read`, `traverse`, `import_bundle`, `ingest`, `doctor`, `reembed`
-and `sync`.
+and `sync`. The constructor creates a missing database and its parent
+directory; a read-only open still refuses a missing file.
 
 ```python
 router = OKFRouter(db_path="graph.db", device="cuda")
@@ -64,7 +65,8 @@ client.search("retrieval", limit=5)
 
 It also accepts `unix:///absolute/path` on POSIX, discovers an owner with
 `discover(db)`, and exposes `jobs()`, `job(id)`, `cancel_job(id)` and
-`reembed_job(...)`.
+`reembed_job(...)`. Only `reembed` is job-capable, and jobs share the owner
+lock with HTTP ops and MCP.
 
 ## Failure behavior
 

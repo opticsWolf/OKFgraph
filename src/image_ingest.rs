@@ -543,6 +543,7 @@ fn caption_route(img: &Extracted, concept_id: &str) -> (Route, String) {
     (Route::Text, caption)
 }
 
+#[cfg(any(feature = "vision", feature = "external"))]
 fn is_lane_outage(err: &crate::error::OkfError) -> bool {
     err.code == "EXTERNAL_UNAVAILABLE"
 }
@@ -687,7 +688,7 @@ pub fn ingest_concept_images(
     let total = images.len();
     #[cfg_attr(
         not(any(feature = "vision", feature = "external")),
-        allow(unused_variables)
+        allow(unused_variables, unused_mut)
     )]
     let mut vision_unavailable = false;
     #[cfg(any(feature = "vision", feature = "external"))]

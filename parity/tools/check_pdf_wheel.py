@@ -21,7 +21,7 @@ def main() -> int:
     assert plugin.is_file(), plugin
 
     db = OUT / "pdf-wheel-smoke.db"
-    shutil.copyfile(ROOT / "parity/fixtures/oracle-v10-import-minimal.db", db)
+    shutil.copyfile(ROOT / "parity/fixtures/oracle-v10.db", db)
     output = OUT / "pdf-wheel-smoke-out"
     shutil.rmtree(output, ignore_errors=True)
 

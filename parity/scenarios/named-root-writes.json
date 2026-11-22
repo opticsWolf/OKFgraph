@@ -1,0 +1,38 @@
+{
+  "name": "named-root-writes",
+  "settings": {
+    "db_path": "parity/out/named-root-@RUNNER@.db",
+    "bundle_root": "parity/corpus/named-root-@RUNNER@/primary",
+    "roots": {
+      "other": "parity/corpus/named-root-@RUNNER@/other"
+    },
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "copy": {
+      "from": "parity/corpus/multi-root",
+      "to": "parity/corpus/named-root-@RUNNER@"
+    },
+    "remove": [
+      "parity/out/named-root-@RUNNER@.db",
+      "parity/out/named-root-@RUNNER@.db.wal",
+      "parity/out/named-root-@RUNNER@.db-shm",
+      "parity/out/named-root-@RUNNER@.db.lock"
+    ]
+  },
+  "ops": [
+    {"op": "import_bundle", "params": {"bundle_path": "parity/corpus/named-root-@RUNNER@/primary"}},
+    {"op": "import_bundle", "params": {"bundle_path": "parity/corpus/named-root-@RUNNER@/other"}},
+    {"op": "get_by_id", "params": {"concept_id": "@other/alpha"}},
+    {"op": "update", "params": {"concept_id": "@other/alpha", "title": "Other Alpha Updated"}},
+    {"op": "get_by_id", "params": {"concept_id": "@other/alpha"}},
+    {"op": "delete", "params": {"concept_id": "@other/alpha", "remove_file": true}},
+    {"op": "get_by_id", "params": {"concept_id": "@other/alpha"}},
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}}
+  ]
+}

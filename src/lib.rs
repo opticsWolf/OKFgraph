@@ -32,6 +32,7 @@ pub mod pdf;
 pub mod producers;
 pub mod purge;
 pub mod pycompat;
+pub mod roots;
 pub mod search;
 pub mod settings;
 pub mod store;

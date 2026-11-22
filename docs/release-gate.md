@@ -66,11 +66,12 @@ parity/.venv-oracle/Scripts/python.exe parity/tools/run_matrix.py \
 Expected:
 
 ```text
-TOTAL:59 FAILS:0
+TOTAL:62 FAILS:0
 ```
 
-`ingest-pdf-no-plugin` remains the one intentional skipped divergence (60
-scenarios total). Any other op diff or DB diff fails the release. If a
+`ingest-pdf-no-plugin` remains the one intentional skipped divergence (61
+comparable scenarios, 62 reported total). Any other op diff or DB diff fails
+the release. If a
 workstation standby interrupts a full run, rerun the affected scenarios with
 `--only`; all must be green before sign-off.
 The stable cutover rerun was performed with the root Python package deleted;
@@ -86,7 +87,7 @@ Expected:
 
 ```text
 ops: 30, success: 30, typed error: 21, documented waivers: 9
-outputs scanned: 64
+outputs scanned: 67
 ```
 
 ### Oracle independence
@@ -138,7 +139,7 @@ release: 0.16.0
 python-core-in-tree: false
 commit: <sha>
 oracle: python-oracle-0.15.0 via parity/tools/oracle.py
-matrix: TOTAL:59 FAILS:0, <duration>
+matrix: TOTAL:62 FAILS:0, <duration>
 coverage: 30/30 success, 21 typed errors, 9 waivers
 rust tests: <all-feature count> / <no-default count>
 surface gates: pass/fail list with tool names

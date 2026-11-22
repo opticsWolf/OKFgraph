@@ -1,0 +1,28 @@
+{
+  "name": "detached-write-refusal",
+  "settings": {
+    "db_path": "parity/out/detached-write-@RUNNER@.db",
+    "bundle_root": "parity/corpus/detached-write-@RUNNER@",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "copy": {
+      "from": "parity/corpus/minimal",
+      "to": "parity/corpus/detached-write-@RUNNER@"
+    },
+    "import": {
+      "corpus": "parity/corpus/detached-write-@RUNNER@"
+    }
+  },
+  "ops": [
+    {"op": "detach", "params": {"verify": false}},
+    {"op": "import_bundle", "params": {}},
+    {"op": "update", "params": {"concept_id": "alpha", "title": "Must not change"}},
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}}
+  ]
+}

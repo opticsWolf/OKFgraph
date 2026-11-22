@@ -324,6 +324,7 @@ fn commit(
         std::slice::from_ref(&parsed),
         None,
         true,
+        true,
     )?;
     finish_indexes(store)
 }
@@ -1753,6 +1754,7 @@ fn ingest_pdf(
                     .and_then(Json::as_bool)
                     .unwrap_or(false),
                 force: params.get("force").and_then(Json::as_bool).unwrap_or(false),
+                ..Default::default()
             },
         )?;
         forget_pdf_ledger(store, &namespace)?;

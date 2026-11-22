@@ -2,8 +2,9 @@
 
 **Status:** review plan from `6a71fec`, updated after the complete M6 cutover
 and the post-cutover review at `a62d1c9`. All code findings through BUG-066 are
-closed. In the first post-cutover fix round, **BUG-067–BUG-071** (settings and
-open contract) are closed; **BUG-072–BUG-089** remain open in section 8A.
+closed. The post-cutover rounds have closed **BUG-067–BUG-076** (settings/open
+contract and named-root/write integrity); **BUG-077–BUG-089** remain open in
+section 8A.
 Section 11 is the authoritative register and records the one intentional
 divergence and the ongoing gate obligations. The original review below is kept
 as the evidence trail.
@@ -19,17 +20,19 @@ materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
 and the write lock are implemented. The M4 serve/MCP/client slice is also in:
 11 rmcp tools, `--connect`, the public `OKFClient`, the HTTP job lane, the
-full 29-command CLI, and typed conversion-error envelopes. The broad differential matrix is green for **58 comparable scenarios**
+full 29-command CLI, and typed conversion-error envelopes. The broad differential matrix is green for **61 comparable scenarios**
 after normalizing wall-clock graph times/internal IDs and the documented
-intentional differences; the 59th, `ingest-pdf-no-plugin`, records the
+intentional differences; `ingest-pdf-no-plugin` records the
 intentional missing-plugin error divergence instead of a green comparison.
 Current verification is listed under “Verification status” below and the
 authoritative register in section 11. The post-cutover review at `a62d1c9`
 found additional API, settings, named-root, detach, parser and surface
 regressions. The settings/open regressions are fixed and covered by the new
-`settings-open-and-env` parity scenario plus extended CLI differential cases;
-the remaining findings are listed in section 8A and are not yet exercised by
-the matrix.
+`settings-open-and-env` parity scenario plus extended CLI differential cases.
+The named-root/write-integrity round added `named-root-writes`,
+`file-free-writes` and `detached-write-refusal`; BUG-075/076 also have unit
+regressions. The remaining findings are listed in section 8A and are not yet
+exercised by the matrix.
 
 **Important:** the original review below describes the pre-fix state. It is
 kept as the evidence trail; the implementation status section records what is
@@ -75,6 +78,12 @@ Final verification on `rust-core` through the M6 security hardening round:
   `check_coverage.py` reports 64 outputs scanned. `check_cli.py` is `15/15 OK`
   with env-only db_path and `--root`/CSV cases. Wheel/facade, client, jobs,
   stdio MCP, MCP proxy, MCP HTTP and external-lane smokes stay green.
+- The named-root/write-integrity round (BUG-072–BUG-076) reran the full matrix
+  at `TOTAL:62 FAILS:0` with the three new scenarios; `check_coverage.py`
+  reports 67 outputs scanned. Focused reruns of `sync`, `named-root-writes`,
+  `file-free-writes` and `detached-write-refusal` were green after the final
+  Windows path-normalization fix. Rust suites are 98 all-feature, 76
+  no-default and 9 fuzz; fmt and clippy are clean.
 - The full six-job CI matrix was green on `44899657898` for code commit
   `333f8df`. The final commit `66df990` changes only docs and the parity
   harness, and its CI run was stopped by the operator before completion.
@@ -1807,11 +1816,9 @@ Add these before calling the beta usable:
 | `op-error-matrix` | BUG-044 |
 | `settings-open-and-env` | BUG-067, BUG-068, BUG-069, BUG-071 |
 | `cli-settings-parsing` | BUG-070 |
-| `import-named-roots` | BUG-072 |
+| `named-root-writes` | BUG-072 |
 | `file-free-writes` | BUG-073 |
 | `detached-write-refusal` | BUG-074 |
-| `delete-atomic-read-only` | BUG-075 |
-| `recover-window` | BUG-076 |
 | `traverse-path` | BUG-077 |
 | `search-time-and-params` | BUG-078 |
 | `frontmatter-null-id` | BUG-079 |
@@ -1827,7 +1834,10 @@ Add these before calling the beta usable:
 | `mcp-http-serialization` | BUG-089 |
 
 For each scenario, include both success and typed-error envelopes, and compare
-the semantic DB dump plus the export tree where applicable.
+the semantic DB dump plus the export tree where applicable. BUG-075 and
+BUG-076 are covered by the existing `delete-file-backed`/`delete-recover`
+differential scenarios plus Rust unit regressions for read-only refusal and
+the expired recovery window; no separate parity scenario was needed.
 
 ---
 
@@ -2229,7 +2239,15 @@ of that split.
 
 ### BUG-072 — Named-root paths and import identity are not threaded through writes
 
-**Severity:** P0, L — **Status: open**.
+**Severity:** P0, L — **Status: closed** (post-cutover named-root round).
+
+**Resolution:** `src/roots.rs` centralizes alias validation, longest-prefix
+root matching and namespaced key resolution. `Store::resolve_file_paths`,
+import identity, materialization, update/supersede, delete/trash and detach all
+use the owning root; explicit positional `--bundle-path` now mints IDs relative
+to that tree. Windows path spellings are normalized before relative-ID
+stripping. `named-root-writes` exercises colliding `alpha` and `@other/alpha`
+files through import/update/delete; `detach` verifies every configured root.
 
 **Where:**
 
@@ -2276,7 +2294,13 @@ files mints IDs relative to that tree; detach verifies every root or refuses.
 
 ### BUG-073 — File-free `update` and `supersede` are refused
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed** (post-cutover named-root round).
+
+**Resolution:** `write_and_import` now has a synthetic graph-only `Parsed`
+branch that refreshes the content signature and re-embeds without requiring a
+bundle root. `graph_only_parsed_is_synthetic_and_signed` and the
+`file-free-writes` scenario cover update and supersede on a graph with no
+configured bundle.
 
 **Where:** `src/ops/mod.rs:653-717` (`write_and_import`), `759-928`
 (`update`/`supersede`).
@@ -2302,7 +2326,14 @@ materialized and file-backed modes still produce the same result as before.
 
 ### BUG-074 — Detached graphs accept writes; `force`/`rebuild`/`batch_size` are ignored
 
-**Severity:** P0, M — **Status: open**.
+**Severity:** P0, M — **Status: closed** (post-cutover named-root round).
+
+**Resolution:** every import/ingest/write path calls
+`detach::require_attached`; a successful forced reattach clears the detached
+state. `rebuild=defer|force` is honored by import indexing, while a per-call
+`batch_size` now produces a typed refusal instead of being silently ignored.
+`detached-write-refusal` and `detached_graph_refuses_mirror_writes` cover the
+refusal and reattach paths.
 
 **Where:** `src/detach.rs:246-377` (only refuses a second detach),
 `src/ops/mod.rs:1141-1167` (`import_bundle`), `1170-1206`
@@ -2336,7 +2367,15 @@ batch boundaries (or a typed refusal is asserted).
 
 ### BUG-075 — `delete` moves files before the database mutation is safe
 
-**Severity:** P0, M — **Status: open**.
+**Severity:** P0, M — **Status: closed** (post-cutover named-root round).
+
+**Resolution:** read-only stores are refused before any filesystem change, all
+moves are staged across the owning roots, and the guarded soft-delete/trash/
+ledger mutation rolls the moves back on failure. The existing
+`delete-file-backed` scenario plus
+`read_only_delete_refuses_before_touching_files` cover the data-loss path. A
+full crash-retry journal remains a separate hardening idea; the reported
+partial-delete failure mode is closed.
 
 **Where:** `src/ops/mod.rs:266-325` (`delete`), `333-385` (`trash_files`).
 
@@ -2364,7 +2403,12 @@ finishes cleanly.
 
 ### BUG-076 — Recovery ignores the 24-hour window
 
-**Severity:** P1, S — **Status: open**.
+**Severity:** P1, S — **Status: closed** (post-cutover named-root round).
+
+**Resolution:** `purge::recover` now parses the latest tombstone's `deleted_at`
+and refuses recovery after 24 hours using the oracle's wall-clock rule.
+`recovery_refuses_tombstones_past_the_24_hour_window` covers the expiry path;
+`list_deleted.recoverable` and `recover_deleted` now agree.
 
 **Where:** `src/purge.rs:128-176` (`recover`), `src/ops/mod.rs:386-430`
 (`recover_deleted`), `src/store/mod.rs:1244-1285` (`list_deleted`).
@@ -2855,11 +2899,11 @@ it does **not** mean every release gate is green.
 | BUG-069 | Closed | CLI/MCP/serve settings go through `Settings::load` with real env, TOML, legacy-name rejection, `checks`, and Python's default bundle-root rules. | Keep env/TOML precedence and required-MCP `db_path` checks in the CLI gate. |
 | BUG-070 | Closed | `--root ALIAS=PATH` arrays and CSV globals are normalized by `Settings::from_map`; malformed entries report `CONFIG_INVALID`. | Keep `--root`/CSV differential cases in `check_cli.py`. |
 | BUG-071 | Closed | Unknown keys and invalid values are refused as `CONFIG_INVALID`; explicit ONNX files are refused instead of ignored; optional nulls remain valid. | Keep the validation unit tests and facade/CLI routing green. |
-| BUG-072 | Open | Named-root FileHash keys are resolved only against the primary root; `import_files` has no identity root; write/delete/trash/detach use the wrong tree and can stray/erase files. | Thread `settings.roots` through resolution/import/write/detach, add longest-prefix aliases and multi-root detach, test with colliding paths. |
-| BUG-073 | Open | File-free `update`/`supersede` return `MISSING_PARAM`; Python edits the stored concept and re-embeds. | Port the graph-only `_write_and_import` branch; test title/tags/extra, links and supersede. |
-| BUG-074 | Open | Detached graphs accept imports/ingest/writes; `force` is never read; `rebuild`/`batch_size` are accepted but unimplemented. | Add `require_attached(force)`/reattach rules, implement or reject index/batch controls, test every write path. |
-| BUG-075 | Open | `delete(remove_file=True)` moves files and forgets hashes before `soft_delete`; a failed/read-only DB write leaves the concept live with files in trash and no tombstone. | Preflight writability, make trash/tombstone recoverable and idempotent, test rollback and retry. |
-| BUG-076 | Open | `purge::recover` never checks `deleted_at`; expired tombstones still recover while `list_deleted` says non-recoverable. | Enforce the 24-hour window with the oracle clock rules; test now-1h/now-25h and malformed timestamps. |
+| BUG-072 | Closed | `src/roots.rs` resolves aliases and namespaced keys for import, materialize, write, trash, recovery and detach; positional `--bundle-path` sets identity. | Keep `named-root-writes` and multi-root detach scenarios green; normalize Windows path spellings before ID stripping. |
+| BUG-073 | Closed | Graph-only `write_and_import` edits and re-embeds concepts without a bundle root; `file-free-writes` covers update/supersede. | Keep the synthetic `Parsed` signature refresh in place when write paths change. |
+| BUG-074 | Closed | All write paths call `require_attached`; forced reattach clears state, `rebuild` is honored and per-call `batch_size` is a typed refusal. | Extend the guard to any new write op; keep `detached-write-refusal` green. |
+| BUG-075 | Closed | Writability is preflighted, moves are staged across named roots and rolled back if the guarded DB mutation fails; read-only never touches files. | Revisit only for a full crash-retry journal; keep read-only and rollback regressions green. |
+| BUG-076 | Closed | `purge::recover` enforces the 24-hour wall-clock window; expired tombstones are not recoverable. | Keep the expiry regression if timestamp parsing changes. |
 | BUG-077 | Open | `find_path` misses PART_OF/INCLUDES_ASSET/directory hops, omits the start node, returns full nodes, caps at 6 (Python 10), and ignores path-mode argument rules. | Use the oracle shortest-path semantics/projection, allow 1–10, validate mode and test each edge type. |
 | BUG-078 | Open | `since`/`until` compare raw strings, not datetimes; `recency_weight` silently defaults non-numbers; invalid `query_vector` is silently truncated. | Parse/validate time bounds and parameters; test date-only, offset, malformed and vector-width cases. |
 | BUG-079 | Open | Null frontmatter `id:` stringifies to `"None"` and can become the concept id/uid. | Treat null as absent before scalar conversion; test null/empty/number/bool under both identities. |
@@ -2889,8 +2933,10 @@ Post-cutover review:
 1. ~~BUG-067, BUG-068, BUG-069, BUG-070, BUG-071 — settings/open contract.~~
    Done: schema-width adoption, create-on-open/`:memory:`, the production
    `Settings::load` path, CLI `--root`/CSV normalization, and strict validation.
-2. BUG-072, BUG-073, BUG-074, BUG-075, BUG-076 — named-root and write
-   integrity, detach enforcement, delete atomicity and recovery lifetime.
+2. ~~BUG-072, BUG-073, BUG-074, BUG-075, BUG-076 — named-root and write
+   integrity, detach enforcement, delete atomicity and recovery lifetime.~~
+   Done: shared root resolver, graph-only writes, detach guards, staged delete
+   rollback and the 24-hour recovery window.
 3. BUG-077, BUG-078, BUG-079, BUG-080, BUG-081, BUG-082 — semantic parity
    for traversal, search bounds, frontmatter, links and file discovery.
 4. BUG-083, BUG-084, BUG-085, BUG-086, BUG-087 — images, BibTeX, export and

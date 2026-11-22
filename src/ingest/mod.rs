@@ -45,6 +45,9 @@ pub(crate) struct Parsed {
     pub(crate) path: PathBuf,
     /// Multi-root namespace (empty for the primary tree).
     pub(crate) alias: String,
+    /// Root that minted the id/ledger key (explicit identity_root, a named
+    /// root, or the primary bundle root).
+    pub(crate) source_root: Option<PathBuf>,
     /// Synthesized from a converter rather than read from a real bundle file.
     /// Such items have no `FileHash` ledger entry and may have a temporary
     /// `path` that is removed before the graph commit.
@@ -57,6 +60,30 @@ pub fn import_files(
     embedder: &EmbedderPool,
     pools: &Pools,
     paths: &[String],
+) -> Result<Json> {
+    import_files_with_root(
+        store,
+        settings,
+        embedder,
+        pools,
+        paths,
+        None,
+        RebuildPolicy::Auto,
+    )
+}
+
+/// Import explicit files. `identity_root` is Python's positional-import
+/// `--bundle-path`: every file must live under it and ids are minted relative
+/// to it. Without it, a file inside a named root mints `@alias/...` using the
+/// longest-prefix root match.
+pub fn import_files_with_root(
+    store: &Store,
+    settings: &Settings,
+    embedder: &EmbedderPool,
+    pools: &Pools,
+    paths: &[String],
+    identity_root: Option<&str>,
+    rebuild: RebuildPolicy,
 ) -> Result<Json> {
     let mut missing = Vec::new();
     for path in paths {
@@ -76,11 +103,74 @@ pub fn import_files(
         ));
     }
 
+    let roots = crate::roots::Roots::from_settings(settings);
+    let explicit_root = match identity_root {
+        Some(text) => {
+            let base = PathBuf::from(text);
+            if !base.is_dir() {
+                return Err(OkfError::new(
+                    "FILE_NOT_FOUND",
+                    format!("not a bundle directory: {text}"),
+                )
+                .op("import_files")
+                .field(
+                    "identity_root",
+                    Json::String(crate::util::python_path_str(text)),
+                ));
+            }
+            Some(canonicalish(&base))
+        }
+        None => None,
+    };
+    if let Some(base) = &explicit_root {
+        let outsiders: Vec<String> = paths
+            .iter()
+            .filter(|path| !canonicalish(Path::new(path)).starts_with(base))
+            .map(|path| crate::util::python_path_str(path))
+            .collect();
+        if !outsiders.is_empty() {
+            return Err(OkfError::new(
+                "BAD_VALUE",
+                format!(
+                    "file(s) outside identity root '{}': {}",
+                    identity_root.unwrap_or_default(),
+                    outsiders.join(", ")
+                ),
+            )
+            .op("import_files")
+            .field(
+                "files",
+                Json::Array(outsiders.into_iter().map(Json::String).collect()),
+            )
+            .field(
+                "identity_root",
+                Json::String(crate::util::python_path_str(
+                    identity_root.unwrap_or_default(),
+                )),
+            )
+            .remedy(
+                "pass a bundle directory containing every FILE, or omit it for the legacy fallback",
+            ));
+        }
+    }
+
     let engine = embedder.get(settings)?;
     pin_graph(store, settings, engine.as_ref())?;
     let parsed: Vec<Parsed> = paths
         .iter()
-        .map(|path| parse_file(Path::new(path), settings, None))
+        .map(|path| {
+            if let Some(base) = &explicit_root {
+                let alias = roots.alias_for_root(base);
+                parse_file_alias(Path::new(path), settings, Some(base), &alias)
+            } else {
+                let alias = roots.alias_for_path(&canonicalish(Path::new(path)));
+                let root = roots
+                    .root_for_alias(&alias)
+                    .map(Path::to_path_buf)
+                    .or_else(|| settings.bundle_root.as_ref().map(PathBuf::from));
+                parse_file_alias(Path::new(path), settings, root.as_deref(), &alias)
+            }
+        })
         .collect::<Result<Vec<_>>>()?;
     commit_parsed(
         store,
@@ -90,8 +180,32 @@ pub fn import_files(
         &parsed,
         None,
         false,
+        rebuild != RebuildPolicy::Defer,
     )?;
     import_report(store, &parsed, Json::Null)
+}
+
+/// Index policy for one import call (Python's `--rebuild`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RebuildPolicy {
+    #[default]
+    Auto,
+    Defer,
+    Force,
+}
+
+impl RebuildPolicy {
+    pub fn parse(text: &str) -> Result<Self> {
+        match text {
+            "auto" => Ok(Self::Auto),
+            "defer" => Ok(Self::Defer),
+            "force" => Ok(Self::Force),
+            other => Err(OkfError::new(
+                "BAD_VALUE",
+                format!("rebuild must be 'auto', 'defer' or 'force', got '{other}'"),
+            )),
+        }
+    }
 }
 
 /// Import a whole bundle with Python's directory-delta detection. Unchanged
@@ -101,6 +215,7 @@ pub fn import_files(
 pub struct ImportOptions {
     pub prune_missing: bool,
     pub force: bool,
+    pub rebuild: RebuildPolicy,
 }
 
 fn import_bundle_one(
@@ -135,6 +250,9 @@ fn import_bundle_one(
         ));
     }
     let root = canonicalish(&root);
+    if options.rebuild == RebuildPolicy::Force {
+        store.drop_search_indexes()?;
+    }
     let engine = embedder.get(settings)?;
     pin_graph(store, settings, engine.as_ref())?;
 
@@ -171,8 +289,9 @@ fn import_bundle_one(
                 &parsed,
                 Some(&root),
                 true,
+                options.rebuild != RebuildPolicy::Defer,
             )?;
-        } else {
+        } else if options.rebuild != RebuildPolicy::Defer {
             finish_indexes(store)?;
         }
         let mut images = Map::new();
@@ -356,6 +475,7 @@ fn import_bundle_one(
             &parsed,
             Some(&root),
             true,
+            options.rebuild != RebuildPolicy::Defer,
         )?;
         let mut file_hashes: BTreeMap<String, (String, String, String)> = BTreeMap::new();
         for item in &parsed {
@@ -529,18 +649,7 @@ pub fn import_bundle(
 }
 
 fn alias_for_path(settings: &Settings, path: &Path) -> String {
-    let wanted = canonicalish(path);
-    if let Some(root) = settings.bundle_root.as_ref() {
-        if canonicalish(Path::new(root)) == wanted {
-            return String::new();
-        }
-    }
-    settings
-        .roots
-        .iter()
-        .find(|(_, root)| canonicalish(Path::new(root)) == wanted)
-        .map(|(alias, _)| alias.clone())
-        .unwrap_or_default()
+    crate::roots::Roots::from_settings(settings).alias_for_path(path)
 }
 
 #[derive(Default)]
@@ -556,6 +665,7 @@ pub(crate) fn finish_indexes(store: &Store) -> Result<()> {
     store.set_meta_int("indexed_epoch", epoch)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn commit_parsed(
     store: &Store,
     settings: &Settings,
@@ -564,6 +674,7 @@ pub(crate) fn commit_parsed(
     parsed: &[Parsed],
     root: Option<&Path>,
     bulk: bool,
+    finish: bool,
 ) -> Result<()> {
     let ids: Vec<&str> = parsed.iter().map(|item| item.id.as_str()).collect();
     let incoming = if ids.is_empty() {
@@ -586,11 +697,15 @@ pub(crate) fn commit_parsed(
     repair_links(store, &BTreeSet::new())?;
     for item in parsed {
         let base_dir = item.path.parent();
+        let image_root = item.source_root.as_deref().or(root);
         crate::image_ingest::ingest_concept_images(
-            store, settings, engine, pools, &item.id, &item.body, base_dir, root,
+            store, settings, engine, pools, &item.id, &item.body, base_dir, image_root,
         )?;
     }
-    finish_indexes(store)
+    if finish {
+        finish_indexes(store)?;
+    }
+    Ok(())
 }
 
 fn import_report(store: &Store, parsed: &[Parsed], detail: Json) -> Result<Json> {
@@ -840,7 +955,11 @@ fn store_pin_json(store: &Store) -> Result<Json> {
 
 fn relative_id(path: &Path, root: Option<&Path>) -> String {
     if let Some(root) = root {
-        if let Ok(rel) = path.strip_prefix(root) {
+        // Both sides may come from different Windows path spellings
+        // (ordinary drive letter vs `\\?\`); normalize before stripping.
+        let resolved = crate::roots::canonicalish(path);
+        let base = crate::roots::canonicalish(root);
+        if let Ok(rel) = resolved.strip_prefix(&base) {
             return rel.with_extension("").to_string_lossy().replace('\\', "/");
         }
     }
@@ -872,6 +991,7 @@ pub(crate) fn parse_file_alias(
     let mut meta = front.metadata.as_object().cloned().unwrap_or_default();
     let effective_root = root
         .map(Path::to_path_buf)
+        .or_else(|| settings.roots.get(alias).map(PathBuf::from))
         .or_else(|| settings.bundle_root.as_ref().map(PathBuf::from));
     let path_id = namespaced_id(alias, &relative_id(path, effective_root.as_deref()));
     if path_id.is_empty() {
@@ -1017,6 +1137,7 @@ pub(crate) fn parse_file_alias(
         sig,
         path: path.to_path_buf(),
         alias: alias.to_string(),
+        source_root: effective_root.clone(),
         synthetic: false,
     })
 }
@@ -1429,8 +1550,11 @@ fn file_hash_entry(
     if item.synthetic {
         return Ok(None);
     }
+    let roots = crate::roots::Roots::from_settings(settings);
     let effective_root = root
         .map(Path::to_path_buf)
+        .or_else(|| item.source_root.clone())
+        .or_else(|| roots.root_for_alias(&item.alias).map(Path::to_path_buf))
         .or_else(|| settings.bundle_root.as_ref().map(PathBuf::from));
     let Some(effective_root) = effective_root else {
         // File-free imports mint bare IDs and do not touch the shared delta
@@ -1848,6 +1972,7 @@ pub fn extract_links_for_concept(store: &Store, concept_id: &str) -> Result<()> 
         sig: String::new(),
         path: PathBuf::new(),
         alias: String::new(),
+        source_root: None,
         synthetic: false,
     };
     create_links(store, std::slice::from_ref(&item))?;
@@ -2398,6 +2523,7 @@ mod tests {
             sig: sig.into(),
             path: PathBuf::from("alpha.md"),
             alias: String::new(),
+            source_root: None,
             synthetic: true,
         }
     }

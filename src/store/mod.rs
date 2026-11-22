@@ -220,6 +220,11 @@ impl Store {
         &self.path
     }
 
+    /// Whether every write through this store must be refused.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -1131,27 +1136,11 @@ impl Store {
             .collect())
     }
 
-    /// Absolute candidates for a FileHash key. The primary root owns bare
-    /// keys; an `@alias/...` key also gets a primary-root fallback, matching
-    /// Python's `_resolve_file_paths` until named roots are threaded through.
+    /// Absolute candidates for a FileHash key. Named roots own `@alias/...`
+    /// keys; the primary root remains the fallback for bare keys and unknown
+    /// aliases, matching Python's `_resolve_file_paths`.
     pub fn resolve_file_paths(&self, key: &str) -> Vec<PathBuf> {
-        let Some(root) = self.settings.bundle_root.as_ref() else {
-            return Vec::new();
-        };
-        let root = absolute_path(Path::new(root));
-        let native = key.replace('\\', "/");
-        let (alias, relative) = match native
-            .strip_prefix('@')
-            .and_then(|rest| rest.split_once('/'))
-        {
-            Some((alias, rest)) => (Some(alias), rest),
-            None => (None, native.as_str()),
-        };
-        let mut out = vec![root.join(relative)];
-        if alias.is_some() {
-            out.push(root.join(&native));
-        }
-        out
+        crate::roots::Roots::from_settings(&self.settings).resolve_key(key)
     }
 
     pub fn source_file_for_concept(&self, concept_id: &str) -> Result<Option<PathBuf>> {

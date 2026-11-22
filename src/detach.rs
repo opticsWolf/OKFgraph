@@ -2,7 +2,7 @@
 //! artifact. The report and provenance rows mirror the Python 0.15 oracle.
 
 use crate::error::{OkfError, Result};
-use crate::ingest::{native_rel, parse_file, walk_source_files};
+use crate::ingest::{native_rel, parse_file_alias, walk_source_files};
 use crate::model::normalize_tags;
 use crate::settings::Settings;
 use crate::store::Store;
@@ -114,8 +114,31 @@ fn verify(
     report: &mut Map<String, Json>,
     store: &Store,
     settings: &Settings,
+    explicit_root: bool,
 ) -> Result<()> {
-    if !root.is_dir() {
+    let roots = crate::roots::Roots::from_settings(settings);
+    let mut checked = 0;
+    let mut total_files = 0;
+    if explicit_root {
+        // An explicit `bundle_path` pins one tree, like Python's detach
+        // call; configured named roots are not verified in that mode.
+        if root.is_dir() {
+            checked += 1;
+            total_files += verify_one(root, "", report, store, settings)?;
+        }
+    } else {
+        for (alias, tree) in roots.all_roots() {
+            if !tree.is_dir() {
+                // An absent/unmounted named root is a legal liveness state;
+                // the primary root reports FILE_NOT_FOUND below when none
+                // of the configured trees can be checked.
+                continue;
+            }
+            checked += 1;
+            total_files += verify_one(tree, alias, report, store, settings)?;
+        }
+    }
+    if checked == 0 {
         return Err(OkfError::new(
             "FILE_NOT_FOUND",
             format!(
@@ -126,11 +149,40 @@ fn verify(
         .field("bundle", Json::String(native_display(root)))
         .remedy("pass the source tree, or --no-verify to detach an already-removed tree"));
     }
+    report.insert("file_count".into(), Json::from(total_files));
+    let mut sourceless = 0;
+    let rows = store.query("MATCH (f:FileHash) RETURN f.path AS p", vec![])?;
+    for row in rows {
+        if let Some(path) = row.get("p").and_then(Json::as_str) {
+            let candidates = if explicit_root {
+                // An explicit tree owns every ledger key for this check;
+                // Python strips the `@alias/` namespace before joining.
+                let (_, native) = crate::roots::split_namespaced(path);
+                vec![root.join(native)]
+            } else {
+                roots.resolve_key(path)
+            };
+            if !candidates.into_iter().any(|candidate| candidate.exists()) {
+                sourceless += 1;
+            }
+        }
+    }
+    report.insert("already_sourceless".into(), Json::from(sourceless));
+    Ok(())
+}
+
+fn verify_one(
+    root: &Path,
+    alias: &str,
+    report: &mut Map<String, Json>,
+    store: &Store,
+    settings: &Settings,
+) -> Result<usize> {
     let files = walk_source_files(root)?;
-    report.insert("file_count".into(), Json::from(files.len()));
+    let file_count = files.len();
     for path in &files {
         let rel = native_rel(path, root);
-        let parsed = match parse_file(path, settings, Some(root)) {
+        let parsed = match parse_file_alias(path, settings, Some(root), alias) {
             Ok(parsed) => parsed,
             Err(err) => {
                 push_object(
@@ -200,23 +252,7 @@ fn verify(
         let rel = native_rel(&path, root);
         push_array(report, "non_source_files", Json::String(rel));
     }
-    let mut sourceless = 0;
-    let rows = store.query("MATCH (f:FileHash) RETURN f.path AS p", vec![])?;
-    for row in rows {
-        if let Some(path) = row.get("p").and_then(Json::as_str) {
-            let native = path.replace('\\', "/");
-            let relative = native
-                .strip_prefix('@')
-                .and_then(|rest| rest.split_once('/'))
-                .map(|(_, rest)| rest)
-                .unwrap_or(&native);
-            if !root.join(relative).exists() {
-                sourceless += 1;
-            }
-        }
-    }
-    report.insert("already_sourceless".into(), Json::from(sourceless));
-    Ok(())
+    Ok(file_count)
 }
 
 fn push_array(report: &mut Map<String, Json>, key: &str, value: Json) {
@@ -242,6 +278,84 @@ fn summary(report: &Map<String, Json>) -> String {
     )
 }
 
+/// Mirror-write guard. Returns true when a forced write should clear the
+/// detached state after it succeeds (Python's `_require_attached`).
+pub fn require_attached(
+    store: &Store,
+    settings: &Settings,
+    force: bool,
+    root: Option<&Path>,
+) -> Result<bool> {
+    if store.meta_int("detached")?.unwrap_or(0) == 0 {
+        return Ok(false);
+    }
+    if !force {
+        return Err(OkfError::new(
+            "DETACHED",
+            "graph is detached from its bundle (see `okf detach`): mirror writes are refused. Re-attach with --force (the bundle root must match the recorded source tree).",
+        )
+        .remedy("re-attach with --force, or pass --force to import"));
+    }
+    let Some(root) = root else {
+        // Rootless addressed writes never carry a mirror relationship.
+        return Ok(false);
+    };
+    let want = crate::roots::canonicalish(root);
+    let rows = store.query("MATCH (s:SourceRoot) RETURN s.path AS path", vec![])?;
+    let known: Vec<PathBuf> = rows
+        .into_iter()
+        .filter_map(|row| {
+            row.get("path")
+                .and_then(Json::as_str)
+                .map(|path| crate::roots::canonicalish(Path::new(path)))
+        })
+        .collect();
+    if !known.iter().any(|path| path == &want) {
+        let shown = known
+            .first()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "<unknown>".into());
+        return Err(OkfError::new(
+            "DETACHED",
+            format!(
+                "graph was detached from a different source tree ({shown}); refusing --force import from {}",
+                want.display()
+            ),
+        )
+        .field("detached_from", Json::String(shown))
+        .field("want", Json::String(want.to_string_lossy().into_owned()))
+        .remedy("create a new database for a different tree"));
+    }
+    // A multi-root graph may only reattach when every configured tree is
+    // present in the recorded provenance.
+    if !settings.roots.is_empty() {
+        let roots = crate::roots::Roots::from_settings(settings);
+        if roots.all_roots().iter().any(|(_, path)| {
+            let resolved = crate::roots::canonicalish(path);
+            !known.iter().any(|candidate| candidate == &resolved)
+        }) {
+            return Err(OkfError::new(
+                "DETACHED",
+                "graph was detached from a different set of source roots; refusing --force import",
+            )
+            .remedy("create a new database for a different tree"));
+        }
+    }
+    Ok(true)
+}
+
+/// Clear detached state and provenance after a successful forced reattach.
+pub fn clear_detached(store: &Store) -> Result<()> {
+    for sql in [
+        "MATCH (m:Meta {key: 'detached'}) DELETE m",
+        "MATCH (m:Meta {key: 'detached_at'}) DELETE m",
+        "MATCH (s:SourceRoot) DELETE s",
+    ] {
+        store.write(sql, vec![])?;
+    }
+    Ok(())
+}
+
 pub fn detach(store: &Store, settings: &Settings, params: &Map<String, Json>) -> Result<Json> {
     if let Some(_since) = store.meta_int("detached")? {
         let since_at = store.meta_int("detached_at")?;
@@ -257,6 +371,7 @@ pub fn detach(store: &Store, settings: &Settings, params: &Map<String, Json>) ->
     }
     let verify_enabled = params.get("verify").and_then(Json::as_bool).unwrap_or(true);
     let force = params.get("force").and_then(Json::as_bool).unwrap_or(false);
+    let explicit_root = params.get("bundle_path").and_then(Json::as_str).is_some();
     let root = params
         .get("bundle_path")
         .and_then(Json::as_str)
@@ -284,7 +399,7 @@ pub fn detach(store: &Store, settings: &Settings, params: &Map<String, Json>) ->
         .and_then(Json::as_i64)
         .unwrap_or(0);
     if verify_enabled {
-        verify(&root, map, store, settings)?;
+        verify(&root, map, store, settings, explicit_root)?;
         let summary = summary(map);
         let mismatched = map
             .get("mismatched")
@@ -355,17 +470,27 @@ pub fn detach(store: &Store, settings: &Settings, params: &Map<String, Json>) ->
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|err| OkfError::internal(err.to_string(), "system time"))?
         .as_secs() as i64;
-    let resolved = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-    store.write(
-        "MERGE (s:SourceRoot {alias: $alias}) \
-         SET s.path = $path, s.file_count = $count, s.last_seen = $seen",
-        vec![
-            ("alias", Value::String(String::new())),
-            ("path", Value::String(native_display(&resolved))),
-            ("count", Value::Int64(file_count)),
-            ("seen", Value::Int64(now)),
-        ],
-    )?;
+    let roots = crate::roots::Roots::from_settings(settings);
+    store.write("MATCH (s:SourceRoot) DELETE s", vec![])?;
+    for (alias, tree) in roots.all_roots() {
+        let count = if tree.is_dir() {
+            walk_source_files(tree)?.len() as i64
+        } else {
+            0
+        };
+        let resolved = crate::roots::canonicalish(tree);
+        store.write(
+            "MERGE (s:SourceRoot {alias: $alias}) \
+             SET s.path = $path, s.file_count = $count, s.last_seen = $seen",
+            vec![
+                ("alias", Value::String(alias.to_string())),
+                ("path", Value::String(native_display(&resolved))),
+                ("count", Value::Int64(count)),
+                ("seen", Value::Int64(now)),
+            ],
+        )?;
+    }
+    let resolved = crate::roots::canonicalish(&root);
     store.write("MERGE (m:Meta {key: 'detached'}) SET m.value = 1", vec![])?;
     store.write(
         "MERGE (m:Meta {key: 'detached_at'}) SET m.value = $now",

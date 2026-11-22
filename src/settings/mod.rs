@@ -291,7 +291,7 @@ impl Settings {
                 format!("Configuration invalid:\n  - {}", errors.join("\n  - ")),
             ));
         }
-        Ok(())
+        crate::roots::validate(self).map_err(config_error)
     }
 
     pub fn to_value(&self) -> Value {

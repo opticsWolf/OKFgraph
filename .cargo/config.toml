@@ -1,3 +1,7 @@
 [env]
 # Shared cache for the prebuilt Ladybug archive across rebuilds.
 LBUG_PREBUILT_CACHE_DIR = { value = "target/lbug-prebuilt", relative = true }
+# Ladybug reserves a large virtual buffer per database. Full-parallel test
+# runs intermittently exhaust Windows address space with a VirtualAlloc error;
+# four threads keep the suite deterministic on the release gate.
+RUST_TEST_THREADS = { value = "4", force = false }

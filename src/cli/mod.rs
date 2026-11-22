@@ -1046,6 +1046,10 @@ fn import_cmd(
             OkfError::new("MISSING_PARAM", "import needs FILES or --all").op("import_file"),
         );
     }
+    // Positional files use --bundle-path as Python's explicit identity root.
+    if let Some(value) = sub.get_one::<String>("bundle-path") {
+        params.insert("identity_root".into(), Value::String(value.clone()));
+    }
     if sub.get_flag("prune-missing") {
         return Err(
             OkfError::new("BAD_VALUE", "--prune-missing only applies with --all")

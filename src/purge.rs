@@ -128,9 +128,24 @@ pub fn remember_trashed(
 pub fn recover(store: &Store, concept_id: &str) -> Result<bool> {
     let rows = store.query(
         "MATCH (d:DeletedConcept {original_id: $id}) \
-         RETURN d.snapshot AS snapshot ORDER BY d.deleted_at DESC",
+         RETURN d.snapshot AS snapshot, d.deleted_at AS deleted_at \
+         ORDER BY d.deleted_at DESC",
         vec![("id", Value::String(concept_id.into()))],
     )?;
+    let deleted_at = rows
+        .first()
+        .and_then(|row| row.get("deleted_at"))
+        .and_then(Json::as_str)
+        .and_then(|text| PyDateTime::parse(text).ok());
+    let Some(parsed) = deleted_at else {
+        // Conservative: a tombstone without a readable timestamp is not
+        // recoverable (`list_deleted` reports the same non-recoverable state).
+        return Ok(false);
+    };
+    let age = (local_now_datetime().as_naive() - parsed.as_naive()).as_seconds_f64();
+    if age > SOFT_DELETE_WINDOW {
+        return Ok(false);
+    }
     let Some(snapshot) = rows
         .first()
         .and_then(|row| row.get("snapshot"))
@@ -481,5 +496,41 @@ fn json_to_lbug(value: &Json) -> Value {
                 .collect(),
         ),
         Json::Object(_) => Value::String(value.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Settings;
+    use serde_json::{Map, Value as Json};
+
+    #[test]
+    fn recovery_refuses_tombstones_past_the_24_hour_window() {
+        let source =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("recovery.db");
+        std::fs::copy(source, &path).expect("copy fixture");
+        let settings = Settings::from_map(&Map::from_iter([(
+            "db_path".to_string(),
+            Json::String(path.to_string_lossy().into_owned()),
+        )]))
+        .expect("settings");
+        let store = Store::open_writable(&settings).expect("store");
+        assert!(soft_delete(&store, "alpha").expect("soft delete"));
+
+        let expired = local_now_datetime().as_naive().assume_utc()
+            - time::Duration::seconds((25 * 60 * 60) as i64);
+        store
+            .write(
+                "MATCH (d:DeletedConcept {original_id: 'alpha'}) SET d.deleted_at = $at",
+                vec![(
+                    "at",
+                    Value::String(crate::model::format_py_datetime(expired)),
+                )],
+            )
+            .expect("backdate tombstone");
+        assert!(!recover(&store, "alpha").expect("recover"));
     }
 }

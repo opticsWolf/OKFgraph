@@ -244,6 +244,29 @@ impl Router {
         Ok(settings)
     }
 
+    fn import_policy(&self, params: &Map<String, Json>) -> Result<crate::ingest::RebuildPolicy> {
+        if let Some(raw) = params.get("batch_size") {
+            let requested = raw
+                .as_i64()
+                .ok_or_else(|| OkfError::new("BAD_VALUE", "batch_size must be an integer"))?;
+            if requested != self.settings.batch_size {
+                return Err(OkfError::new(
+                    "BAD_VALUE",
+                    format!(
+                        "batch_size={requested} is not supported by the Rust import path; configure import.batch_size instead"
+                    ),
+                )
+                .field("batch_size", raw.clone()));
+            }
+        }
+        match opt_str(params, "rebuild")? {
+            Some(text) => {
+                crate::ingest::RebuildPolicy::parse(&text).map_err(|err| err.op("import"))
+            }
+            None => Ok(crate::ingest::RebuildPolicy::Auto),
+        }
+    }
+
     fn import_files(&self, params: &Map<String, Json>) -> Result<Json> {
         let paths = match params.get("paths") {
             Some(Json::Array(items)) => items
@@ -256,8 +279,28 @@ impl Router {
             return self.import_file(params);
         }
         let settings = self.import_settings(params)?;
-        crate::ingest::import_files(&self.store, &settings, &self.embedder, &self.pools, &paths)
-            .map_err(|err| err.op("import_files"))
+        let rebuild = self.import_policy(params)?;
+        let identity_root = opt_str(params, "identity_root")?;
+        let force = params.get("force").and_then(Json::as_bool).unwrap_or(false);
+        let guard_root = identity_root
+            .as_deref()
+            .or(settings.bundle_root.as_deref())
+            .map(Path::new);
+        let reattach = crate::detach::require_attached(&self.store, &settings, force, guard_root)?;
+        let report = crate::ingest::import_files_with_root(
+            &self.store,
+            &settings,
+            &self.embedder,
+            &self.pools,
+            &paths,
+            identity_root.as_deref(),
+            rebuild,
+        )
+        .map_err(|err| err.op("import_files"))?;
+        if reattach {
+            crate::detach::clear_detached(&self.store)?;
+        }
+        Ok(report)
     }
 
     fn delete(&self, params: &Map<String, Json>) -> Result<Json> {
@@ -265,6 +308,15 @@ impl Router {
         let remove_file = opt_bool(params, "remove_file")?.unwrap_or(false);
         if self.store.get_by_id(&concept_id)?.is_none() {
             return Err(unknown_concept("delete", "concept_id", &concept_id));
+        }
+        // Never move a file before we know the database write can happen.
+        if self.store.is_read_only() {
+            return Err(OkfError::new(
+                "DB_LOCKED",
+                "this store was opened read-only; writing through it is refused",
+            )
+            .op("delete")
+            .remedy("reopen the router with write access"));
         }
 
         let keys = self.store.file_hash_keys_for_concept(&concept_id)?;
@@ -298,19 +350,63 @@ impl Router {
             ));
         }
 
-        let trashed = if alive.is_empty() {
+        let staged = if alive.is_empty() {
             Vec::new()
         } else {
-            self.trash_files(&keys)?
+            self.stage_trash(&keys)?
         };
-        if !crate::purge::soft_delete(&self.store, &concept_id)? {
-            return Err(OkfError::new(
-                "NOT_RECOVERABLE",
-                format!("concept '{concept_id}' vanished mid-operation"),
-            )
-            .op("delete"));
+        let mut moved: Vec<(String, String, String)> = Vec::new();
+        let outcome = (|| {
+            for item in &staged {
+                if let Some(parent) = Path::new(&item.2).parent() {
+                    std::fs::create_dir_all(parent).map_err(|err| {
+                        OkfError::internal(
+                            format!("cannot create {}: {err}", parent.display()),
+                            "std::io::Error",
+                        )
+                    })?;
+                }
+                std::fs::rename(&item.1, &item.2).map_err(|err| {
+                    OkfError::internal(
+                        format!("cannot move {} to {}: {err}", item.1, item.2),
+                        "std::io::Error",
+                    )
+                })?;
+                moved.push(item.clone());
+            }
+            if !crate::purge::soft_delete(&self.store, &concept_id)? {
+                return Err(OkfError::new(
+                    "NOT_RECOVERABLE",
+                    format!("concept '{concept_id}' vanished mid-operation"),
+                )
+                .op("delete"));
+            }
+            let pairs: Vec<(String, String)> = moved
+                .iter()
+                .map(|item| (item.2.clone(), item.1.clone()))
+                .collect();
+            crate::purge::remember_trashed(&self.store, &concept_id, &pairs)?;
+            for item in &moved {
+                self.store.forget_file_hash(&item.0)?;
+            }
+            Ok(())
+        })();
+        if let Err(err) = outcome {
+            // Idempotent rollback: any move we completed is undone. Ledger
+            // rows were deliberately left in place until the DB write won.
+            for item in moved.iter().rev() {
+                let trash = Path::new(&item.2);
+                let source = Path::new(&item.1);
+                if trash.exists() && !source.exists() {
+                    let _ = std::fs::rename(trash, source);
+                }
+            }
+            return Err(err);
         }
-        crate::purge::remember_trashed(&self.store, &concept_id, &trashed)?;
+        let trashed: Vec<(String, String)> = moved
+            .iter()
+            .map(|item| (item.2.clone(), item.1.clone()))
+            .collect();
         let until = crate::model::local_now_datetime().as_naive().assume_utc()
             + time::Duration::seconds(86_400);
         Ok(serde_json::json!({
@@ -324,13 +420,11 @@ impl Router {
         }))
     }
 
-    /// Move backing files to `<root>/.okf-trash/<stamp>/...` and retire their
-    /// delta ledger entries. Returns `(trash, source)` pairs.
-    fn trash_files(&self, keys: &[String]) -> Result<Vec<(String, String)>> {
-        let Some(root) = self.settings.bundle_root.as_ref() else {
-            return Ok(Vec::new());
-        };
-        let root = crate::store::absolute_path(Path::new(root));
+    /// Plan `(ledger key, source, trash)` moves without touching the
+    /// filesystem. Each source is matched against every configured root, so
+    /// named-root files are trashed in their own tree.
+    fn stage_trash(&self, keys: &[String]) -> Result<Vec<(String, String, String)>> {
+        let roots = crate::roots::Roots::from_settings(&self.settings);
         let now = crate::model::local_now_datetime().as_naive().assume_utc();
         let stamp = format!(
             "{:04}{:02}{:02}T{:02}{:02}{:02}",
@@ -341,43 +435,35 @@ impl Router {
             now.minute(),
             now.second()
         );
-        let mut moved: Vec<(String, String)> = Vec::new();
+        let mut planned: Vec<(String, String, String)> = Vec::new();
         let mut seen = BTreeSet::new();
         for key in keys {
             for source in self.store.resolve_file_paths(key) {
                 if !source.is_file() || !seen.insert(source.clone()) {
                     continue;
                 }
-                let Ok(relative) = source.strip_prefix(&root) else {
+                let resolved = crate::roots::canonicalish(&source);
+                let Some(root) = roots
+                    .all_roots()
+                    .into_iter()
+                    .filter(|(_, candidate)| resolved.starts_with(candidate))
+                    .max_by_key(|(_, candidate)| candidate.components().count())
+                    .map(|(_, candidate)| candidate)
+                else {
+                    continue;
+                };
+                let Ok(relative) = resolved.strip_prefix(root) else {
                     continue;
                 };
                 let trash = root.join(".okf-trash").join(&stamp).join(relative);
-                if let Some(parent) = trash.parent() {
-                    std::fs::create_dir_all(parent).map_err(|err| {
-                        OkfError::internal(
-                            format!("cannot create {}: {err}", parent.display()),
-                            "std::io::Error",
-                        )
-                    })?;
-                }
-                std::fs::rename(&source, &trash).map_err(|err| {
-                    OkfError::internal(
-                        format!(
-                            "cannot move {} to {}: {err}",
-                            source.display(),
-                            trash.display()
-                        ),
-                        "std::io::Error",
-                    )
-                })?;
-                self.store.forget_file_hash(key)?;
-                moved.push((
-                    trash.to_string_lossy().into_owned(),
+                planned.push((
+                    key.clone(),
                     source.to_string_lossy().into_owned(),
+                    trash.to_string_lossy().into_owned(),
                 ));
             }
         }
-        Ok(moved)
+        Ok(planned)
     }
 
     fn recover_deleted(&self, params: &Map<String, Json>) -> Result<Json> {
@@ -651,8 +737,10 @@ impl Router {
         &self,
         op: &str,
         concept_id: &str,
+        force: bool,
         edit: impl FnOnce(&mut Map<String, Json>) -> Result<Vec<String>>,
     ) -> Result<Json> {
+        let reattach = crate::detach::require_attached(&self.store, &self.settings, force, None)?;
         let concept = self
             .store
             .get_by_id(concept_id)?
@@ -681,17 +769,50 @@ impl Router {
                 "changed": Json::Array(Vec::new()),
             }));
         }
+        if source.is_none() && self.settings.bundle_root.is_none() && self.settings.roots.is_empty()
+        {
+            // Python's file-free branch edits the graph node directly and
+            // re-runs the single-concept pipeline. No file is materialized.
+            let item = graph_only_parsed(concept_id, &meta, &body)?;
+            let engine = self.embedder.get(&self.settings)?;
+            crate::ingest::commit_parsed(
+                &self.store,
+                &self.settings,
+                engine.as_ref(),
+                &self.pools,
+                std::slice::from_ref(&item),
+                None,
+                false,
+                true,
+            )?;
+            return Ok(serde_json::json!({
+                "concept_id": concept_id,
+                "path": Json::Null,
+                "changed": changed,
+            }));
+        }
+        let roots = crate::roots::Roots::from_settings(&self.settings);
+        let materialized = source.is_none();
+        let (materialize_root, relative_id) = if let Some(path) = &source {
+            (path.parent().map(Path::to_path_buf), None)
+        } else {
+            let (alias, native) = crate::roots::split_namespaced(concept_id);
+            match roots.root_for_alias(&alias) {
+                Some(root) => (Some(root.to_path_buf()), Some(native)),
+                None => {
+                    return Err(OkfError::new(
+                        "BAD_VALUE",
+                        format!("{op}: unknown root alias for {concept_id:?}"),
+                    )
+                    .op(op)
+                    .field("concept_id", Json::String(concept_id.into())));
+                }
+            }
+        };
         let path = if let Some(path) = source {
             path
-        } else if let Some(root) = self.settings.bundle_root.as_ref() {
-            let mut relative = concept_id.to_string();
-            if let Some(rest) = relative.strip_prefix('@') {
-                relative = rest
-                    .split_once('/')
-                    .map(|(_, rest)| rest)
-                    .unwrap_or(rest)
-                    .to_string();
-            }
+        } else if let Some(root) = &materialize_root {
+            let relative = relative_id.expect("materialize relative id");
             if self.settings.identity == "frontmatter" {
                 meta.insert("id".into(), Json::String(relative.clone()));
             }
@@ -703,7 +824,7 @@ impl Router {
                 .op(op)
                 .field("concept_id", Json::String(concept_id.into())));
             }
-            Path::new(root).join(format!("{relative}.md"))
+            root.join(format!("{relative}.md"))
         } else {
             return Err(OkfError::new(
                 "MISSING_PARAM",
@@ -729,6 +850,14 @@ impl Router {
             "file_path".into(),
             Json::String(path.to_string_lossy().into_owned()),
         );
+        if materialized {
+            if let Some(root) = &materialize_root {
+                import_params.insert(
+                    "identity_root".into(),
+                    Json::String(root.to_string_lossy().into_owned()),
+                );
+            }
+        }
         let imported = self.import_file(&import_params)?;
         let imported_id = imported
             .get("concept_id")
@@ -746,6 +875,9 @@ impl Router {
             .field("concept_id", Json::String(concept_id.into()))
             .field("imported", Json::String(imported_id.into())));
         }
+        if reattach {
+            crate::detach::clear_detached(&self.store)?;
+        }
         Ok(serde_json::json!({
             "concept_id": imported_id,
             "path": path.to_string_lossy().into_owned(),
@@ -755,7 +887,8 @@ impl Router {
 
     fn update(&self, params: &Map<String, Json>) -> Result<Json> {
         let concept_id = str_param(params, "concept_id")?.to_string();
-        let result = self.write_and_import("update", &concept_id, |meta| {
+        let force = params.get("force").and_then(Json::as_bool).unwrap_or(false);
+        let result = self.write_and_import("update", &concept_id, force, |meta| {
             if params.contains_key("tags")
                 && (params.contains_key("add_tags") || params.contains_key("remove_tags"))
             {
@@ -872,7 +1005,8 @@ impl Router {
             }
         }
         let old = old_id.clone();
-        let new_result = self.write_and_import("supersede", &new_id, |meta| {
+        let force = params.get("force").and_then(Json::as_bool).unwrap_or(false);
+        let new_result = self.write_and_import("supersede", &new_id, force, |meta| {
             let mut relations = meta
                 .get("relations")
                 .and_then(Json::as_object)
@@ -899,7 +1033,7 @@ impl Router {
             Ok(vec!["relations".into()])
         })?;
         let new = new_id.clone();
-        let old_result = self.write_and_import("supersede", &old_id, |meta| {
+        let old_result = self.write_and_import("supersede", &old_id, force, |meta| {
             let mut changed = Vec::new();
             let mut tags = crate::model::normalize_tags(meta.get("tags").unwrap_or(&Json::Null));
             if !tags.iter().any(|tag| tag == "superseded") {
@@ -1146,14 +1280,21 @@ impl Router {
             }
         };
         let settings = self.import_settings(params)?;
+        let rebuild = self.import_policy(params)?;
         let options = crate::ingest::ImportOptions {
             prune_missing: params
                 .get("prune_missing")
                 .and_then(Json::as_bool)
                 .unwrap_or(false),
             force: params.get("force").and_then(Json::as_bool).unwrap_or(false),
+            rebuild,
         };
-        crate::ingest::import_bundle(
+        let guard_root = bundle_path
+            .or(settings.bundle_root.as_deref())
+            .map(Path::new);
+        let reattach =
+            crate::detach::require_attached(&self.store, &settings, options.force, guard_root)?;
+        let report = crate::ingest::import_bundle(
             &self.store,
             &settings,
             &self.embedder,
@@ -1161,7 +1302,11 @@ impl Router {
             bundle_path,
             options,
         )
-        .map_err(|err| err.op("import_bundle"))
+        .map_err(|err| err.op("import_bundle"))?;
+        if reattach {
+            crate::detach::clear_detached(&self.store)?;
+        }
+        Ok(report)
     }
 
     fn import_file(&self, params: &Map<String, Json>) -> Result<Json> {
@@ -1175,14 +1320,27 @@ impl Router {
             );
         }
         let settings = self.import_settings(params)?;
-        let report = crate::ingest::import_files(
+        let rebuild = self.import_policy(params)?;
+        let identity_root = opt_str(params, "identity_root")?;
+        let force = params.get("force").and_then(Json::as_bool).unwrap_or(false);
+        let guard_root = identity_root
+            .as_deref()
+            .or(settings.bundle_root.as_deref())
+            .map(Path::new);
+        let reattach = crate::detach::require_attached(&self.store, &settings, force, guard_root)?;
+        let report = crate::ingest::import_files_with_root(
             &self.store,
             &settings,
             &self.embedder,
             &self.pools,
             std::slice::from_ref(&path),
+            identity_root.as_deref(),
+            rebuild,
         )
         .map_err(|err| err.op("import_file"))?;
+        if reattach {
+            crate::detach::clear_detached(&self.store)?;
+        }
         let id = report
             .get("concept_ids")
             .and_then(Json::as_array)
@@ -1344,13 +1502,26 @@ impl Router {
             "lint" => self.lint(params),
             "produce" => self.produce(params),
             "sync" => self.sync(params),
-            "ingest" => crate::converters::ingest(
-                &self.store,
-                &self.settings,
-                &self.embedder,
-                &self.pools,
-                params,
-            ),
+            "ingest" => {
+                let force = params.get("force").and_then(Json::as_bool).unwrap_or(false);
+                let reattach = crate::detach::require_attached(
+                    &self.store,
+                    &self.settings,
+                    force,
+                    self.settings.bundle_root.as_deref().map(Path::new),
+                )?;
+                let report = crate::converters::ingest(
+                    &self.store,
+                    &self.settings,
+                    &self.embedder,
+                    &self.pools,
+                    params,
+                )?;
+                if reattach {
+                    crate::detach::clear_detached(&self.store)?;
+                }
+                Ok(report)
+            }
             "pin_info" => self.pin_info(),
             "lanes" => self.lanes(),
             "doctor" => self.doctor(params),
@@ -4498,6 +4669,77 @@ const WRITE_RESERVED: &[&str] = &[
     "resource",
 ];
 
+/// Build the synthetic `Parsed` used by file-free `update`/`supersede`.
+/// It is deliberately marked synthetic so no FileHash row is minted.
+fn graph_only_parsed(
+    concept_id: &str,
+    meta: &Map<String, Json>,
+    body: &str,
+) -> Result<crate::ingest::Parsed> {
+    use crate::ingest::{refresh_content_sig, Parsed};
+    use crate::model::PyDateTime;
+    use crate::pycompat::PyValue;
+
+    let text = |key: &str| {
+        meta.get(key)
+            .and_then(Json::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let tags = meta
+        .get("tags")
+        .map(crate::model::normalize_tags)
+        .unwrap_or_default();
+    let timestamp = meta
+        .get("timestamp")
+        .and_then(Json::as_str)
+        .and_then(|text| PyDateTime::parse(text).ok());
+    let mut authored = BTreeMap::new();
+    for (key, value) in meta {
+        if !matches!(key.as_str(), "body" | "embedding") {
+            authored.insert(key.clone(), PyValue::from_golden(value));
+        }
+    }
+    let mut extra = BTreeMap::new();
+    for (key, value) in meta {
+        if ![
+            "type",
+            "title",
+            "description",
+            "resource",
+            "tags",
+            "timestamp",
+        ]
+        .contains(&key.as_str())
+        {
+            extra.insert(
+                key.clone(),
+                crate::model::extra_value(&PyValue::from_golden(value)),
+            );
+        }
+    }
+    let mut item = Parsed {
+        id: concept_id.to_string(),
+        title: text("title").unwrap_or_else(|| concept_id.to_string()),
+        concept_type: text("type").unwrap_or_else(|| "note".into()),
+        description: text("description"),
+        resource: text("resource"),
+        tags,
+        timestamp,
+        authored,
+        body: body.to_string(),
+        search_text_override: None,
+        extra,
+        sig: String::new(),
+        path: PathBuf::new(),
+        alias: String::new(),
+        source_root: None,
+        synthetic: true,
+    };
+    refresh_content_sig(&mut item);
+    Ok(item)
+}
+
 fn concept_frontmatter(concept: &Json) -> (Map<String, Json>, String) {
     let mut meta = Map::new();
     if let Some(object) = concept.as_object() {
@@ -4803,6 +5045,81 @@ mod tests {
             .call("list_deleted", &Map::new())
             .expect("list_deleted");
         assert_eq!(rows, Json::Array(Vec::new()));
+    }
+
+    #[test]
+    fn graph_only_parsed_is_synthetic_and_signed() {
+        let meta = Map::from_iter([
+            ("title".to_string(), Json::String("Updated".into())),
+            ("type".to_string(), Json::String("note".into())),
+            (
+                "tags".to_string(),
+                Json::Array(vec![Json::String("x".into())]),
+            ),
+        ]);
+        let item = graph_only_parsed("alpha", &meta, "body").expect("parsed");
+        assert!(item.synthetic);
+        assert!(item.source_root.is_none());
+        assert_eq!(item.title, "Updated");
+        assert!(!item.sig.is_empty());
+    }
+
+    #[test]
+    fn detached_graph_refuses_mirror_writes() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("detached.db");
+        std::fs::copy(&source, &path).expect("copy fixture");
+        let settings = Settings::from_map(&Map::from_iter([
+            (
+                "db_path".to_string(),
+                Json::String(path.to_string_lossy().into_owned()),
+            ),
+            (
+                "bundle_root".to_string(),
+                Json::String("parity/corpus/minimal".into()),
+            ),
+        ]))
+        .expect("settings");
+        let router = Router::open(&settings).expect("router");
+        router
+            .store
+            .write("MERGE (m:Meta {key: 'detached'}) SET m.value = 1", vec![])
+            .expect("mark detached");
+        let err = router
+            .call(
+                "import_bundle",
+                &Map::from_iter([(
+                    "bundle_path".to_string(),
+                    Json::String("parity/corpus/minimal".into()),
+                )]),
+            )
+            .expect_err("must refuse");
+        assert_eq!(err.code, "DETACHED");
+    }
+
+    #[test]
+    fn read_only_delete_refuses_before_touching_files() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("parity/fixtures/oracle-v10.db");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("read-only.db");
+        std::fs::copy(&source, &path).expect("copy fixture");
+        let settings = Settings::from_map(&Map::from_iter([(
+            "db_path".to_string(),
+            Json::String(path.to_string_lossy().into_owned()),
+        )]))
+        .expect("settings");
+        let router = Router::open_read_only(&settings).expect("router");
+        let err = router
+            .call(
+                "delete",
+                &Map::from_iter([
+                    ("concept_id".to_string(), Json::String("alpha".into())),
+                    ("remove_file".to_string(), Json::Bool(true)),
+                ]),
+            )
+            .expect_err("must refuse");
+        assert_eq!(err.code, "DB_LOCKED");
     }
 
     #[test]

@@ -1,0 +1,29 @@
+{
+  "name": "file-free-writes",
+  "settings": {
+    "db_path": "parity/out/file-free-writes-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "remove": [
+      "parity/out/file-free-writes-@RUNNER@.db",
+      "parity/out/file-free-writes-@RUNNER@.db.wal",
+      "parity/out/file-free-writes-@RUNNER@.db-shm",
+      "parity/out/file-free-writes-@RUNNER@.db.lock"
+    ],
+    "import": {
+      "corpus": "parity/corpus/minimal"
+    }
+  },
+  "ops": [
+    {"op": "update", "params": {"concept_id": "alpha", "title": "File-free Update"}},
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}},
+    {"op": "supersede", "params": {"old_id": "alpha", "new_id": "beta"}},
+    {"op": "get_by_id", "params": {"concept_id": "alpha"}}
+  ]
+}

@@ -1,18 +1,63 @@
-## 0.16.0 — Rust core cutover
-
-- Rust core replaces the Python implementation; Python is a thin public facade.
-- v10 databases and bundles stay compatible; older schemas are refused.
-- Full 29-command CLI, 11 MCP tools, HTTP ops/jobs, stdlib `OKFClient`.
-- Slim wheel plus optional `okfgraph-pdf` native add-on.
-- M6 hardening: differential, fuzz, performance, SSRF, extension integrity,
-  redacted crash reports and dependency audit gates.
-- See `docs/release-notes-0.16.0.md` and `docs/migration-guide.md`.
-
 # Changelog
 
 All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
+
+## [0.16.0] — Rust core cutover
+
+### Added
+
+- Native Rust core in `src/` implementing all 30 router ops, the 29-command
+  CLI, 11 MCP tools, HTTP ops/jobs and `okf serve` with TCP and POSIX UDS.
+- Public stdlib `OKFClient`, `discover()` and `serve_file_for()`.
+- External embed/rerank/vision lanes behind the `external` feature.
+- Optional native `okfgraph-pdf` add-on with a stable C plugin ABI.
+- Python 3.12–3.14 wheels for Windows x64, Linux x86_64 and macOS arm64.
+- Differential, fuzz, performance, SSRF, extension-integrity, crash-report
+  and dependency-audit gates; see `docs/release-gate.md`.
+
+### Changed
+
+- Python is now a thin public facade over a PyO3 native extension; there is no
+  Python fallback.
+- Engine pins are checked against the loaded engine and vector space;
+  `max_length` is ignored.
+- Image import mode is per operation (`text`, `optional`, `omni`).
+- `doctor` accepts `stale_days`, `fix`, `strict` and `cache_dir`.
+- HTTP jobs are in-memory and non-durable; `okf serve` serializes all ops
+  through one owner lock.
+- CLI and MCP proxy borrow a live `okf serve` owner unless
+  `OKFGRAPH_NO_SERVER=1`.
+
+### Removed
+
+- The Python implementation from the default tree, including
+  `okfgraph.components.*`, `okfgraph.ops.*` and the root `pyproject.toml`.
+  Python 0.15 remains available at tag `python-oracle-0.15.0`.
+- Python 3.11, Linux aarch64 and macOS x86_64 from the first release matrix.
+- Bundled `bobine` from the slim wheel; install `okfgraph[pdf]` instead.
+
+### Fixed
+
+- Transactional imports, preserved timestamps, file-backed delete/restore,
+  image pruning, path/resource safety, frontmatter identity, YAML parsing,
+  export paths, doctor findings/fixes, typed error envelopes and op coverage.
+- Ready Ladybug connections, cached pin checks, one-connection hybrid search
+  and lean search row projection; the paired benchmark now meets parity.
+- Remote-image SSRF redirects/DNS rebinding, extension load verification and
+  redacted CLI crash reports.
+
+### Compatibility
+
+- v10 databases and bundles remain compatible; older or schema-less databases
+  are refused with `CONFIG_INVALID`. Python 0.15 is the one-time migration
+  path.
+- Missing PDF plugin returns `CONVERSION_FAILED` with an install hint instead
+  of Python 0.15's raw `INTERNAL`.
+
+See `docs/release-notes-0.16.0.md`, `docs/migration-guide.md`,
+`docs/quickref.md` and `docs/README.md`.
 
 ## [0.15.0] — 2026-11-16
 

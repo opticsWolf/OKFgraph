@@ -287,6 +287,9 @@ constructor-only settings. Generate the vision oracle with `parity/.venv-oracle`
 The full GPU-dependent matrix is a manual stable-release gate; see
 `docs/release-gate.md`. Hosted CI remains a build/smoke gate.
 
+The documentation map is [`docs/README.md`](../docs/README.md); the
+operator quick reference is [`docs/quickref.md`](../docs/quickref.md).
+
 The Python side of the harness never imports the root `okfgraph/` package.
 `tools/oracle.py` resolves `python-oracle-0.15.0` into a cached detached
 worktree at `parity/tmp/oracle-0.15.0` and prepends it to `PYTHONPATH`. Local

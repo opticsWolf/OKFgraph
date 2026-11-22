@@ -1,3 +1,8 @@
+> **Historical (Python 0.15).** This document records the old implementation.
+> The shipped 0.16.0 documentation is indexed in [docs/README.md](README.md);
+> start with [rust-architecture.md](rust-architecture.md) and
+> [quickref.md](quickref.md).
+
 # Plan: the embedder-loader seam (`docs/plan-embedder-loader.md`)
 
 **Status:** draft v2, 2026-11-05 — embedder seam + reranker seam,

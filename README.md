@@ -30,6 +30,9 @@ pip install "okfgraph[cpu,pdf]"
 pip install "okfgraph[gpu,pdf]"
 ```
 
+Documentation starts at [`docs/README.md`](docs/README.md). For a one-page
+reference, use [`docs/quickref.md`](docs/quickref.md).
+
 Supported first-release targets:
 
 | Platform | Architecture |
@@ -80,7 +83,7 @@ The native `okf` binary exposes the full 29-command oracle surface, including:
 okf init --db-path graph.db --embedding-dim 512
 okf import --all --bundle-root ./notes
 okf search --db-path graph.db "retrieval augmented generation"
-okf export --style okf --out-dir ./export
+okf export --output-dir ./export --flavor okf
 okf serve --listen 127.0.0.1:8765
 okf setup extensions
 ```
@@ -108,7 +111,7 @@ The public `OKFClient` is stdlib-only:
 ```python
 from okfgraph import OKFClient
 
-client = OKFClient("http://127.0.0.1:8765", db="graph.db")
+client = OKFClient("http://127.0.0.1:8765")
 hits = client.search("retrieval", limit=5)
 ```
 
@@ -133,7 +136,10 @@ parity/                  tag-based Python 0.15 oracle and differential gates
 ```
 
 See [`docs/rust-architecture.md`](docs/rust-architecture.md) for the runtime
-model, locking, and compatibility boundaries.
+model, locking, and compatibility boundaries. The complete documentation map
+is [`docs/README.md`](docs/README.md); the one-page
+[`docs/quickref.md`](docs/quickref.md) covers commands, ops, settings,
+environment variables, errors and paths.
 
 ## Migration from 0.15
 

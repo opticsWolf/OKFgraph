@@ -1,5 +1,8 @@
 # Manual release gate — OKFgraph 0.16.0
 
+Documentation for the release is indexed in [`docs/README.md`](README.md);
+operators should use [`docs/quickref.md`](quickref.md) during sign-off.
+
 Hosted GitHub Actions runners are **smoke gates only**: format, clippy,
 workspace checks, wheel build/install, facade/wheel smokes, Python version
 matrix, UDS smokes and external-lane Rust unit tests. They do not have the

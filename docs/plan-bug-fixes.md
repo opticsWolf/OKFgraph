@@ -1,8 +1,9 @@
 # OKFgraph Rust Core — Bug Findings and Fix Plan
 
-**Status:** review plan from `6a71fec`, updated after the fix series through
-the M4/M5 slices and the BUG-013 external-lane implementation. The remaining
-open work is tracked in section 11; findings marked “partial” are not closed.
+**Status:** review plan from `6a71fec`, updated after the complete M6 cutover.
+All code findings through BUG-066 are closed; section 11 is the authoritative
+register and records the one intentional divergence and the ongoing gate
+obligations. The original review below is kept as the evidence trail.
 
 **Scope:** the Rust core, the PyO3 binding, the Python facade, the optional
 PDF plugin, and the parity harness. Stage C surfaces (`okf serve`, MCP) are
@@ -15,11 +16,12 @@ materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
 and the write lock are implemented. The M4 serve/MCP/client slice is also in:
 11 rmcp tools, `--connect`, the public `OKFClient`, the HTTP job lane, the
-full 29-command CLI, and typed conversion-error envelopes. The broad differential matrix is green for **56 scenarios** after
-normalizing wall-clock graph times/internal IDs and the documented intentional
-differences; the 58th, `ingest-pdf-no-plugin`, records the intentional
-missing-plugin error divergence instead of a green comparison. Remaining items are listed under
-“Verification status” below and the authoritative register in section 11.
+full 29-command CLI, and typed conversion-error envelopes. The broad differential matrix is green for **58 comparable scenarios**
+after normalizing wall-clock graph times/internal IDs and the documented
+intentional differences; the 59th, `ingest-pdf-no-plugin`, records the
+intentional missing-plugin error divergence instead of a green comparison.
+Current verification is listed under “Verification status” below and the
+authoritative register in section 11.
 
 **Important:** the original review below describes the pre-fix state. It is
 kept as the evidence trail; the implementation status section records what is

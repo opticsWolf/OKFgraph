@@ -1,5 +1,8 @@
 # Migration guide — Python 0.15 to Rust 0.16.0
 
+See [`docs/README.md`](README.md) for the documentation map and
+[`quickref.md`](quickref.md) for the new command/op surface.
+
 ## Databases and bundles
 
 - v10 databases and bundle trees are compatible. Rust opens and writes them

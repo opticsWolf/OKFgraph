@@ -1,28 +1,22 @@
 # OKFgraph Rust core + PyO3 binding — analysis and port plan
 
-**Status:** M3 Stage B bug-fix pass, M4 serve/MCP/client/CLI slice and the
-M5 packaging slice —
-Windows spikes, `pycompat`, M1, M2, the Stage B write/ingest/export/delete/
-reembed/PDF slices, the `okf serve` HTTP op plane, the public `OKFClient`, and
-the 11-tool rmcp server (stdio + `--connect`), the HTTP job lane, and the
-full 29-command CLI are implemented.
-Real EmbeddingGemma 2 ONNX inference runs on CUDA; text/rerank/vision and
-write parity scenarios are green on the covered fixtures. The review findings
-in `docs/plan-bug-fixes.md` are implemented except the explicitly listed
-deferred items. CI builds wheels and runs the Python 3.12–3.14
-matrix on Windows, Linux and macOS; POSIX UDS client smoke is green in CI.
-External embed/rerank/vision lanes are implemented and covered by mock-host
-differential checks. Final bug-round verification: 57/57 matrix scenarios
-green in 14m37s, 30/30 success-op coverage, 75 all-feature / 54 no-default
-Rust tests, and a green six-job CI run on the last code-affecting commit. M6
-step 1 is also complete: the parity harness imports the oracle from a cached
-worktree of `python-oracle-0.15.0`, and the full matrix passed with the root
-Python package hidden; at cutover the package was deleted and its skills
-were moved under `src/cli/skills/`. M6 hardening is complete.
+**Status:** M6 complete; 0.16.0 stable cutover prepared. The Rust core in
+`src/` implements all 30 router ops, the 29-command CLI, 11 MCP tools, HTTP
+ops/jobs with `okf serve`, TCP/UDS transports, a public stdlib `OKFClient`,
+native/external embed/rerank/vision lanes, transactional ingest, full doctor,
+and the slim wheel plus optional native PDF add-on. Python is a thin public
+facade over PyO3; the old Python core is deleted from the default tree and
+available only at tag `python-oracle-0.15.0`. Final local evidence: 58/58
+comparable differential scenarios green (one intentional missing-plugin
+divergence), 30/30 success ops, 82 all-feature / 60 no-default Rust tests, 9
+fuzz properties, paired performance parity, green wheels for Python
+3.12–3.14, and clean fmt/clippy. Hosted CI and the manual GPU release gate
+must be signed off before publishing the tag.
+
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
-**Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
-164 modules, 1,241 tests)  
+**Oracle:** the frozen Python 0.15 tag `python-oracle-0.15.0` (24,242 LOC,
+164 modules, 1,241 tests), resolved by `parity/tools/oracle.py`
 **Baseline schema:** v10 (17 tables: 13 node + 4 relationship; 5 indexes)
 
 **Locked decisions (2026-11-18):**
@@ -1037,7 +1031,10 @@ core: the legacy package and root `pyproject.toml` are deleted, its three
 agent skills are bundled under `src/cli/skills/`, and the legacy eval scripts
 resolve Python 0.15 through the tag oracle. Rust-first docs, the Python
 binding guide, the migration guide and `docs/release-notes-0.16.0.md` are in
-place, and crate/wheel versions are set to stable `0.16.0`.
+place, and crate/wheel versions are set to stable `0.16.0`. Documentation is
+indexed in [`docs/README.md`](README.md); [`docs/quickref.md`](quickref.md)
+is the one-page operator reference and `pages/index.html` is updated to the
+0.16.0 Rust-first message.
 
 **Gate:** parity suite green on all target platforms; all 1,241 behaviors either
 ported, covered by an equivalent test, or explicitly waived in the parity report;

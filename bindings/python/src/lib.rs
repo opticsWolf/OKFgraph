@@ -23,7 +23,7 @@ fn op_names() -> Vec<&'static str> {
     okfgraph::ops::OP_NAMES.to_vec()
 }
 
-/// M0 spike: proves a blocking native call releases the GIL.
+/// Smoke hook: proves a blocking native call releases the GIL.
 #[pyfunction]
 fn run_cli(argv: Vec<String>) -> u32 {
     okfgraph::cli::run(argv) as u32

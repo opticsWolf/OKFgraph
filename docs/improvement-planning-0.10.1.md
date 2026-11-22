@@ -1,3 +1,8 @@
+> **Historical (Python 0.15).** This document records the old implementation.
+> The shipped 0.16.0 documentation is indexed in [docs/README.md](README.md);
+> start with [rust-architecture.md](rust-architecture.md) and
+> [quickref.md](quickref.md).
+
 # OKFgraph 0.10.1 — improvement plan (graph-reunification follow-ups)
 
 **Status:** implemented on `dev_0.10.1` (commits `4e0ae60` + `15ed2bd`, pushed). Full serial suite green (876 passed, 6 skipped, 0 failed). This document stands as the historical record: why the work exists (field report + incident), what was decided, and what was built.

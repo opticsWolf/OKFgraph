@@ -4,6 +4,8 @@ This is the executable form of §5 of `docs/plan-rust-core.md`. Every unchecked
 item is a release blocker for its stage. Status values: `open`, `wip`,
 `covered`, `waived` (waivers require the parity report).
 
+Command and environment lookup: [`docs/quickref.md`](quickref.md).
+
 ## A. Database (Stage A)
 
 - [x] open and write **v10 only**; never bump the schema during the port.

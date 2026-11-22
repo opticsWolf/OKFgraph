@@ -14,7 +14,7 @@
 <nav class="top" aria-label="Main navigation">
   <a class="brand" href="#top">
     <svg class="mark" viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M6 7 21 5 23 21 7 23 6 7Zm0 0 17 14M21 5 7 23" stroke="currentColor" stroke-width="1.5"/><g fill="currentColor"><circle cx="6" cy="7" r="3"/><circle cx="21" cy="5" r="3"/><circle cx="23" cy="21" r="3"/><circle cx="7" cy="23" r="3"/></g></svg>
-    OKFgraph <span class="release">0.15.0</span>
+    OKFgraph <span class="release">0.16.0</span>
   </a>
   <div class="links">
     <a href="#positioning">Why OKFgraph</a>
@@ -35,10 +35,10 @@
   <div class="hero-copy">
     <h1>Local knowledge.<br><span>Connected thinking.</span></h1>
     <p class="sub">A local knowledge graph and a <strong>vault for lasting agent memory</strong>. Keep documents, decisions, and working notes searchable, connected, and useful long after the conversation ends.</p>
-    <p class="hero-detail">OKFgraph turns plain Markdown into a local graph with hybrid retrieval. Keep editing in your own tools; use MCP, the CLI, or Python to find the right passage and follow the relationships around it. Embeddings run locally over ONNX Runtime, without torch.</p>
+    <p class="hero-detail">OKFgraph 0.16.0 is Rust-backed: one native core powers hybrid retrieval, ingest, the CLI, MCP, and a thin Python facade. Keep editing in your own tools; use MCP, the CLI, Python, or HTTP to find the right passage and follow the relationships around it. Embeddings run locally over ONNX Runtime.</p>
     <div class="cta">
       <a class="btn" href="#workflow">Build your first graph <span aria-hidden="true">↓</span></a>
-      <a class="text-link" href="https://github.com/opticsWolf/OKFgraph#quick-start">Read the documentation <span aria-hidden="true">↗</span></a>
+      <a class="text-link" href="https://github.com/opticsWolf/OKFgraph/blob/rust-core/docs/quickref.md">Read the quick reference <span aria-hidden="true">↗</span></a>
     </div>
   </div>
   <figure class="knowledge-preview">
@@ -91,7 +91,7 @@ Refresh flow: <span class="syntax-link">[[token-refresh]]</span></code></pre>
         <li><strong>Recall</strong><span>Search and read it in a later session.</span></li>
         <li><strong>Resume</strong><span>Build on prior work instead of rediscovering it.</span></li>
       </ol>
-      <p class="memory-storage">Use a stable database path across sessions. Python supports <code>OKFRouter(db_path="memory.db")</code> without a bundle root; export can turn those thoughts into Markdown. Graph-only knowledge lives in the database, so back it up or export it before rebuilding, even when the same graph also indexes files.</p>
+      <p class="memory-storage">Use a stable database path across sessions. The Python facade supports <code>OKFRouter(db_path="memory.db")</code> without a bundle root; export can turn those thoughts into Markdown. Graph-only knowledge lives in the database, so back it up or export it before rebuilding, even when the same graph also indexes files.</p>
     </div>
   </aside>
 </section>
@@ -187,7 +187,7 @@ okf export --all --output-dir out/ \
       <tr><th scope="row"><code>rank=ppr</code></th><td>Topic exploration, cold sessions</td><td>No</td><td>Lexical seeds + Personalized PageRank</td></tr>
     </tbody></table>
   </div>
-  <div class="impl"><div><h3>Small pieces. Explicit contracts.</h3><p>The implementation separates conversion, embedding, import, retrieval, and export behind the router facade. Rust handles document conversion and ONNX inference; LadybugDB holds the graph, vectors, and full-text indexes. That division keeps responsibilities inspectable without requiring a fleet of services.</p></div><pre tabindex="0" aria-label="Retrieval mode examples"><code># A graph query without an embedding session:
+  <div class="impl"><div><h3>Small pieces. Explicit contracts.</h3><p>The Rust core implements import, retrieval, export, scheduling, and the public op surface. Conversion sits behind an optional native plugin, embedding uses embroider/ONNX Runtime, and LadybugDB holds the graph, vectors, and full-text indexes. That division keeps responsibilities inspectable without requiring a fleet of services.</p></div><pre tabindex="0" aria-label="Retrieval mode examples"><code># A graph query without an embedding session:
 okf search "auth" --rank ppr
 
 # Retrieve passages rather than whole concepts:
@@ -199,7 +199,7 @@ okf read auth --include context \
 </section>
 
 <section id="surfaces" aria-labelledby="surfaces-title">
-  <div class="section-intro"><h2 id="surfaces-title">One graph.<br>Three ways in.</h2><div class="prose"><p>MCP gives agents a small tool surface, the CLI supports interactive work and automation, and Python exposes the router for your own pipelines. All use the same underlying components. Bundle import and maintenance stay outside the eleven MCP tools, so agents don't need a large administrative tool catalogue; anything snapshot-shaped (diff, doctor, lint, produce) is CLI-only.</p></div></div>
+  <div class="section-intro"><h2 id="surfaces-title">One graph.<br>Four ways in.</h2><div class="prose"><p>MCP gives agents a small tool surface, the CLI supports interactive work and automation, Python exposes the router for your own pipelines, and the stdlib <code>OKFClient</code> talks to a running <code>okf serve</code> owner over HTTP or a Unix socket. All use the same Rust core. Bundle import and maintenance stay outside the eleven MCP tools, so agents don't need a large administrative tool catalogue; anything snapshot-shaped (diff, doctor, lint, produce) is CLI-only.</p></div></div>
   <div class="doors">
     <article><h3>MCP for agents</h3><p>Connect with stdio. The tools are <code>search</code>, <code>read</code>, <code>traverse</code>, <code>ingest</code>, <code>export_bundle</code>, <code>export_concept</code>, <code>list_images</code>, <code>get_image</code> — plus the write tools <code>update</code>, <code>supersede</code>, and <code>delete</code>. Every tool returns the result envelope; failures carry <code>isError</code> with the typed error. Use persistent, absolute paths appropriate to your machine.</p><pre tabindex="0" aria-label="MCP client configuration"><code>{
   "mcpServers": {
@@ -218,8 +218,8 @@ okf traverse auth --direction BOTH
 
 # Inspect drift and graph health:
 okf diff
-okf doctor --strict</code></pre><a class="text-link" href="https://github.com/opticsWolf/OKFgraph#cli-reference">CLI reference <span aria-hidden="true">↗</span></a></article>
-    <article><h3>Python for pipelines</h3><p>Import a bundle, retrieve concepts, and export directly through <code>OKFRouter</code>. Omit <code>bundle_root</code> for graph-only thought workflows; close the router when you're done.</p><pre tabindex="0" aria-label="Python router example"><code>from pathlib import Path
+okf doctor --strict</code></pre><a class="text-link" href="https://github.com/opticsWolf/OKFgraph/blob/rust-core/docs/quickref.md">Command quick reference <span aria-hidden="true">↗</span></a></article>
+    <article><h3>Python for pipelines</h3><p>The 0.16 Python package is a thin facade over the native core. Import a bundle, retrieve concepts, and export directly through <code>OKFRouter</code>. Omit <code>bundle_root</code> for graph-only thought workflows; close the router when you're done. Internal <code>okfgraph.components.*</code> modules are gone; use the public API or the CLI.</p><pre tabindex="0" aria-label="Python router example"><code>from pathlib import Path
 from okfgraph import OKFRouter
 
 r = OKFRouter(bundle_root="./kb",
@@ -234,7 +234,7 @@ finally:
 </section>
 
 <section id="stack" aria-labelledby="stack-title">
-  <div class="section-intro"><h2 id="stack-title">A focused stack,<br>with clear ownership.</h2><div class="prose"><p>OKFgraph owns the knowledge workflow and the embedding-space pins. Three independently usable Rust-backed libraries support it: bobine converts documents, mordant parses and lints the Markdown that feeds the graph, and embroider supplies the embedding engine and shared ONNX session policy. Each consumer owns its sessions; sharing runtime policy doesn't mean sharing one global inference session.</p><p>The graph store is LadybugDB, not SQLite. SQLite is supported as a source for bundle production. CPU and GPU runtime extras are alternatives: install one ONNX Runtime distribution, not both.</p></div></div>
+  <div class="section-intro"><h2 id="stack-title">A focused stack,<br>with clear ownership.</h2><div class="prose"><p>OKFgraph owns the knowledge workflow and the embedding-space pins in Rust. Three independently usable Rust-backed libraries support it: bobine converts documents (optional), mordant parses and lints the Markdown that feeds the graph, and embroider supplies the embedding engine and shared ONNX session policy. Each consumer owns its sessions; sharing runtime policy doesn't mean sharing one global inference session.</p><p>The graph store is LadybugDB, not SQLite. SQLite is supported as a source for bundle production. CPU and GPU runtime extras are alternatives: install one ONNX Runtime distribution, not both.</p></div></div>
   <div class="package" id="bobine">
     <div class="package-heading"><h3>bobine <span class="ver">0.9.1</span></h3><p>Documents → Markdown</p><a class="text-link" href="https://opticswolf.github.io/bobine/">Website <span aria-hidden="true">↗</span></a> <a class="text-link" href="https://github.com/opticsWolf/bobine">Repository <span aria-hidden="true">↗</span></a></div>
     <div class="prose"><p>PDF and Office conversion stays behind a replaceable converter boundary. PDF routes let you choose text extraction, surgical formula processing, or full layout/OCR analysis. DOCX, XLSX, PPTX and their legacy counterparts enter through extension-based dispatch; Excel also offers per-sheet CSV and typed JSON output.</p><p>Provider defaults follow measurement: CUDA helps layout and OCR, while SLANet-plus tables remain CPU-pinned. TexTeller defaults to int8 CPU, with fp32 CUDA available as an opt-in. Faster hardware is only useful when the model's graph benefits from it.</p></div>
@@ -257,8 +257,8 @@ finally:
     <div class="prose"><p>A fast Rust parser with Python bindings, three jobs in the okfgraph chain: <code>lint</code> reports GFM issues before a file enters the graph, <code>fix</code> repairs what is repairable, and the <code>MarkdownChunker</code> splits document bodies by block structure — heading, list and table boundaries stay intact, so chunk hits read like the source document they came from.</p><p>Parsing follows the CommonMark and GFM specs with explicit options; no regex post-processing in any consumer. Bundle validation runs at import time, never on read.</p><p><a href="https://github.com/opticsWolf/mordant/blob/main/README.md">README and API</a></p></div>
   </div>
   <div class="table-wrap" tabindex="0" role="region" aria-label="Package versions"><table><caption>Published stack</caption><thead><tr><th scope="col">Responsibility</th><th scope="col">Package</th><th scope="col">Version</th></tr></thead><tbody>
-    <tr><th scope="row">Knowledge graph · retrieval · MCP</th><td><a href="https://pypi.org/project/okfgraph/">okfgraph</a></td><td>0.15.0</td></tr>
-    <tr><th scope="row">PDF / Office conversion</th><td><a href="https://pypi.org/project/bobine/">bobine</a></td><td>0.9.1</td></tr>
+    <tr><th scope="row">Rust knowledge graph · retrieval · MCP</th><td><a href="https://pypi.org/project/okfgraph/">okfgraph</a></td><td>0.16.0</td></tr>
+    <tr><th scope="row">PDF / Office conversion (optional add-on)</th><td><a href="https://pypi.org/project/okfgraph-pdf/">okfgraph-pdf</a> / bobine</td><td>0.16.0 / 0.9.1</td></tr>
     <tr><th scope="row">EmbeddingGemma 2 · runtime policy</th><td><a href="https://pypi.org/project/embroider/">embroider</a></td><td>0.15.1</td></tr>
     <tr><th scope="row">CommonMark + GFM parsing · lint · chunking</th><td><a href="https://pypi.org/project/mordant/">mordant</a></td><td>0.10.1</td></tr>
     <tr><th scope="row">Graph · vectors · full-text index</th><td><a href="https://pypi.org/project/ladybug/">ladybug</a></td><td>0.22.1</td></tr>

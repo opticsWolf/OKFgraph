@@ -1,3 +1,8 @@
+> **Historical (Python 0.15).** This document records the old implementation.
+> The shipped 0.16.0 documentation is indexed in [docs/README.md](README.md);
+> start with [rust-architecture.md](rust-architecture.md) and
+> [quickref.md](quickref.md).
+
 # OKFgraph Search Options — Implemented vs. Ladybug-Native (Gap Analysis)
 
 > Date: 2026-10-08 · ladybug `0.21.2` (probed live on `:memory:`) · OKFgraph `okfgraph/components/search.py`, `ops/query.py`, `components/ranking.py`, `components/image_assets.py`, `components/schema.py`

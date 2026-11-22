@@ -1,3 +1,8 @@
+> **Historical (Python 0.15).** This document records the old implementation.
+> The shipped 0.16.0 documentation is indexed in [docs/README.md](README.md);
+> start with [rust-architecture.md](rust-architecture.md) and
+> [quickref.md](quickref.md).
+
 # Surface unification plan: CLI, MCP, Python API
 
 **Status:** implemented in okfgraph 0.10.0 (2026-10-04); the error-code table in §4 is the shipped set. Plan history: draft v3 (2026-10-04). v1 was the user's draft; v2 checks it against `dev` @ `7e88eab` (okfgraph 0.9.0), corrects it, and expands it. v3 records the §11 decisions (Q1–Q5 answered) and adds the Q6 impact appendix (§11.1); Q6 itself is still open.

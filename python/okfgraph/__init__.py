@@ -1,7 +1,8 @@
-"""Thin Python facade for the Rust OKFgraph core (M0 scaffold).
+"""Thin public facade for the Rust OKFgraph 0.16.0 core.
 
-The full public API lands in M5. This module deliberately avoids importing
-`_native` at module import time so start-up failures remain reportable.
+Only documented API objects are exported here. The native extension is loaded
+lazily so import failures remain reportable; there is no Python fallback.
+See ``docs/python-binding.md`` and ``docs/quickref.md``.
 """
 from __future__ import annotations
 

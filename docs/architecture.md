@@ -1,6 +1,7 @@
 > **Historical document.** This describes the Python 0.15 implementation.
 > The shipped 0.16.0 architecture is [`docs/rust-architecture.md`](rust-architecture.md);
-> see also [`docs/python-binding.md`](python-binding.md) and
+> see also [`docs/README.md`](README.md), [`docs/quickref.md`](quickref.md),
+> [`docs/python-binding.md`](python-binding.md) and
 > [`docs/migration-guide.md`](migration-guide.md).
 
 # OKF Knowledge Graph — Architecture Specification

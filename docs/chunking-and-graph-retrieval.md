@@ -1,3 +1,8 @@
+> **Historical (Python 0.15).** This document records the old implementation.
+> The shipped 0.16.0 documentation is indexed in [docs/README.md](README.md);
+> start with [rust-architecture.md](rust-architecture.md) and
+> [quickref.md](quickref.md).
+
 # OKF Graph-Aware Chunking & Retrieval — Implementation Specification
 
 > **Status (0.10):** the chunking feature shipped long ago; this is its

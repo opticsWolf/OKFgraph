@@ -2,6 +2,8 @@
 
 This is the architecture of the shipped implementation. The older
 `docs/architecture.md` is retained as historical Python 0.15 design evidence.
+See [`docs/README.md`](README.md) for the full documentation map and
+[`quickref.md`](quickref.md) for command/ops/environment lookup.
 
 ## Ownership
 

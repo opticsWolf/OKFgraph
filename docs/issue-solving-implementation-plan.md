@@ -1,3 +1,8 @@
+> **Historical (Python 0.15).** This document records the old implementation.
+> The shipped 0.16.0 documentation is indexed in [docs/README.md](README.md);
+> start with [rust-architecture.md](rust-architecture.md) and
+> [quickref.md](quickref.md).
+
 # OKFgraph issue-solving implementation plan
 
 **Date:** 2026-11-01 (status refreshed 2026-11-02) · **Baseline:** `main` at

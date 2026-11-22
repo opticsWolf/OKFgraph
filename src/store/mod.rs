@@ -400,6 +400,12 @@ impl Store {
         })
     }
 
+    /// Whether a Ladybug error means the extension was never installed.
+    fn extension_missing(err: &lbug::Error) -> bool {
+        let text = err.to_string().to_ascii_lowercase();
+        text.contains("has not been installed") || text.contains("not installed")
+    }
+
     fn load_extensions(&self, conn: &Connection<'_>) -> Result<()> {
         for extension in ["vector", "fts"] {
             if let Some(dir) = self.settings.extension_dir.as_ref() {
@@ -421,7 +427,19 @@ impl Store {
                 conn.query(&format!("LOAD EXTENSION '{escaped}'"))
                     .map_err(map_lbug)?;
             } else {
-                conn.query(&format!("LOAD {extension}")).map_err(map_lbug)?;
+                // A clean machine has no extension cache: Ladybug's LOAD
+                // refuses an extension that was never installed, so install
+                // it once and retry. Offline hosts still fail here, and the
+                // extension_dir path above is the explicit offline route.
+                match conn.query(&format!("LOAD {extension}")) {
+                    Ok(_) => {}
+                    Err(err) if Self::extension_missing(&err) => {
+                        conn.query(&format!("INSTALL {extension}"))
+                            .map_err(map_lbug)?;
+                        conn.query(&format!("LOAD {extension}")).map_err(map_lbug)?;
+                    }
+                    Err(err) => return Err(map_lbug(err)),
+                }
             }
         }
         Ok(())

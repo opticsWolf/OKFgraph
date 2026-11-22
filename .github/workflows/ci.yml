@@ -1,98 +1,146 @@
+# Hosted CI is a build/smoke gate. The full GPU-dependent parity matrix is a
+# documented manual release gate; see docs/release-gate.md.
 name: ci
 
 on:
   push:
-    branches: [dev_rework, dev, main, dev_roadtov010]
+    branches: [main, rust-core]
   pull_request:
-    branches: [dev_rework, dev, main, dev_roadtov010]
-
-env:
-  UV_FROZEN: "1"
+    branches: [main, rust-core]
 
 jobs:
-  fast:
-    name: fast tests (no model download)
-    runs-on: ubuntu-latest
+  check:
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13"]
+        os: [ubuntu-latest, windows-latest, macos-15]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # oracle.py needs python-oracle-0.15.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Windows vcpkg (check)
+        if: runner.os == 'Windows'
+        uses: lukka/run-vcpkg@v11
+        with:
+          runVcpkgInstall: false
+          vcpkgJsonGlob: vcpkg.json
+          doNotCache: true
+      - name: Windows OpenSSL (check)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "VCPKG_ROOT=${RUNVCPKG_VCPKG_ROOT}" >> "$GITHUB_ENV"
+          echo "VCPKGRS_DYNAMIC=1" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_TRIPLET=x64-windows" >> "$GITHUB_ENV"
+          echo "${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/bin" >> "$GITHUB_PATH"
+          vcpkg install --classic openssl:x64-windows
+      - name: macOS OpenSSL 3 (check)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Dependency audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+      - name: Clippy (core, no optional engines)
+        run: cargo clippy -p okfgraph --no-default-features --all-targets -- -D warnings
+      - name: Check workspace
+        run: cargo check --workspace --no-default-features
+      - name: Rust tests and fuzz properties
+        run: |
+          cargo test -p okfgraph --no-default-features --lib
+          cargo test -p okfgraph --no-default-features --test fuzz_robustness
+      - name: Parity runner smoke
+        run: cargo run -p okfgraph --no-default-features --bin parity-run -- parity/scenarios/minimal.json
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Sync (frozen lockfile, dev extra)
-        run: uv sync --frozen --extra dev
-
-      - name: Pure + harness tests (no ONNX load, no downloads)
+  wheel:
+    name: wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # oracle.py needs python-oracle-0.15.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Windows vcpkg (wheels)
+        if: runner.os == 'Windows'
+        uses: lukka/run-vcpkg@v11
+        with:
+          runVcpkgInstall: false
+          vcpkgJsonGlob: vcpkg.json
+          doNotCache: true
+      - name: Windows OpenSSL (wheels)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "VCPKG_ROOT=${RUNVCPKG_VCPKG_ROOT}" >> "$GITHUB_ENV"
+          echo "VCPKGRS_DYNAMIC=1" >> "$GITHUB_ENV"
+          echo "VCPKG_DEFAULT_TRIPLET=x64-windows" >> "$GITHUB_ENV"
+          echo "${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/bin" >> "$GITHUB_PATH"
+          vcpkg install --classic openssl:x64-windows
+      - name: macOS OpenSSL 3 (wheels)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          # Ladybug's std::format usage needs the macOS 13.3 libc++ runtime.
+          echo "MACOSX_DEPLOYMENT_TARGET=13.3" >> "$GITHUB_ENV"
+          echo "CMAKE_OSX_DEPLOYMENT_TARGET=13.3" >> "$GITHUB_ENV"
+      - name: Tag oracle worktree
+        shell: bash
+        run: python -c "import sys; sys.path.insert(0, 'parity/tools'); from oracle import oracle_root; print(oracle_root())"
+      - name: Build wheels
+        shell: bash
+        run: |
+          python -m pip install "maturin>=1.14,<2"
+          python bindings/python/build_wheel.py --profile dev
+          python parity/tools/check_packaging.py
+      - name: Install and smoke
+        shell: bash
+        run: |
+          python -m pip install target/wheels/okfgraph-*.whl
+          mkdir -p parity/out
+          cp parity/fixtures/oracle-v10.db parity/out/ci-facade.db
+          python parity/tools/check_wheel.py
+          python parity/tools/check_facade.py --db parity/out/ci-facade.db
+      - name: Python version matrix
+        shell: bash
         run: >
-          uv run --frozen pytest
-          tests/test_ranking.py
-          tests/test_mcp_server.py
-          tests/test_packaging.py
-          tests/test_ort.py
-          tests/test_lazy_encoder.py
-          tests/test_explicit_files.py
-          tests/test_diff.py::TestDiffPure
-          tests/test_doctor.py::TestDoctorPure
-          tests/test_obsidian.py::TestWikiLinksPure
-          tests/test_roundup_cli.py::TestRoundupHelp
-          tests/test_v011_links_delta.py::test_o12_lint_names_the_candidates
-          tests/test_v011_identity_write.py::test_o10_entry_point_producers_are_discovered_and_cannot_shadow_builtins
-          tests/test_v011_serve_offline.py::test_o4_serve_file_lifecycle_and_stale_files_are_ignored
-          tests/test_v011_serve_offline.py::test_o5_setup_reports_what_is_missing
-          tests/test_v011_serve_offline.py::test_o5_settings_refuse_a_missing_extension_dir
-          tests/test_mcp_stdio.py
-          tests/test_error_paths.py
-          tests/test_envelope.py
-          tests/test_settings.py
-          tests/test_surface_contract.py
-          -q
-
-      - name: No torch imports outside tests/docs (plan-onnx-only Phase 0)
+          python parity/tools/check_python_matrix.py
+          --main 'okfgraph-*.whl'
+          --pdf-smoke
+      - name: UDS unit smokes (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: cargo test -p okfgraph --no-default-features --features mcp --lib unix_listener
+      - name: UDS client smoke (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
-          if grep -rn --include='*.py' -E '(import|from).*(torch|sentence_transformers|optimum)' okfgraph/ examples/ 2>/dev/null; then
-            echo 'torch-path import in shipped code'; exit 1;
-          fi
-          echo 'torch-free shipped code'
-
-  build:
-    name: build sdist + wheel
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Build
-        run: uv build
-
-      - name: Check metadata
-        run: uvx twine check dist/*
-
-      - name: Requires-Dist sanity (embroider must be a plain PyPI pin)
-        run: |
-          uv run --frozen --no-sync python -c "
-          import zipfile, glob, re, tomllib
-          whl = sorted(glob.glob('dist/*.whl'))[-1]
-          zf = zipfile.ZipFile(whl)
-          meta = zf.read(next(n for n in zf.namelist() if n.endswith('METADATA'))).decode()
-          requires = [line.split('Requires-Dist:', 1)[1].strip() for line in meta.splitlines() if line.startswith('Requires-Dist:')]
-          # The wheel must carry exactly pyproject's embroider bounds (read,
-          # not hard-coded, so floor bumps need no CI edit). PEP 440
-          # normalizes specifier order ('<0.13,>=0.12'): compare as sets.
-          def bounds(req):
-              return set(re.sub(r'\s+', '', req)[len('embroider'):].split(','))
-          deps = tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']
-          want = bounds(next(d for d in deps if d.startswith('embroider')))
-          got = [bounds(r) for r in requires if r.startswith('embroider')]
-          assert got == [want], (got, want, requires)
-          assert all('path' not in r and 'file:' not in r for r in requires), requires
-          assert 'Description-Content-Type: text/markdown' in meta, meta
-          lines = meta.splitlines()
-          body = '\n'.join(lines[lines.index('') + 1:])
-          assert len(body.strip()) > 100, len(body)
-          print('wheel metadata PyPI-clean')
-          "
+          cargo build -p okfgraph --no-default-features --features cli,server,mcp --bin okf
+          python parity/tools/check_uds.py
+      - name: External lane unit tests
+        shell: bash
+        run: cargo test -p okfgraph --all-features --lib embed::external

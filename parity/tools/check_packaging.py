@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static wheel/packaging gate for the slim wheel + native PDF add-on."""
+"""Static wheel/packaging gate for the single bundled okfgraph wheel."""
 from __future__ import annotations
 
 import argparse
@@ -36,8 +36,11 @@ def check_main(path: Path) -> None:
         assert not re.search(r"^Requires-Dist: (bobine|ladybug|mcp|numpy)", meta, re.M), meta
         for extra in ("cpu", "gpu", "pdf"):
             assert f"Provides-Extra: {extra}" in meta, meta
-        assert "Requires-Dist: okfgraph-pdf ; extra == 'pdf'" in meta, meta
+        assert "Requires-Dist: okfgraph-pdf" not in meta, meta
         assert not any(n.startswith("okfgraph_pdf/") for n in names), names
+        plugins = [n for n in names if n.startswith("okfgraph/_plugin/")]
+        assert len(plugins) == 1, plugins
+        assert plugins[0].endswith((".dll", ".so", ".dylib")), plugins
         assert not any("__pycache__" in n or n.endswith(".pyc") for n in names), names
         assert any(n.startswith("okfgraph/_native.") for n in names), names
         if "-win_amd64" in path.name:
@@ -47,32 +50,14 @@ def check_main(path: Path) -> None:
         assert any(n.endswith("entry_points.txt") for n in names), names
         assert "Description-Content-Type: text/markdown" in meta, meta
         assert "Project-URL: Homepage," in meta, meta
-    print(f"OK: {path.name} is slim and abi3 (auditwheel repair enabled)")
-
-
-def check_pdf(path: Path) -> None:
-    with zipfile.ZipFile(path) as zf:
-        names = zf.namelist()
-        meta = metadata(zf)
-        assert "Name: okfgraph-pdf" in meta, meta
-        assert "Requires-Python: >=3.12,<3.15" in meta, meta
-        assert "okfgraph_pdf/__init__.py" in names, names
-        libraries = [
-            n for n in names
-            if n.endswith((".dll", ".so", ".dylib"))
-        ]
-        assert len(libraries) == 1, libraries
-        assert not any(n.startswith("okfgraph/") for n in names), names
-    print(f"OK: {path.name} ships only the locator and native plugin")
+    print(f"OK: {path.name} bundles the facade, native core and PDF plugin")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--main", default="okfgraph-*.whl")
-    ap.add_argument("--pdf", default="okfgraph_pdf-*.whl")
     args = ap.parse_args()
     check_main(wheel_path(args.main))
-    check_pdf(wheel_path(args.pdf))
     return 0
 
 

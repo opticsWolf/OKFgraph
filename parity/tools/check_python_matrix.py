@@ -52,12 +52,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--versions", nargs="+", default=["3.12", "3.13", "3.14"])
     ap.add_argument("--main", default="okfgraph-*.whl")
-    ap.add_argument("--pdf", default="okfgraph_pdf-*.whl")
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--pdf-smoke", action="store_true")
     args = ap.parse_args()
 
-    wheels = [resolve_wheel(args.main), resolve_wheel(args.pdf)]
+    wheels = [resolve_wheel(args.main)]
     OUT.mkdir(parents=True, exist_ok=True)
 
     for version in args.versions:

@@ -27,7 +27,7 @@ Repository = "https://github.com/opticsWolf/OKFgraph"
 [project.optional-dependencies]
 cpu = ["onnxruntime==1.31.1"]
 gpu = ["onnxruntime-gpu[cuda,cudnn]==1.31.1"]
-pdf = ["okfgraph-pdf"]
+pdf = []  # bundled in this wheel; kept as a no-op install alias
 dev = ["pytest>=8"]
 
 [project.scripts]

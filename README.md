@@ -30,10 +30,8 @@ pip install "okfgraph[cpu]"
 # NVIDIA GPU inference
 pip install "okfgraph[gpu]"
 
-# Add PDF/Office conversion (optional)
+# PDF/Office conversion is bundled; `pdf` is a compatibility alias
 pip install "okfgraph[cpu,pdf]"
-# or
-pip install "okfgraph[gpu,pdf]"
 ```
 
 Documentation starts at [`docs/README.md`](docs/README.md). For a one-page
@@ -48,8 +46,9 @@ Supported first-release targets:
 | macOS | arm64 |
 
 Python 3.12, 3.13 and 3.14 are supported. Python 3.11, Linux aarch64 and
-macOS x86_64 are not part of the first release. The slim wheel does not
-contain `bobine`; the PDF add-on is installed only through the `pdf` extra.
+macOS x86_64 are not part of the first release. One `okfgraph` wheel carries
+the facade, the Rust core and the PDF/Office plugin; the `pdf` extra is kept
+as a no-op alias for 0.15 install commands.
 
 If a native import fails, the package fails loudly. It never silently falls
 back to a Python core.
@@ -174,7 +173,6 @@ cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo test --workspace --all-features --lib
 cargo test -p okfgraph --no-default-features --test fuzz_robustness
 python bindings/python/build_wheel.py --profile dev
-python addons/pdf/build_wheel.py --profile dev
 ```
 
 The differential matrix uses the frozen `python-oracle-0.15.0` git tag, not

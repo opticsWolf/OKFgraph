@@ -39,10 +39,10 @@ Errors keep the closed code set and envelope order
 ## Packaging
 
 - Install one ORT extra: `okfgraph[cpu]` XOR `okfgraph[gpu]`.
-- PDF/Office conversion requires `okfgraph[cpu,pdf]` or
-  `okfgraph[gpu,pdf]`; the slim wheel no longer bundles `bobine`.
-- A missing plugin returns `CONVERSION_FAILED` with the install hint instead
-  of Python 0.15's raw `INTERNAL`.
+- PDF/Office conversion is inside the `okfgraph` wheel; the `pdf` extra is a
+  no-op alias so 0.15 install commands keep working.
+- A source build without the plugin returns `CONVERSION_FAILED` with the
+  install hint instead of Python 0.15's raw `INTERNAL`.
 - Only Python 3.12–3.14 on Windows x64, Linux x86_64 and macOS arm64.
 
 ## Behavior changes

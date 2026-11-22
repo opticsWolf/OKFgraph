@@ -4,7 +4,7 @@
 `src/` implements all 30 router ops, the 29-command CLI, 11 MCP tools, HTTP
 ops/jobs with `okf serve`, TCP/UDS transports, a public stdlib `OKFClient`,
 native/external embed/rerank/vision lanes, transactional ingest, full doctor,
-and the slim wheel plus optional native PDF add-on. Python is a thin public
+and one wheel that bundles the native PDF plugin. Python is a thin public
 facade over PyO3; the old Python core is deleted from the default tree and
 available only at tag `python-oracle-0.15.0`. Final local evidence: 72/73
 comparable differential scenarios green (one intentional missing-plugin
@@ -33,6 +33,11 @@ binding/facade
 | g | **Stage A allows schema migrations** (schema writes, `okf init`) but no concept/content/import writes. |
 | h | **PDF add-on shares the `cpu`/`gpu` ONNX Runtime.** `okfgraph[pdf]` alone installs the plugin but not ORT; document `okfgraph[cpu,pdf]` / `okfgraph[gpu,pdf]`. |
 | i | **Missing/incompatible PDF add-on returns `CONVERSION_FAILED`** with an install hint. This intentionally replaces today's `INTERNAL`/crash-report path and is recorded as a 0.16 behavior change. |
+
+**Packaging amendment (at release):** (c) and (h) were superseded. The plugin
+ships inside the `okfgraph` wheel as `okfgraph/_plugin/`, so one tag publishes
+one PyPI project. `okfgraph[pdf]` is a no-op alias; `cpu`/`gpu` still select
+ONNX Runtime. Rust-only builds keep the optional `pdf` cargo feature.
 
 ---
 
@@ -318,9 +323,8 @@ src/                           # ALL core Rust (one `okfgraph` crate)
   util/                        # paths, hashing, clock, net/SSRF, fs, crash
 tests/                         # Rust integration tests against temp DBs
 bindings/python/               # okfgraph-py: PyO3 cdylib (binding only)
-addons/pdf/                    # okfgraph-pdf: native PDF/Office plugin (bobine)
+addons/pdf/                    # native PDF/Office plugin (bobine), bundled in the wheel
 python/okfgraph/               # compatibility facade (pure Python)
-python/okfgraph_pdf/           # PDF add-on locator (plugin_path, version)
 python/tests/                  # public-API compatibility suite
 parity/                        # oracle scenarios, corpus, differential harness
 ```
@@ -380,12 +384,12 @@ fakes. `ops` is the only place that orchestrates a whole operation.
 - CLI: `cargo install okfgraph --features cli,server,mcp,pdf` (or without `pdf`
   and use the plugin). `server` is required for `okf serve`; `mcp` for
   `okf-mcp` and the `/mcp` mount.
-- Python wheel (slim): core + binding with `cli,server,mcp,vision,external`;
-  **no `pdf`**.
-- PDF add-on: `pip install okfgraph[pdf]` installs the separate `okfgraph-pdf`
-  native plugin; the Python facade sets `OKFGRAPH_PDF_PLUGIN` from
-  `okfgraph_pdf.plugin_path()` before opening a router. Conversion still needs
-  ORT from `okfgraph[cpu]` or `okfgraph[gpu]`.
+- Python wheel: core + binding with `cli,server,mcp,vision,external`, plus the
+  PDF plugin library staged at `okfgraph/_plugin/`. One wheel, one PyPI
+  project.
+- The Python facade sets `OKFGRAPH_PDF_PLUGIN` from the bundled path before
+  opening a router. Conversion still needs ORT from `okfgraph[cpu]` or
+  `okfgraph[gpu]`; `pdf` is a no-op alias.
 
 **PDF add-on design.** `addons/pdf` is a `cdylib` with a deliberately tiny C ABI
 (`abi_version`, `convert(input, workdir, config_json) -> markdown/error`, `free`),
@@ -883,11 +887,11 @@ concepts with citation frontmatter; thoughts ingest writes OKF-compliant
 frontmatter, preserves `created` via `extra`, and materializes the virtual
 `thoughts/<topic>/...` hierarchy.
 
-Stage B also wires PDF/Office conversion through the optional `okfgraph-pdf`
+Stage B also wires PDF/Office conversion through the bundled `okfgraph-pdf`
 C ABI plugin. `addons/pdf` wraps `bobine::HybridConverter`; the core loads the
 plugin lazily with `libloading`, checks ABI version 1, converts into a work
 directory, and auto-imports the produced bundle under the PDF namespace.
-The Python facade resolves `okfgraph_pdf.plugin_path()` into
+The Python facade resolves the bundled `okfgraph/_plugin` path into
 `OKFGRAPH_PDF_PLUGIN`. A missing or incompatible plugin returns the documented
 `CONVERSION_FAILED` install hint.
 
@@ -985,7 +989,7 @@ perform every op with parity; no Python transport/runtime dependency.
 **M5 progress (packaging slice):** the slim abi3 wheel is built with auditwheel
 repair enabled by `bindings/python/build_wheel.py`, metadata pins Python
 3.12–3.14, and `__pycache__` is excluded from the stage. `addons/pdf` now has a
-PEP 517 backend that builds a real `okfgraph-pdf` wheel containing the native
+build step that compiles the native plugin and stages it inside the main wheel
 plugin, so `okfgraph[pdf]` resolves to an installable distribution.
 `parity/tools/check_packaging.py` checks wheel metadata/contents;
 `check_pdf_wheel.py` verifies auto-discovery and a real PDF conversion from a
@@ -1138,17 +1142,16 @@ old test files to the new tests so the parity report can prove coverage.
   the `cli`/`mcp` features.
 - `okfgraph-py` — `bindings/python`, not published as a library; built by
   maturin.
-- `okfgraph-pdf` — `addons/pdf`, the optional native plugin; published as a
-  separate PyPI wheel and, if useful, to crates.io as a plugin crate.
+- `okfgraph-pdf` — `addons/pdf`, the native plugin crate. It is **not**
+  published separately; `bindings/python/build_wheel.py` stages its cdylib
+  inside the main wheel.
 
 **PyPI:**
 
-- `pip install okfgraph` → slim wheel with `okfgraph._native` + pure-Python
-  facade; no bobine.
+- `pip install okfgraph` → one wheel with `okfgraph._native`, the pure-Python
+  facade and `okfgraph/_plugin/` (PDF/Office).
 - Extras: `cpu` (`onnxruntime==1.31.1`), `gpu`
-  (`onnxruntime-gpu[cuda,cudnn]==1.31.1`), `pdf` (`okfgraph-pdf`), `dev`
-  (pytest). `pip install "okfgraph[pdf]"` installs the add-on; the facade wires
-  its plugin path before opening a router.
+  (`onnxruntime-gpu[cuda,cudnn]==1.31.1`), `pdf` (no-op alias), `dev` (pytest).
 - `abi3-py312` wheels; `manylinux_2_28` x86_64, `macosx_11_0` arm64, `win_amd64`.
 - `okf`/`okf-mcp` console scripts call native entry points. `cargo install
   okfgraph --features cli,server,mcp` gives the same binaries without Python

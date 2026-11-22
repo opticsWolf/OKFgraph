@@ -1586,10 +1586,12 @@ Windows versions pass locally; CI runs the same matrix on Linux and macOS.
 
 `okfgraph[pdf]` declared a dependency on `okfgraph-pdf`, but no wheel existed:
 the native plugin was only available as a `target/debug` file through an env
-override. `addons/pdf` now ships a PEP 517 backend (`build_wheel.py`) that
-builds the cdylib and packages it with the `okfgraph_pdf` locator. A clean venv
-with both wheels discovers the plugin without `OKFGRAPH_PDF_PLUGIN` and
-converts `sample.pdf`. `check_packaging.py` and `check_pdf_wheel.py` pin this.
+override. `addons/pdf` was given a PEP 517 backend and locator so a clean venv
+could discover it, and the release build now goes further: the plugin cdylib is
+staged inside the main wheel as `okfgraph/_plugin/`, so one PyPI project and
+one tag carry everything. A clean venv without `OKFGRAPH_PDF_PLUGIN` discovers
+the bundled plugin and converts `sample.pdf`. `check_packaging.py` and
+`check_pdf_wheel.py` pin this.
 
 ### BUG-056 — packaging metadata and import surface drifted
 
@@ -2998,7 +3000,7 @@ it does **not** mean every release gate is green.
 | BUG-052 | Closed | All 29 CLI verbs, global flags, op mapping, and typed error ops are wired; `check_cli.py` is green. | Keep new verbs covered; revisit if the oracle CLI gains commands. |
 | BUG-053 | Closed | All 11 MCP tools are mounted at `okf serve /mcp` over Streamable HTTP; `check_mcp_http.py` is green. | Keep covered with stdio and `--connect` smokes. |
 | BUG-054 | Closed | `--listen unix:///path` handles stale sockets; `check_uds.py` runs in CI on Linux and macOS (run `44861850111`) with the public `OKFClient`. | Keep both POSIX wheel jobs green. |
-| BUG-055 | Closed | `okfgraph-pdf` builds as a PEP 517 wheel with the native plugin; clean-venv auto-discovery converts a real PDF. | Keep both wheels in the packaging gate. |
+| BUG-055 | Closed | The native plugin now ships inside the `okfgraph` wheel; clean-venv auto-discovery converts a real PDF. | Keep the bundled plugin in the packaging gate. |
 | BUG-056 | Closed | Wheel metadata pins 3.12–3.14, no bytecode in the wheel, public client/settings exports present. | Extend `check_packaging.py` with new metadata rules. |
 | BUG-057 | Closed | `build_wheel.py` always passes auditwheel repair, clears the maturin scratch dir, and the Windows wheel contains OpenSSL DLLs. | Keep static gate green. |
 | BUG-058 | Closed | Windows 3.12/3.13/3.14 clean-venv installs, facade, console scripts and PDF conversion are green. | Keep the matrix in CI for Linux/macOS. |

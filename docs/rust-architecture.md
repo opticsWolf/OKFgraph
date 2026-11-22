@@ -72,12 +72,14 @@ and `rebuild=defer|force` is honored on reattach. Delete stages the file move
 and graph transaction so a failure rolls both back; trashed files stay
 recoverable for 24 hours before purge.
 
-## Optional PDF plugin
+## Bundled PDF plugin
 
-The slim wheel has no `bobine`. `okfgraph-pdf` exports the stable C ABI
-`okf_pdf_abi_version`, `okf_pdf_convert`, `okf_pdf_free`. A missing plugin
-returns `CONVERSION_FAILED` with the install hint; a loaded plugin failure
-carries `fields.path` and `fields.converter`.
+The `okfgraph` wheel contains `okfgraph/_plugin/` with the native converter
+(`addons/pdf`, `bobine` linked in). The plugin exports the stable C ABI
+`okf_pdf_abi_version`, `okf_pdf_convert`, `okf_pdf_free`; the facade points
+`OKFGRAPH_PDF_PLUGIN` at it before the first router call. A wheel or source
+build without the plugin returns `CONVERSION_FAILED` with the install hint; a
+loaded plugin failure carries `fields.path` and `fields.converter`.
 
 ## Security and diagnostics
 

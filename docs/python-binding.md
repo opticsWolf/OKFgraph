@@ -27,7 +27,7 @@ Also available:
 - `okfgraph.models` Pydantic models
 - `okfgraph.settings` constants and a read-only settings view
 - `okfgraph.cli.main`, `okfgraph.mcp_server.main` entry shims
-- `okfgraph_pdf.plugin_path()` when the optional add-on is installed
+- `okfgraph._pdf.bundled_plugin()` for the plugin shipped in the wheel
 
 `okfgraph.components.*` and `okfgraph.ops.*` do not exist.
 
@@ -71,17 +71,17 @@ lock with HTTP ops and MCP.
 ## Failure behavior
 
 - Native extension import failure is fatal; there is no Python fallback.
-- Missing PDF add-on raises `CONVERSION_FAILED` with the install hint
-  `pip install "okfgraph[cpu,pdf]" or "okfgraph[gpu,pdf]"`.
+- A build without the bundled plugin raises `CONVERSION_FAILED` with the
+  install hint `pip install "okfgraph[cpu,pdf]" or "okfgraph[gpu,pdf]"`.
 - Loaded converter failures carry `fields.path` and `fields.converter`.
 - Console scripts resolve native CLI/MCP entry points through thin shims.
 
 ## Wheel layout
 
-The slim wheel contains `okfgraph/`, `okfgraph/_native*.pyd|so`, and the
-OpenSSL DLLs it needs. The PDF wheel is `py3-none-<platform>` and contains
-only `okfgraph_pdf/` plus the native plugin library. Importability is
-extras-independent.
+One wheel contains `okfgraph/`, `okfgraph/_native*.pyd|so`,
+`okfgraph/_plugin/` (the native PDF/Office plugin), and the OpenSSL DLLs it
+needs. `cpu`/`gpu` install ONNX Runtime; `pdf` is a no-op alias for 0.15
+install commands. Importability is extras-independent.
 
 ## Verification
 

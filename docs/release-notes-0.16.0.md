@@ -23,7 +23,8 @@ environment variable, error code and important path.
 - Public stdlib `OKFClient`, `discover()` and `serve_file_for()`.
 - External embed/rerank/vision lanes behind the `external` feature, with
   fail-closed identity and typed outages.
-- Optional `okfgraph-pdf` native add-on with a stable C plugin ABI.
+- Bundled native PDF/Office plugin (`okfgraph/_plugin`) with a stable C ABI:
+  one wheel, one PyPI project.
 - Python 3.12, 3.13 and 3.14 wheels for Windows x64, Linux x86_64 and macOS
   arm64.
 - Differential, fuzz, performance and security gates, including `cargo deny`.
@@ -57,8 +58,8 @@ environment variable, error code and important path.
 - The root Python implementation, including `okfgraph.components.*` and
   `okfgraph.ops.*`.
 - The root Python `pyproject.toml` and Python 3.11 support.
-- Bundled `bobine` from the slim wheel. Install `okfgraph[pdf]` for PDF and
-  Office conversion.
+- The separate `okfgraph-pdf` distribution. The plugin now ships inside the
+  `okfgraph` wheel; `pdf` remains a no-op install alias.
 - Linux aarch64 and macOS x86_64 from the first release target matrix.
 
 ## Compatibility
@@ -68,7 +69,8 @@ environment variable, error code and important path.
   once with Python 0.15, then reopen with Rust.
 - Public Python API, settings constants, models, errors, console scripts and
   module entry shims are preserved.
-- Missing PDF add-on returns `CONVERSION_FAILED` with the install hint
+- PDF/Office conversion is included in the wheel; a source build without the
+  plugin returns `CONVERSION_FAILED` with the install hint
   `pip install "okfgraph[cpu,pdf]" or "okfgraph[gpu,pdf]"`.
 - Loaded plugin conversion failures carry `fields.path` and
   `fields.converter`.

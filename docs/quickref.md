@@ -9,13 +9,13 @@ One-page reference for the Rust-backed release. For explanation, see
 ```bash
 pip install "okfgraph[cpu]"              # CPU ONNX Runtime
 pip install "okfgraph[gpu]"              # NVIDIA GPU ONNX Runtime
-pip install "okfgraph[cpu,pdf]"          # add PDF/Office conversion
-pip install "okfgraph[gpu,pdf]"          # GPU + PDF/Office
+pip install "okfgraph[cpu,pdf]"          # `pdf` is a no-op alias
+pip install "okfgraph[gpu,pdf]"          # PDF/Office is bundled
 ```
 
 Use one of `cpu` or `gpu`, never both. Supported: Windows x64, Linux x86_64,
-macOS arm64; Python 3.12–3.14. The slim wheel excludes `bobine`; the `pdf`
-extra installs the native `okfgraph-pdf` plugin.
+macOS arm64; Python 3.12–3.14. One wheel carries the facade, the Rust core and
+the native PDF/Office plugin; `pdf` remains an accepted alias.
 
 ## First graph
 

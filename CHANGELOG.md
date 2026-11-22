@@ -14,7 +14,8 @@ commit history, newest first.
   CLI, 11 MCP tools, HTTP ops/jobs and `okf serve` with TCP and POSIX UDS.
 - Public stdlib `OKFClient`, `discover()` and `serve_file_for()`.
 - External embed/rerank/vision lanes behind the `external` feature.
-- Optional native `okfgraph-pdf` add-on with a stable C plugin ABI.
+- Native PDF/Office plugin with a stable C ABI, bundled inside the wheel as
+  `okfgraph/_plugin/` so a tag publishes one PyPI project.
 - Python 3.12–3.14 wheels for Windows x64, Linux x86_64 and macOS arm64.
 - Differential, fuzz, performance, SSRF, extension-integrity, crash-report
   and dependency-audit gates; see `docs/release-gate.md`.
@@ -38,7 +39,7 @@ commit history, newest first.
   `okfgraph.components.*`, `okfgraph.ops.*` and the root `pyproject.toml`.
   Python 0.15 remains available at tag `python-oracle-0.15.0`.
 - Python 3.11, Linux aarch64 and macOS x86_64 from the first release matrix.
-- Bundled `bobine` from the slim wheel; install `okfgraph[pdf]` instead.
+- The separate `okfgraph-pdf` wheel; `pdf` remains a no-op install alias.
 
 ### Fixed
 

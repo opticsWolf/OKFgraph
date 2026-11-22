@@ -157,5 +157,6 @@ A stable 0.16.0 may be published only when:
 - the manual GPU matrix above is green and recorded;
 - the paired benchmark meets the parity gate in `docs/performance-findings.md`;
 - coverage and all surface gates are green;
-- the wheel contains the thin facade and native extension only, with no
-  Python core implementation.
+- the wheel contains the thin facade, the native extension and the bundled
+  `okfgraph/_plugin` converter, with no Python core implementation;
+- one tag publishes one PyPI project.

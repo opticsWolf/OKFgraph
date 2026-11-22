@@ -112,8 +112,8 @@ Command and environment lookup: [`docs/quickref.md`](quickref.md).
 
 - [x] `lbug = "=0.22.1"`
 - [x] `embroider = "=0.15.1"`
-- [x] `bobine = "=0.9.1"`
-- [x] `mordant = "=0.10.1"`
+- [x] `bobine = "=0.10.0"`
+- [x] `mordant = "=0.11.0"` (explicit 0.16 engine set)
 
 ## I. M6 security hardening (Stage C)
 

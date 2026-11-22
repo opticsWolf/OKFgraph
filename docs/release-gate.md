@@ -18,7 +18,8 @@ recorded in the release evidence. No self-hosted GitHub runner is required for
 - Clean checkout of the release commit on the CUDA workstation.
 - Tag `python-oracle-0.15.0` available. `parity/tools/oracle.py` creates a
   cached detached worktree at `parity/tmp/oracle-0.15.0`.
-- Oracle venv `parity/.venv-oracle` with `embroider 0.15.1` and `bobine 0.9.1`.
+- Oracle venv `parity/.venv-oracle` with `embroider 0.15.1`, `bobine 0.10.0`
+  and `mordant 0.11.0`; the tagged Python 0.15 source is unchanged.
 - Main venv ORT/CUDA DLLs on `PATH` and `ORT_DYLIB_PATH` set.
 - Native PDF plugin built at `target/debug/okfgraph_pdf.dll` for real
   PDF/Office scenarios.

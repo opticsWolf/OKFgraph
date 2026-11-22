@@ -51,7 +51,7 @@ heavy dependency already has a first-class Rust crate:
 | Graph + vector + FTS | `ladybug==0.22.1` wheel | official `lbug` crate, same C++ core | high |
 | Text/vision embeddings, rerank | `embroider>=0.15.1` wheel | `embroider` crate, same Rust core | high |
 | PDF/Office → Markdown | `bobine>=0.9` wheel | `bobine` crate, same Rust core | high |
-| CommonMark/GFM + chunker | `mordant>=0.10.1` wheel | `mordant` crate, same Rust core | high |
+| CommonMark/GFM + chunker | `mordant>=0.11.0` wheel | `mordant` crate, same Rust core | high |
 | MCP server/client | Python `mcp>=2.0` | `rmcp` 3.11 | medium |
 | HTTP serve | Starlette | `axum`/`tokio` | medium |
 | CLI | `argparse` | `clap` (built from the settings table) | medium |
@@ -243,7 +243,7 @@ the Rust crate. Image decode and Pillow-compatible bicubic resize must be ported
 (see risk R5).
 
 Pin exact native crate versions to the oracle (`embroider = "=0.15.1"`,
-`mordant = "=0.10.1"`, `bobine = "=0.9.1"`, `lbug = "=0.22.1"`) so a routine
+`mordant = "=0.11.0"`, `bobine = "=0.10.0"`, `lbug = "=0.22.1"`) so a routine
 `cargo update` cannot silently change tokenization, chunking, conversion, or
 storage behavior. Upgrades are deliberate parity events.
 

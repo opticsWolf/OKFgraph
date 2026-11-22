@@ -4,6 +4,20 @@ All notable changes to OKFgraph are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com); entries are grouped from
 commit history, newest first.
 
+## [Unreleased]
+
+**0.17.0 dependency refresh.**
+
+### Changed
+
+- `bobine` 0.9.1 → 0.10.0: tagged-PDF math/provenance, explicit input/body
+  limits, binary text fallback detection and corrected PPTX slide image order.
+- `mordant` 0.10.1 → 0.11.0: new engine switches and extensions; the old
+  engine set is pinned explicitly with `default-features = false`, so 0.16
+  Markdown output is unchanged.
+- The parity oracle venv now uses the same `bobine`/`mordant` versions; the
+  tagged Python 0.15 source itself is unchanged.
+
 ## [0.16.0] — 2026-11-22
 
 **Rust core cutover.**

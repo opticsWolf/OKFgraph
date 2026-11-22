@@ -1,3 +1,8 @@
+> **Historical document.** This describes the Python 0.15 implementation.
+> The shipped 0.16.0 architecture is [`docs/rust-architecture.md`](rust-architecture.md);
+> see also [`docs/python-binding.md`](python-binding.md) and
+> [`docs/migration-guide.md`](migration-guide.md).
+
 # OKF Knowledge Graph — Architecture Specification
 
 **Version**: 6.8 (as-built for okfgraph 0.11.0 — the findings-store changes in the v6.7 → v6.8 summary below: links survive re-import, per-file change detection, opt-in frontmatter identity, `okf serve` (one owner, many clients), offline extensions, typed relations, filters, typed ingest, producer cursors, MCP write tools; schema v9. Earlier: 6.7 for okfgraph 0.10.2 — v6.6 surface per `docs/surface-unification-plan.md` plus the v6.6 → v6.7 summary below: one 24-op vocabulary across CLI / MCP / Python, the `{ok, op, data, warnings, error}` envelope, typed `OKFError` codes with a fixed exit plan, one settings table for flags / env / TOML; on top of v6.5's ONNX vision (`JinaV5Vision` via embroider 0.3), §10d producers + observations, file-free `bundle_root=None` and namespaced thought IDs; supersedes the v5.x design lineage as the authoritative surface)

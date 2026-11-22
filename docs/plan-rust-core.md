@@ -17,7 +17,8 @@ green in 14m37s, 30/30 success-op coverage, 75 all-feature / 54 no-default
 Rust tests, and a green six-job CI run on the last code-affecting commit. M6
 step 1 is also complete: the parity harness imports the oracle from a cached
 worktree of `python-oracle-0.15.0`, and the full matrix passed with the root
-Python package hidden. The remaining Stage C surface is M6 hardening.
+Python package hidden; at cutover the package was deleted and its skills
+were moved under `src/cli/skills/`. M6 hardening is complete.
 **Target:** okfgraph 0.16.0 — Rust core is the only implementation; Python is a thin
 binding/facade  
 **Oracle:** the current Python tree at tag `python-oracle-0.15.0` (24,242 LOC,
@@ -1031,7 +1032,12 @@ success, CLI `INTERNAL` errors write redacted crash reports, and `deny.toml`
 plus `docs/license-review.md` cover the dependency audit. The full GPU matrix
 is retained as a documented manual release gate in
 `docs/release-gate.md`; hosted CI remains a build/smoke gate and no self-hosted
-runner is required for 0.16.0.
+runner is required for 0.16.0. The cutover tree now contains no root Python
+core: the legacy package and root `pyproject.toml` are deleted, its three
+agent skills are bundled under `src/cli/skills/`, and the legacy eval scripts
+resolve Python 0.15 through the tag oracle. Rust-first docs, the Python
+binding guide, the migration guide and `docs/release-notes-0.16.0.md` are in
+place, and crate/wheel versions are set to stable `0.16.0`.
 
 **Gate:** parity suite green on all target platforms; all 1,241 behaviors either
 ported, covered by an equivalent test, or explicitly waived in the parity report;

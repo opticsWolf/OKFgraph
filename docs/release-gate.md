@@ -70,6 +70,8 @@ TOTAL:58 FAILS:0
 scenarios total). Any other op diff or DB diff fails the release. If a
 workstation standby interrupts a full run, rerun the affected scenarios with
 `--only`; all must be green before sign-off.
+The stable cutover rerun was performed with the root Python package deleted;
+all oracle imports came from `python-oracle-0.15.0`.
 
 ### Coverage
 
@@ -86,14 +88,11 @@ outputs scanned: 63
 
 ### Oracle independence
 
-The matrix must also be runnable with the old root Python implementation
-hidden, proving that all oracle imports come from `python-oracle-0.15.0`:
-
-```bash
-mv okfgraph okfgraph.hidden
-# rerun run_matrix.py, check_cli.py and check_external_lanes.py
-mv okfgraph.hidden okfgraph
-```
+The old root Python implementation has been deleted from the default tree.
+The matrix, `check_cli.py` and `check_external_lanes.py` must run without it;
+the only Python 0.15 source is the cached `python-oracle-0.15.0` worktree.
+Before deletion the same gates were run with the package hidden, which is the
+historical evidence for this property.
 
 ### Performance gate
 
@@ -133,6 +132,7 @@ Store a short release note beside the parity output, for example
 
 ```text
 release: 0.16.0
+python-core-in-tree: false
 commit: <sha>
 oracle: python-oracle-0.15.0 via parity/tools/oracle.py
 matrix: TOTAL:58 FAILS:0, <duration>

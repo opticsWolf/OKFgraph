@@ -21,6 +21,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from parity.tools.oracle import prepend_oracle_path  # noqa: E402
+
+prepend_oracle_path()
+
 # Common words + medium words: the "many rows match" class. HYBRID
 # queries pay a fresh model load per subprocess (~30 s), so only the
 # crash-relevant common words run under ranks none/hub; model-free PPR

@@ -12,15 +12,15 @@ use std::path::PathBuf;
 const SKILLS: &[(&str, &str)] = &[
     (
         "okfgraph-cli",
-        include_str!("../../okfgraph/skills/okfgraph-cli/SKILL.md"),
+        include_str!("../cli/skills/okfgraph-cli/SKILL.md"),
     ),
     (
         "okfgraph-ingest",
-        include_str!("../../okfgraph/skills/okfgraph-ingest/SKILL.md"),
+        include_str!("../cli/skills/okfgraph-ingest/SKILL.md"),
     ),
     (
         "okfgraph-mcp",
-        include_str!("../../okfgraph/skills/okfgraph-mcp/SKILL.md"),
+        include_str!("../cli/skills/okfgraph-mcp/SKILL.md"),
     ),
 ];
 

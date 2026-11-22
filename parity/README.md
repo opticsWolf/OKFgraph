@@ -292,7 +292,8 @@ The Python side of the harness never imports the root `okfgraph/` package.
 worktree at `parity/tmp/oracle-0.15.0` and prepends it to `PYTHONPATH`. Local
 runs may override the checkout with `OKFGRAPH_ORACLE_ROOT` or select another
 reference with `OKFGRAPH_ORACLE_TAG`. This keeps differential tests working
-after the old Python implementation is removed from the default tree.
+now that the old Python implementation has been removed from the default
+tree.
 
 The post-review matrix covers 59 scenarios: **58 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,

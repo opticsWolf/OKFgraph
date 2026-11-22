@@ -45,6 +45,12 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from parity.tools.oracle import prepend_oracle_path  # noqa: E402
+
+prepend_oracle_path()
 from typing import Any, Dict, List, Optional
 
 from okfgraph.components.embedding import (MODEL_META_KEY,

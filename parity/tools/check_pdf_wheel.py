@@ -18,7 +18,7 @@ from okfgraph import OKFRouter  # noqa: E402
 def main() -> int:
     plugin = okfgraph_pdf.plugin_path()
     assert plugin and Path(plugin).is_file(), plugin
-    assert okfgraph_pdf.version() == "0.16.0a1", okfgraph_pdf.version()
+    assert okfgraph_pdf.version() == "0.16.0", okfgraph_pdf.version()
 
     db = OUT / "pdf-wheel-smoke.db"
     shutil.copyfile(ROOT / "parity/fixtures/oracle-v10-import-minimal.db", db)

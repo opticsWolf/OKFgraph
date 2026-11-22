@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def wheel_path(pattern: str) -> Path:
-    matches = sorted((ROOT / "target/wheels").glob(pattern))
+    matches = sorted(
+        (ROOT / "target/wheels").glob(pattern),
+        key=lambda path: path.stat().st_mtime,
+    )
     if not matches:
         raise SystemExit(f"no wheel matching {pattern}")
     return matches[-1]

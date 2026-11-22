@@ -20,7 +20,10 @@ def resolve_wheel(pattern: str) -> Path:
         if not path.is_file():
             raise SystemExit(f"missing wheel: {path}")
         return path
-    matches = sorted(path.parent.glob(path.name))
+    matches = sorted(
+        path.parent.glob(path.name),
+        key=lambda candidate: candidate.stat().st_mtime,
+    )
     if len(matches) != 1:
         raise SystemExit(f"expected one wheel for {pattern}, found {matches}")
     return matches[0]

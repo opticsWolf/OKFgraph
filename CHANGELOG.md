@@ -1,3 +1,13 @@
+## 0.16.0 — Rust core cutover
+
+- Rust core replaces the Python implementation; Python is a thin public facade.
+- v10 databases and bundles stay compatible; older schemas are refused.
+- Full 29-command CLI, 11 MCP tools, HTTP ops/jobs, stdlib `OKFClient`.
+- Slim wheel plus optional `okfgraph-pdf` native add-on.
+- M6 hardening: differential, fuzz, performance, SSRF, extension integrity,
+  redacted crash reports and dependency audit gates.
+- See `docs/release-notes-0.16.0.md` and `docs/migration-guide.md`.
+
 # Changelog
 
 All notable changes to OKFgraph are documented here. Format follows

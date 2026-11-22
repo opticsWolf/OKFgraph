@@ -38,7 +38,8 @@ Final verification on `rust-core` through the M6 security hardening round:
   59-scenario suite was rerun scenario-by-scenario: **58/58 green**, with
   `ingest-pdf-no-plugin` the intentional divergence. The single full-suite
   run was interrupted by workstation standby; the chunked rerun is the
-  recorded evidence.
+  recorded evidence. The same 58/58 result was repeated after the root Python
+  package was deleted for the stable cutover.
 - `parity/tools/check_coverage.py`: 30/30 success ops, 21 typed-error ops,
   nine documented waivers, 63 output files scanned.
 - `parity/tools/check_external_lanes.py`: green against four local mock hosts,
@@ -52,8 +53,9 @@ Final verification on `rust-core` through the M6 security hardening round:
   wikilink scanning/resolution, op params and closed error codes; the
   generated regression seed is checked in.
 - The same full matrix, `check_cli.py` and `check_external_lanes.py` also pass
-  when the root `okfgraph/` package is hidden: all oracle imports now come
-  from a cached worktree of `python-oracle-0.15.0`.
+  when the root `okfgraph/` package was hidden and, after cutover, with that
+  package deleted: all oracle imports come from a cached worktree of
+  `python-oracle-0.15.0`.
 - Rust suites: 82 all-feature tests, 60 no-default tests and 9 fuzz
   properties pass; Clippy is clean with all features and with no default
   features.

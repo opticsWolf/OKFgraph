@@ -8,7 +8,7 @@ __all__ = ["plugin_path", "version", "PLUGIN_ENV"]
 
 
 PLUGIN_ENV = "OKFGRAPH_PDF_PLUGIN"
-_VERSION = "0.16.0a1"
+_VERSION = "0.16.0"
 
 
 def version() -> str:

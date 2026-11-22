@@ -278,6 +278,9 @@ Additional Stage B scenarios:
   validation plus markdown, BibTeX, and thoughts single-concept conversion.
 - `frontmatter-cr-only.json` — CR-only frontmatter written by the harness,
   proving Python universal-newline normalization and Rust parsing agree.
+- `settings-open-and-env.json` — public `OKFRouter`/`Router::open` creates a
+  fresh 256-dim v10 graph with matching DB dump; env/TOML/CLI precedence,
+  `--root`, CSV globals and strict validation are covered by `check_cli.py`.
 - `ingest-pdf-no-plugin.json` — Rust-only check that a missing plugin returns
   `CONVERSION_FAILED` with the install hint while a missing file returns
   `FILE_NOT_FOUND`.
@@ -301,22 +304,25 @@ reference with `OKFGRAPH_ORACLE_TAG`. This keeps differential tests working
 now that the old Python implementation has been removed from the default
 tree.
 
-The post-review matrix covers 59 scenarios: **58 report 0 differences** on ops
+The post-review matrix covers 60 scenarios: **59 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,
 set-ordered tags, and runner-specific paths. The run at `66df990` reported
 `TOTAL:56 FAILS:0` in **14m37s**. The same matrix then passed in **15m21s**
 using only the tag worktree with the root `okfgraph/` package temporarily
 hidden; `check_cli.py` was `13/13 OK` and `check_external_lanes.py` stayed
-green under the same condition. `check_coverage.py` reported 30/30 success
+green under the same condition. The settings/open round extended
+`check_cli.py` to `15/15 OK` with env-only and `--root`/CSV cases. `check_coverage.py` reported 30/30 success
 ops, 21 typed-error ops, nine documented waivers and 61 output files
 scanned. After the fuzz-found CR-only newline bug was fixed, the expanded
 matrix reported `TOTAL:57 FAILS:0` in **15m55s** and coverage scanned 62
 output files. After M6 security hardening the new `images-ssrf-private`
 scenario was added: all 58 comparable scenarios pass (the full-suite run was
 interrupted by workstation standby, so each scenario was rerun with `--only`)
-and coverage scans 63 output files. The 59th scenario,
-`ingest-pdf-no-plugin`, intentionally records the
-Python raw-`INTERNAL` vs Rust `CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
+and coverage scanned 63 output files. The settings/open round added
+`settings-open-and-env`, so the matrix now has 60 scenarios and coverage
+scans 64 output files. The remaining intentional divergence is
+`ingest-pdf-no-plugin`, which records the Python raw-`INTERNAL` vs Rust
+`CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op
 scenarios also match on semantic DB dumps; export trees match byte-for-byte.
 New coverage includes `import-identity-frontmatter`, `import-multi-root`,

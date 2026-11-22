@@ -168,31 +168,130 @@ impl Default for Settings {
 
 impl Settings {
     /// Build from canonical JSON values; every omitted field uses its default.
+    ///
+    /// This is the single validation choke point for every public surface:
+    /// unknown keys are refused, CLI-style strings/lists are normalized with
+    /// the generated table, and `checks()` runs before a `Settings` value can
+    /// reach a router.
     pub fn from_map(map: &Map<String, Value>) -> Result<Self> {
+        let mut taken = Map::new();
+        for (key, raw) in map {
+            let key = if key == "embed_backend" {
+                "backend"
+            } else {
+                key.as_str()
+            };
+            if key == "roots" {
+                taken.insert("roots".into(), parse_roots(raw).map_err(config_error)?);
+                continue;
+            }
+            if key == "model_path" || key == "tokenizer_path" {
+                if !raw.is_null() {
+                    return Err(OkfError::new(
+                        "CONFIG_INVALID",
+                        format!(
+                            "{key} is not supported by the Rust core: explicit local ONNX files are unsupported; use a registry model id or an external backend"
+                        ),
+                    ));
+                }
+                continue;
+            }
+            let def = row(key).ok_or_else(|| {
+                OkfError::new("CONFIG_INVALID", format!("unknown setting: {key}"))
+            })?;
+            if key == "bundle_root" {
+                handle_bundle_root(raw).map_err(config_error)?;
+            }
+            let parsed = if raw.is_null() && matches!(def.default, DefaultValue::Null) {
+                // Optional ints/strs legitimately use JSON null (`max_length`,
+                // `efs`, rerank windows, ...). They bypass table parsing.
+                Value::Null
+            } else {
+                parse_value(def, raw.clone(), &flag_name(def.name)).map_err(config_error)?
+            };
+            taken.insert(def.name.to_string(), parsed);
+        }
+
         let mut full = Map::new();
         for def in SETTINGS {
-            let value = map
-                .get(def.name)
-                .or_else(|| {
-                    // Python's constructor calls this setting `embed_backend`;
-                    // the canonical Rust name is `backend`. Parity scenarios
-                    // use the public spelling, so accept both.
-                    (def.name == "backend")
-                        .then(|| map.get("embed_backend"))
-                        .flatten()
-                })
-                .cloned()
-                .unwrap_or_else(|| def.default_value());
-            full.insert(def.name.to_string(), value);
+            full.insert(
+                def.name.to_string(),
+                taken
+                    .get(def.name)
+                    .cloned()
+                    .unwrap_or_else(|| def.default_value()),
+            );
         }
         full.insert(
             "roots".to_string(),
-            map.get("roots")
+            taken
+                .get("roots")
                 .cloned()
                 .unwrap_or_else(|| Value::Object(Map::new())),
         );
-        serde_json::from_value(Value::Object(full))
-            .map_err(|err| OkfError::new("CONFIG_INVALID", format!("invalid settings: {err}")))
+        let settings: Self = serde_json::from_value(Value::Object(full))
+            .map_err(|err| OkfError::new("CONFIG_INVALID", format!("invalid settings: {err}")))?;
+        settings.validate_router()?;
+        Ok(settings)
+    }
+
+    /// Constructor-level validation only. The Python `OKFRouter` validates
+    /// the database path, embedding width/model, token ceiling, choices and
+    /// explicit model files; it does not run the full `Settings.checks()`
+    /// table (parity scenarios legitimately pass a 32-token `chunk_size`).
+    /// CLI/env/TOML callers get the full checks through `Settings::load`.
+    fn validate_router(&self) -> Result<()> {
+        let mut errors = Vec::new();
+        if self.db_path.trim().is_empty() {
+            errors.push("database.db_path must be a non-empty string".into());
+        }
+        if !(32..=1024).contains(&self.embedding_dim) {
+            errors.push("embedding.embedding_dim must be between 32 and 1024".into());
+        }
+        if !self.model_id.contains('/') {
+            errors.push(format!(
+                "embedding.model_id must be 'owner/name', got '{}'",
+                self.model_id
+            ));
+        } else if ['\'', '"', '\\', ';']
+            .iter()
+            .any(|c| self.model_id.contains(*c))
+        {
+            errors.push(format!(
+                "embedding.model_id must not contain quotes/semicolons, got '{}'",
+                self.model_id
+            ));
+        }
+        if let Some(max) = self.max_length {
+            if !(1..=32768).contains(&max) {
+                errors.push(format!(
+                    "embedding.max_length must be within 1..=32768, got {max}"
+                ));
+            }
+        }
+        for def in SETTINGS {
+            if def.choices.is_empty() {
+                continue;
+            }
+            if let Some(value) = self
+                .get(def.name)
+                .and_then(|v| v.as_str().map(str::to_string))
+            {
+                if !def.choices.contains(&value.as_str()) {
+                    errors.push(format!(
+                        "{}.{} must be one of {:?}, got '{}'",
+                        def.section, def.name, def.choices, value
+                    ));
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Err(OkfError::new(
+                "CONFIG_INVALID",
+                format!("Configuration invalid:\n  - {}", errors.join("\n  - ")),
+            ));
+        }
+        Ok(())
     }
 
     pub fn to_value(&self) -> Value {
@@ -219,7 +318,19 @@ impl Settings {
     }
 
     /// Merge TOML < env < CLI over defaults, with explicit `require` checks.
+    ///
+    /// Every configuration refusal is reported as `CONFIG_INVALID`, matching
+    /// the Python CLI's `ValueError` -> `OKFError` translation.
     pub fn load(
+        bundle_root: Option<&str>,
+        cli: &Map<String, Value>,
+        environ: &BTreeMap<String, String>,
+        require: &[&str],
+    ) -> Result<Self> {
+        Self::load_inner(bundle_root, cli, environ, require).map_err(config_error)
+    }
+
+    fn load_inner(
         bundle_root: Option<&str>,
         cli: &Map<String, Value>,
         environ: &BTreeMap<String, String>,
@@ -553,6 +664,58 @@ fn is_http_url(value: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://")
 }
 
+/// Loaders report every bad setting as `CONFIG_INVALID`, whatever the
+/// underlying table parser called it.
+fn config_error(err: OkfError) -> OkfError {
+    if err.code == "CONFIG_INVALID" {
+        err
+    } else {
+        OkfError::new("CONFIG_INVALID", err.message)
+    }
+}
+
+/// `roots` arrives as a map from TOML/programmatic callers and as an array of
+/// `ALIAS=PATH` strings from `--root`. Normalize both to the map the settings
+/// struct expects; malformed entries get Python's `--root must be ALIAS=PATH`
+/// wording.
+fn parse_roots(raw: &Value) -> Result<Value> {
+    match raw {
+        Value::Null => Ok(Value::Object(Map::new())),
+        Value::Object(map) => Ok(Value::Object(map.clone())),
+        Value::Array(items) => {
+            let mut roots = Map::new();
+            for item in items {
+                let Some(entry) = item.as_str() else {
+                    return Err(OkfError::new(
+                        "BAD_VALUE",
+                        format!("--root must be ALIAS=PATH, got {item}"),
+                    ));
+                };
+                let (alias, path) = entry.split_once('=').ok_or_else(|| {
+                    OkfError::new(
+                        "BAD_VALUE",
+                        format!("--root must be ALIAS=PATH, got {entry:?}"),
+                    )
+                })?;
+                if alias.is_empty() || path.is_empty() {
+                    return Err(OkfError::new(
+                        "BAD_VALUE",
+                        format!("--root must be ALIAS=PATH, got {entry:?}"),
+                    ));
+                }
+                // Python's dict assignment means a repeated alias keeps the
+                // last path; keep that behavior for the CLI and TOML alike.
+                roots.insert(alias.to_string(), Value::String(path.to_string()));
+            }
+            Ok(Value::Object(roots))
+        }
+        other => Err(OkfError::new(
+            "BAD_VALUE",
+            format!("--root must be ALIAS=PATH, got {other}"),
+        )),
+    }
+}
+
 fn parse_value(def: &SettingDef, raw: Value, origin: &str) -> Result<Value> {
     match def.kind {
         SettingKind::Bool => match &raw {
@@ -605,7 +768,10 @@ fn parse_value(def: &SettingDef, raw: Value, origin: &str) -> Result<Value> {
             let items: Vec<String> = match raw {
                 Value::Array(items) => items
                     .iter()
-                    .map(|v| v.to_string().trim().to_string())
+                    .map(|value| match value {
+                        Value::String(text) => text.trim().to_string(),
+                        other => other.to_string().trim().to_string(),
+                    })
                     .collect(),
                 other => other
                     .as_str()
@@ -831,5 +997,118 @@ mod tests {
         let env = BTreeMap::from([("OKFGRAPH_CHUNK_OVERLAP".to_string(), "0".to_string())]);
         let settings = Settings::load(None, &Map::new(), &env, &[]).expect("load");
         assert_eq!(settings.chunk_overlap, 0);
+    }
+
+    #[test]
+    fn from_map_normalizes_cli_shapes() {
+        let map = Map::from_iter([
+            (
+                "roots".to_string(),
+                Value::Array(vec![
+                    Value::String("other=parity/corpus/multi-root/other".into()),
+                    Value::String("docs=docs".into()),
+                ]),
+            ),
+            (
+                "allowed_image_domains".to_string(),
+                Value::String("a.example,b.example,, c.example ".into()),
+            ),
+        ]);
+        let settings = Settings::from_map(&map).expect("normalized settings");
+        assert_eq!(
+            settings.roots.get("other").map(String::as_str),
+            Some("parity/corpus/multi-root/other")
+        );
+        assert_eq!(
+            settings.allowed_image_domains,
+            vec![
+                "a.example".to_string(),
+                "b.example".into(),
+                "c.example".into()
+            ]
+        );
+    }
+
+    #[test]
+    fn from_map_rejects_bad_settings() {
+        for (key, raw) in [
+            ("bogus_setting", Value::from(1)),
+            ("embedding_dim", Value::from(8)),
+            ("device", Value::String("tpu".into())),
+            ("model_path", Value::String("x.onnx".into())),
+            ("tokenizer_path", Value::String("y.json".into())),
+        ] {
+            let map = Map::from_iter([(key.to_string(), raw)]);
+            let err = Settings::from_map(&map).expect_err("must refuse");
+            assert_eq!(err.code, "CONFIG_INVALID", "{key}: {}", err.message);
+        }
+        let roots = Map::from_iter([(
+            "roots".to_string(),
+            Value::Array(vec![Value::String("no-equals-here".into())]),
+        )]);
+        let err = Settings::from_map(&roots).expect_err("must refuse bad roots");
+        assert_eq!(err.code, "CONFIG_INVALID");
+        assert!(err.message.contains("ALIAS=PATH"), "{}", err.message);
+    }
+
+    #[test]
+    fn router_settings_allow_small_chunk_size_but_loader_does_not() {
+        let map = Map::from_iter([("chunk_size".to_string(), Value::from(32))]);
+        assert_eq!(
+            Settings::from_map(&map)
+                .expect("router settings")
+                .chunk_size,
+            32
+        );
+
+        let env = BTreeMap::from([("OKFGRAPH_CHUNK_SIZE".to_string(), "32".into())]);
+        let err = Settings::load(None, &Map::new(), &env, &[]).expect_err("loader validates");
+        assert_eq!(err.code, "CONFIG_INVALID");
+        assert!(err.message.contains("chunk_size"));
+    }
+
+    #[test]
+    fn loader_merges_toml_env_and_cli() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            dir.path().join("okfgraph.toml"),
+            "[database]\ndb_path = \"from-toml.db\"\n[embedding]\nembedding_dim = 256\n",
+        )
+        .expect("write toml");
+        let cli = Map::from_iter([("db_path".to_string(), Value::String("from-cli.db".into()))]);
+        let env = BTreeMap::from([("OKFGRAPH_CHUNK_OVERLAP".to_string(), "0".to_string())]);
+        let settings =
+            Settings::load(dir.path().to_str(), &cli, &env, &[]).expect("merged settings");
+        assert_eq!(settings.db_path, "from-cli.db");
+        assert_eq!(settings.embedding_dim, 256);
+        assert_eq!(settings.chunk_overlap, 0);
+    }
+
+    #[test]
+    fn loader_refuses_legacy_env_and_missing_required() {
+        let env = BTreeMap::from([("OKFGRAPH_DB".to_string(), "old.db".into())]);
+        let err = Settings::load(None, &Map::new(), &env, &[]).expect_err("legacy env");
+        assert_eq!(err.code, "CONFIG_INVALID");
+        assert!(err.message.contains("OKFGRAPH_DB_PATH"));
+
+        let err = Settings::load(None, &Map::new(), &BTreeMap::new(), &["db_path"])
+            .expect_err("required db_path");
+        assert_eq!(err.code, "CONFIG_INVALID");
+        assert!(err.message.contains("db_path must be set"));
+    }
+
+    #[test]
+    fn default_bundle_root_uses_graph_home() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join(".okfgraph/okfgraph.db");
+        let settings = Settings::from_map(&Map::from_iter([(
+            "db_path".to_string(),
+            Value::String(db.to_string_lossy().into_owned()),
+        )]))
+        .expect("settings");
+        let bundle = settings.default_bundle_root("fallback");
+        let expected = dir.path().join(".okfgraph").join("bundle");
+        assert_eq!(Path::new(&bundle), expected.as_path());
+        assert!(Path::new(&bundle).is_dir());
     }
 }

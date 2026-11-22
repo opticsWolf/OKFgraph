@@ -53,8 +53,8 @@ cargo test -p okfgraph --no-default-features --lib
 cargo test -p okfgraph --no-default-features --test fuzz_robustness
 ```
 
-Expected at the last recorded gate: 82 all-feature tests, 60 no-default
-tests and 9 fuzz properties pass.
+Expected after the settings/open fix round: 91 all-feature tests, 69
+no-default tests and 9 fuzz properties pass.
 
 ### Full differential matrix
 
@@ -66,10 +66,10 @@ parity/.venv-oracle/Scripts/python.exe parity/tools/run_matrix.py \
 Expected:
 
 ```text
-TOTAL:58 FAILS:0
+TOTAL:59 FAILS:0
 ```
 
-`ingest-pdf-no-plugin` remains the one intentional skipped divergence (59
+`ingest-pdf-no-plugin` remains the one intentional skipped divergence (60
 scenarios total). Any other op diff or DB diff fails the release. If a
 workstation standby interrupts a full run, rerun the affected scenarios with
 `--only`; all must be green before sign-off.
@@ -86,7 +86,7 @@ Expected:
 
 ```text
 ops: 30, success: 30, typed error: 21, documented waivers: 9
-outputs scanned: 63
+outputs scanned: 64
 ```
 
 ### Oracle independence
@@ -138,7 +138,7 @@ release: 0.16.0
 python-core-in-tree: false
 commit: <sha>
 oracle: python-oracle-0.15.0 via parity/tools/oracle.py
-matrix: TOTAL:58 FAILS:0, <duration>
+matrix: TOTAL:59 FAILS:0, <duration>
 coverage: 30/30 success, 21 typed errors, 9 waivers
 rust tests: <all-feature count> / <no-default count>
 surface gates: pass/fail list with tool names

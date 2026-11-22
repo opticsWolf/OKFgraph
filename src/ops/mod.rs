@@ -129,6 +129,26 @@ impl Router {
     fn db_created_for(settings: &Settings) -> bool {
         settings.db_path == ":memory:" || !Path::new(&settings.db_path).exists()
     }
+
+    /// Every constructor adopts the settings from the opened `Store`. The
+    /// store is the only component that knows the width actually stored in
+    /// the v10 schema, so keeping the caller's copy here used to let a 3-dim
+    /// graph be opened with 512-dim defaults and fail on first embed.
+    fn from_store(store: Store, db_created: bool) -> Self {
+        let settings = store.settings().clone();
+        Self {
+            store,
+            settings,
+            embedder: EmbedderPool::new(),
+            pools: Pools::new(),
+            #[cfg(feature = "embed")]
+            reranker: RerankerPool::new(),
+            write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            db_created,
+            reembed_active: std::sync::Arc::new(AtomicBool::new(false)),
+            pin_checked: std::sync::Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 /// Cooperative hooks for a long-running op. The job lane passes these so a
@@ -165,52 +185,29 @@ impl Router {
     /// Open a v10 database for the normal public surface, including writes.
     /// Stage B callers must own the graph; never mix Python and Rust cores in
     /// one process.
+    /// Open (or create) a v10 database for the normal public surface,
+    /// including writes. Python's `OKFRouter` creates the file and its parent
+    /// folders on first use; this constructor now does the same.
     pub fn open(settings: &Settings) -> Result<Self> {
-        Ok(Self {
-            store: Store::open_writable(settings)?,
-            settings: settings.clone(),
-            embedder: EmbedderPool::new(),
-            pools: Pools::new(),
-            #[cfg(feature = "embed")]
-            reranker: RerankerPool::new(),
-            write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
-            db_created: Self::db_created_for(settings),
-            reembed_active: Arc::new(AtomicBool::new(false)),
-            pin_checked: Arc::new(AtomicBool::new(false)),
-        })
+        let db_created = Self::db_created_for(settings);
+        let store = Store::open_or_create(settings)?;
+        Ok(Self::from_store(store, db_created))
     }
 
     /// Explicit read-only handle for tools that must never mutate the graph.
+    /// It never creates a database.
     pub fn open_read_only(settings: &Settings) -> Result<Self> {
-        Ok(Self {
-            store: Store::open(settings)?,
-            settings: settings.clone(),
-            embedder: EmbedderPool::new(),
-            pools: Pools::new(),
-            #[cfg(feature = "embed")]
-            reranker: RerankerPool::new(),
-            write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
-            db_created: Self::db_created_for(settings),
-            reembed_active: Arc::new(AtomicBool::new(false)),
-            pin_checked: Arc::new(AtomicBool::new(false)),
-        })
+        let db_created = Self::db_created_for(settings);
+        let store = Store::open(settings)?;
+        Ok(Self::from_store(store, db_created))
     }
 
     /// Open an existing v10 database with write permission. Stage B callers
     /// must own the graph; never mix Python and Rust cores in one process.
     pub fn open_writable(settings: &Settings) -> Result<Self> {
-        Ok(Self {
-            store: Store::open_writable(settings)?,
-            settings: settings.clone(),
-            embedder: EmbedderPool::new(),
-            pools: Pools::new(),
-            #[cfg(feature = "embed")]
-            reranker: RerankerPool::new(),
-            write_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
-            db_created: Self::db_created_for(settings),
-            reembed_active: Arc::new(AtomicBool::new(false)),
-            pin_checked: Arc::new(AtomicBool::new(false)),
-        })
+        let db_created = Self::db_created_for(settings);
+        let store = Store::open_writable(settings)?;
+        Ok(Self::from_store(store, db_created))
     }
 
     fn ensure_engine_pins(&self, embedder: &Arc<dyn Embedder>) -> Result<()> {
@@ -4765,5 +4762,58 @@ mod tests {
             .expect("get_by_id");
         assert_eq!(concept["id"], "alpha");
         assert_eq!(concept["type"], "note");
+    }
+
+    #[test]
+    fn public_open_creates_a_fresh_graph_with_the_requested_width() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("nested/graph.db");
+        let settings = Settings::from_map(&Map::from_iter([
+            (
+                "db_path".to_string(),
+                Json::String(path.to_string_lossy().into_owned()),
+            ),
+            ("embedding_dim".to_string(), Json::from(256)),
+        ]))
+        .expect("settings");
+        assert!(!path.exists());
+
+        let created = Router::open(&settings).expect("create on open");
+        assert!(created.db_created());
+        assert_eq!(created.settings().embedding_dim, 256);
+        assert!(path.is_file());
+        drop(created);
+
+        // Reopen with the default 512 setting: the stored schema width wins.
+        let reopened = Router::open(&settings).expect("reopen");
+        assert!(!reopened.db_created());
+        assert_eq!(reopened.settings().embedding_dim, 256);
+    }
+
+    #[test]
+    fn public_open_supports_in_memory_graphs() {
+        let settings = Settings::from_map(&Map::from_iter([(
+            "db_path".to_string(),
+            Json::String(":memory:".into()),
+        )]))
+        .expect("settings");
+        let router = Router::open(&settings).expect("in-memory router");
+        assert!(router.db_created());
+        let rows = router
+            .call("list_deleted", &Map::new())
+            .expect("list_deleted");
+        assert_eq!(rows, Json::Array(Vec::new()));
+    }
+
+    #[test]
+    fn read_only_open_still_refuses_a_missing_database() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = Settings::from_map(&Map::from_iter([(
+            "db_path".to_string(),
+            Json::String(dir.path().join("missing.db").to_string_lossy().into_owned()),
+        )]))
+        .expect("settings");
+        let err = Router::open_read_only(&settings).expect_err("must refuse");
+        assert_eq!(err.code, "FILE_NOT_FOUND");
     }
 }

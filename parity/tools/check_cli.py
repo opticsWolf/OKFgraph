@@ -60,6 +60,19 @@ def run_cli(exe: list[str], db: Path, args: list[str]) -> tuple[int, dict]:
     return proc.returncode, payload
 
 
+def run_cli_env(
+    exe: list[str], db: Path, args: list[str], env: dict[str, str], *, include_db: bool = True
+) -> tuple[int, dict]:
+    cmd = exe + (["--json", "--db-path", str(db)] if include_db else ["--json"]) + args
+    proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True)
+    stdout = proc.stdout.decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(stdout)
+    except ValueError:
+        raise SystemExit(f"non-JSON CLI output for {args}: {proc.stdout[:400]!r}\n{proc.stderr}")
+    return proc.returncode, payload
+
+
 def normalize_envelope(value: dict) -> dict:
     value = drop_info_rules(normalize(value), HOST_INFO_RULES)
     # Model cache paths/precision depend on the host's ORT installation; keep
@@ -153,6 +166,62 @@ def main() -> int:
         else:
             print(f"[ OK ] {' '.join(argv)}")
     print(f"CLI: {len(CASES) - failures}/{len(CASES)} OK")
+
+    # Settings loader regressions: env-only db_path, repeatable --root parsed
+    # as ALIAS=PATH, and CSV globals parsed into lists. Each runner uses its
+    # own copy of the fixture so doctor's root paths stay comparable.
+    config_cases: list[tuple[str, list[str], dict[str, str]]] = [
+        (
+            "env db_path and bundle root",
+            ["deleted-list"],
+            {
+                "OKFGRAPH_BUNDLE_ROOT": "parity/corpus/minimal",
+            },
+        ),
+        (
+            "named root and CSV globals",
+            [
+                "doctor",
+                "--stale-days",
+                "100000",
+                "--bundle-root",
+                "parity/corpus/minimal",
+                "--root",
+                "other=parity/corpus/multi-root/other",
+                "--allowed-image-domains",
+                "a.example,b.example",
+            ],
+            {},
+        ),
+    ]
+    for label, argv, extra_env in config_cases:
+        py_env_cfg = dict(env, **extra_env)
+        rs_env_cfg = dict(env, **extra_env)
+        if "OKFGRAPH_DB_PATH" not in extra_env:
+            py_env_cfg["OKFGRAPH_DB_PATH"] = str(py_db)
+            rs_env_cfg["OKFGRAPH_DB_PATH"] = str(rs_db)
+        include_db = "OKFGRAPH_DB_PATH" in extra_env
+        py_rc, py_payload = run_cli_env(python, py_db, argv, py_env_cfg, include_db=include_db)
+        rs_rc, rs_payload = run_cli_env(rust, rs_db, argv, rs_env_cfg, include_db=include_db)
+        diffs: list[str] = []
+        if py_rc != 0 or rs_rc != 0:
+            diffs.append(f"exit: python={py_rc} rust={rs_rc}")
+        diff(
+            normalize_envelope(py_payload),
+            normalize_envelope(rs_payload),
+            "$",
+            1e-6,
+            diffs,
+            {"crash_report"},
+        )
+        if diffs:
+            failures += 1
+            print(f"[FAIL] {label}")
+            for line in diffs[:20]:
+                print(f"  {line}")
+        else:
+            print(f"[ OK ] {label}")
+    print(f"CLI total: {len(CASES) + len(config_cases) - failures}/{len(CASES) + len(config_cases)} OK")
     return 1 if failures else 0
 
 

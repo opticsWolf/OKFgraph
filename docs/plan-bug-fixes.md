@@ -2,8 +2,9 @@
 
 **Status:** review plan from `6a71fec`, updated after the complete M6 cutover
 and the post-cutover review at `a62d1c9`. All code findings through BUG-066 are
-closed. The post-cutover review added **BUG-067–BUG-089**, all open in section
-8A; section 11 is the authoritative register and records the one intentional
+closed. In the first post-cutover fix round, **BUG-067–BUG-071** (settings and
+open contract) are closed; **BUG-072–BUG-089** remain open in section 8A.
+Section 11 is the authoritative register and records the one intentional
 divergence and the ongoing gate obligations. The original review below is kept
 as the evidence trail.
 
@@ -25,8 +26,10 @@ intentional missing-plugin error divergence instead of a green comparison.
 Current verification is listed under “Verification status” below and the
 authoritative register in section 11. The post-cutover review at `a62d1c9`
 found additional API, settings, named-root, detach, parser and surface
-regressions; they are listed in section 8A and are not yet exercised by the
-58-scenario matrix.
+regressions. The settings/open regressions are fixed and covered by the new
+`settings-open-and-env` parity scenario plus extended CLI differential cases;
+the remaining findings are listed in section 8A and are not yet exercised by
+the matrix.
 
 **Important:** the original review below describes the pre-fix state. It is
 kept as the evidence trail; the implementation status section records what is
@@ -64,8 +67,14 @@ Final verification on `rust-core` through the M6 security hardening round:
   package deleted: all oracle imports come from a cached worktree of
   `python-oracle-0.15.0`.
 - Rust suites: 82 all-feature tests, 60 no-default tests and 9 fuzz
-  properties pass; Clippy is clean with all features and with no default
-  features.
+  properties pass at the cutover baseline. After the post-cutover
+  settings/open round they are 91 all-feature, 69 no-default and 9 fuzz;
+  Clippy is clean with all features and with no default features.
+- The settings/open round (BUG-067–BUG-071) reran the full matrix at
+  `TOTAL:59 FAILS:0` with the new `settings-open-and-env` scenario;
+  `check_coverage.py` reports 64 outputs scanned. `check_cli.py` is `15/15 OK`
+  with env-only db_path and `--root`/CSV cases. Wheel/facade, client, jobs,
+  stdio MCP, MCP proxy, MCP HTTP and external-lane smokes stay green.
 - The full six-job CI matrix was green on `44899657898` for code commit
   `333f8df`. The final commit `66df990` changes only docs and the parity
   harness, and its CI run was stopped by the operator before completion.
@@ -1979,7 +1988,10 @@ pruning; the CLI differential smoke remains 13/13.
 
 ---
 
-## 8A. Post-cutover review findings (BUG-067–BUG-089, open)
+## 8A. Post-cutover review findings (BUG-067–BUG-089)
+
+BUG-067–BUG-071 are closed by the settings/open fix round; BUG-072–BUG-089
+remain open.
 
 **Review baseline:** `a62d1c9` (`docs: refresh Rust-first 0.16 documentation set`).
 This review exercised the public Python facade, `okf`, `okf serve`, and the
@@ -1993,11 +2005,10 @@ exclusion) + a status update in section 11.
 
 ### BUG-067 — Router discards the schema-adopted embedding width
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed**.
 
-**Where:** `src/ops/mod.rs:168-205` (`Router::open`,
-`Router::open_read_only`, `Router::open_writable`), `src/store/mod.rs:92-100`
-(`Store::open`).
+**Where:** `src/ops/mod.rs` (`Router::from_store` and constructors),
+`src/store/mod.rs` (`Store::adopt_settings`, `Store::validate_schema`).
 
 **Cause:** `Store::open` correctly reads `Concept.embedding` from
 `TABLE_INFO` and changes its own `settings.embedding_dim` to the stored width.
@@ -2026,11 +2037,16 @@ assert `router.settings().embedding_dim` equals the schema width,
 `pin_info().pinned.embedding_dim` equals it, `embed` works, and reembed refuses
 only for a genuinely different engine width.
 
+**Closed by:** every `Router` constructor now builds from `store.settings()`
+through `Router::from_store`. `opens_fixture_and_reads` and
+`public_open_creates_a_fresh_graph_with_the_requested_width` assert the
+adopted width survives reopening with mismatched caller settings.
+
 ### BUG-068 — Public router no longer creates a fresh database
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed**.
 
-**Where:** `src/store/mod.rs:77-85` (`Store::open`), `src/ops/mod.rs:168`
+**Where:** `src/store/mod.rs` (`Store::open_or_create`), `src/ops/mod.rs`
 (`Router::open`), `python/okfgraph/router.py`.
 
 **Cause:** `Store::open` requires `Path::exists()` and returns
@@ -2061,13 +2077,21 @@ reopening it works; an empty zero-byte file is handled intentionally; old and
 future schema versions still fail with `CONFIG_INVALID`; `:memory:` either
 works or returns a clear `CONFIG_INVALID`.
 
+**Closed by:** `Router::open` calls `Store::open_or_create`, which creates the
+parent folders and v10 schema on the same connection that stays open.
+`:memory:` works; `Router::open_read_only` still refuses a missing file.
+Covered by `public_open_creates_a_fresh_graph_with_the_requested_width`,
+`public_open_supports_in_memory_graphs`,
+`read_only_open_still_refuses_a_missing_database` and the
+`settings-open-and-env` differential scenario.
+
 ### BUG-069 — `Settings::load` is dead code: env, TOML, validation, and default root never run
 
-**Severity:** P1, L — **Status: open**.
+**Severity:** P1, L — **Status: closed**.
 
-**Where:** `src/settings/mod.rs:222-310` (`Settings::load`, legacy env
-rejection, TOML merge, `checks`), `src/settings/mod.rs:512-530`
-(`default_bundle_root`), `src/cli/mod.rs:1297-1333` (`settings_from`).
+**Where:** `src/settings/mod.rs` (`Settings::load`, `checks`,
+`default_bundle_root`), `src/cli/mod.rs` (`settings_from_with`),
+`src/mcp/mod.rs` (`settings_from_mcp`).
 
 **Cause:** `Settings::load` has no production call site. `settings_from` only
 collects command-line flags and calls `Settings::from_map`; it never reads
@@ -2105,11 +2129,18 @@ over flags; legacy env rejection; default root for `.okfgraph` homes and
 non-`.okfgraph` paths; invalid settings report `CONFIG_INVALID`; MCP required
 `db_path` behaves like Python.
 
+**Closed by:** CLI and MCP settings now go through `Settings::load` with the
+real environment, CLI > env > TOML precedence, legacy-name rejection, and
+`checks`. CLI uses `default_bundle_root(".")`; `serve`/MCP use the database's
+parent as Python does. Unit tests cover merge, legacy refusal and required
+`db_path`; `check_cli.py` adds env-only and named-root/CSV cases.
+
 ### BUG-070 — `--root` and CSV global flags fail before any command runs
 
-**Severity:** P1, S — **Status: open**.
+**Severity:** P1, S — **Status: closed**.
 
-**Where:** `src/cli/mod.rs:1319-1331`, `src/settings/mod.rs:188-194`.
+**Where:** `src/cli/mod.rs` (`cli_signal`), `src/settings/mod.rs`
+(`parse_roots`, `from_map`).
 
 **Cause:** `settings_from` inserts every `--root` occurrence as a JSON array
 of `ALIAS=PATH` strings, while `Settings.roots` deserializes as
@@ -2141,12 +2172,17 @@ Alternatively route all CLI values through `parse_value` before
 aliases; `--allowed-image-domains a.com,b.com`; CSV empty entries; the same
 values via env/TOML; all produce the expected settings and no `CONFIG_INVALID`.
 
+**Closed by:** `cli_signal` collects only present flags; `Settings::from_map`
+normalizes `ALIAS=PATH` arrays and CSV strings with the generated table.
+`from_map_normalizes_cli_shapes` and `from_map_rejects_bad_settings` cover the
+mapping and malformed entries; the extended `check_cli.py` case exercises real
+CLI parsing against the oracle.
+
 ### BUG-071 — Unknown settings are silently ignored; validation and explicit model files are missing
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed**.
 
-**Where:** `src/settings/mod.rs:171-195` (`Settings::from_map`),
-`src/settings/table.rs` (no `model_path`/`tokenizer_path` rows),
+**Where:** `src/settings/mod.rs` (`Settings::from_map`, `config_error`),
 `python/okfgraph/router.py`.
 
 **Cause:** `from_map` copies only names present in `SETTINGS` (plus `roots`)
@@ -2181,6 +2217,15 @@ setting and ignore it.
 `chunk_size=1`, invalid `device`/choices → `CONFIG_INVALID`; documented
 explicit-file pair either loads or fails explicitly when one is missing;
 facade and CLI share the same validation.
+
+**Closed by:** `from_map` rejects unknown keys and applies the constructor-level
+validation Python's `OKFRouter` performs (path, width, model id, choices,
+token ceiling), while `Settings::load` runs the full `Settings::checks()` table
+for CLI/env/TOML callers. `model_path`/`tokenizer_path` are now explicitly
+refused as unsupported by the Rust core instead of silently ignored; optional
+JSON `null` settings remain valid. `from_map_rejects_bad_settings` and
+`router_settings_allow_small_chunk_size_but_loader_does_not` cover both sides
+of that split.
 
 ### BUG-072 — Named-root paths and import identity are not threaded through writes
 
@@ -2805,11 +2850,11 @@ it does **not** mean every release gate is green.
 | BUG-064 | Closed | Remote images resolve-and-screen addresses, pin one safe address, disable redirects and stream-cap at 20 MiB; `images-ssrf-private` is green. | Re-run if image fetching changes. |
 | BUG-065 | Closed | `setup extensions` loads both files into a scratch DB before reporting `ok`; unit and CLI smoke green. | Re-run if the extension ABI changes. |
 | BUG-066 | Closed | Rust CLI writes redacted crash reports with `fields.crash_report` and keeps 20 files; unit tests green. | Keep in the release gate if CLI error handling changes. |
-| BUG-067 | Open | `Router` stores the caller’s `embedding_dim` instead of the width adopted by `Store::open`; 3/256/768-dim graphs fail with `DIM_MISMATCH` under default settings. | Build all `Router` constructors from `store.settings().clone()`; add mismatched-dim open/embed/reembed tests. |
-| BUG-068 | Open | `OKFRouter`/`Router::open` require an existing DB; Python creates one on first use and supports `:memory:`. README/quickref examples fail fresh. | Implement open-or-init for the public surfaces; define or remove `:memory:`; test fresh, existing, old and future schemas. |
-| BUG-069 | Open | `Settings::load` (TOML/env/legacy/checks) and `default_bundle_root` have no production call site. Env/TOML are ignored; default `okf import --all` lacks a root. | Route CLI/MCP/serve/facade through `Settings::load`; apply `default_bundle_root`; test precedence, legacy errors and invalid settings. |
-| BUG-070 | Open | CLI `--root` inserts an array where `Settings.roots` expects a map; CSV flags insert a string where `Vec<String>` is expected. Both fail `CONFIG_INVALID`. | Parse roots and Csv values in `settings_from`/`from_map`; add malformed/duplicate/empty tests. |
-| BUG-071 | Open | Unknown kwargs are silently dropped; `checks` never runs; `model_path`/`tokenizer_path` are accepted and ignored. | Reject unknown keys, run `checks`, and either implement explicit model files or return typed `CONFIG_INVALID`. |
+| BUG-067 | Closed | Router constructors now adopt `Store::settings()`; the 3/256/768-vs-default DIM_MISMATCH path cannot occur. | Keep `store.settings().clone()` in every constructor and the reopen regression green. |
+| BUG-068 | Closed | `Router::open` creates parent folders and the v10 schema on first use; `:memory:` works on the same open connection; read-only still refuses missing DBs. | Keep open/create, `:memory:` and schema-version regressions green. |
+| BUG-069 | Closed | CLI/MCP/serve settings go through `Settings::load` with real env, TOML, legacy-name rejection, `checks`, and Python's default bundle-root rules. | Keep env/TOML precedence and required-MCP `db_path` checks in the CLI gate. |
+| BUG-070 | Closed | `--root ALIAS=PATH` arrays and CSV globals are normalized by `Settings::from_map`; malformed entries report `CONFIG_INVALID`. | Keep `--root`/CSV differential cases in `check_cli.py`. |
+| BUG-071 | Closed | Unknown keys and invalid values are refused as `CONFIG_INVALID`; explicit ONNX files are refused instead of ignored; optional nulls remain valid. | Keep the validation unit tests and facade/CLI routing green. |
 | BUG-072 | Open | Named-root FileHash keys are resolved only against the primary root; `import_files` has no identity root; write/delete/trash/detach use the wrong tree and can stray/erase files. | Thread `settings.roots` through resolution/import/write/detach, add longest-prefix aliases and multi-root detach, test with colliding paths. |
 | BUG-073 | Open | File-free `update`/`supersede` return `MISSING_PARAM`; Python edits the stored concept and re-embeds. | Port the graph-only `_write_and_import` branch; test title/tags/extra, links and supersede. |
 | BUG-074 | Open | Detached graphs accept imports/ingest/writes; `force` is never read; `rebuild`/`batch_size` are accepted but unimplemented. | Add `require_attached(force)`/reattach rules, implement or reject index/batch controls, test every write path. |
@@ -2839,10 +2884,11 @@ Completed in the earlier fix series:
 3. ~~BUG-013 external clients.~~ Done: the documented stable surface keeps
    the lanes and the clients are covered by mock-host parity.
 
-Next, post-cutover review:
+Post-cutover review:
 
-1. BUG-067, BUG-068, BUG-069, BUG-070, BUG-071 — restore the settings/open
-   contract first; these block most other scenarios.
+1. ~~BUG-067, BUG-068, BUG-069, BUG-070, BUG-071 — settings/open contract.~~
+   Done: schema-width adoption, create-on-open/`:memory:`, the production
+   `Settings::load` path, CLI `--root`/CSV normalization, and strict validation.
 2. BUG-072, BUG-073, BUG-074, BUG-075, BUG-076 — named-root and write
    integrity, detach enforcement, delete atomicity and recovery lifetime.
 3. BUG-077, BUG-078, BUG-079, BUG-080, BUG-081, BUG-082 — semantic parity

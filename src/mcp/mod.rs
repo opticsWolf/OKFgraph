@@ -470,7 +470,7 @@ pub fn run(argv: Vec<String>) -> i32 {
             return code;
         }
     };
-    let settings = match crate::cli::settings_from(&matches) {
+    let settings = match crate::cli::settings_from_mcp(&matches) {
         Ok(value) => value,
         Err(err) => {
             eprintln!("[ERROR] CONFIG_INVALID: {}", err.message);

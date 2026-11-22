@@ -74,30 +74,29 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn open(settings: &Settings) -> Result<Self> {
-        let path = PathBuf::from(&settings.db_path);
-        if !path.exists() {
-            return Err(OkfError::new(
-                "FILE_NOT_FOUND",
-                format!("database not found: {}", path.display()),
-            )
-            .field("path", Json::String(path.to_string_lossy().into_owned())));
-        }
-        let store = Self {
-            path,
+    fn new(settings: &Settings, read_only: bool) -> Self {
+        Self {
+            path: PathBuf::from(&settings.db_path),
             settings: settings.clone(),
-            read_only: true,
+            read_only,
             shared: Arc::new(Mutex::new(SharedConnection::default())),
-        };
+        }
+    }
+
+    /// The stored column width is authoritative: a caller that opened the DB
+    /// with the wrong `--dim` must still encode/search in the stored space.
+    fn adopt_settings(&self, settings: &Settings) -> Result<Settings> {
         let mut settings = settings.clone();
-        // The on-disk column width is authoritative: a caller that opened the
-        // DB with the wrong --dim must still encode/search in the stored space.
-        if let Some(dim) = store.schema_embedding_dim()? {
+        if let Some(dim) = self.schema_embedding_dim()? {
             settings.embedding_dim = dim;
-        } else if let Some(dim) = store.meta_int("embedding_dim")? {
+        } else if let Some(dim) = self.meta_int("embedding_dim")? {
             settings.embedding_dim = dim;
         }
-        let version = store.schema_version()?;
+        Ok(settings)
+    }
+
+    fn validate_schema(&self) -> Result<()> {
+        let version = self.schema_version()?;
         if version > SCHEMA_VERSION {
             return Err(OkfError::new(
                 "CONFIG_INVALID",
@@ -122,7 +121,53 @@ impl Store {
             .field("schema_version", Json::from(version))
             .remedy("open/migrate it once with the Python 0.15 release, then reopen with Rust"));
         }
-        Ok(Self { settings, ..store })
+        Ok(())
+    }
+
+    /// Open an existing database read-only. A missing file is an error here:
+    /// only the public writable surface creates a graph on first use.
+    pub fn open(settings: &Settings) -> Result<Self> {
+        let path = PathBuf::from(&settings.db_path);
+        if settings.db_path != ":memory:" && !path.exists() {
+            return Err(OkfError::new(
+                "FILE_NOT_FOUND",
+                format!("database not found: {}", path.display()),
+            )
+            .field("path", Json::String(path.to_string_lossy().into_owned())));
+        }
+        let store = Self::new(settings, true);
+        store.validate_schema()?;
+        let adopted = store.adopt_settings(settings)?;
+        Ok(Self {
+            settings: adopted,
+            ..store
+        })
+    }
+
+    /// Open a writable graph, creating the v10 schema and parent folders when
+    /// the file (or `:memory:`) does not exist yet. The schema is created on
+    /// the same connection that stays open in the returned store, which is
+    /// essential for in-memory databases.
+    pub fn open_or_create(settings: &Settings) -> Result<Self> {
+        let memory = settings.db_path == ":memory:";
+        let path = PathBuf::from(&settings.db_path);
+        if !memory {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let store = Self::new(settings, false);
+        if memory || store.schema_version().unwrap_or(0) == 0 {
+            let mut warnings = Vec::new();
+            store.create_schema(settings.embedding_dim, &mut warnings)?;
+            return Ok(store);
+        }
+        store.validate_schema()?;
+        let adopted = store.adopt_settings(settings)?;
+        Ok(Self {
+            settings: adopted,
+            ..store
+        })
     }
 
     /// Create a v10 database at `path`. Content writes remain disabled in M1.

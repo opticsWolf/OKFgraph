@@ -6,9 +6,9 @@ ops/jobs with `okf serve`, TCP/UDS transports, a public stdlib `OKFClient`,
 native/external embed/rerank/vision lanes, transactional ingest, full doctor,
 and the slim wheel plus optional native PDF add-on. Python is a thin public
 facade over PyO3; the old Python core is deleted from the default tree and
-available only at tag `python-oracle-0.15.0`. Final local evidence: 58/58
+available only at tag `python-oracle-0.15.0`. Final local evidence: 59/59
 comparable differential scenarios green (one intentional missing-plugin
-divergence), 30/30 success ops, 82 all-feature / 60 no-default Rust tests, 9
+divergence), 30/30 success ops, 91 all-feature / 69 no-default Rust tests, 9
 fuzz properties, paired performance parity, green wheels for Python
 3.12–3.14, and clean fmt/clippy. Hosted CI and the manual GPU release gate
 must be signed off before publishing the tag.

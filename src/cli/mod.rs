@@ -1295,6 +1295,41 @@ fn shell(settings: &Settings, argv: &[OsString]) -> Result<()> {
 }
 
 pub fn settings_from(matches: &ArgMatches) -> Result<Settings> {
+    let fallback = if matches.subcommand_name() == Some("serve") {
+        db_parent_fallback(&cli_signal(matches))
+    } else {
+        ".".to_string()
+    };
+    settings_from_with(matches, &[], &fallback)
+}
+
+/// `okf-mcp` has no CWD contract: some layer must pin `db_path` explicitly,
+/// and its bundle defaults live beside the database.
+pub fn settings_from_mcp(matches: &ArgMatches) -> Result<Settings> {
+    let cli = cli_signal(matches);
+    let fallback = db_parent_fallback(&cli);
+    settings_from_with(matches, &["db_path"], &fallback)
+}
+
+fn db_parent_fallback(cli: &Map<String, Value>) -> String {
+    cli.get("db_path")
+        .and_then(Value::as_str)
+        .map(|path| {
+            std::path::Path::new(path)
+                .parent()
+                .and_then(|parent| parent.to_str())
+                .filter(|parent| !parent.is_empty())
+                .unwrap_or(".")
+                .to_string()
+        })
+        .unwrap_or_else(|| ".".to_string())
+}
+
+/// Collect only the settings flags actually present on the command line,
+/// using the generated table's canonical names (the Python `cli_signal`
+/// contract). `--root` is deliberately left as raw `ALIAS=PATH` strings for
+/// `Settings::from_map` to normalize.
+fn cli_signal(matches: &ArgMatches) -> Map<String, Value> {
     let mut map = Map::new();
     for def in SETTINGS {
         if !def.cli {
@@ -1330,7 +1365,23 @@ pub fn settings_from(matches: &ArgMatches) -> Result<Settings> {
             Value::Array(roots.cloned().map(Value::String).collect()),
         );
     }
-    Settings::from_map(&map)
+    map
+}
+
+fn settings_from_with(
+    matches: &ArgMatches,
+    require: &[&str],
+    bundle_fallback: &str,
+) -> Result<Settings> {
+    let cli = cli_signal(matches);
+    let toml_root = cli
+        .get("bundle_root")
+        .and_then(Value::as_str)
+        .unwrap_or(".");
+    let environ = std::collections::BTreeMap::from_iter(std::env::vars());
+    let mut settings = Settings::load(Some(toml_root), &cli, &environ, require)?;
+    settings.bundle_root = Some(settings.default_bundle_root(bundle_fallback));
+    Ok(settings)
 }
 
 fn render(data: Value) {

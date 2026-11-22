@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import tempfile
 from pathlib import Path
 
 import okfgraph
@@ -30,6 +31,23 @@ def main() -> int:
     assert not missing, f"facade is missing op methods: {missing}"
     doctor_params = inspect.signature(OKFRouter.doctor).parameters
     assert {"stale_days", "fix", "strict", "cache_dir"} <= set(doctor_params)
+
+    # Settings/open contract: unknown or invalid kwargs are typed refusals,
+    # and a fresh path creates a v10 graph without a separate `okf init`.
+    for kwargs in ({"bogus_setting": 1}, {"embedding_dim": 8}):
+        try:
+            OKFRouter(db_path=str(Path(args.db)), **kwargs)
+        except OKFError as exc:
+            assert exc.code == "CONFIG_INVALID", (kwargs, exc.code)
+        else:
+            raise AssertionError(f"{kwargs} should be refused")
+    with tempfile.TemporaryDirectory() as scratch:
+        fresh = OKFRouter(db_path=str(Path(scratch) / "nested/graph.db"))
+        try:
+            assert fresh.list_deleted() == []
+        finally:
+            fresh.close()
+
     router = OKFRouter(
         db_path=str(Path(args.db)),
         embedding_dim=512,

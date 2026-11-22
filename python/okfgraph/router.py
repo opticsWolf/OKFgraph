@@ -26,7 +26,12 @@ class OKFRouter:
         params.update({key: value for key, value in kwargs.items() if value is not None})
         if "embed_backend" in params:
             params["backend"] = params.pop("embed_backend")
-        self._native = _native.NativeRouter.open(json.dumps(params, default=str))
+        try:
+            self._native = _native.NativeRouter.open(json.dumps(params, default=str))
+        except RuntimeError as exc:
+            # Constructor validation is a typed configuration error, not a
+            # raw binding failure. The facade already translates call errors.
+            raise OKFError.from_native(str(exc)) from None
 
     def close(self) -> None:
         self._native.close()

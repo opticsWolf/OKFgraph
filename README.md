@@ -1,6 +1,7 @@
 # OKFgraph 0.16.0
 
 [![PyPI](https://img.shields.io/badge/pypi-okfgraph-blue)](https://pypi.org/project/okfgraph/)
+[![crates.io](https://img.shields.io/crates/v/okfgraph.svg)](https://crates.io/crates/okfgraph)
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/)
 [![Rust](https://img.shields.io/badge/core-Rust-orange)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-green)](LICENSE)
@@ -504,6 +505,10 @@ docs/                    current docs, historical 0.15 records, release gates
 - Exactly one ORT provider: `okfgraph[cpu]` or `okfgraph[gpu]`; shared by the
   core and the bundled converter via `ORT_DYLIB_PATH`.
 - No torch, transformers, optimum or Python PDF stack anywhere.
+- The crates.io package targets Linux and macOS Rust builds. Windows Rust
+  builds should use this repository, where the vendored `esaxx-rs` patch keeps
+  the MSVC CRT compatible with Ladybug's prebuilt archive; wheel users are
+  unaffected.
 
 ### Upgrading ladybug (0.22.1)
 

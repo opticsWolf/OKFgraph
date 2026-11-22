@@ -100,6 +100,20 @@ jobs:
           path: target/wheels/okfgraph-*.whl
           if-no-files-found: error
 
+  publish-crate:
+    name: publish okfgraph to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p okfgraph --locked
+
   publish-okfgraph:
     name: publish okfgraph to PyPI
     needs: build

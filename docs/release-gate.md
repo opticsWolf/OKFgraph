@@ -43,13 +43,14 @@ Run from the repository root.
 
 ```bash
 cargo fmt --all -- --check
+cargo deny check
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo test --workspace --all-features --lib
 cargo test -p okfgraph --no-default-features --lib
 cargo test -p okfgraph --no-default-features --test fuzz_robustness
 ```
 
-Expected at the last recorded gate: 78 all-feature tests, 57 no-default
+Expected at the last recorded gate: 82 all-feature tests, 60 no-default
 tests and 9 fuzz properties pass.
 
 ### Full differential matrix
@@ -62,11 +63,13 @@ parity/.venv-oracle/Scripts/python.exe parity/tools/run_matrix.py \
 Expected:
 
 ```text
-TOTAL:57 FAILS:0
+TOTAL:58 FAILS:0
 ```
 
-`ingest-pdf-no-plugin` remains the one intentional skipped divergence. Any
-other op diff or DB diff fails the release.
+`ingest-pdf-no-plugin` remains the one intentional skipped divergence (59
+scenarios total). Any other op diff or DB diff fails the release. If a
+workstation standby interrupts a full run, rerun the affected scenarios with
+`--only`; all must be green before sign-off.
 
 ### Coverage
 
@@ -78,6 +81,7 @@ Expected:
 
 ```text
 ops: 30, success: 30, typed error: 21, documented waivers: 9
+outputs scanned: 63
 ```
 
 ### Oracle independence
@@ -90,6 +94,16 @@ mv okfgraph okfgraph.hidden
 # rerun run_matrix.py, check_cli.py and check_external_lanes.py
 mv okfgraph.hidden okfgraph
 ```
+
+### Performance gate
+
+```bash
+parity/.venv-oracle/Scripts/python.exe parity/tools/check_perf_bench.py
+```
+
+The paired benchmark must stay within the ratios in
+`docs/performance-findings.md`. The local gate was green at the last
+recorded run.
 
 ### Surface gates
 
@@ -121,7 +135,7 @@ Store a short release note beside the parity output, for example
 release: 0.16.0
 commit: <sha>
 oracle: python-oracle-0.15.0 via parity/tools/oracle.py
-matrix: TOTAL:57 FAILS:0, <duration>
+matrix: TOTAL:58 FAILS:0, <duration>
 coverage: 30/30 success, 21 typed errors, 9 waivers
 rust tests: <all-feature count> / <no-default count>
 surface gates: pass/fail list with tool names

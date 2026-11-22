@@ -485,8 +485,22 @@ where
             }
             0
         }
-        Err(err) => {
+        Err(mut err) => {
             let op = err.op.clone().unwrap_or_else(|| name.to_string());
+            if err.code == "INTERNAL" {
+                let argv: Vec<String> = let_args
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect();
+                if let Some(path) = crate::util::crash::write_report(&err, name, &argv) {
+                    let shown = path.to_string_lossy().into_owned();
+                    err.remedy = Some(format!(
+                        "this is a bug — full traceback: {shown}; report it with that file"
+                    ));
+                    err.fields
+                        .insert("crash_report".into(), Value::String(shown));
+                }
+            }
             if json {
                 println!(
                     "{}",

@@ -250,6 +250,8 @@ Additional Stage B scenarios:
   frontmatter with `uid`, timestamps, and relations.
 - `images-import.json` — caption-route image assets, deterministic asset IDs,
   content hashes, pins, and index state.
+- `images-ssrf-private.json` — loopback remote image URL is refused by both
+  runners while the caption-row asset remains for retry after a failed fetch.
 - `images-import-vision.json` — Gemma vision-route assets with explicit
   `image_precision=fp16`, plus `reindex(if_dirty=...)` and forced rebuild.
 - `diff.json` — identical and different dir-vs-dir snapshots plus DB-vs-dir
@@ -292,7 +294,7 @@ runs may override the checkout with `OKFGRAPH_ORACLE_ROOT` or select another
 reference with `OKFGRAPH_ORACLE_TAG`. This keeps differential tests working
 after the old Python implementation is removed from the default tree.
 
-The post-review matrix covers 58 scenarios: **57 report 0 differences** on ops
+The post-review matrix covers 59 scenarios: **58 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,
 set-ordered tags, and runner-specific paths. The run at `66df990` reported
 `TOTAL:56 FAILS:0` in **14m37s**. The same matrix then passed in **15m21s**
@@ -302,7 +304,11 @@ green under the same condition. `check_coverage.py` reported 30/30 success
 ops, 21 typed-error ops, nine documented waivers and 61 output files
 scanned. After the fuzz-found CR-only newline bug was fixed, the expanded
 matrix reported `TOTAL:57 FAILS:0` in **15m55s** and coverage scanned 62
-output files. The 58th scenario, `ingest-pdf-no-plugin`, intentionally records the
+output files. After M6 security hardening the new `images-ssrf-private`
+scenario was added: all 58 comparable scenarios pass (the full-suite run was
+interrupted by workstation standby, so each scenario was rerun with `--only`)
+and coverage scans 63 output files. The 59th scenario,
+`ingest-pdf-no-plugin`, intentionally records the
 Python raw-`INTERNAL` vs Rust `CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op
 scenarios also match on semantic DB dumps; export trees match byte-for-byte.

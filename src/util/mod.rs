@@ -1,5 +1,8 @@
 //! Paths, hashing, clock, network/SSRF, filesystem, and crash reports.
 
+pub mod crash;
+pub mod extensions;
+
 /// Format a caller-supplied path the way Python's `str(Path(value))` does.
 /// On Windows that means normalizing `/` to `\`; elsewhere the string is
 /// unchanged (a backslash is a legal filename character on POSIX).

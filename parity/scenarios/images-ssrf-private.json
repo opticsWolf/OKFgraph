@@ -1,0 +1,30 @@
+{
+  "name": "images-ssrf-private",
+  "settings": {
+    "db_path": "parity/out/images-ssrf-@RUNNER@.db",
+    "bundle_root": "parity/out/images-ssrf-corpus-@RUNNER@",
+    "model_id": "google/embeddinggemma-2",
+    "embedding_dim": 512,
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 512,
+    "chunk_overlap": 40,
+    "allow_remote_images": true,
+    "allowed_image_domains": []
+  },
+  "setup": {
+    "write_file": {
+      "path": "parity/out/images-ssrf-corpus-@RUNNER@/private.md",
+      "text": "---\ntitle: Private Image\n---\n\n![private](http://127.0.0.1:9/secret.png)\n"
+    },
+    "import": {
+      "corpus": "parity/out/images-ssrf-corpus-@RUNNER@",
+      "mode": "text"
+    }
+  },
+  "ops": [
+    {"op": "list_images", "params": {"concept_id": "private"}},
+    {"op": "get_by_id", "params": {"concept_id": "private"}}
+  ]
+}

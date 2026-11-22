@@ -107,3 +107,17 @@ item is a release blocker for its stage. Status values: `open`, `wip`,
 - [x] `embroider = "=0.15.1"`
 - [x] `bobine = "=0.9.1"`
 - [x] `mordant = "=0.10.1"`
+
+## I. M6 security hardening (Stage C)
+
+- [x] remote image URLs are fetched only after resolving and screening every
+      address; one safe address is pinned, redirects are disabled, and the
+      response body is capped at 20 MiB (BUG-064).
+- [x] a failed remote fetch still produces a caption-route `ImageAsset`, so
+      Rust matches Python 0.15 and retries on the next import.
+- [x] `okf setup extensions` loads both native files into a scratch Ladybug
+      DB before reporting `ok` (BUG-065).
+- [x] CLI `INTERNAL` errors write a redacted crash report named on the final
+      error line and in `fields.crash_report` (BUG-066).
+- [x] dependency audit policy is checked in as `deny.toml`; the generated
+      license inventory is `docs/license-review.md`.

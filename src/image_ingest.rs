@@ -14,6 +14,10 @@ use lbug::{LogicalType, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
+#[cfg(feature = "external")]
+use std::io::Read;
+#[cfg(feature = "external")]
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
 #[cfg(any(feature = "vision", feature = "external"))]
@@ -29,6 +33,7 @@ struct Extracted {
     filename: String,
     mime_type: String,
     data: Option<Vec<u8>>,
+    remote: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,31 +293,85 @@ fn domain_allowed(host: &str, patterns: &[String]) -> bool {
 }
 
 #[cfg(feature = "external")]
+const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+#[cfg(feature = "external")]
+fn v4_blocked(octets: [u8; 4]) -> bool {
+    let [a, b, c, _] = octets;
+    a == 0
+        || a == 10
+        || a == 127
+        || a >= 224
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 0 && (c == 0 || c == 2))
+        || (a == 192 && b == 168)
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+}
+
+#[cfg(feature = "external")]
+fn ip_blocked(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4_blocked(v4.octets()),
+        IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                || segments[0] & 0xfe00 == 0xfc00
+                || segments[0] & 0xffc0 == 0xfe80
+                || v6
+                    .to_ipv4()
+                    .is_some_and(|mapped| v4_blocked(mapped.octets()))
+        }
+    }
+}
+
+#[cfg(feature = "external")]
+fn safe_resolution(host: &str, port: u16) -> Option<SocketAddr> {
+    let addresses: Vec<SocketAddr> = (host, port).to_socket_addrs().ok()?.collect();
+    let chosen = addresses.first()?.to_owned();
+    addresses
+        .iter()
+        .all(|addr| !ip_blocked(addr.ip()))
+        .then_some(chosen)
+}
+
+#[cfg(feature = "external")]
+fn fetch_validated(url: reqwest::Url, host: &str, addr: SocketAddr) -> Option<Vec<u8>> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(host, addr)
+        .build()
+        .ok()?;
+    let response = client.get(url).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= MAX_IMAGE_BYTES).then_some(bytes)
+}
+
+#[cfg(feature = "external")]
 fn fetch_remote(url: &str, patterns: &[String]) -> Option<Vec<u8>> {
-    const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
     let parsed = reqwest::Url::parse(url).ok()?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return None;
     }
-    if !domain_allowed(parsed.host_str()?, patterns) {
+    let host = parsed.host_str()?.to_string();
+    if !domain_allowed(&host, patterns) {
         return None;
     }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .ok()?;
-    let response = client.get(parsed).send().ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    if response
-        .content_length()
-        .is_some_and(|len| len > MAX_IMAGE_BYTES)
-    {
-        return None;
-    }
-    let bytes = response.bytes().ok()?;
-    (bytes.len() as u64 <= MAX_IMAGE_BYTES).then(|| bytes.to_vec())
+    let port = parsed.port_or_known_default()?;
+    let addr = safe_resolution(&host, port)?;
+    fetch_validated(parsed, &host, addr)
 }
 
 #[cfg(not(feature = "external"))]
@@ -408,6 +467,7 @@ fn extract_images(
                 mime_type: sniff_mime(data.as_deref(), &filename),
                 filename,
                 data,
+                remote: remote_src(&src),
             }
         })
         .collect()
@@ -572,7 +632,10 @@ pub fn ingest_concept_images(
     let mut pending: Vec<(Extracted, Route, String, String, Vec<f32>)> = Vec::new();
     for img in images {
         let known = store.image_asset_fingerprint(&img.asset_id)?;
-        if img.data.is_none() && known.as_ref().is_none_or(|(_, has_data)| !has_data) {
+        // Like Python, a failed remote fetch still creates a caption-row
+        // asset so the next import retries instead of forgetting the ref.
+        if img.data.is_none() && !img.remote && known.as_ref().is_none_or(|(_, has_data)| !has_data)
+        {
             skip += 1;
             continue;
         }
@@ -698,5 +761,37 @@ mod tests {
         assert!(!super::domain_allowed("10.0.0.1", &patterns));
         assert!(!super::domain_allowed("evil.test", &patterns));
         assert!(super::domain_allowed("anything.test", &[]));
+    }
+
+    #[cfg(feature = "external")]
+    #[test]
+    fn resolved_private_and_special_addresses_are_blocked() {
+        use std::net::{IpAddr, Ipv4Addr};
+        for ip in [
+            "0.0.0.0",
+            "10.1.2.3",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "172.16.0.1",
+            "192.0.0.1",
+            "192.0.2.1",
+            "192.168.1.2",
+            "198.51.100.7",
+            "203.0.113.9",
+            "224.0.0.1",
+            "240.0.0.1",
+        ] {
+            let parsed: IpAddr = ip.parse().unwrap();
+            assert!(super::ip_blocked(parsed), "{ip} should be blocked");
+        }
+        assert!(!super::ip_blocked(IpAddr::V4(Ipv4Addr::new(
+            93, 184, 216, 34
+        ))));
+        assert!(super::ip_blocked("::1".parse().unwrap()));
+        assert!(super::ip_blocked("fc00::1".parse().unwrap()));
+        assert!(super::ip_blocked("fe80::1".parse().unwrap()));
+        assert!(super::ip_blocked("ff02::1".parse().unwrap()));
+        assert!(!super::ip_blocked("2606:4700:4700::1111".parse().unwrap()));
     }
 }

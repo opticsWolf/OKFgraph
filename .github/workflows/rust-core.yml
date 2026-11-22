@@ -48,6 +48,11 @@ jobs:
           echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Dependency audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
       - name: Clippy (core, no optional engines)
         run: cargo clippy -p okfgraph --no-default-features --all-targets -- -D warnings
       - name: Check workspace

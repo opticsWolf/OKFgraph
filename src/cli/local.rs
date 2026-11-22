@@ -197,14 +197,13 @@ pub fn setup_extensions(target: Option<&str>, from: Option<&str>, download: bool
         )
         .op("setup_extensions"));
     }
-    let mut verified = Map::new();
-    for ext in ["vector", "fts"] {
-        let present = root.join(format!("lib{ext}.lbug_extension")).is_file();
-        verified.insert(
-            ext.into(),
-            Value::String(if present { "ok" } else { "missing" }.into()),
-        );
-    }
+    // Presence is not integrity: load both native files into a scratch DB
+    // exactly as `okfgraph.components.extensions.verify` does.
+    let checks = crate::util::extensions::verify(&root)?;
+    let verified: Map<String, Value> = checks
+        .into_iter()
+        .map(|(ext, status)| (ext, Value::String(status)))
+        .collect();
     let ok = verified.values().all(|value| value.as_str() == Some("ok"));
     let toml = format!(
         "[database]\nextension_dir = \"{}\"",

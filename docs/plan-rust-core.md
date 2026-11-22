@@ -1024,8 +1024,12 @@ testing. The full matrix was rerun green in 15m21s with that package hidden.
 Fuzz hardening is complete: frontmatter/YAML, chunk offsets, safe ids/paths,
 wikilinks, op params and closed error codes are covered, and the found
 CR-only newline bug is closed as BUG-062. Paired performance benchmarks landed and performance parity was met after
-connection reuse; BUG-063 is closed. The full GPU matrix is retained as a
-documented manual release gate in
+connection reuse; BUG-063 is closed. M6 security hardening is also landed:
+remote-image fetch resolves and screens addresses before pinning one safe
+destination, extension setup loads files into a scratch DB before reporting
+success, CLI `INTERNAL` errors write redacted crash reports, and `deny.toml`
+plus `docs/license-review.md` cover the dependency audit. The full GPU matrix
+is retained as a documented manual release gate in
 `docs/release-gate.md`; hosted CI remains a build/smoke gate and no self-hosted
 runner is required for 0.16.0.
 

@@ -29,26 +29,32 @@ claimed until the remaining gate items close.
 
 ### Verification status
 
-Final verification on `rust-core` through the M6 fuzz hardening round:
+Final verification on `rust-core` through the M6 security hardening round:
 
 - `parity/tools/run_matrix.py --pdf-plugin target/debug/okfgraph_pdf.dll`:
   `TOTAL:56 FAILS:0` in **14m37s** on the CUDA dev box. The new
   `frontmatter-cr-only` scenario followed the fuzz fix with
-  `TOTAL:57 FAILS:0` in **15m55s**; the 58th scenario,
-  `ingest-pdf-no-plugin`, remains the documented intentional divergence.
+  `TOTAL:57 FAILS:0` in **15m55s**. After M6 security hardening the expanded
+  59-scenario suite was rerun scenario-by-scenario: **58/58 green**, with
+  `ingest-pdf-no-plugin` the intentional divergence. The single full-suite
+  run was interrupted by workstation standby; the chunked rerun is the
+  recorded evidence.
 - `parity/tools/check_coverage.py`: 30/30 success ops, 21 typed-error ops,
-  nine documented waivers, 62 output files scanned.
+  nine documented waivers, 63 output files scanned.
 - `parity/tools/check_external_lanes.py`: green against four local mock hosts,
   including TEI rerank fallback and a generated valid GGUF counter fixture.
 - Paired performance gate is green: import 0.70x Python, embed 0.68x,
   search 1.06x, RSS 0.88x (`docs/performance-baseline.md`).
+- M6 security hardening is green: SSRF unit tests plus
+  `images-ssrf-private`, scratch-DB extension verification, redacted crash
+  reports, `deny.toml` and `docs/license-review.md`.
 - Fuzz properties cover frontmatter/YAML, chunk offsets, safe ids/paths,
   wikilink scanning/resolution, op params and closed error codes; the
   generated regression seed is checked in.
 - The same full matrix, `check_cli.py` and `check_external_lanes.py` also pass
   when the root `okfgraph/` package is hidden: all oracle imports now come
   from a cached worktree of `python-oracle-0.15.0`.
-- Rust suites: 78 all-feature tests, 57 no-default tests and 9 fuzz
+- Rust suites: 82 all-feature tests, 60 no-default tests and 9 fuzz
   properties pass; Clippy is clean with all features and with no default
   features.
 - The full six-job CI matrix was green on `44899657898` for code commit
@@ -1854,6 +1860,60 @@ passes the explicit 5ms sub-10ms tolerance.
 **Tests:** `parity/tools/check_perf_bench.py`, full 57-scenario matrix,
 Rust unit/fuzz suites and wheel/MCP/client/CLI smokes are green.
 
+### BUG-064 — Remote-image SSRF checks were host-string only
+
+**Severity:** P1, S — **Status: closed** (M6 security hardening).
+
+**Where:** `src/image_ingest.rs`.
+
+**Cause:** the domain allowlist checked the URL host text, but reqwest could
+follow a redirect and DNS could rebind to a private address. The whole
+response was buffered before the size cap was applied.
+
+**Resolution:** resolved addresses are screened against IPv4/IPv6 private,
+loopback, link-local, CGNAT, documentation and reserved ranges; one safe
+address is pinned for the request; redirects are disabled; and response bytes
+are stream-capped at 20 MiB. Failed remote fetches now keep the Python
+caption-row asset so the next import retries.
+
+**Evidence:** Rust unit tests cover blocked and allowed IP ranges;
+`parity/scenarios/images-ssrf-private.json` compares both runners for a
+loopback image URL (ops and DB dumps green).
+
+### BUG-065 — Extension setup checked presence, not loadability
+
+**Severity:** P2, S — **Status: closed** (M6 security hardening).
+
+**Where:** `src/util/extensions.rs`, `src/cli/local.rs`.
+
+**Cause:** `setup extensions` reported `ok` when the two native files merely
+existed, so a corrupt or wrong-ABI file could be installed into
+`extension_dir` undetected.
+
+**Resolution:** the CLI now loads both files into a scratch Ladybug database
+and reports `{ext: "ok" | error}` exactly like Python 0.15's verifier.
+
+**Evidence:** `util::extensions::tests::missing_extensions_are_reported` and
+the 13-case CLI differential smoke.
+
+### BUG-066 — Rust INTERNAL errors had no redacted crash report
+
+**Severity:** P2, S — **Status: closed** (M6 security hardening).
+
+**Where:** `src/util/crash.rs`, `src/cli/mod.rs`.
+
+**Cause:** Python 0.15 writes a full traceback named on the final `[ERROR]`
+line; the Rust CLI had no equivalent, so a truncated terminal capture lost
+the diagnostic context.
+
+**Resolution:** `INTERNAL` CLI errors write a redacted report to
+`OKF_CRASH_DIR` (or the platform state dir), keep the newest 20, and add
+`fields.crash_report` plus the Python remedy. Home paths, bearer tokens and
+key/token/password values are redacted before writing.
+
+**Evidence:** `util::crash` unit tests cover redaction, report contents and
+pruning; the CLI differential smoke remains 13/13.
+
 ---
 
 ## 9. Deferred / explicitly out of scope for this plan
@@ -1927,6 +1987,9 @@ gate is green.
 | BUG-061 | Closed | Rust CLI and MCP proxy borrow a live `okf serve` owner through `server::client`, with `OKFGRAPH_NO_SERVER=1` opt-out. | Keep CLI-to-owner and stale-discovery checks in `check_client.py`. |
 | BUG-062 | Closed | Universal-newline parsing now normalizes lone CR; fuzz seed, unit regression and `frontmatter-cr-only` parity scenario are green. | Keep fuzz properties in CI and expand only for new parser surfaces. |
 | BUG-063 | Closed | Shared Ladybug connection and cached pin checks bring Rust to 0.70x import, 0.68x embed and 1.06x search vs Python; parity gate enforced by `check_perf_bench.py`. | Keep the paired benchmark green before each release. |
+| BUG-064 | Closed | Remote images resolve-and-screen addresses, pin one safe address, disable redirects and stream-cap at 20 MiB; `images-ssrf-private` is green. | Re-run if image fetching changes. |
+| BUG-065 | Closed | `setup extensions` loads both files into a scratch DB before reporting `ok`; unit and CLI smoke green. | Re-run if the extension ABI changes. |
+| BUG-066 | Closed | Rust CLI writes redacted crash reports with `fields.crash_report` and keeps 20 files; unit tests green. | Keep in the release gate if CLI error handling changes. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order

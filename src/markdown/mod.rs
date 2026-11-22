@@ -185,6 +185,9 @@ pub fn reconstruct_document(chunks: &[Chunk]) -> Option<String> {
 pub struct Frontmatter {
     pub metadata: Json,
     pub content: String,
+    /// PyYAML/Pydantic rejection reason. A non-null value means the file must
+    /// be skipped by import, the way Python 0.15 skips a failed parse.
+    pub error: Option<String>,
 }
 
 /// Parse `---` delimited frontmatter. Closing delimiter may be `---` or `...`.
@@ -198,6 +201,7 @@ pub fn parse_frontmatter(text: &str) -> Frontmatter {
         return Frontmatter {
             metadata: Json::Object(Map::new()),
             content: String::new(),
+            error: None,
         };
     };
     if first.trim_end() != "---" {
@@ -207,6 +211,7 @@ pub fn parse_frontmatter(text: &str) -> Frontmatter {
             // document has no `---` block (PDF/converter output often ends
             // with one).
             content: text.trim_matches('\n').to_string(),
+            error: None,
         };
     }
     let mut yaml = String::new();
@@ -224,10 +229,137 @@ pub fn parse_frontmatter(text: &str) -> Frontmatter {
         }
     }
     let content = rest.trim_matches('\n').to_string();
+    let (metadata, error) = match validate_yaml(&yaml) {
+        Ok(()) => (parse_yaml(&yaml), None),
+        Err(message) => (Json::Object(Map::new()), Some(message)),
+    };
     Frontmatter {
-        metadata: parse_yaml(&yaml),
+        metadata,
         content,
+        error,
     }
+}
+
+/// Fail closed on YAML forms our scoped parser cannot reproduce faithfully.
+/// Python 0.15 lets `frontmatter.load` raise and skips that file; guessing a
+/// value here would silently change identities/content signatures. This is a
+/// structural pre-pass; `parse_yaml` still owns value resolution.
+fn validate_yaml(text: &str) -> std::result::Result<(), String> {
+    let mut block_indent: Option<usize> = None;
+    for (number, raw) in text.lines().enumerate() {
+        let line_number = number + 1;
+        let indent_len = raw.len() - raw.trim_start_matches(' ').len();
+        if let Some(stop) = block_indent {
+            if raw.trim().is_empty() || indent_len > stop {
+                continue;
+            }
+            block_indent = None;
+        }
+        if raw[..indent_len].contains('\t') {
+            return Err(format!(
+                "yaml at line {line_number}: tabs cannot be used for indentation"
+            ));
+        }
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut quote: Option<char> = None;
+        let mut brackets: Vec<char> = Vec::new();
+        let mut seen_colon = false;
+        let chars: Vec<char> = raw.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let ch = chars[i];
+            if let Some(q) = quote {
+                if q == '"' && ch == '\\' {
+                    let Some(next) = chars.get(i + 1).copied() else {
+                        return Err(format!(
+                            "yaml at line {line_number}: unterminated escape sequence"
+                        ));
+                    };
+                    if !matches!(
+                        next,
+                        '0' | 'a'
+                            | 'b'
+                            | 't'
+                            | 'n'
+                            | 'v'
+                            | 'f'
+                            | 'r'
+                            | 'e'
+                            | ' '
+                            | '"'
+                            | '/'
+                            | '\\'
+                            | 'N'
+                            | '_'
+                            | 'L'
+                            | 'P'
+                            | 'x'
+                            | 'u'
+                            | 'U'
+                    ) {
+                        return Err(format!(
+                            "yaml at line {line_number}: unknown escape \\{next}"
+                        ));
+                    }
+                    i += 2;
+                    continue;
+                }
+                if ch == q {
+                    quote = None;
+                }
+                i += 1;
+                continue;
+            }
+            match ch {
+                '\'' | '"' => quote = Some(ch),
+                '[' | '{' => brackets.push(ch),
+                ']' | '}' => {
+                    let expected = if ch == ']' { '[' } else { '{' };
+                    if brackets.pop() != Some(expected) {
+                        return Err(format!("yaml at line {line_number}: unmatched '{ch}'"));
+                    }
+                }
+                ':' if brackets.is_empty() => seen_colon = true,
+                '&' | '*'
+                    if (i == 0 || chars[i - 1].is_whitespace())
+                        && chars.get(i + 1).is_some_and(|ch| ch.is_alphanumeric()) =>
+                {
+                    return Err(format!(
+                        "yaml at line {line_number}: anchors and aliases are not supported"
+                    ));
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if quote.is_some() {
+            return Err(format!("yaml at line {line_number}: unterminated quote"));
+        }
+        if !brackets.is_empty() {
+            return Err(format!(
+                "yaml at line {line_number}: unterminated flow collection"
+            ));
+        }
+        let is_sequence = trimmed == "-" || trimmed.starts_with("- ");
+        if !is_sequence && !seen_colon {
+            return Err(format!(
+                "yaml at line {line_number}: expected 'key: value' mapping entry"
+            ));
+        }
+        if !is_sequence {
+            let after_colon = raw
+                .split_once(':')
+                .map(|(_, value)| value.trim())
+                .unwrap_or_default();
+            if after_colon.starts_with('|') || after_colon.starts_with('>') {
+                block_indent = Some(indent_len);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A deliberately scoped PyYAML 1.1 resolver for the scalar forms OKF
@@ -509,11 +641,66 @@ fn unquote(raw: &str) -> String {
         return raw[1..raw.len() - 1].replace("''", "'");
     }
     if raw.len() >= 2 && raw.starts_with('\"') && raw.ends_with('\"') {
-        return raw[1..raw.len() - 1]
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\");
+        return unescape_double(&raw[1..raw.len() - 1]);
     }
     raw.to_string()
+}
+
+fn unescape_double(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '\\' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let Some(next) = chars.get(i + 1).copied() else {
+            out.push('\\');
+            break;
+        };
+        match next {
+            '0' => out.push('\0'),
+            'a' => out.push('\u{7}'),
+            'b' => out.push('\u{8}'),
+            't' => out.push('\t'),
+            'n' => out.push('\n'),
+            'v' => out.push('\u{b}'),
+            'f' => out.push('\u{c}'),
+            'r' => out.push('\r'),
+            'e' => out.push('\u{1b}'),
+            ' ' | '"' | '/' | '\\' => out.push(next),
+            'N' => out.push('\u{85}'),
+            '_' => out.push('\u{a0}'),
+            'L' => out.push('\u{2028}'),
+            'P' => out.push('\u{2029}'),
+            'x' | 'u' | 'U' => {
+                let width = match next {
+                    'x' => 2,
+                    'u' => 4,
+                    _ => 8,
+                };
+                let digits: String = chars.iter().skip(i + 2).take(width).collect();
+                if let Ok(code) = u32::from_str_radix(&digits, 16) {
+                    if let Some(ch) = char::from_u32(code) {
+                        out.push(ch);
+                        i += width;
+                    } else {
+                        out.push(next);
+                    }
+                } else {
+                    out.push(next);
+                }
+            }
+            other => {
+                out.push('\\');
+                out.push(other);
+            }
+        }
+        i += 2;
+    }
+    out
 }
 
 fn resolve_scalar(raw: &str) -> Json {
@@ -818,6 +1005,38 @@ b: 1
             let input = case["input"].as_str().expect("input");
             assert_eq!(parse_yaml(input), case["value"], "yaml case {name}");
         }
+    }
+
+    #[test]
+    fn malformed_yaml_is_rejected_instead_of_guessed() {
+        for yaml in [
+            r#"title: "unterminated
+"#,
+            "title: 'still open
+",
+            "title: [one, two\n",
+            "title: &anchor Example\n",
+            "title Example\n",
+        ] {
+            let doc = format!("---\n{yaml}---\nbody\n");
+            let parsed = parse_frontmatter(&doc);
+            assert!(parsed.error.is_some(), "expected rejection for {yaml:?}");
+            assert!(parsed.metadata.as_object().is_some_and(Map::is_empty));
+        }
+        assert_eq!(
+            parse_yaml(
+                r#"a: "line\nnext"
+"#
+            )["a"],
+            "line\nnext"
+        );
+        assert_eq!(
+            parse_yaml(
+                r#"a: "\u20ac"
+"#
+            )["a"],
+            "€"
+        );
     }
 
     #[test]

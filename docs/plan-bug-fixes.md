@@ -2,9 +2,9 @@
 
 **Status:** review plan from `6a71fec`, updated after the complete M6 cutover
 and the post-cutover review at `a62d1c9`. All code findings through BUG-066 are
-closed. The post-cutover rounds have closed **BUG-067–BUG-076** (settings/open
-contract and named-root/write integrity); **BUG-077–BUG-089** remain open in
-section 8A.
+closed. The post-cutover rounds have closed **BUG-067–BUG-082** (settings/open
+contract, named-root/write integrity and semantic parity); **BUG-083–BUG-089**
+remain open in section 8A.
 Section 11 is the authoritative register and records the one intentional
 divergence and the ongoing gate obligations. The original review below is kept
 as the evidence trail.
@@ -20,7 +20,7 @@ materialize/folder, BibTeX/macros/lint, pins/lanes, schema refusal, read-only
 enforcement, op vocabulary, YAML/time, export filtering, remote-image opt-in,
 and the write lock are implemented. The M4 serve/MCP/client slice is also in:
 11 rmcp tools, `--connect`, the public `OKFClient`, the HTTP job lane, the
-full 29-command CLI, and typed conversion-error envelopes. The broad differential matrix is green for **61 comparable scenarios**
+full 29-command CLI, and typed conversion-error envelopes. The broad differential matrix is green for **68 comparable scenarios**
 after normalizing wall-clock graph times/internal IDs and the documented
 intentional differences; `ingest-pdf-no-plugin` records the
 intentional missing-plugin error divergence instead of a green comparison.
@@ -31,8 +31,10 @@ regressions. The settings/open regressions are fixed and covered by the new
 `settings-open-and-env` parity scenario plus extended CLI differential cases.
 The named-root/write-integrity round added `named-root-writes`,
 `file-free-writes` and `detached-write-refusal`; BUG-075/076 also have unit
-regressions. The remaining findings are listed in section 8A and are not yet
-exercised by the matrix.
+regressions. The semantic-parity round added seven scenarios covering traverse
+paths, search time/parameters, null/frontmatter errors, link extraction and
+uppercase extensions. The remaining findings are listed in section 8A and are
+not yet exercised by the matrix.
 
 **Important:** the original review below describes the pre-fix state. It is
 kept as the evidence trail; the implementation status section records what is
@@ -82,8 +84,10 @@ Final verification on `rust-core` through the M6 security hardening round:
   at `TOTAL:62 FAILS:0` with the three new scenarios; `check_coverage.py`
   reports 67 outputs scanned. Focused reruns of `sync`, `named-root-writes`,
   `file-free-writes` and `detached-write-refusal` were green after the final
-  Windows path-normalization fix. Rust suites are 98 all-feature, 76
-  no-default and 9 fuzz; fmt and clippy are clean.
+  Windows path-normalization fix. The semantic-parity round
+  (BUG-077–BUG-082) reran the full matrix at `TOTAL:69 FAILS:0` with seven new
+  scenarios; `check_coverage.py` reports 74 outputs scanned. Rust suites are
+  103 all-feature, 81 no-default and 9 fuzz; fmt and clippy are clean.
 - The full six-job CI matrix was green on `44899657898` for code commit
   `333f8df`. The final commit `66df990` changes only docs and the parity
   harness, and its CI run was stopped by the operator before completion.
@@ -1821,8 +1825,8 @@ Add these before calling the beta usable:
 | `detached-write-refusal` | BUG-074 |
 | `traverse-path` | BUG-077 |
 | `search-time-and-params` | BUG-078 |
-| `frontmatter-null-id` | BUG-079 |
-| `frontmatter-type-errors` | BUG-080 |
+| `frontmatter-null-id`, `frontmatter-null-frontmatter-id` | BUG-079 |
+| `frontmatter-type-errors` | BUG-080 (anchors/aliases excluded; see below) |
 | `links-code-encoding-ambiguity` | BUG-081 |
 | `import-uppercase-extensions` | BUG-082 |
 | `images-corrupt-and-title` | BUG-083 |
@@ -1838,6 +1842,10 @@ the semantic DB dump plus the export tree where applicable. BUG-075 and
 BUG-076 are covered by the existing `delete-file-backed`/`delete-recover`
 differential scenarios plus Rust unit regressions for read-only refusal and
 the expired recovery window; no separate parity scenario was needed.
+`query_vector` is a Rust-only test hook: Python 0.15 rejects it as an
+unexpected keyword, so its validation is covered by unit tests instead of a
+differential scenario. PyYAML anchors/aliases are explicitly rejected by the
+Rust parser (unit-tested) and are not part of the differential corpus.
 
 ---
 
@@ -2434,7 +2442,15 @@ the same wall-clock rule as the oracle.
 
 ### BUG-077 — `traverse(target=...)` returns the wrong path and ignores path-mode rules
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed** (post-cutover semantic-parity round).
+
+**Resolution:** path mode now validates ignored walk parameters before
+starting, rejects a target without a non-empty start, checks both endpoints,
+and runs a BFS over all four whitelisted relationship types in both
+directions. It returns `{id, title, type}` for every node including both
+endpoints, clamps `max_path_length` to 1–10, and keeps walk/root-listing mode
+rules. `traverse-path` covers direct paths, empty results, empty-start errors
+and the ignored-parameter envelope.
 
 **Where:** `src/ops/mod.rs:2599-2708` (`traverse`, `find_path`).
 
@@ -2472,7 +2488,15 @@ error as Python.
 
 ### BUG-078 — Search time bounds are string comparisons; parameter validation is incomplete
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed** (post-cutover semantic-parity round).
+
+**Resolution:** `since`/`until` are parsed with the oracle's `_as_ts` rules
+(ISO date/datetime, offset to naive UTC) and compared in the same
+`str(datetime)` spelling Ladybug stores. Non-numeric `recency_weight` now
+fails with the Python-shaped BAD_VALUE envelope. `query_vector` is validated
+as a non-empty finite numeric array of graph width; because Python 0.15 has
+no such parameter, its cases are unit tests rather than differential ops.
+`search-time-and-params` covers invalid bounds, offsets and recency weight.
 
 **Where:** `src/ops/mod.rs:3143-3152` (`since`/`until`), `3933-3952`
 (`recency_weight`), `4099-4107` (`query_vector`), `SearchParams::parse`.
@@ -2504,7 +2528,12 @@ vector; compare result IDs and envelopes with the oracle.
 
 ### BUG-079 — Null frontmatter `id:` becomes the concept id/uid `"None"`
 
-**Severity:** P1, S — **Status: open**.
+**Severity:** P1, S — **Status: closed** (post-cutover semantic-parity round).
+
+**Resolution:** a YAML null frontmatter id is now treated as absent; an
+explicit empty string is preserved as `uid: ""`, and numbers/bools are
+stringified exactly like Python. Both path and frontmatter identity modes are
+covered by `frontmatter-null-id` and `frontmatter-null-frontmatter-id`.
 
 **Where:** `src/ingest/mod.rs:885-914`, `1074-1084` (`scalar_text`).
 
@@ -2527,7 +2556,15 @@ both identity modes; compare concept id/uid and DB dump with Python.
 
 ### BUG-080 — Frontmatter type/YAML errors are silently defaulted or dropped
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed** (post-cutover semantic-parity round).
+
+**Resolution:** core frontmatter fields are validated with the
+`ConceptModel` string rules, timestamps use the shared parser, and malformed
+YAML (unterminated quotes/flow collections, tabs, unsupported anchors or
+aliases, unknown double-quoted escapes) is rejected instead of guessed. Failed
+files are skipped like Python and their parent DirHash row is dropped so the
+next import retries. `frontmatter-type-errors` compares the surviving concept
+and DB dump; unit tests cover the rejected YAML forms and escape decoding.
 
 **Where:** `src/ingest/mod.rs:929-980` (`string_field`,
 `parse_tagged_datetime`, title/type/description/resource defaults),
@@ -2558,7 +2595,14 @@ envelopes or parsed metadata with the oracle.
 
 ### BUG-081 — Link resolution diverges on code spans, encoding, escapes, and >2 ambiguous names
 
-**Severity:** P1, M — **Status: open**.
+**Severity:** P1, M — **Status: closed** (post-cutover semantic-parity round).
+
+**Resolution:** `strip_code` now blanks matching-length fences and inline
+code spans for both wikilink and markdown extraction. Markdown links accept
+angle-bracket sources and optional quoted titles, link paths are
+percent-decoded, `..` beyond the bundle root stays broken, and a name claimed
+by three concepts remains ambiguous with sorted candidates.
+`links-code-encoding-ambiguity` and focused unit tests cover all four cases.
 
 **Where:** `src/ingest/mod.rs:1495-1524` (`LinkIndex::add`), `1936-2068`
 (`markdown_links`, `strip_code`, `link_target`, `wikilinks`).
@@ -2595,7 +2639,12 @@ BrokenLink rows, and `diff` output with the oracle.
 
 ### BUG-082 — Bulk source discovery is case-sensitive on the extension
 
-**Severity:** P1, S — **Status: open**.
+**Severity:** P1, S — **Status: closed** (post-cutover semantic-parity round).
+
+**Resolution:** `util::is_concept_file` is the single discovery predicate for
+import, detach, lint, diff and sync. It lowercases extensions and reserved
+filenames; `import-uppercase-extensions` covers `.MD`, `.Markdown`, `.TXT`,
+`INDEX.MD` and `LOG.MD`.
 
 **Where:** `src/ingest/mod.rs:709-712` (`walk_dir`), reused by
 `import_bundle`, `detach`, `diagnostics::lint`, and `diff`.
@@ -2904,12 +2953,12 @@ it does **not** mean every release gate is green.
 | BUG-074 | Closed | All write paths call `require_attached`; forced reattach clears state, `rebuild` is honored and per-call `batch_size` is a typed refusal. | Extend the guard to any new write op; keep `detached-write-refusal` green. |
 | BUG-075 | Closed | Writability is preflighted, moves are staged across named roots and rolled back if the guarded DB mutation fails; read-only never touches files. | Revisit only for a full crash-retry journal; keep read-only and rollback regressions green. |
 | BUG-076 | Closed | `purge::recover` enforces the 24-hour wall-clock window; expired tombstones are not recoverable. | Keep the expiry regression if timestamp parsing changes. |
-| BUG-077 | Open | `find_path` misses PART_OF/INCLUDES_ASSET/directory hops, omits the start node, returns full nodes, caps at 6 (Python 10), and ignores path-mode argument rules. | Use the oracle shortest-path semantics/projection, allow 1–10, validate mode and test each edge type. |
-| BUG-078 | Open | `since`/`until` compare raw strings, not datetimes; `recency_weight` silently defaults non-numbers; invalid `query_vector` is silently truncated. | Parse/validate time bounds and parameters; test date-only, offset, malformed and vector-width cases. |
-| BUG-079 | Open | Null frontmatter `id:` stringifies to `"None"` and can become the concept id/uid. | Treat null as absent before scalar conversion; test null/empty/number/bool under both identities. |
-| BUG-080 | Open | Numeric/bool core frontmatter is defaulted/dropped; invalid timestamps become null; malformed YAML/anchors/escapes are guessed instead of rejected. | Match Pydantic/PyYAML validation and fail closed with typed field errors; add the scenario matrix. |
-| BUG-081 | Open | Third name collision resolves instead of staying ambiguous; wikilinks/inline code links are not stripped; link paths are not percent-decoded and `..` escape depth is lost. | Port Python ambiguity bookkeeping, `strip_code`, `unquote` and normpath/escape rules; compare edges/BrokenLinks. |
-| BUG-082 | Open | Bulk discovery is case-sensitive (`.MD`/`.Markdown`/`.TXT` skipped), unlike Python’s `suffix.lower()`. | Lowercase the extension and share one predicate across import/detach/lint/diff; test mixed-case trees. |
+| BUG-077 | Closed | Path mode validates ignored params, checks endpoints, and BFSes all four edge types with `{id,title,type}` projection and a 1–10 cap. | Keep `traverse-path` green when traversal changes. |
+| BUG-078 | Closed | Time bounds use `_as_ts` rules; `recency_weight` is validated; Rust-only `query_vector` rejects non-numeric/empty/wrong-width input in unit tests. | Re-run the bound tests if timestamp parsing changes. |
+| BUG-079 | Closed | Null frontmatter ids are absent; empty strings, numbers and bools keep Python's uid spelling under both identity modes. | Keep both null-id scenarios green. |
+| BUG-080 | Closed | Core field types and timestamps are validated; malformed YAML is skipped with DirHash retry; anchors/aliases are explicitly rejected. | Keep the rejected-YAML unit tests and `frontmatter-type-errors` green. |
+| BUG-081 | Closed | Code spans/fences are blanked, titles and angle sources parse, percent escapes decode, escaping `..` stays broken, and three-way ambiguity never resolves. | Keep link unit tests and the differential scenario green. |
+| BUG-082 | Closed | One lowercasing `is_concept_file` predicate drives import, detach, lint, diff and sync. | Reuse the predicate for any new source-discovery path. |
 | BUG-083 | Open | Vision-route errors abort the concept; Python falls back to captions except lane outages. Image refs ignore optional titles. | Catch per-image non-outage failures, preserve outage behavior, parse titles/angle sources; compare rows. |
 | BUG-084 | Open (security) | `okf-asset://` ids are joined without rejecting `..`/absolute/drive paths, allowing arbitrary local file reads into `ImageAsset`. | Validate to a safe asset id, canonicalize/within-root check every branch, test Windows/POSIX traversal. |
 | BUG-085 | Open | BibTeX citations lose the `entry.key` fallback and keep untrimmed/braced author/venue/abstract fields. | Reproduce Python citation fallback, trimming and `unwrap_braces`; test sparse/padded entries. |
@@ -2937,8 +2986,10 @@ Post-cutover review:
    integrity, detach enforcement, delete atomicity and recovery lifetime.~~
    Done: shared root resolver, graph-only writes, detach guards, staged delete
    rollback and the 24-hour recovery window.
-3. BUG-077, BUG-078, BUG-079, BUG-080, BUG-081, BUG-082 — semantic parity
-   for traversal, search bounds, frontmatter, links and file discovery.
+3. ~~BUG-077, BUG-078, BUG-079, BUG-080, BUG-081, BUG-082 — semantic parity
+   for traversal, search bounds, frontmatter, links and file discovery.~~
+   Done: seven new scenarios, shared source-discovery predicate, typed YAML
+   skipping, Python-shaped link extraction and traverse/search semantics.
 4. BUG-083, BUG-084, BUG-085, BUG-086, BUG-087 — images, BibTeX, export and
    CLI PDF surfaces.
 5. BUG-088, BUG-089 — job and MCP serialization.

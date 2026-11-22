@@ -156,22 +156,26 @@ pub fn import_files_with_root(
 
     let engine = embedder.get(settings)?;
     pin_graph(store, settings, engine.as_ref())?;
-    let parsed: Vec<Parsed> = paths
-        .iter()
-        .map(|path| {
-            if let Some(base) = &explicit_root {
-                let alias = roots.alias_for_root(base);
-                parse_file_alias(Path::new(path), settings, Some(base), &alias)
-            } else {
-                let alias = roots.alias_for_path(&canonicalish(Path::new(path)));
-                let root = roots
-                    .root_for_alias(&alias)
-                    .map(Path::to_path_buf)
-                    .or_else(|| settings.bundle_root.as_ref().map(PathBuf::from));
-                parse_file_alias(Path::new(path), settings, root.as_deref(), &alias)
+    let mut parsed: Vec<Parsed> = Vec::new();
+    for path in paths {
+        let result = if let Some(base) = &explicit_root {
+            let alias = roots.alias_for_root(base);
+            parse_file_alias(Path::new(path), settings, Some(base), &alias)
+        } else {
+            let alias = roots.alias_for_path(&canonicalish(Path::new(path)));
+            let root = roots
+                .root_for_alias(&alias)
+                .map(Path::to_path_buf)
+                .or_else(|| settings.bundle_root.as_ref().map(PathBuf::from));
+            parse_file_alias(Path::new(path), settings, root.as_deref(), &alias)
+        };
+        match result {
+            Ok(item) => parsed.push(item),
+            Err(err) => {
+                tracing::warn!("parse failed {}: {}", path, err.message);
             }
-        })
-        .collect::<Result<Vec<_>>>()?;
+        }
+    }
     commit_parsed(
         store,
         settings,
@@ -268,14 +272,16 @@ fn import_bundle_one(
     let isolated = bundle_path.is_some()
         && owned_root.is_some_and(|configured| canonicalish(Path::new(configured)) != root);
     if isolated {
-        let mut parsed = walk_source_files(&root)?
-            .iter()
-            .map(|path| {
-                let mut item = parse_file_alias(path, settings, Some(&root), alias)?;
-                item.synthetic = true;
-                Ok(item)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut parsed = Vec::new();
+        for path in walk_source_files(&root)? {
+            match parse_file_alias(&path, settings, Some(&root), alias) {
+                Ok(mut item) => {
+                    item.synthetic = true;
+                    parsed.push(item);
+                }
+                Err(err) => tracing::warn!("parse failed {}: {}", path.display(), err.message),
+            }
+        }
         let concept_ids = parsed
             .iter()
             .map(|item| item.id.clone())
@@ -410,10 +416,17 @@ fn import_bundle_one(
         "actually_changed": actually_changed,
     });
 
-    let mut parsed: Vec<Parsed> = changed
-        .iter()
-        .map(|path| parse_file_alias(path, settings, Some(&root), alias))
-        .collect::<Result<Vec<_>>>()?;
+    let mut parsed: Vec<Parsed> = Vec::new();
+    let mut failed_dirs = BTreeSet::new();
+    for path in &changed {
+        match parse_file_alias(path, settings, Some(&root), alias) {
+            Ok(item) => parsed.push(item),
+            Err(err) => {
+                tracing::warn!("parse failed {}: {}", path.display(), err.message);
+                failed_dirs.insert(namespaced_key(alias, &parent_key(&native_rel(path, &root))));
+            }
+        }
+    }
     let (mut duplicates, moved) =
         resolve_identity_conflicts(store, &mut parsed, &stored_files, &root, alias)?;
     let now = SystemTime::now()
@@ -489,6 +502,11 @@ fn import_bundle_one(
         }
     } else {
         finish_indexes(store)?;
+    }
+    // Python drops the parent DirHash of any failed file so the next run
+    // retries that directory instead of treating the bad bytes as stable.
+    for dir in failed_dirs {
+        current_dirs.remove(&dir);
     }
     for (dir, state) in &current_dirs {
         let json = PyValue::List(state.files.iter().cloned().map(PyValue::Str).collect())
@@ -817,15 +835,7 @@ fn walk_dir(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         if name.starts_with('.') {
             continue;
         }
-        let lower = name.to_ascii_lowercase();
-        if matches!(lower.as_str(), "index.md" | "log.md") {
-            continue;
-        }
-        let source = matches!(
-            path.extension().and_then(|value| value.to_str()),
-            Some("md" | "markdown" | "txt")
-        );
-        if source {
+        if crate::util::is_concept_file(&path) {
             let _ = root;
             out.push(path);
         }
@@ -988,7 +998,28 @@ pub(crate) fn parse_file_alias(
 ) -> Result<Parsed> {
     let text = fs::read_to_string(path)?;
     let front = parse_frontmatter(&text);
+    if let Some(message) = &front.error {
+        return Err(frontmatter_error(path, message));
+    }
     let mut meta = front.metadata.as_object().cloned().unwrap_or_default();
+    for field in ["title", "description", "resource", "type"] {
+        if let Some(value) = meta.get(field) {
+            if !value.is_null() && !value.is_string() {
+                return Err(frontmatter_error(
+                    path,
+                    &format!("{field} must be a string or null, got {value}"),
+                ));
+            }
+        }
+    }
+    if let Some(value) = meta.get("timestamp") {
+        if !value.is_null() && parse_tagged_datetime(value).is_none() {
+            return Err(frontmatter_error(
+                path,
+                &format!("timestamp is not an ISO date/time: {value}"),
+            ));
+        }
+    }
     let effective_root = root
         .map(Path::to_path_buf)
         .or_else(|| settings.roots.get(alias).map(PathBuf::from))
@@ -1007,7 +1038,13 @@ pub(crate) fn parse_file_alias(
     let mut uid: Option<String> = None;
     let mut source_path: Option<String> = None;
     if let Some(value) = &fm_id {
-        let written = scalar_text(value);
+        // Python guards with `fm_id is not None`: a YAML null is absent, while
+        // 0/false are stringified (`'0'`/`'False'`) as uid or frontmatter id.
+        let written = if value.is_null() {
+            String::new()
+        } else {
+            scalar_text(value)
+        };
         if settings.identity == "frontmatter" && !written.trim().is_empty() {
             let written = written.trim().to_string();
             if !safe_frontmatter_id(&written) {
@@ -1029,7 +1066,9 @@ pub(crate) fn parse_file_alias(
                     source_path = Some(rel.to_string_lossy().replace('\\', "/"));
                 }
             }
-        } else if !written.is_empty() && written != id {
+        } else if !value.is_null() && written != id {
+            // An explicit empty string is still a frontmatter uid in
+            // Python; only YAML null is absent.
             uid = Some(written);
         }
     }
@@ -1190,6 +1229,14 @@ pub(crate) fn refresh_content_sig(item: &mut Parsed) {
         sig_timestamp(&item.authored, item.timestamp.as_ref()),
     );
     item.sig = content_sig(&PyValue::Dict(sig_data.into_iter().collect()), &item.body);
+}
+
+fn frontmatter_error(path: &Path, detail: &str) -> OkfError {
+    OkfError::new(
+        "BAD_VALUE",
+        format!("parse failed {}: {detail}", path.display()),
+    )
+    .op("import_files")
 }
 
 fn scalar_text(value: &Json) -> String {
@@ -1627,24 +1674,45 @@ impl LinkIndex {
             "title" => &mut index.title,
             _ => &mut index.stem,
         };
+        let candidate_key = format!("{kind}:{key}");
         if let Some(existing) = map.get(&key) {
             if existing != id {
-                let entry = index.candidates.entry(format!("{kind}:{key}")).or_default();
-                if !entry.contains(&existing.to_string()) {
+                // Python records every claim and removes the key once at
+                // the end; a third claimant must never restore it.
+                let entry = index.candidates.entry(candidate_key).or_default();
+                if !entry.contains(existing) {
                     entry.push(existing.to_string());
                 }
                 if !entry.contains(&id.to_string()) {
                     entry.push(id.to_string());
                 }
-                map.remove(&key);
             }
-        } else if !index
-            .candidates
-            .get(&format!("{kind}:{key}"))
-            .map(|ids| ids.contains(&id.to_string()))
-            .unwrap_or(false)
-        {
+        } else if !index.candidates.contains_key(&candidate_key) {
             map.insert(key, id.to_string());
+        }
+    }
+
+    fn finalize(&mut self) {
+        let keys: Vec<(String, String)> = self
+            .candidates
+            .keys()
+            .filter_map(|candidate| {
+                let (kind, key) = candidate.split_once(':')?;
+                Some((kind.to_string(), key.to_string()))
+            })
+            .collect();
+        for (kind, key) in keys {
+            let map = match kind.as_str() {
+                "uid" => &mut self.uid,
+                "alias" => &mut self.alias,
+                "title" => &mut self.title,
+                _ => &mut self.stem,
+            };
+            map.remove(&key);
+        }
+        for ids in self.candidates.values_mut() {
+            ids.sort();
+            ids.dedup();
         }
     }
 
@@ -1674,6 +1742,7 @@ impl LinkIndex {
                 Self::add("stem", stem, &item.id, &mut index);
             }
         }
+        index.finalize();
         index
     }
 
@@ -1774,6 +1843,7 @@ fn load_link_index(store: &Store) -> Result<LinkIndex> {
             LinkIndex::add("stem", stem, &id, &mut index);
         }
     }
+    index.finalize();
     Ok(index)
 }
 
@@ -2064,35 +2134,122 @@ pub(crate) fn markdown_links(body: &str) -> Vec<String> {
     let mut rest = stripped.as_str();
     while let Some(start) = rest.find("](") {
         rest = &rest[start + 2..];
-        let Some(end) = rest.find(')') else { break };
-        let inner = rest[..end].trim();
-        let raw = inner
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .trim_matches(['<', '>']);
-        if is_source_path(raw) {
-            out.push(raw.to_string());
+        let lead = rest.len() - rest.trim_start().len();
+        let angle = rest[lead..].starts_with('<');
+        let inner_end = if angle {
+            let Some(close) = rest[lead..].find('>') else {
+                break;
+            };
+            lead + close + 1
+        } else {
+            match rest[lead..].find(')') {
+                Some(end) => lead + end,
+                None => break,
+            }
+        };
+        let Some(after) = rest[inner_end..].find(')') else {
+            break;
+        };
+        let inner = &rest[lead..inner_end];
+        if let Some(raw) = md_link_target(inner) {
+            if is_source_path(&raw) {
+                out.push(raw);
+            }
         }
-        rest = &rest[end + 1..];
+        rest = &rest[inner_end + after + 1..];
     }
     out
 }
 
+/// Python's `_MD_LINK_RE`: angle-bracket sources with spaces and an optional
+/// quoted title, or a bare source followed by an optional quoted title.
+fn md_link_target(inner: &str) -> Option<String> {
+    let text = inner.trim();
+    let (target, tail) = if let Some(rest) = text.strip_prefix('<') {
+        let close = rest.find('>')?;
+        (&rest[..close], rest[close + 1..].trim())
+    } else {
+        let end = text
+            .find(|ch: char| ch.is_whitespace() || matches!(ch, ')' | '<' | '>'))
+            .unwrap_or(text.len());
+        (&text[..end], text[end..].trim())
+    };
+    if !tail.is_empty() && !(tail.len() >= 2 && tail.starts_with('\"') && tail.ends_with('\"')) {
+        return None;
+    }
+    if target.is_empty() {
+        return None;
+    }
+    Some(target.to_string())
+}
+
+/// Python `strip_code`: blank fenced blocks (3+ backticks or tildes, same
+/// fence closes) and inline code spans (a run closed by the same length).
 fn strip_code(body: &str) -> String {
-    let mut out = String::with_capacity(body.len());
-    let mut in_fence = false;
-    for line in body.lines() {
-        let fence = line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~");
-        if fence {
-            in_fence = !in_fence;
-            out.push_str(&" ".repeat(line.len()));
-        } else if in_fence {
-            out.push_str(&" ".repeat(line.len()));
+    let mut fenced = String::with_capacity(body.len());
+    let mut marker: Option<(char, usize)> = None;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_start_matches(' ');
+        if let Some((ch, opened)) = marker {
+            let closing = trimmed.chars().take_while(|c| *c == ch).count();
+            fenced.extend(line.chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+            if closing >= opened {
+                marker = None;
+            }
         } else {
-            out.push_str(line);
+            let first = trimmed.chars().next();
+            let run = first
+                .map(|ch| trimmed.chars().take_while(|c| *c == ch).count())
+                .unwrap_or(0);
+            if matches!(first, Some('`' | '~')) && run >= 3 {
+                marker = Some((first.unwrap(), run));
+                fenced.extend(line.chars().map(|c| if c == '\n' { '\n' } else { ' ' }));
+            } else {
+                fenced.push_str(line);
+            }
         }
-        out.push('\n');
+    }
+    let chars: Vec<char> = fenced.chars().collect();
+    let mut out = String::with_capacity(fenced.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '`' && (i == 0 || chars[i - 1] != '`') {
+            let start = i;
+            while i < chars.len() && chars[i] == '`' {
+                i += 1;
+            }
+            let width = i - start;
+            let mut close = None;
+            let mut j = i;
+            while j < chars.len() {
+                if chars[j] == '`' {
+                    let cstart = j;
+                    while j < chars.len() && chars[j] == '`' {
+                        j += 1;
+                    }
+                    if j - cstart == width && (j == chars.len() || chars[j] != '`') {
+                        close = Some((cstart, j));
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some((_, cend)) = close {
+                out.extend(
+                    chars[start..cend]
+                        .iter()
+                        .map(|c| if *c == '\n' { '\n' } else { ' ' }),
+                );
+                i = cend;
+                continue;
+            }
+            // No closing run: treat the opener as ordinary text.
+            out.extend(std::iter::repeat_n('`', width));
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
     }
     out
 }
@@ -2127,14 +2284,15 @@ pub(crate) fn link_target(
     path_ids: Option<&BTreeMap<String, String>>,
 ) -> (Option<String>, String) {
     let path_part = raw.split(['#', '?']).next().unwrap_or("").trim();
-    let joined = if let Some(rest) = path_part.strip_prefix('/') {
+    let decoded = crate::image_ingest::percent_decode(path_part);
+    let joined = if let Some(rest) = decoded.strip_prefix('/') {
         rest.to_string()
     } else {
         let parent = source.rsplit_once('/').map(|value| value.0).unwrap_or("");
         if parent.is_empty() {
-            path_part.to_string()
+            decoded.clone()
         } else {
-            format!("{parent}/{path_part}")
+            format!("{parent}/{decoded}")
         }
     };
     let normalized = joined.replace('\\', "/");
@@ -2143,7 +2301,13 @@ pub(crate) fn link_target(
         match part {
             "" | "." => {}
             ".." => {
-                parts.pop();
+                // Python's normpath keeps a leading `..`; it is a broken
+                // link, never a shortened path back into the bundle.
+                if parts.last().is_some_and(|last| *last != "..") {
+                    parts.pop();
+                } else {
+                    parts.push("..");
+                }
             }
             other => parts.push(other),
         }
@@ -2181,8 +2345,9 @@ pub(crate) fn link_target(
 }
 
 pub(crate) fn wikilinks(body: &str) -> Vec<String> {
+    let stripped = strip_code(body);
     let mut out = Vec::new();
-    let mut rest = body;
+    let mut rest = stripped.as_str();
     while let Some(start) = rest.find("[[") {
         rest = &rest[start + 2..];
         let Some(end) = rest.find("]]") else { break };
@@ -2588,6 +2753,51 @@ mod tests {
             0..180,
         )
         .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    #[test]
+    fn links_decode_escape_and_reject_outside_paths() {
+        let mut index = LinkIndex::default();
+        index.ids.insert("b ta".into());
+        index.ids.insert("beta".into());
+        assert_eq!(
+            link_target("b%20ta.md", "alpha", &index, None).0,
+            Some("b ta".into())
+        );
+        assert_eq!(
+            link_target("dir/../../beta.md", "alpha", &index, None).0,
+            None
+        );
+        assert_eq!(link_target("/../beta.md", "alpha", &index, None).0, None);
+    }
+
+    #[test]
+    fn strip_code_blanks_fences_and_inline_spans() {
+        let body = "[[live]] and `[[code]]`
+
+```
+[[fenced]]
+```
+
+[[after]]
+";
+        assert_eq!(wikilinks(body), vec!["live", "after"]);
+        assert_eq!(markdown_links("x [a](b.md `c.md`)"), vec!["b.md"]);
+        assert_eq!(markdown_links("[a](b.md \"title\")"), vec!["b.md"]);
+        assert_eq!(markdown_links("[a](<b c.md> \"title\")"), vec!["b c.md"]);
+    }
+
+    #[test]
+    fn link_index_keeps_three_way_ambiguity() {
+        let mut index = LinkIndex::default();
+        for id in ["dup1", "dup2", "dup3"] {
+            LinkIndex::add("title", "Duplicate", id, &mut index);
+        }
+        index.finalize();
+        let (target, reason, candidates) = index.resolve_wiki("Duplicate");
+        assert!(target.is_none());
+        assert_eq!(reason.as_deref(), Some("ambiguous"));
+        assert_eq!(candidates, vec!["dup1", "dup2", "dup3"]);
     }
 
     proptest! {

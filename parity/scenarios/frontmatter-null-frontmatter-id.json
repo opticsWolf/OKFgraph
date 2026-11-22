@@ -1,0 +1,39 @@
+{
+  "name": "frontmatter-null-frontmatter-id",
+  "settings": {
+    "db_path": "parity/out/frontmatter-null-frontmatter-id-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false,
+    "chunk_size": 512,
+    "chunk_overlap": 40,
+    "identity": "frontmatter"
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/frontmatter-null"
+    }
+  },
+  "ops": [
+    {
+      "op": "list_directory",
+      "params": {
+        "directory_id": ""
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "0"
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "False"
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "name": "links-code-encoding-ambiguity",
+  "settings": {
+    "db_path": "parity/out/links-code-encoding-ambiguity-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/links-semantics"
+    }
+  },
+  "ops": [
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "b ta"
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "b%20ta"
+      }
+    },
+    {
+      "op": "list_broken_links",
+      "params": {}
+    }
+  ]
+}

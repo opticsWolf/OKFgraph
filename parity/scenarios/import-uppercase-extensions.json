@@ -1,0 +1,44 @@
+{
+  "name": "import-uppercase-extensions",
+  "settings": {
+    "db_path": "parity/out/import-uppercase-extensions-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/uppercase-ext"
+    }
+  },
+  "ops": [
+    {
+      "op": "list_directory",
+      "params": {
+        "directory_id": ""
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "upper"
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "mixed"
+      }
+    },
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "plain"
+      }
+    }
+  ]
+}

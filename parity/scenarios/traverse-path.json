@@ -1,0 +1,50 @@
+{
+  "name": "traverse-path",
+  "settings": {
+    "db_path": "parity/out/traverse-path-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/minimal"
+    }
+  },
+  "ops": [
+    {
+      "op": "traverse",
+      "params": {
+        "start_id": "alpha",
+        "target": "beta"
+      }
+    },
+    {
+      "op": "traverse",
+      "params": {
+        "start_id": "alpha",
+        "target": "alpha"
+      }
+    },
+    {
+      "op": "traverse",
+      "params": {
+        "start_id": "",
+        "target": "beta"
+      }
+    },
+    {
+      "op": "traverse",
+      "params": {
+        "start_id": "alpha",
+        "target": "beta",
+        "max_path_length": 8,
+        "depth": 2
+      }
+    }
+  ]
+}

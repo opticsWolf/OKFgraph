@@ -1,0 +1,32 @@
+{
+  "name": "frontmatter-type-errors",
+  "settings": {
+    "db_path": "parity/out/frontmatter-type-errors-@RUNNER@.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": false,
+    "chunk_size": 512,
+    "chunk_overlap": 40
+  },
+  "setup": {
+    "import": {
+      "corpus": "parity/corpus/frontmatter-errors"
+    }
+  },
+  "ops": [
+    {
+      "op": "get_by_id",
+      "params": {
+        "concept_id": "valid"
+      }
+    },
+    {
+      "op": "list_directory",
+      "params": {
+        "directory_id": ""
+      }
+    }
+  ]
+}

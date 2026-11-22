@@ -1,0 +1,50 @@
+{
+  "name": "search-time-and-params",
+  "settings": {
+    "db_path": "parity/fixtures/oracle-v10-filters.db",
+    "embedding_dim": 512,
+    "model_id": "google/embeddinggemma-2",
+    "device": "cuda",
+    "precision": "auto",
+    "enable_chunking": true,
+    "chunk_size": 32,
+    "chunk_overlap": 4
+  },
+  "setup": {
+    "fixture": "parity/fixtures/oracle-v10-filters.db"
+  },
+  "ops": [
+    {
+      "op": "search",
+      "params": {
+        "query": "badger",
+        "limit": 10,
+        "since": "not-a-date"
+      }
+    },
+    {
+      "op": "search",
+      "params": {
+        "query": "badger",
+        "limit": 10,
+        "until": 123
+      }
+    },
+    {
+      "op": "search",
+      "params": {
+        "query": "badger",
+        "limit": 10,
+        "since": "2026-03-01T00:00:00Z"
+      }
+    },
+    {
+      "op": "search",
+      "params": {
+        "query": "badger",
+        "limit": 10,
+        "recency_weight": "yes"
+      }
+    }
+  ]
+}

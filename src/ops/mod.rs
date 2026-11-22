@@ -1149,18 +1149,7 @@ impl Router {
         let written: Vec<String> = bundle
             .written
             .iter()
-            .filter(|path| {
-                let name = path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-                matches!(
-                    path.extension().and_then(|value| value.to_str()),
-                    Some("md" | "markdown" | "txt")
-                ) && name != "index.md"
-                    && name != "log.md"
-            })
+            .filter(|path| crate::util::is_concept_file(path))
             .map(|path| crate::producers::native(path))
             .collect();
         let concept_ids = if written.is_empty() {
@@ -2813,16 +2802,49 @@ impl Router {
             );
         }
 
+        let walk_passed = [
+            (relationship.as_str() != "CONTAINS").then_some("relationship"),
+            (direction.as_str() != "OUTGOING").then_some("direction"),
+            (depth != 1).then_some("depth"),
+            node_type.as_ref().map(|_| "node_type"),
+            link_kinds.as_ref().map(|_| "link_kinds"),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let path_passed = (max_path_length != 6).then(|| "max_path_length".to_string());
+
         if start_id.is_empty() {
+            if let Some(target) = &target {
+                return Err(OkfError::new(
+                    "BAD_VALUE",
+                    "target needs a non-empty start_id to build a path from",
+                )
+                .op("traverse")
+                .field("target", Json::String(target.clone())));
+            }
+            if let Some(err) = ignored_params(
+                "root listing",
+                [walk_passed, path_passed.into_iter().collect()].concat(),
+            ) {
+                return Err(err);
+            }
             return self.list_directory("");
         }
         if let Some(target) = target {
+            if let Some(err) = ignored_params("path", walk_passed) {
+                return Err(err);
+            }
             for (field, id) in [("start_id", start_id.as_str()), ("target", target.as_str())] {
                 if !self.store.node_exists(id)? {
                     return Err(unknown_concept("traverse", field, id));
                 }
             }
             return self.find_path(&start_id, &target, max_path_length);
+        }
+        if let Some(err) = ignored_params("walk", path_passed.into_iter().collect()) {
+            return Err(err);
         }
         if !self.store.node_exists(&start_id)? {
             return Err(unknown_concept("traverse", "start_id", &start_id));
@@ -2838,42 +2860,58 @@ impl Router {
     }
 
     fn find_path(&self, start: &str, target: &str, max_len: i64) -> Result<Json> {
-        let max_len = max_len.clamp(1, 6) as usize;
-        let mut queue: Vec<(String, Vec<Json>)> = vec![(start.to_string(), Vec::new())];
-        let mut visited = std::collections::BTreeSet::new();
-        visited.insert(start.to_string());
-        while !queue.is_empty() {
-            let (current, path) = queue.remove(0);
-            if current.as_str() == target {
-                return Ok(Json::Array(path));
-            }
-            if path.len() >= max_len {
-                continue;
-            }
-            for neighbor in self
-                .store
-                .traverse(&current, "LINKS_TO", "BOTH", 1, None, None)?
-                .into_iter()
-                .chain(
-                    self.store
-                        .traverse(&current, "CONTAINS", "BOTH", 1, None, None)?,
-                )
-            {
-                let Some(id) = neighbor
-                    .get("id")
-                    .and_then(Json::as_str)
-                    .map(str::to_string)
-                else {
-                    continue;
-                };
-                if visited.insert(id.clone()) {
-                    let mut next = path.clone();
-                    next.push(neighbor);
-                    queue.push((id, next));
+        const RELS: &[&str] = &["CONTAINS", "LINKS_TO", "PART_OF", "INCLUDES_ASSET"];
+        let max_len = max_len.clamp(1, 10) as usize;
+        let mut frontier: Vec<Vec<String>> = vec![vec![start.to_string()]];
+        let mut visited = std::collections::BTreeSet::from([start.to_string()]);
+        for _ in 0..max_len {
+            let mut next_frontier: Vec<Vec<String>> = Vec::new();
+            for path in &frontier {
+                let current = path.last().expect("non-empty path");
+                for rel in RELS {
+                    let rows = self.store.traverse(current, rel, "BOTH", 1, None, None)?;
+                    let mut ids = rows
+                        .iter()
+                        .filter_map(|row| row.get("id").and_then(Json::as_str).map(str::to_string))
+                        .collect::<Vec<_>>();
+                    ids.sort();
+                    ids.dedup();
+                    for id in ids {
+                        if !visited.insert(id.clone()) {
+                            continue;
+                        }
+                        let mut candidate = path.clone();
+                        candidate.push(id.clone());
+                        if id == target {
+                            let mut out = Vec::new();
+                            for node in &candidate {
+                                out.push(self.node_projection(node)?);
+                            }
+                            return Ok(Json::Array(out));
+                        }
+                        next_frontier.push(candidate);
+                    }
                 }
+            }
+            frontier = next_frontier;
+            if frontier.is_empty() {
+                break;
             }
         }
         Ok(Json::Array(Vec::new()))
+    }
+
+    fn node_projection(&self, id: &str) -> Result<Json> {
+        let rows = self.store.query(
+            "MATCH (n {id: $id}) RETURN n.id AS id, n.title AS title, n.type AS type LIMIT 1",
+            vec![("id", lbug::Value::String(id.to_string()))],
+        )?;
+        Ok(Json::Object(rows.into_iter().next().unwrap_or_else(|| {
+            serde_json::json!({"id": id, "title": Json::Null, "type": Json::Null})
+                .as_object()
+                .cloned()
+                .expect("object literal")
+        })))
     }
 
     /// Embed texts with the configured native model. No database writes.
@@ -2977,6 +3015,21 @@ impl Router {
     /// embedder unless a scenario supplies `query_vector` explicitly.
     pub fn search(&self, raw: &Map<String, Json>) -> Result<Json> {
         let mut params = SearchParams::parse(raw)?;
+        if let Some(vector) = &params.query_vector {
+            let width = self
+                .store
+                .schema_embedding_dim()?
+                .unwrap_or(self.settings.embedding_dim) as usize;
+            if vector.len() != width {
+                return Err(bad_value(
+                    format!(
+                        "query_vector must have {width} values, got {}",
+                        vector.len()
+                    ),
+                    vec![("query_vector", Json::from(vector.len() as i64))],
+                ));
+            }
+        }
         if params.hub_rerank || params.expand {
             // chunks:hub and chunks:expand do not honour filters, including
             // the configured default exclude_tags list.
@@ -4102,7 +4155,18 @@ impl SearchParams {
             .get("recency_weight")
             .cloned()
             .unwrap_or_else(|| Json::from(0.3));
-        let recency_weight = recency_weight_raw.as_f64().unwrap_or(0.3);
+        let recency_weight = match recency_weight_raw.as_f64() {
+            Some(value) => value,
+            None => {
+                return Err(bad_value(
+                    format!(
+                        "recency_weight must be 0..1, got {}",
+                        py_repr(&recency_weight_raw)
+                    ),
+                    vec![("recency_weight", recency_weight_raw.clone())],
+                ))
+            }
+        };
         if !(0.0..=1.0).contains(&recency_weight) {
             return Err(bad_value(
                 format!(
@@ -4264,15 +4328,40 @@ impl SearchParams {
                 where_map.insert(key.clone(), encoded);
             }
         }
-        let query_vector = params
-            .get("query_vector")
-            .and_then(Json::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_f64().map(|n| n as f32))
-                    .collect::<Vec<_>>()
-            });
+        let query_vector = match params.get("query_vector") {
+            None | Some(Json::Null) => None,
+            Some(Json::Array(items)) => {
+                let mut values = Vec::with_capacity(items.len());
+                for value in items {
+                    let Some(number) = value.as_f64().filter(|n| n.is_finite()) else {
+                        return Err(bad_value(
+                            format!(
+                                "query_vector must contain only numbers, got {}",
+                                py_repr(value)
+                            ),
+                            vec![("query_vector", Json::Array(items.clone()))],
+                        ));
+                    };
+                    values.push(number as f32);
+                }
+                if values.is_empty() {
+                    return Err(bad_value(
+                        "query_vector must not be empty",
+                        vec![("query_vector", Json::Array(Vec::new()))],
+                    ));
+                }
+                Some(values)
+            }
+            Some(other) => {
+                return Err(bad_value(
+                    format!(
+                        "query_vector must be a list of numbers, got {}",
+                        py_repr(other)
+                    ),
+                    vec![("query_vector", other.clone())],
+                ))
+            }
+        };
         Ok(Self {
             query,
             target,
@@ -4288,8 +4377,8 @@ impl SearchParams {
             hub_weight,
             rank,
             where_map,
-            since: opt_str(params, "since")?,
-            until: opt_str(params, "until")?,
+            since: parse_search_bound_param(params, "since")?,
+            until: parse_search_bound_param(params, "until")?,
             exclude_tags: opt_strings(params, "exclude_tags")?,
             exclude_tags_set: params.contains_key("exclude_tags"),
             link_kinds: opt_strings(params, "link_kinds")?.into_version(),
@@ -4409,6 +4498,28 @@ const HUB_PARAMS: &[&str] = &[
     "dedupe",
 ];
 const EXPAND_PARAMS: &[&str] = &["expand", "context_hops"];
+
+fn parse_search_bound_param(params: &Map<String, Json>, name: &str) -> Result<Option<String>> {
+    let Some(value) = params.get(name) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let text = value.as_str().ok_or_else(|| {
+        bad_value(
+            format!("{name} must be an ISO date/time, got {}", py_repr(value)),
+            vec![(name, value.clone())],
+        )
+    })?;
+    let parsed = crate::model::parse_search_bound(text).map_err(|_| {
+        bad_value(
+            format!("{name} must be an ISO date/time, got {}", py_repr(value)),
+            vec![(name, value.clone())],
+        )
+    })?;
+    Ok(Some(parsed.python_str()))
+}
 
 fn bad_value(message: impl Into<String>, fields: Vec<(&str, Json)>) -> OkfError {
     bad_value2("search", message, fields)
@@ -4624,6 +4735,22 @@ fn unknown_concept(op: &str, field: &str, id: &str) -> OkfError {
         .op(op)
         .field(field, Json::String(id.into()))
         .remedy("search first to find IDs")
+}
+
+fn ignored_params(mode: &str, ignored: Vec<String>) -> Option<OkfError> {
+    if ignored.is_empty() {
+        return None;
+    }
+    let message = format!("traverse {mode} mode ignores: {}", ignored.join(", "));
+    let mut err = OkfError::new("BAD_VALUE", message)
+        .op("traverse")
+        .field("mode", Json::String(mode.to_string()))
+        .field(
+            "ignored",
+            Json::Array(ignored.into_iter().map(Json::String).collect()),
+        );
+    err.remedy = Some("drop the ignored params".into());
+    Some(err)
 }
 
 fn require_nonempty(op: &str, field: &str, value: &str) -> Result<()> {

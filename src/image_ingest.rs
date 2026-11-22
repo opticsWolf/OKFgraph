@@ -59,7 +59,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
     }
 }
 
-fn percent_decode(text: &str) -> String {
+pub(crate) fn percent_decode(text: &str) -> String {
     // Decode bytes, never `str` slices: a malformed escape can otherwise split
     // a multi-byte UTF-8 character (for example `%€`).
     let bytes = text.as_bytes();

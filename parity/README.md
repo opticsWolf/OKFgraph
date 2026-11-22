@@ -304,7 +304,7 @@ reference with `OKFGRAPH_ORACLE_TAG`. This keeps differential tests working
 now that the old Python implementation has been removed from the default
 tree.
 
-The post-review matrix covers 62 scenarios: **61 report 0 differences** on ops
+The post-review matrix covers 69 scenarios: **68 report 0 differences** on ops
 output after normalizing wall-clock graph times, internal Ladybug IDs,
 set-ordered tags, and runner-specific paths. The run at `66df990` reported
 `TOTAL:56 FAILS:0` in **14m37s**. The same matrix then passed in **15m21s**
@@ -322,8 +322,13 @@ and coverage scanned 63 output files. The settings/open round added
 `settings-open-and-env`, so the matrix grew to 60 scenarios and 64 outputs.
 The named-root/write-integrity round added `named-root-writes`,
 `file-free-writes` and `detached-write-refusal`; the full matrix now reports
-`TOTAL:62 FAILS:0` and coverage scans 67 output files. The remaining intentional
-divergence is
+`TOTAL:69 FAILS:0` and coverage scans 74 output files after the semantic-parity
+round, which added `traverse-path`, `search-time-and-params`,
+`frontmatter-null-id`, `frontmatter-null-frontmatter-id`,
+`frontmatter-type-errors`, `links-code-encoding-ambiguity` and
+`import-uppercase-extensions`. PyYAML anchors/aliases and the Rust-only
+`query_vector` hook are covered by unit tests rather than differential ops.
+The remaining intentional divergence is
 `ingest-pdf-no-plugin`, which records the Python raw-`INTERNAL` vs Rust
 `CONVERSION_FAILED` missing-plugin divergence. Import, links, delete,
 image, reembed, YAML/time, multi-root, prune, dimension, and write-op

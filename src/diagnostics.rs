@@ -434,15 +434,8 @@ fn count_skipped(root: &Path) -> usize {
                 count += walk(&path, root);
                 continue;
             }
-            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            let lower = name.to_ascii_lowercase();
-            let source = matches!(
-                path.extension().and_then(|value| value.to_str()),
-                Some("md" | "markdown" | "txt")
-            );
-            if !source || lower == "index.md" || lower == "log.md" {
+            let source = crate::util::is_concept_file(&path);
+            if !source {
                 continue;
             }
             if path.strip_prefix(root).is_ok_and(|rel| {

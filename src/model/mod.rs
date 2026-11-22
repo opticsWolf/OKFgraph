@@ -114,6 +114,45 @@ impl PyDateTime {
     pub fn as_naive(&self) -> PrimitiveDateTime {
         self.0
     }
+
+    /// Python `str(datetime)`: the spelling Ladybug's `TIMESTAMP` columns
+    /// return, so string comparisons in filtered search stay lexical.
+    pub fn python_str(&self) -> String {
+        let date = self.0.date();
+        let time = self.0.time();
+        let mut text = format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            date.year(),
+            date.month() as u8,
+            date.day(),
+            time.hour(),
+            time.minute(),
+            time.second()
+        );
+        if time.nanosecond() != 0 {
+            text.push_str(&format!(".{:06}", time.nanosecond() / 1_000));
+        }
+        text
+    }
+}
+
+/// Search bounds use Python's `_as_ts`: an explicit offset is converted to
+/// naive UTC before it is bound to a `TIMESTAMP` column.
+pub fn parse_search_bound(text: &str) -> Result<PyDateTime> {
+    let parsed = PyDateTime::parse(text)?;
+    let normalized = text.trim().trim_matches('"').replace('T', " ");
+    let (_, offset) = split_datetime_offset(&normalized);
+    match offset {
+        Some(offset) => {
+            let shifted = parsed.as_naive().assume_utc()
+                - time::Duration::seconds(offset.whole_seconds() as i64);
+            Ok(PyDateTime::new(PrimitiveDateTime::new(
+                shifted.date(),
+                shifted.time(),
+            )))
+        }
+        None => Ok(parsed),
+    }
 }
 
 pub fn format_py_datetime(value: OffsetDateTime) -> String {
@@ -200,7 +239,7 @@ pub fn recency_decay(effective: Option<&str>, now: &str, half_life_days: f64) ->
     0.5_f64.powf(age_days / half_life_days)
 }
 
-fn split_datetime_offset(text: &str) -> (&str, Option<UtcOffset>) {
+pub(crate) fn split_datetime_offset(text: &str) -> (&str, Option<UtcOffset>) {
     let text = text.trim();
     if let Some(body) = text.strip_suffix('Z').or_else(|| text.strip_suffix('z')) {
         return (body.trim_end(), Some(UtcOffset::UTC));
@@ -450,6 +489,27 @@ mod tests {
         assert_eq!(dt.isoformat(), "2024-01-02T03:04:05.000001");
         let dt = PyDateTime::parse("2024-01-02T03:04:05Z").expect("parse");
         assert_eq!(dt.isoformat(), "2024-01-02T03:04:05");
+    }
+
+    #[test]
+    fn search_bounds_follow_python_as_ts() {
+        assert_eq!(
+            parse_search_bound("2024-01-02").unwrap().python_str(),
+            "2024-01-02 00:00:00"
+        );
+        assert_eq!(
+            parse_search_bound("2024-01-02T03:04:05+05:30")
+                .unwrap()
+                .python_str(),
+            "2024-01-01 21:34:05"
+        );
+        assert_eq!(
+            parse_search_bound("2024-01-02T03:04:05Z")
+                .unwrap()
+                .python_str(),
+            "2024-01-02 03:04:05"
+        );
+        assert!(parse_search_bound("not-a-date").is_err());
     }
 
     #[test]

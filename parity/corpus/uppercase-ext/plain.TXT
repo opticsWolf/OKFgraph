@@ -1,0 +1,6 @@
+---
+title: Plain TXT
+type: note
+---
+
+Plain body.

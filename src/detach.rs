@@ -19,8 +19,6 @@ const SKIP_DIRS: &[&str] = &[
     "dist",
     "build",
 ];
-const SOURCE_EXTS: &[&str] = &["md", "markdown", "txt"];
-const RESERVED: &[&str] = &["index.md", "log.md"];
 
 fn native_display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
@@ -85,20 +83,7 @@ fn all_files(root: &Path, settings: &Settings) -> Vec<PathBuf> {
             if skipped(&path, root) || is_db_file(&path, settings) {
                 continue;
             }
-            let name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if RESERVED.contains(&name.as_str()) {
-                continue;
-            }
-            if !SOURCE_EXTS.contains(
-                &path
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or_default(),
-            ) {
+            if !crate::util::is_concept_file(&path) {
                 out.push(path);
             }
         }

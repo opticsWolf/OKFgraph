@@ -19,6 +19,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_fixtures import validate_fixtures  # noqa: E402
 from oracle import oracle_root  # noqa: E402
 
 OPS_IGNORE_KEYS = [
@@ -84,6 +85,12 @@ def main() -> int:
     ap.add_argument("--only", action="append", default=[], help="run only this scenario name")
     ap.add_argument("--skip", action="append", default=[], help="skip this scenario name")
     args = ap.parse_args()
+
+    fixture_errors = validate_fixtures()
+    if fixture_errors:
+        for error in fixture_errors:
+            print(f"[FAIL] fixture: {error}")
+        return 1
 
     out = ROOT / args.out_dir
     out.mkdir(parents=True, exist_ok=True)

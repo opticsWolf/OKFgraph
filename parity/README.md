@@ -17,6 +17,9 @@ the Python and Rust cores in one process.
   any unexpected op or DB difference.
 - `tools/check_coverage.py` — verifies success and typed-error coverage for
   every public op, with documented waivers.
+- `tools/check_fixtures.py` — validates OOXML fixture root relationships
+  against their extensions; called by `run_matrix.py` before any scenario.
+  Intentionally malformed packages live in `corpus/invalid/` instead.
 - `examples/perf_bench.rs` / `tools/python_bench.py` /
   `tools/check_perf_bench.py` — paired release benchmark for import, embed,
   search, RSS and startup; writes `docs/performance-baseline.md`.
@@ -325,8 +328,9 @@ New coverage includes `import-identity-frontmatter`, `import-multi-root`,
 `ingest-params`,
 `import-resource-sanitize`, `ingest-pdf-no-plugin`, and
 `ingest-pdf-real` / `ingest-office-real` (real PDF/DOCX fixtures through the
-optional bobine add-on), and `ingest-office-formats` (XLSX conversion success
-and a PPTX refusal with identical typed envelopes).
+optional bobine add-on), and `ingest-office-formats` (DOCX/XLSX/PPTX conversion
+success plus a malformed PPTX that produces the same typed envelope in both
+runners).
 `parity/tools/check_coverage.py` asserts every public op appears in a
 scenario.
 
@@ -334,9 +338,10 @@ External lanes are covered by `check_external_lanes.py` against four local
 mock hosts, including TEI rerank fallback and a generated GGUF counter. The remaining coverage gaps are the Python 0.15 one-time
 old-schema migration step (v10-only compatibility) and any host-specific
 model cache state that cannot be reproduced deterministically. PDF,
-DOCX and XLSX are covered; pinned bobine refuses PPTX in both runners, which
-`ingest-office-formats` records as a typed conversion outcome rather than a
-divergence. `doctor` parameters are covered by
+DOCX, XLSX and PPTX all convert successfully in both runners; a deliberately
+malformed PPTX in `corpus/invalid/` records the typed conversion failure shape.
+`tools/check_fixtures.py` guards against another malformed fixture being
+mistaken for a converter limitation. `doctor` parameters are covered by
 `doctor-params`; portable `info` probes (index inventory, image routes, stale
 lock, lanes) are now compared with `--ignore-info-rule` for only the
 host-specific `ort_*`, `converter_cache`, `cache_hygiene`, `pdf_converter`,

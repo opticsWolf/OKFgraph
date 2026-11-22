@@ -49,6 +49,14 @@
         "pdf_path": "parity/fixtures/sample.pptx",
         "auto_import": true
       }
+    },
+    {
+      "op": "ingest",
+      "params": {
+        "kind": "pdf",
+        "pdf_path": "parity/corpus/invalid/broken.pptx",
+        "auto_import": false
+      }
     }
   ]
 }

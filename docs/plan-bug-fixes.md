@@ -1,9 +1,11 @@
 # OKFgraph Rust Core — Bug Findings and Fix Plan
 
-**Status:** review plan from `6a71fec`, updated after the complete M6 cutover.
-All code findings through BUG-066 are closed; section 11 is the authoritative
-register and records the one intentional divergence and the ongoing gate
-obligations. The original review below is kept as the evidence trail.
+**Status:** review plan from `6a71fec`, updated after the complete M6 cutover
+and the post-cutover review at `a62d1c9`. All code findings through BUG-066 are
+closed. The post-cutover review added **BUG-067–BUG-089**, all open in section
+8A; section 11 is the authoritative register and records the one intentional
+divergence and the ongoing gate obligations. The original review below is kept
+as the evidence trail.
 
 **Scope:** the Rust core, the PyO3 binding, the Python facade, the optional
 PDF plugin, and the parity harness. Stage C surfaces (`okf serve`, MCP) are
@@ -21,7 +23,10 @@ after normalizing wall-clock graph times/internal IDs and the documented
 intentional differences; the 59th, `ingest-pdf-no-plugin`, records the
 intentional missing-plugin error divergence instead of a green comparison.
 Current verification is listed under “Verification status” below and the
-authoritative register in section 11.
+authoritative register in section 11. The post-cutover review at `a62d1c9`
+found additional API, settings, named-root, detach, parser and surface
+regressions; they are listed in section 8A and are not yet exercised by the
+58-scenario matrix.
 
 **Important:** the original review below describes the pre-fix state. It is
 kept as the evidence trail; the implementation status section records what is
@@ -110,10 +115,11 @@ Deliberately partial / remaining before stable:
   `wal_mode` is accepted but lbug always journals through its WAL (upstream
   has no separate mode); the compatibility-only behavior is now explicitly
   documented in `docs/rust-compat.md` §A.
-- BUG-034 is covered end-to-end for PDF, DOCX and XLSX through the same bobine
-  converter path. A minimal PPTX fixture is also covered: pinned bobine 0.9.1
-  refuses it in both runners with a typed `CONVERSION_FAILED`, verified by
-  `ingest-office-formats`.
+- BUG-034 is covered end-to-end for PDF, DOCX, XLSX and PPTX through the same
+  bobine converter path. `ingest-office-formats` converts and imports a valid
+  minimal PPTX in both runners. The earlier PPTX refusal came from a malformed
+  fixture whose root relationship named `xl/workbook.xml`, not from missing
+  PPTX support in bobine 0.9.1; `check_fixtures.py` now guards that invariant.
 - BUG-045 is closed: `doctor` now accepts `stale_days`/`fix`/`strict`/
   `cache_dir`, returns `DOCTOR_FINDINGS`, and the safe fix repairs links and
   orphan delta rows; `doctor-params` covers it.
@@ -137,7 +143,8 @@ Deliberately partial / remaining before stable:
   the primary output-dir tree and DB dump are compared byte/semantic-for-byte.
 - BUG-050 is closed: a loaded plugin's real conversion failure now carries
   Python 0.15's `fields`/`remedy` instead of the missing-add-on install hint;
-  `ingest-office-formats` covers the XLSX success and PPTX refusal paths.
+  `ingest-office-formats` covers valid DOCX/XLSX/PPTX conversion plus a
+  deliberately malformed PPTX in `parity/corpus/invalid/`.
 - M4 surface checks outside the scenario counter: `check_client.py`,
   `check_mcp.py`, `check_mcp_connect.py`, `check_mcp_http.py`,
   `check_uds.py`, `check_jobs.py`, `check_cli.py`, `check_packaging.py`,
@@ -205,6 +212,15 @@ A finding is “done” only when:
 - Symlink/hidden-file walking, index error handling, and PDF conversion
   lifecycle need work.
 
+### Post-cutover additions (open)
+
+The `a62d1c9` review found 23 additional open findings, detailed in section
+8A. The highest-impact clusters are: named-root path/import resolution
+(BUG-072), detached-graph write enforcement (BUG-074), delete atomicity
+(BUG-075), settings/env/default-root wiring (BUG-069), schema-width adoption
+(BUG-067), fresh-database creation (BUG-068), and the `okf-asset://` local
+file disclosure (BUG-084). The existing matrix does not exercise any of them.
+
 ### Why the green matrix misses this
 
 The scenarios currently use:
@@ -238,6 +254,7 @@ then API/storage hardening.
 | 4 | Missing documented features | BUG-013, BUG-020, BUG-021, BUG-033, BUG-034, BUG-035, BUG-036, BUG-037 | XL | Phase 3 |
 | 5 | API, storage, packaging | BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-032, BUG-038, BUG-039, BUG-040, BUG-042, BUG-043, BUG-045 | L | Phases 1–4 |
 | 6 | Verification and release gates | BUG-044, BUG-046, BUG-047, BUG-048, BUG-049 | M | All |
+| 7 | Post-cutover review | BUG-067–BUG-089 | XL | All prior phases |
 
 “Size” is S (< half day), M (1–3 days), L (3–5 days), XL (1–2 weeks) for one
 experienced Rust developer; split each work package into reviewable commits.
@@ -1632,8 +1649,10 @@ the plugin is loaded and bobine rejects one file. Python 0.15 emits
 `fields: {path, converter: "bobine"}` and the “check the file opens in another
 reader” remedy. `addons/pdf` now returns those fields for `ingest_document`
 failures, and the core copies them into the typed error while retaining the
-install hint for bare ABI/setup errors. `ingest-office-formats` verifies the
-XLSX success and the PPTX refusal with zero differences.
+install hint for bare ABI/setup errors. `ingest-office-formats` verifies
+XLSX/PPTX success and a typed failure for a deliberately malformed PPTX with
+zero differences. The original `sample.pptx` was also malformed (it carried
+the XLSX root relationship); that was a fixture bug, not a converter refusal.
 
 ### BUG-045 — `doctor` parameters were ignored
 
@@ -1768,7 +1787,7 @@ Add these before calling the beta usable:
 | `time-microseconds-offset` | BUG-022 |
 | `percent-escape-nonascii` | BUG-002 |
 | `pdf-real-fixture` | BUG-034 |
-| `ingest-office-formats` | BUG-034, BUG-050 (XLSX success, PPTX typed failure) |
+| `ingest-office-formats` | BUG-034, BUG-050 (DOCX/XLSX/PPTX success, malformed PPTX typed failure) |
 | `external-lanes-mock` | BUG-013 |
 | `pins-mismatch` | BUG-014, BUG-015 |
 | `facade-api` | BUG-026, BUG-027 |
@@ -1777,6 +1796,26 @@ Add these before calling the beta usable:
 | `doctor-empty` | BUG-046 |
 | `op-names` | BUG-038 |
 | `op-error-matrix` | BUG-044 |
+| `settings-open-and-env` | BUG-067, BUG-068, BUG-069, BUG-071 |
+| `cli-settings-parsing` | BUG-070 |
+| `import-named-roots` | BUG-072 |
+| `file-free-writes` | BUG-073 |
+| `detached-write-refusal` | BUG-074 |
+| `delete-atomic-read-only` | BUG-075 |
+| `recover-window` | BUG-076 |
+| `traverse-path` | BUG-077 |
+| `search-time-and-params` | BUG-078 |
+| `frontmatter-null-id` | BUG-079 |
+| `frontmatter-type-errors` | BUG-080 |
+| `links-code-encoding-ambiguity` | BUG-081 |
+| `import-uppercase-extensions` | BUG-082 |
+| `images-corrupt-and-title` | BUG-083 |
+| `images-asset-traversal` | BUG-084 |
+| `bibtex-sparse-entry` | BUG-085 |
+| `export-existing-links` | BUG-086 |
+| `ingest-pdf-multiple` | BUG-087 |
+| `jobs-reembed-lock` | BUG-088 |
+| `mcp-http-serialization` | BUG-089 |
 
 For each scenario, include both success and typed-error envelopes, and compare
 the semantic DB dump plus the export tree where applicable.
@@ -1817,6 +1856,26 @@ the semantic DB dump plus the export tree where applicable.
 - Schema migration fixtures pass and Python 0.15 can reopen Rust-written DBs.
 - File lock interoperability is tested across Python and Rust processes.
 - PDF/Office end-to-end parity has a real fixture.
+
+### Gate E — after the post-cutover review
+
+- A fresh `OKFRouter`/CLI open creates a v10 database; every graph opens with
+  its schema-adopted width, not the caller’s default.
+- TOML, environment variables, default bundle roots and CLI `--root`/CSV
+  flags reach `Settings`; unknown settings and invalid values fail typed.
+- Named-root update/delete/import/detach resolve the owning tree and leave no
+  stray files; file-free update/supersede works.
+- Detached graphs refuse writes unless a successful `--force` reattach;
+  `delete(remove_file=True)` is atomic under failure and read-only mode.
+- `recover_deleted` obeys the 24-hour window.
+- Traverse path mode, search time bounds, frontmatter/link parsing and
+  uppercase extensions match the oracle scenarios in section 7.
+- Corrupt images fall back to captions; `okf-asset://` cannot read outside the
+  bundle.
+- Reembed jobs take the process write lock; MCP tools share the owner lock;
+  job records match Python’s phase/elapsed/`JOB_OPS` contract.
+- New scenarios and typed-error coverage are in `run_matrix.py` and
+  `check_coverage.py`, with no waivers for these findings.
 
 ---
 
@@ -1920,6 +1979,751 @@ pruning; the CLI differential smoke remains 13/13.
 
 ---
 
+## 8A. Post-cutover review findings (BUG-067–BUG-089, open)
+
+**Review baseline:** `a62d1c9` (`docs: refresh Rust-first 0.16 documentation set`).
+This review exercised the public Python facade, `okf`, `okf serve`, and the
+Rust API directly against the frozen `python-oracle-0.15.0` behavior. The
+existing 58/58 differential matrix is green, but none of the scenarios below
+is covered by it.
+
+The findings are grouped by root cause. Each needs the normal close rule:
+code fix + regression test + a differential scenario (or a documented
+exclusion) + a status update in section 11.
+
+### BUG-067 — Router discards the schema-adopted embedding width
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/ops/mod.rs:168-205` (`Router::open`,
+`Router::open_read_only`, `Router::open_writable`), `src/store/mod.rs:92-100`
+(`Store::open`).
+
+**Cause:** `Store::open` correctly reads `Concept.embedding` from
+`TABLE_INFO` and changes its own `settings.embedding_dim` to the stored width.
+Every `Router` constructor then stores `settings.clone()` from the caller
+instead of `store.settings().clone()`. `Rust` therefore keeps 512 for a
+256- or 3-dim graph while the Store, pins, and schema say otherwise.
+
+**Evidence:** opening the 3-dim `parity/fixtures/oracle-v10.db` through the
+public facade with default settings fails at the first model-backed op with
+`DIM_MISMATCH: graph stores 3-dim vectors, configured 512`. A 512-dim graph
+opened with `--embedding-dim 256` behaves the same way.
+
+**Impact:** the “on-disk width is authoritative” rule from BUG-008 only reaches
+`Store`. `embed`, `reembed`, model pin checks, and any path that reads
+`Router.settings.embedding_dim` use a stale value. This blocks opening any
+existing graph whose width differs from the current default or flag.
+
+**Fix:** build all three `Router` values from the `Store` after adoption, e.g.
+`let store = Store::open_writable(settings)?; let settings = store.settings().clone();`.
+Audit every `self.settings.embedding_dim` use after that; it should be the
+adopted value. Keep `db_created` derived from the original path (path equality
+is unaffected).
+
+**Tests:** open 3/256/768-dim fixtures with mismatched `--embedding-dim`;
+assert `router.settings().embedding_dim` equals the schema width,
+`pin_info().pinned.embedding_dim` equals it, `embed` works, and reembed refuses
+only for a genuinely different engine width.
+
+### BUG-068 — Public router no longer creates a fresh database
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/store/mod.rs:77-85` (`Store::open`), `src/ops/mod.rs:168`
+(`Router::open`), `python/okfgraph/router.py`.
+
+**Cause:** `Store::open` requires `Path::exists()` and returns
+`FILE_NOT_FOUND` otherwise. Python 0.15's `OKFRouter(db_path=...)` creates the
+parent directory and initializes the v10 schema on first use. `Router::init`
+exists, but the public facade never calls it. `Router::db_created_for` even
+special-cases `:memory:`, while `Store::open` rejects it before that branch is
+reachable.
+
+**Evidence:** `OKFRouter(db_path=<fresh temp path>)` raises
+`FILE_NOT_FOUND: database not found`. The README and `docs/quickref.md` both
+show `OKFRouter(db_path="graph.db", bundle_root="./notes")` without a prior
+`okf init`. `okf search`/`okf import` on a missing default database behave the
+same way.
+
+**Impact:** the documented Python quick start is broken, first-run CLI flows
+that rely on Python's create-on-open behavior fail, and `:memory:` is
+unreachable despite being advertised in the code.
+
+**Fix:** add an explicit open-or-init policy used by the public facade and CLI:
+create parent directories, initialize the v10 schema when the file is absent,
+and keep `okf init` as the explicit operation. For an existing file, still
+refuse missing/old schema versions. Wire `:memory:` through the same path or
+remove the unsupported claim.
+
+**Tests:** fresh `OKFRouter` creates a v10 DB with the requested width;
+reopening it works; an empty zero-byte file is handled intentionally; old and
+future schema versions still fail with `CONFIG_INVALID`; `:memory:` either
+works or returns a clear `CONFIG_INVALID`.
+
+### BUG-069 — `Settings::load` is dead code: env, TOML, validation, and default root never run
+
+**Severity:** P1, L — **Status: open**.
+
+**Where:** `src/settings/mod.rs:222-310` (`Settings::load`, legacy env
+rejection, TOML merge, `checks`), `src/settings/mod.rs:512-530`
+(`default_bundle_root`), `src/cli/mod.rs:1297-1333` (`settings_from`).
+
+**Cause:** `Settings::load` has no production call site. `settings_from` only
+collects command-line flags and calls `Settings::from_map`; it never reads
+`okfgraph.toml`, `OKFGRAPH_*` environment variables, legacy names, or
+`default_bundle_root`. `Settings::checks()` is therefore not run for CLI,
+MCP, `serve`, parity-run, or facade settings either.
+
+**Evidence:**
+
+```text
+OKFGRAPH_DB_PATH=<fixture> okf doctor --json
+  -> FILE_NOT_FOUND: database not found: .okfgraph/okfgraph.db
+```
+
+After `okf init` in a `.okfgraph` home, `okf import --all` fails with
+`MISSING_PARAM: import_bundle needs a bundle path or configured bundle_root`
+even though Python would use `.okfgraph/bundle`. `OKFGRAPH_DB` and other
+renamed variables are also never rejected, so their migration errors never
+surface.
+
+**Impact:** environment and TOML configuration are silently ignored on every
+Rust surface; the documented precedence “TOML < env < CLI” is false. Default
+bundle roots differ from Python (CLI `.`/`.okfgraph/bundle`, serve/MCP the db
+folder), so default imports and serve/MCP roots are wrong. Invalid settings
+pass through because `checks` is dead.
+
+**Fix:** make `Settings::load` the single production loader (or call it from
+`settings_from` with the real environment and CLI map), then apply
+`default_bundle_root` in the CLI/serve/MCP open paths. Ensure `checks` runs
+for every surface, including the Python facade. Keep `Settings::from_map` as a
+typed internal constructor only.
+
+**Tests:** env-only `okf doctor`; `okfgraph.toml` precedence over env and env
+over flags; legacy env rejection; default root for `.okfgraph` homes and
+non-`.okfgraph` paths; invalid settings report `CONFIG_INVALID`; MCP required
+`db_path` behaves like Python.
+
+### BUG-070 — `--root` and CSV global flags fail before any command runs
+
+**Severity:** P1, S — **Status: open**.
+
+**Where:** `src/cli/mod.rs:1319-1331`, `src/settings/mod.rs:188-194`.
+
+**Cause:** `settings_from` inserts every `--root` occurrence as a JSON array
+of `ALIAS=PATH` strings, while `Settings.roots` deserializes as
+`BTreeMap<String, String>`. It inserts every Csv setting (for example
+`--allowed-image-domains`) as one string, while the struct expects
+`Vec<String>`. `Settings::from_map` does not normalize either type.
+
+**Evidence:**
+
+```text
+okf doctor --root other=parity/corpus/multi-root/other
+  -> CONFIG_INVALID: invalid settings: invalid type: sequence, expected a map
+
+okf doctor --allowed-image-domains a.com,b.com
+  -> CONFIG_INVALID: invalid settings: invalid type: string, expected a sequence
+```
+
+**Impact:** named roots are unusable from the CLI even though they are a
+documented multi-root feature, and at least one exposed CSV flag cannot be
+used at all. This also blocks fixing BUG-072 through the CLI.
+
+**Fix:** parse `--root` entries into an alias→path object (reject missing
+`=`, empty alias/path, and duplicate aliases consistently with Python) and
+parse Csv flags with the same split/trim/drop-empty rule as `Settings::load`.
+Alternatively route all CLI values through `parse_value` before
+`from_map`, but keep `from_map` strict for programmatic callers.
+
+**Tests:** CLI `--root` with one and several aliases; duplicate/malformed
+aliases; `--allowed-image-domains a.com,b.com`; CSV empty entries; the same
+values via env/TOML; all produce the expected settings and no `CONFIG_INVALID`.
+
+### BUG-071 — Unknown settings are silently ignored; validation and explicit model files are missing
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/settings/mod.rs:171-195` (`Settings::from_map`),
+`src/settings/table.rs` (no `model_path`/`tokenizer_path` rows),
+`python/okfgraph/router.py`.
+
+**Cause:** `from_map` copies only names present in `SETTINGS` (plus `roots`)
+into `full`; any other key is dropped. It also never calls `checks`, so
+out-of-range and choice-invalid values survive. The Python facade forwards
+arbitrary kwargs, so a misspelled setting becomes a silent default.
+
+**Evidence:** all of these are accepted without an error:
+
+```python
+OKFRouter(db_path=db, bogus_setting=1)
+OKFRouter(db_path=db, embedding_dim=8)
+OKFRouter(db_path=db, model_path="x.onnx", tokenizer_path="y.json")
+```
+
+Python 0.15 rejects the first two (`TypeError`/`ValueError`) and uses the last
+two for air-gapped explicit ONNX files. Rust has no table rows or loader path
+for them, so it silently opens the registry model instead.
+
+**Impact:** typo’d configuration appears to work but changes nothing; invalid
+dimensions/devices/backends can reach schema creation or the embedder; users
+who depend on explicit local model files get a network/model-cache path
+instead of a clear refusal.
+
+**Fix:** reject unknown keys in `from_map` (the facade should map Python’s
+`embed_backend` alias first), run `checks` before returning a settings object,
+and either port `model_path`/`tokenizer_path` end-to-end or return a typed
+`CONFIG_INVALID` saying explicit local files are unsupported. Do not accept a
+setting and ignore it.
+
+**Tests:** unknown kwarg → `CONFIG_INVALID`; `embedding_dim=8`,
+`chunk_size=1`, invalid `device`/choices → `CONFIG_INVALID`; documented
+explicit-file pair either loads or fails explicitly when one is missing;
+facade and CLI share the same validation.
+
+### BUG-072 — Named-root paths and import identity are not threaded through writes
+
+**Severity:** P0, L — **Status: open**.
+
+**Where:**
+
+- `src/store/mod.rs:1089-1109` (`resolve_file_paths`),
+  `1112-1123` (`source_file_for_concept`).
+- `src/ingest/mod.rs:81-84` (`import_files` parses with `root=None`),
+  `531-550` (`alias_for_path` is exact-match only), `106-405`
+  (`import_bundle_one`).
+- `src/ops/mod.rs:687-709` (`write_and_import` strips `@alias/` but joins the
+  primary root), `304-385` (`delete`/`trash_files`).
+- `src/cli/mod.rs:1040-1077` (positional `--bundle-path` is passed but never
+  consumed).
+- `src/detach.rs:264-380` (single-root detach; clears all ledger rows).
+
+**Cause:** FileHash keys are namespaced (`@alias/relative`), but path
+resolution only ever consults `settings.bundle_root`. For an `@alias/...` key
+it tries `primary/relative` first and `primary/@alias/relative` second; it
+never tries `settings.roots[alias]/relative`. `import_files` has no
+`identity_root`/alias lookup, and `write_and_import` deliberately strips the
+alias before joining the primary root. `detach` only verifies one tree but
+clears `FileHash`/`DirHash`/`DeletedPath` for every root.
+
+**Impact:** with a named root configured, a file-backed concept can resolve
+to a same-named primary-root file (wrong file edited), materialize a stray
+file into the primary tree, fail “imports as X, not @alias/Y”, or delete the
+graph concept while leaving the real file in the named root. Single-file
+imports from a secondary root mint bare or stem-only IDs, so they collide with
+primary concepts. `detach` can discard the provenance ledger of roots it did
+not verify. `okf import --bundle-path DIR file.md` ignores the explicit
+identity root, unlike Python’s `identity_root`.
+
+**Fix:** centralize a root resolver that maps an alias/key to
+`settings.roots[alias]` (with the documented primary fallback only for unknown
+aliases), use it in `resolve_file_paths`, `delete`, `trash`, recovery,
+detach verification, and materialization. Add `identity_root`/alias handling
+to `import_files` and the CLI, and implement Python’s longest-prefix
+`resolve_alias_for_path` for subdirectories. Port `_detach_multi` or explicitly
+refuse detach when named roots are configured.
+
+**Tests:** multi-root bundle with identical relative names in primary and
+alias roots; update/delete/supersede each resolve the correct file; import a
+single file and a subdirectory in a named root; `--bundle-path` with positional
+files mints IDs relative to that tree; detach verifies every root or refuses.
+
+### BUG-073 — File-free `update` and `supersede` are refused
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/ops/mod.rs:653-717` (`write_and_import`), `759-928`
+(`update`/`supersede`).
+
+**Cause:** when there is no source file and `bundle_root` is `None`,
+`write_and_import` returns `MISSING_PARAM: materialize needs a bundle root`.
+Python’s `_write_and_import` explicitly supports this mode: it edits the
+stored concept and re-runs the single-concept pipeline, re-embedding and
+preserving incoming links.
+
+**Impact:** the documented file-free router can search/read/traverse/doctor
+but cannot update or supersede concepts. This is a public API regression, not
+just a missing convenience.
+
+**Fix:** mirror Python’s third branch: apply the edit to the graph concept,
+run the same single-concept import/encode path with a synthetic `Parsed`, and
+preserve incoming links/timestamps. Keep materialization only when a bundle
+root exists.
+
+**Tests:** file-free update changes title/tags/extra and re-embeds; incoming
+links survive; supersede writes relations and tags in both directions;
+materialized and file-backed modes still produce the same result as before.
+
+### BUG-074 — Detached graphs accept writes; `force`/`rebuild`/`batch_size` are ignored
+
+**Severity:** P0, M — **Status: open**.
+
+**Where:** `src/detach.rs:246-377` (only refuses a second detach),
+`src/ops/mod.rs:1141-1167` (`import_bundle`), `1170-1206`
+(`import_file`/`import_files`), `src/ingest/mod.rs:101-106`
+(`ImportOptions.force` is never read), `src/converters.rs` (ingest has no
+detached check).
+
+**Cause:** Python calls `_require_attached(force)` from all import/ingest
+paths; a detached graph refuses writes with `DETACHED` unless `force` performs
+an explicit reattach. Rust has no equivalent guard. `force` is accepted in
+`ImportOptions` but never consulted, and `rebuild`/`batch_size` are accepted by
+the CLI/op signatures but have no implementation in the import pipeline.
+
+**Impact:** after `okf detach`, imports and ingests still mutate the graph even
+though the source tree may be gone, violating the detach contract and creating
+a graph that can no longer be audited against a bundle. `--force` cannot
+re-attach; `--rebuild defer/force` silently behaves like `auto`; `batch_size`
+does not bound import batches.
+
+**Fix:** add a shared `require_attached(force, root)` check to import, ingest,
+single-file writes, and materialization. Implement the Python reattach rules
+(root must match, every configured root present) or document and reject
+`force` explicitly. Implement the index policy for `rebuild` and either honor
+`batch_size` in import encoding or reject it as unsupported; never accept a
+control that does nothing.
+
+**Tests:** detached `import`/`ingest`/`update` → `DETACHED`; `force` with the
+matching root re-attaches; `force` with a different root refuses; `rebuild
+defer` skips index creation and `force` rebuilds; `batch_size` changes encode
+batch boundaries (or a typed refusal is asserted).
+
+### BUG-075 — `delete` moves files before the database mutation is safe
+
+**Severity:** P0, M — **Status: open**.
+
+**Where:** `src/ops/mod.rs:266-325` (`delete`), `333-385` (`trash_files`).
+
+**Cause:** `delete` resolves live files, moves them to `.okf-trash`, forgets
+their FileHash rows, and only then calls `purge::soft_delete`. If that write
+fails (read-only Store, disk/lock error, missing table) the concept remains
+live but its files are gone from the bundle and no tombstone records the
+trash. `trash_files` also commits each move/forget independently, so a
+mid-list rename failure leaves a partial move.
+
+**Impact:** data loss or an unrecoverable half-delete, especially through
+`Router::open_read_only` where the write refusal happens after the file move.
+The user sees an error but the bundle has already changed.
+
+**Fix:** preflight that the Store is writable before touching the filesystem;
+perform the tombstone/snapshot write first or stage all moves and roll them
+back if the DB transaction fails; record the trash list on the tombstone before
+moving when possible, or use a recoverable journal. Make the whole operation
+idempotent so a retry can finish a partial move.
+
+**Tests:** read-only `delete(remove_file=True)` changes no file; injected
+soft-delete failure restores every moved file and ledger row; injected rename
+failure leaves the concept and files intact; retry after a simulated crash
+finishes cleanly.
+
+### BUG-076 — Recovery ignores the 24-hour window
+
+**Severity:** P1, S — **Status: open**.
+
+**Where:** `src/purge.rs:128-176` (`recover`), `src/ops/mod.rs:386-430`
+(`recover_deleted`), `src/store/mod.rs:1244-1285` (`list_deleted`).
+
+**Cause:** Python’s `_recover_concept_inner` parses `deleted_at` and returns
+false when `(now - deleted_at) > SOFT_DELETE_WINDOW` (24h). Rust’s `recover`
+never reads or compares `deleted_at`; it restores any snapshot that exists.
+
+**Impact:** `list_deleted` can report `recoverable: false` while
+`recover_deleted` still succeeds past the promised window. Tombstones are
+supposed to expire into `purge_deleted`; recovery after expiry violates the
+lifecycle and can resurrect data that should have been collected.
+
+**Fix:** use the latest tombstone’s `deleted_at`, parse it with the same
+clock/timezone rule as Python, and return false (or the typed
+`NOT_RECOVERABLE` at the op layer) past 24h. Keep invalid/missing timestamps
+conservative and consistent with `list_deleted`.
+
+**Tests:** now-1h recovers; now-25h refuses with `NOT_RECOVERABLE`;
+`list_deleted.recoverable` and `recover_deleted` agree; malformed
+`deleted_at` follows the documented behavior; timezone-offset timestamps use
+the same wall-clock rule as the oracle.
+
+### BUG-077 — `traverse(target=...)` returns the wrong path and ignores path-mode rules
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/ops/mod.rs:2599-2708` (`traverse`, `find_path`).
+
+**Cause:** `find_path` is a custom BFS that only walks `LINKS_TO` and
+`CONTAINS`, never `PART_OF`/`INCLUDES_ASSET` or directory intermediates, and
+returns full node objects. It initializes the path empty, so the start node is
+missing; when `start == target` it returns `[]`. `max_len` is clamped to
+1..=6 while Python allows 1..=10. Empty `start_id` is handled before the
+`target` check, so a target without a start silently lists the root instead
+of raising. Path mode never rejects `relationship`, `depth`, `node_type`, or
+`link_kinds`, which Python reports as ignored.
+
+**Evidence:**
+
+```text
+okf traverse alpha --target beta
+  -> [{ "id": "beta", ... full node ... }]
+```
+
+Python returns alpha **and** beta, projected to `{id, title, type}`.
+
+**Impact:** path queries through directories/chunks/assets fail; the returned
+shape is not the documented one; long paths are cut off at 6; invalid
+argument combinations silently do the wrong thing.
+
+**Fix:** use the oracle query shape (`SHORTEST 1..N` over the four whitelisted
+relationship types, both directions) or an equivalent BFS that includes the
+start and projects only `id/title/type`; allow 1..=10; move the empty-start
+check before target handling; port the ignored-parameter matrix.
+
+**Tests:** direct link path includes both endpoints; path through a directory,
+a chunk, and an image asset; no path returns `[]`; >6-hop path; start==target;
+invalid empty-start+target; path-mode ignored params produce the same typed
+error as Python.
+
+### BUG-078 — Search time bounds are string comparisons; parameter validation is incomplete
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/ops/mod.rs:3143-3152` (`since`/`until`), `3933-3952`
+(`recency_weight`), `4099-4107` (`query_vector`), `SearchParams::parse`.
+
+**Cause:** Python’s `_as_ts` parses `since`/`until` into datetimes and binds
+them to `TIMESTAMP` columns. Rust compares the stored `effective_at` string
+lexicographically against the raw caller string. Date-only bounds therefore
+behave differently (`until=2024-01-02` still includes that day), offsets and
+alternate ISO spellings sort incorrectly, and invalid values are accepted.
+`recency_weight` falls back to `0.3` for any non-number instead of raising;
+`query_vector` silently drops non-numeric entries and accepts an empty or
+wrong-width vector.
+
+**Impact:** filtered searches can include/exclude the wrong day or range,
+while invalid parameters that Python rejects produce silently different
+results. An empty query vector can reach the vector index and fail later with
+an unrelated error.
+
+**Fix:** parse both bounds with the shared `PyDateTime` parser, validate them
+as Python does, and compare typed timestamps (or normalized UTC strings).
+Reject non-numeric/bool `recency_weight`; validate `query_vector` as a
+non-empty numeric array of the engine/graph width. Keep error fields/remedies
+in the same shape as Python.
+
+**Tests:** date-only `since`/`until` boundaries; Z/offset/fractional
+spellings; invalid bounds → `BAD_VALUE`; string/bool `recency_weight`;
+`query_vector` with a string entry, empty list, wrong width, and valid
+vector; compare result IDs and envelopes with the oracle.
+
+### BUG-079 — Null frontmatter `id:` becomes the concept id/uid `"None"`
+
+**Severity:** P1, S — **Status: open**.
+
+**Where:** `src/ingest/mod.rs:885-914`, `1074-1084` (`scalar_text`).
+
+**Cause:** Python guards with `fm_id is not None` and only uses a non-empty
+string. Rust converts `Json::Null` with `scalar_text` to the literal `"None"`,
+which then passes `safe_frontmatter_id` (letters only) and is used as the
+concept id under `identity="frontmatter"` or as `uid` under path identity.
+
+**Impact:** a file containing an empty `id:` imports as concept `None`, or
+gains `uid: None`, instead of keeping its path identity. That can create a
+wrong node and broken/incorrect wikilink resolution.
+
+**Fix:** treat `Json::Null` as absent before stringifying; only string values
+(and the documented scalar cases Python actually stringifies) should feed the
+id/uid path. Add a dedicated null-empty branch rather than relying on
+`scalar_text`.
+
+**Tests:** `id:` (null), `id: ""`, `id: 0`, `id: false`, and no `id:` under
+both identity modes; compare concept id/uid and DB dump with Python.
+
+### BUG-080 — Frontmatter type/YAML errors are silently defaulted or dropped
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/ingest/mod.rs:929-980` (`string_field`,
+`parse_tagged_datetime`, title/type/description/resource defaults),
+`src/markdown/mod.rs:191-650` (`parse_yaml`, `parse_float`, `tagged_date`).
+
+**Cause:** Pydantic validates `title`/`description`/`resource` as optional
+strings, `type` as a required string, and `timestamp` through
+`datetime.fromisoformat`; PyYAML raises on malformed YAML. Rust’s
+`string_field` returns `None` for a numeric/bool value (then silently uses the
+stem/default), invalid timestamps become `None`, and unterminated quotes or
+flow collections fall through as raw strings. Several double-quoted escapes
+and anchors/aliases are also treated literally.
+
+**Impact:** authored metadata can change or disappear without any error,
+content signatures and exports drift from Python, and a typo in frontmatter
+is much harder to detect. This is a data-quality bug even when no crash occurs.
+
+**Fix:** validate core frontmatter fields with the same rules as
+`ConceptModel` and return a typed `BAD_VALUE`/parse error naming the file and
+field. Make the YAML subset fail closed on malformed input rather than
+guessing; either implement the relevant PyYAML escapes/anchors or explicitly
+reject them with a clear message. Keep supported scalar coercion documented.
+
+**Tests:** numeric/bool `title`, `type`, `description`, `resource`;
+invalid/date-only/offset `timestamp`; unterminated single/double quotes and
+flow arrays/maps; `\n`/`\u` escapes; anchor/alias input; compare error
+envelopes or parsed metadata with the oracle.
+
+### BUG-081 — Link resolution diverges on code spans, encoding, escapes, and >2 ambiguous names
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/ingest/mod.rs:1495-1524` (`LinkIndex::add`), `1936-2068`
+(`markdown_links`, `strip_code`, `link_target`, `wikilinks`).
+
+**Cause/four symptoms:**
+
+1. `LinkIndex::add` removes a colliding key from the map but re-inserts the
+   third claimant: the `else if` only checks candidate membership for the new
+   id. A name claimed by three concepts can resolve instead of remaining
+   ambiguous. Python pops every claimed key and never restores it.
+2. `wikilinks()` reads the raw body; Python runs `strip_code` first. Links in
+   inline code or fences become real edges. `markdown_links` strips fences but
+   not inline code spans.
+3. `link_target` never percent-decodes the path; Python calls `unquote`, so
+   `my%20note.md` resolves there but not here.
+4. `..` segments are popped without tracking depth. An escaping path such as
+   `a/../../b` or `/../a` collapses to `b`/`a` and can resolve to a real
+   concept; Python’s `normpath` plus the `..`/`../` check marks it broken.
+
+**Impact:** phantom links from code blocks, missed links with encoded spaces,
+wrong link targets when names collide three ways, and links that should be
+broken resolving to unrelated concepts.
+
+**Fix:** implement Python’s ambiguity bookkeeping (remove on first collision
+and never re-add), use `strip_code` for both markdown and wiki extraction,
+percent-decode before normalization, and track the normalized path depth so
+escaping links return `None` with the same recorded target. Keep case-folding
+consistent with Python’s `str.lower()` for non-ASCII if parity requires it.
+
+**Tests:** 3-way duplicate title/stem/uid; links inside inline code, fenced
+code, and code with a different fence length; `%20`/UTF-8 escapes; `..` at
+root, inside a subdirectory, and with a leading slash; compare edges,
+BrokenLink rows, and `diff` output with the oracle.
+
+### BUG-082 — Bulk source discovery is case-sensitive on the extension
+
+**Severity:** P1, S — **Status: open**.
+
+**Where:** `src/ingest/mod.rs:709-712` (`walk_dir`), reused by
+`import_bundle`, `detach`, `diagnostics::lint`, and `diff`.
+
+**Cause:** Rust matches `Some("md" | "markdown" | "txt")` exactly. Python uses
+`fp.suffix.lower() in SOURCE_EXTS`, so `.MD`, `.Markdown`, and `.TXT` are
+concept files.
+
+**Impact:** uppercase-extension notes are silently skipped by import, never
+verified by detach (and may be reported as non-source files, refusing detach),
+and ignored by lint/diff. A tree can look empty or unchanged for reasons the
+user cannot see.
+
+**Fix:** lowercase the extension before comparison, and use one shared
+predicate for import, walk, detach, diff, and lint (as Python’s
+`is_concept_file` does).
+
+**Tests:** `.md`/`.MD`/`.Markdown`/`.TXT` in import, detach verification,
+lint, and diff; reserved `INDEX.MD`/`LOG.MD` behavior; mixed-case directory
+names; compare file sets and DB dumps.
+
+### BUG-083 — Image ingestion aborts on vision failures and ignores optional image titles
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/image_ingest.rs:673-688` (`ingest_concept_images`),
+`82-112` (`extract_refs`), `476-481` (`route_and_caption`).
+
+**Cause:** Python wraps per-image vision encoding in `try/except` and falls
+back to the caption route for undecodable bytes or a missing/incompatible
+vision runtime; only a lane outage aborts. Rust propagates every
+`pools.vision.get(...)`/`encode_image(...)` error and aborts the concept.
+`extract_refs` also treats everything between `](` and `)` as the source
+unless it starts/ends with `<...>`, so `![alt](pic.png "title")` produces the
+wrong `src`/asset id and usually no bytes.
+
+**Impact:** one corrupt image or unavailable optional vision lane prevents an
+entire document import, where Python keeps the concept with a caption row.
+Image titles change asset identity and prevent reuse.
+
+**Fix:** capture per-image vision errors, reclassify non-outage failures to
+the caption route (and record the existing failure counters/notes if the
+report exposes them), and let only `EXTERNAL_UNAVAILABLE`/lane-outage errors
+escape. Parse image references with optional single/double-quoted titles and
+angle-bracket sources.
+
+**Tests:** corrupt image bytes in `omni`/`optional` mode produce a caption row;
+lane outage still aborts; valid image with `"title"`, `'title'`, and
+`<path with spaces>`; compare asset ids, route, caption, and DB dump.
+
+### BUG-084 — `okf-asset://` paths can escape the bundle and read arbitrary local files
+
+**Severity:** P0, S — **Status: open (security; inherited from Python 0.15)**.
+
+**Where:** `src/image_ingest.rs:116-128` (`okf_asset_id`), `229-250`
+(`asset_store_bytes`), `382-393` (`load_bytes`).
+
+**Cause:** `okf_asset_id` only strips the scheme and leading/trailing slashes.
+`asset_store_bytes` then does `dir.join(asset_id)` (and a prefix glob) without
+rejecting `..`, absolute paths, or Windows drive/colon paths, and
+`load_bytes` bypasses `within_root` for this branch.
+
+**Impact:** a markdown file can read any file the process can access, store
+its bytes in an `ImageAsset`, and expose them through `get_image` as base64.
+Examples: `okf-asset://../../etc/passwd`, `okf-asset://C:/Users/...` on
+Windows, or a path that resolves outside the bundle. This is a local file
+disclosure and also poisons the graph with attacker-controlled bytes.
+
+**Fix:** validate the asset id as a single safe filename component (no `/`,
+`\`, `:`, `..`, empty/`.`), reject absolute paths, canonicalize the candidate
+and require it under the relevant asset-store/root, and keep the
+`within_root` check on every local branch. Prefer an explicit allowlist of
+`img_<uuid>`/stored asset ids. Decide whether to mirror the fix into the 0.15
+oracle; if not, document the intentional security divergence.
+
+**Tests:** `..`, nested `../`, absolute POSIX, Windows drive, colon, empty,
+and encoded traversal ids; valid `img_<uuid>` in `_assets`; shared asset
+store; assert no read outside root and no asset row for rejected ids.
+
+### BUG-085 — BibTeX sparse entries lose the citation fallback and keep untrimmed metadata
+
+**Severity:** P2, S — **Status: open**.
+
+**Where:** `src/converters.rs:922-1000` (`ingest_bib`), `547-620`
+(`parse_bibtex`).
+
+**Cause:** Python builds `citation = f"{head}. {venue}".strip(" .")` and falls
+back to `entry.key` when both are empty; Rust filters the empty parts and
+joins, producing `""` for an entry with only a title. Python also
+`.strip()`s author/year/venue/DOI/URL and applies `unwrap_braces()` to the
+abstract; Rust keeps whitespace/braces in several of those fields.
+
+**Impact:** sparse entries get an empty `description`/Citation section, and
+padded or braced fields produce different body/frontmatter bytes and content
+signatures than the oracle.
+
+**Fix:** reproduce the Python citation expression and key fallback, trim every
+text field before use, and unwrap braces for the abstract (and any other field
+Python unwraps). Keep tags/entrytype/year ordering unchanged.
+
+**Tests:** entry with only a title; empty author/year/venue; whitespace-padded
+fields; braced abstract/title; DOI/URL padding; compare body, description,
+frontmatter, tags, and DB dump.
+
+### BUG-086 — Export “See Also” duplicates links whose target appears mid-URL
+
+**Severity:** P2, S — **Status: open**.
+
+**Where:** `src/export/mod.rs:234-265` (`enrich_body`).
+
+**Cause:** Rust checks `body.contains("]({target}")`, which only matches a
+link URL that begins with the target id. Python scans any `](...)` whose URL
+contains the target id, so a link to `dir/target.md` suppresses the synthetic
+`target.md` See Also entry there but not here.
+
+**Impact:** exported bodies gain duplicate See Also bullets for links that
+already exist under a different relative path; round-trip bodies and export
+trees differ from Python.
+
+**Fix:** parse link destinations (or use the existing link extractor) and
+compare the resolved target id/path suffix, not a prefix-only substring.
+Keep the raw wikilink checks and the existing title-case comparison.
+
+**Tests:** body with `[x](target.md)`, `[x](dir/target.md)`,
+`[x](../target.md)`, `[[Title]]`, and code-span-only links; assert no
+duplicate See Also and compare export trees.
+
+### BUG-087 — CLI PDF ingestion cannot take multiple paths or folders
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/cli/mod.rs:1103-1107`, `src/converters.rs:1671-1676`.
+
+**Cause:** the CLI always stores `pdf_path` as an array (`num_args(1..)`), but
+`ingest_pdf` uses `json_string(params.get("pdf_path"))`, which returns `None`
+for an array, so it reports `MISSING_PARAM`. Python 0.15 expands folders and
+shell patterns and loops `_ingest_many_pdfs` over one router call per file.
+
+**Impact:** `okf ingest --kind pdf --pdf-path a.pdf b.pdf` and
+`--pdf-path docs/` fail, even though they are documented CLI forms; the same
+array shape from an API caller is also rejected instead of typed.
+
+**Fix:** either make the op accept a list and loop internally with the Python
+report shape, or expand/validate in the CLI and call once per path; support
+folder/glob expansion exactly as Python does. Keep single-path behavior and
+error envelopes unchanged.
+
+**Tests:** one PDF, two PDFs, one folder, one unmatched glob, a mixed
+valid/missing list; assert per-file report/error shape and no partial import
+on a preflight failure.
+
+### BUG-088 — Job-lane reembed bypasses the write lock and diverges from Python’s job contract
+
+**Severity:** P1, M — **Status: open**.
+
+**Where:** `src/server/mod.rs:155-226` (`JobManager::submit`), `278-284`
+(`view_with_elapsed`), `347-353` (`finish`), `478-520`
+(`submit_job_op`/`submit_job_body`).
+
+**Cause:**
+
+- The reembed branch takes only `op_lock` and calls
+  `router.reembed_with_control` directly; it never enters
+  `Router::with_write_lock`, so a CLI process can write during the job.
+- Submission checks `has_running("reembed")` but not
+  `Router::_reembed_active`, so a sync reembed and a job can race.
+- Any `OP_NAMES` op is accepted as a job; Python’s `JOB_OPS` is only
+  `("reembed",)`.
+- `view_with_elapsed` computes elapsed from `submitted` for queued jobs
+  (Python returns `0.0` until `started`), and `finish` clears `phase`
+  (Python retains the last progress phase).
+- `/jobs` body submission does not strip `mode` from `kwargs` like Python.
+
+**Impact:** concurrent writers can corrupt the reembed/pin state; a second
+reembed can queue instead of getting `REEMBED_IN_PROGRESS`; clients observe
+different job records; unsupported jobs run where Python returns a typed
+`BAD_VALUE` with `job_ops`.
+
+**Fix:** route both job and sync reembed through the same lock-aware op
+wrapper, check both the registry and `_reembed_active` atomically enough for
+the contract, restrict jobs to `JOB_OPS`, keep `phase` and elapsed semantics
+matching Python, and filter `mode` from stored kwargs.
+
+**Tests:** sync reembed blocks job submission with `REEMBED_IN_PROGRESS`;
+cancel/queued/terminal elapsed values; phase after done/cancelled; non-reembed
+job refusal; CLI writer during reembed sees `WRITE_LOCK_TIMEOUT`; compare
+`check_jobs.py` records with Python.
+
+### BUG-089 — MCP tool calls bypass the owner’s `op_lock`
+
+**Severity:** P1, S — **Status: open**.
+
+**Where:** `src/mcp/mod.rs:82-90` (`invoke`), `src/server/mod.rs:28-50`
+(`AppState.op_lock`).
+
+**Cause:** `okf serve /mcp` constructs `McpHttpService` with the `Arc<Router>`
+as `OpClient`; `invoke` calls `client.call` directly inside
+`spawn_blocking`. Python wraps the same router in `LockedRouter`, so MCP tools
+and `/ops`/jobs share one lock. Rust’s HTTP ops and jobs take `op_lock` only.
+
+**Impact:** MCP search/read/delete can run concurrently with a blocking HTTP
+op or job. The shared Ladybug connection mutex prevents raw DB races, but file
+operations, pin checks, reembed state, and multi-step writes are not protected
+as one owner operation, so the “one serialized owner” contract is broken.
+
+**Fix:** pass the owner lock (or a single `LockedOpClient` wrapper) into
+`OkfMcp`/`McpHttpService` and acquire it around every `client.call`, matching
+the HTTP path. Ensure cancel remains lock-free and the job lane does not
+double-lock.
+
+**Tests:** concurrent MCP + HTTP write/search with an injected delay; assert
+serialization (no overlapping op marker); MCP delete/import does not interleave
+with reembed; `/health` and cancel stay responsive; compare with Python’s
+`LockedRouter` behavior.
+
+---
+
 ## 9. Deferred / explicitly out of scope for this plan
 
 - UDS client verification is closed by BUG-054; `/mcp` is closed by BUG-053.
@@ -1952,6 +2756,13 @@ pruning; the CLI differential smoke remains 13/13.
 16. `feat: add schema migrations, write lock, and read-only enforcement`
 17. `test: add the regression/parity matrix`
 18. `docs: update M3 status and release notes`
+19. `fix: adopt schema settings and restore database creation`
+20. `fix: wire TOML/env settings, validation and default bundle roots`
+21. `fix: resolve named roots across import, writes and detach`
+22. `fix: guard detached and file-free writes; make delete recoverable`
+23. `fix: match traverse, search bounds, links and frontmatter validation`
+24. `fix: harden asset resolution and image caption fallbacks`
+25. `fix: complete CLI PDF, job-lock and MCP serialization parity`
 
 Each commit should include its tests; do not batch P0 fixes with refactors.
 
@@ -1960,9 +2771,9 @@ Each commit should include its tests; do not batch P0 fixes with refactors.
 ## 11. Open follow-ups (status register)
 
 This is the authoritative list of work that is still open after the
-`a7da87a`–`391b46a` fix series. “Closed” above means the code path is safe or
-the documented behavior is implemented; it does **not** mean every release
-gate is green.
+`a7da87a`–`391b46a` fix series and the `a62d1c9` post-cutover review. “Closed”
+above means the code path is safe or the documented behavior is implemented;
+it does **not** mean every release gate is green.
 
 | Finding | State | Why it is open | Required close action |
 | --- | --- | --- | --- |
@@ -1976,7 +2787,7 @@ gate is green.
 | BUG-047 | Closed | Unit tests copy the oracle fixture into a temp dir instead of sharing checkpoint state. | Keep the copy-fixture pattern for any new DB tests. |
 | BUG-048 | Closed | `doctor --fix` takes the same write lock as other writes; idle lock sidecars are unlinked like Python. | Keep lock interop/read-only checks in the release gate. |
 | BUG-049 | Closed | Typed-error envelopes for embed/traverse/import/sync match the oracle. | Keep `op-error-matrix` in the gate. |
-| BUG-034 | Covered for PDF/DOCX/XLSX/PPTX | XLSX converts in both runners; pinned bobine refuses PPTX in both with the same typed envelope (`ingest-office-formats`). | Re-test PPTX if bobine/office_oxide is upgraded. |
+| BUG-034 | Closed | PDF, DOCX, XLSX and a valid PPTX convert in both runners; `check_fixtures.py` rejects OOXML fixtures whose root relationship disagrees with their extension. The malformed `parity/corpus/invalid/broken.pptx` still verifies typed conversion failures. | Re-test PPTX if bobine/office_oxide is upgraded. |
 | BUG-050 | Closed | Loaded-plugin conversion failures now carry `fields` (`path`, `converter`) and the converter remedy; missing-plugin failures keep the install hint. | Keep covered by `ingest-office-formats`. |
 | BUG-051 | Closed | HTTP jobs submit/poll/list/cancel with terminal-state protection; `reembed_job` returns a job id. | Keep covered by `check_jobs.py`; revisit when jobs become durable across restarts. |
 | BUG-052 | Closed | All 29 CLI verbs, global flags, op mapping, and typed error ops are wired; `check_cli.py` is green. | Keep new verbs covered; revisit if the oracle CLI gains commands. |
@@ -1994,14 +2805,51 @@ gate is green.
 | BUG-064 | Closed | Remote images resolve-and-screen addresses, pin one safe address, disable redirects and stream-cap at 20 MiB; `images-ssrf-private` is green. | Re-run if image fetching changes. |
 | BUG-065 | Closed | `setup extensions` loads both files into a scratch DB before reporting `ok`; unit and CLI smoke green. | Re-run if the extension ABI changes. |
 | BUG-066 | Closed | Rust CLI writes redacted crash reports with `fields.crash_report` and keeps 20 files; unit tests green. | Keep in the release gate if CLI error handling changes. |
+| BUG-067 | Open | `Router` stores the caller’s `embedding_dim` instead of the width adopted by `Store::open`; 3/256/768-dim graphs fail with `DIM_MISMATCH` under default settings. | Build all `Router` constructors from `store.settings().clone()`; add mismatched-dim open/embed/reembed tests. |
+| BUG-068 | Open | `OKFRouter`/`Router::open` require an existing DB; Python creates one on first use and supports `:memory:`. README/quickref examples fail fresh. | Implement open-or-init for the public surfaces; define or remove `:memory:`; test fresh, existing, old and future schemas. |
+| BUG-069 | Open | `Settings::load` (TOML/env/legacy/checks) and `default_bundle_root` have no production call site. Env/TOML are ignored; default `okf import --all` lacks a root. | Route CLI/MCP/serve/facade through `Settings::load`; apply `default_bundle_root`; test precedence, legacy errors and invalid settings. |
+| BUG-070 | Open | CLI `--root` inserts an array where `Settings.roots` expects a map; CSV flags insert a string where `Vec<String>` is expected. Both fail `CONFIG_INVALID`. | Parse roots and Csv values in `settings_from`/`from_map`; add malformed/duplicate/empty tests. |
+| BUG-071 | Open | Unknown kwargs are silently dropped; `checks` never runs; `model_path`/`tokenizer_path` are accepted and ignored. | Reject unknown keys, run `checks`, and either implement explicit model files or return typed `CONFIG_INVALID`. |
+| BUG-072 | Open | Named-root FileHash keys are resolved only against the primary root; `import_files` has no identity root; write/delete/trash/detach use the wrong tree and can stray/erase files. | Thread `settings.roots` through resolution/import/write/detach, add longest-prefix aliases and multi-root detach, test with colliding paths. |
+| BUG-073 | Open | File-free `update`/`supersede` return `MISSING_PARAM`; Python edits the stored concept and re-embeds. | Port the graph-only `_write_and_import` branch; test title/tags/extra, links and supersede. |
+| BUG-074 | Open | Detached graphs accept imports/ingest/writes; `force` is never read; `rebuild`/`batch_size` are accepted but unimplemented. | Add `require_attached(force)`/reattach rules, implement or reject index/batch controls, test every write path. |
+| BUG-075 | Open | `delete(remove_file=True)` moves files and forgets hashes before `soft_delete`; a failed/read-only DB write leaves the concept live with files in trash and no tombstone. | Preflight writability, make trash/tombstone recoverable and idempotent, test rollback and retry. |
+| BUG-076 | Open | `purge::recover` never checks `deleted_at`; expired tombstones still recover while `list_deleted` says non-recoverable. | Enforce the 24-hour window with the oracle clock rules; test now-1h/now-25h and malformed timestamps. |
+| BUG-077 | Open | `find_path` misses PART_OF/INCLUDES_ASSET/directory hops, omits the start node, returns full nodes, caps at 6 (Python 10), and ignores path-mode argument rules. | Use the oracle shortest-path semantics/projection, allow 1–10, validate mode and test each edge type. |
+| BUG-078 | Open | `since`/`until` compare raw strings, not datetimes; `recency_weight` silently defaults non-numbers; invalid `query_vector` is silently truncated. | Parse/validate time bounds and parameters; test date-only, offset, malformed and vector-width cases. |
+| BUG-079 | Open | Null frontmatter `id:` stringifies to `"None"` and can become the concept id/uid. | Treat null as absent before scalar conversion; test null/empty/number/bool under both identities. |
+| BUG-080 | Open | Numeric/bool core frontmatter is defaulted/dropped; invalid timestamps become null; malformed YAML/anchors/escapes are guessed instead of rejected. | Match Pydantic/PyYAML validation and fail closed with typed field errors; add the scenario matrix. |
+| BUG-081 | Open | Third name collision resolves instead of staying ambiguous; wikilinks/inline code links are not stripped; link paths are not percent-decoded and `..` escape depth is lost. | Port Python ambiguity bookkeeping, `strip_code`, `unquote` and normpath/escape rules; compare edges/BrokenLinks. |
+| BUG-082 | Open | Bulk discovery is case-sensitive (`.MD`/`.Markdown`/`.TXT` skipped), unlike Python’s `suffix.lower()`. | Lowercase the extension and share one predicate across import/detach/lint/diff; test mixed-case trees. |
+| BUG-083 | Open | Vision-route errors abort the concept; Python falls back to captions except lane outages. Image refs ignore optional titles. | Catch per-image non-outage failures, preserve outage behavior, parse titles/angle sources; compare rows. |
+| BUG-084 | Open (security) | `okf-asset://` ids are joined without rejecting `..`/absolute/drive paths, allowing arbitrary local file reads into `ImageAsset`. | Validate to a safe asset id, canonicalize/within-root check every branch, test Windows/POSIX traversal. |
+| BUG-085 | Open | BibTeX citations lose the `entry.key` fallback and keep untrimmed/braced author/venue/abstract fields. | Reproduce Python citation fallback, trimming and `unwrap_braces`; test sparse/padded entries. |
+| BUG-086 | Open | Export See Also only detects `](target` at the start of a URL; links like `dir/target.md` get duplicated. | Compare resolved link destinations, not a prefix substring; test relative/up-level/alias links. |
+| BUG-087 | Open | CLI sends `pdf_path` as an array but `ingest_pdf` expects one string; multi-path/folder/glob PDF ingest fails. | Accept a list or loop in the CLI, add folder/glob expansion, preserve per-file reports. |
+| BUG-088 | Open | Job reembed bypasses `with_write_lock`; `_reembed_active` is not checked at submission; any op is accepted; queued elapsed/phase differ. | Route jobs through the same lock/op wrapper, limit `JOB_OPS`, match phase/elapsed/kwargs, test races. |
+| BUG-089 | Open | MCP `invoke` calls the router without `op_lock`; Python serializes MCP and HTTP through `LockedRouter`. | Pass the owner lock into `OkfMcp`/`McpHttpService`; test MCP+HTTP write/search serialization. |
 | PDF missing-plugin | Intentional divergence | Python 0.15 raises raw `INTERNAL`; Rust returns `CONVERSION_FAILED` with the install hint. | Keep documented; do not “fix” Rust to match the raw Python failure. |
 
 ### Immediate order
 
+Completed in the earlier fix series:
+
 1. ~~BUG-028 migrations or an explicit v10-only compatibility statement.~~ Done.
-2. ~~Broader Office fixtures (XLSX/PPTX).~~ Done for the pinned converter.
+2. ~~Broader Office fixtures (XLSX/PPTX).~~ Done: valid PPTX converts in both runners; an intentionally malformed corpus fixture covers typed failures.
 3. ~~BUG-013 external clients.~~ Done: the documented stable surface keeps
    the lanes and the clients are covered by mock-host parity.
+
+Next, post-cutover review:
+
+1. BUG-067, BUG-068, BUG-069, BUG-070, BUG-071 — restore the settings/open
+   contract first; these block most other scenarios.
+2. BUG-072, BUG-073, BUG-074, BUG-075, BUG-076 — named-root and write
+   integrity, detach enforcement, delete atomicity and recovery lifetime.
+3. BUG-077, BUG-078, BUG-079, BUG-080, BUG-081, BUG-082 — semantic parity
+   for traversal, search bounds, frontmatter, links and file discovery.
+4. BUG-083, BUG-084, BUG-085, BUG-086, BUG-087 — images, BibTeX, export and
+   CLI PDF surfaces.
+5. BUG-088, BUG-089 — job and MCP serialization.
 
 Each close needs code + regression test + parity/scenario (or an explicit
 documented exclusion) + updated status in this file.
